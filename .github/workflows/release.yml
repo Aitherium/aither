@@ -1,0 +1,64 @@
+name: Create Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Extract version
+        id: ver
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "AitherOS Alpha ${{ steps.ver.outputs.version }}"
+          body: |
+            ## AitherOS Alpha ${{ steps.ver.outputs.version }}
+
+            ### Install
+
+            ```bash
+            pip install aither-adk==${{ steps.ver.outputs.version }}
+            ```
+
+            Or with Docker:
+
+            ```bash
+            docker pull ghcr.io/aitherium/aither-adk:${{ steps.ver.outputs.version }}
+            ```
+
+            ### Quick Start
+
+            ```bash
+            # Start the ADK server (requires Ollama running)
+            aither-serve --identity aither --port 8080
+
+            # Or connect to gateway (no local LLM needed)
+            AITHER_API_KEY=ak_xxx aither-serve
+            ```
+
+            ### What's Included
+
+            - AitherADK: 19 modules, 16 agent identities, 7 examples
+            - OpenAI-compatible API (`/v1/chat/completions`)
+            - Multi-backend LLM support (Ollama, vLLM, OpenAI, Anthropic)
+            - Gateway connection to gateway.aitherium.com
+            - MCP server at mcp.aitherium.com
+            - Docker support (Dockerfile + compose)
+            - 11 hardware profiles, setup wizard
+
+            See [CHANGELOG.md](CHANGELOG.md) for full release notes.
+          draft: false
+          prerelease: true
+          generate_release_notes: true

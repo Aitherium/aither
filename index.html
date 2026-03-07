@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AitherOS — The Agentic Operating System</title>
+    <meta name="description" content="AitherOS is a full-stack agentic operating system. 97 microservices, 16 specialist AI agents, self-healing infrastructure. Alpha now available.">
+    <meta property="og:title" content="AitherOS — The Agentic Operating System">
+    <meta property="og:description" content="97 microservices. 16 AI agents. Pain-driven recovery. Self-improving feedback loops. Built by one person over 15 months.">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://aitherium.github.io/AitherOS-Alpha/">
+    <link rel="icon" type="image/x-icon" href="assets/favicon.ico">
+    <style>
+        :root {
+            --bg: #0a0a0f;
+            --bg2: #12121a;
+            --bg3: #1a1a2e;
+            --accent: #7c3aed;
+            --accent2: #a78bfa;
+            --accent3: #c4b5fd;
+            --cyan: #22d3ee;
+            --text: #e2e8f0;
+            --muted: #94a3b8;
+            --border: #2d2d44;
+            --success: #34d399;
+            --warn: #fbbf24;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html { scroll-behavior: smooth; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+            overflow-x: hidden;
+        }
+        a { color: var(--accent2); text-decoration: none; transition: color 0.2s; }
+        a:hover { color: var(--accent3); }
+
+        /* Nav */
+        nav {
+            position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+            background: rgba(10,10,15,0.85); backdrop-filter: blur(12px);
+            border-bottom: 1px solid var(--border);
+            padding: 0.75rem 2rem;
+            display: flex; align-items: center; justify-content: space-between;
+        }
+        nav .logo { font-weight: 700; font-size: 1.25rem; color: var(--accent2); }
+        nav .logo span { color: var(--muted); font-weight: 400; font-size: 0.85rem; margin-left: 0.5rem; }
+        nav .links { display: flex; gap: 1.5rem; align-items: center; }
+        nav .links a { color: var(--muted); font-size: 0.9rem; }
+        nav .links a:hover { color: var(--text); }
+        .btn {
+            display: inline-block; padding: 0.6rem 1.4rem; border-radius: 8px;
+            font-weight: 600; font-size: 0.9rem; transition: all 0.2s;
+        }
+        .btn-primary { background: var(--accent); color: white; }
+        .btn-primary:hover { background: #6d28d9; color: white; }
+        .btn-outline { border: 1px solid var(--border); color: var(--text); }
+        .btn-outline:hover { border-color: var(--accent2); color: var(--accent2); }
+        .btn-lg { padding: 0.8rem 2rem; font-size: 1rem; }
+
+        /* Hero */
+        .hero {
+            min-height: 100vh; display: flex; flex-direction: column;
+            align-items: center; justify-content: center; text-align: center;
+            padding: 6rem 2rem 4rem;
+            background: radial-gradient(ellipse at 50% 0%, rgba(124,58,237,0.15) 0%, transparent 60%);
+        }
+        .hero-badge {
+            display: inline-flex; align-items: center; gap: 0.5rem;
+            padding: 0.4rem 1rem; border-radius: 99px;
+            background: rgba(124,58,237,0.15); border: 1px solid rgba(124,58,237,0.3);
+            font-size: 0.85rem; color: var(--accent2); margin-bottom: 2rem;
+        }
+        .hero-badge .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--success); animation: pulse 2s infinite; }
+        @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+        .hero h1 { font-size: clamp(2.5rem, 5vw, 4rem); font-weight: 800; line-height: 1.1; margin-bottom: 1.5rem; }
+        .hero h1 .gradient {
+            background: linear-gradient(135deg, var(--accent2), var(--cyan));
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+        }
+        .hero p { font-size: 1.2rem; color: var(--muted); max-width: 640px; margin-bottom: 2.5rem; }
+        .hero-actions { display: flex; gap: 1rem; flex-wrap: wrap; justify-content: center; }
+        .hero-stats {
+            display: flex; gap: 3rem; margin-top: 4rem; flex-wrap: wrap; justify-content: center;
+        }
+        .hero-stats .stat { text-align: center; }
+        .hero-stats .stat-num { font-size: 2rem; font-weight: 800; color: var(--accent2); }
+        .hero-stats .stat-label { font-size: 0.85rem; color: var(--muted); }
+
+        /* Sections */
+        section { padding: 5rem 2rem; max-width: 1100px; margin: 0 auto; }
+        .section-label {
+            font-size: 0.8rem; font-weight: 600; text-transform: uppercase;
+            letter-spacing: 0.1em; color: var(--accent2); margin-bottom: 0.5rem;
+        }
+        section h2 { font-size: 2rem; font-weight: 700; margin-bottom: 1rem; }
+        section .subtitle { color: var(--muted); font-size: 1.1rem; margin-bottom: 3rem; max-width: 600px; }
+
+        /* Cards grid */
+        .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1.5rem; }
+        .card {
+            background: var(--bg2); border: 1px solid var(--border); border-radius: 12px;
+            padding: 1.5rem; transition: border-color 0.2s, transform 0.2s;
+        }
+        .card:hover { border-color: var(--accent); transform: translateY(-2px); }
+        .card-icon { font-size: 1.5rem; margin-bottom: 0.75rem; }
+        .card h3 { font-size: 1.1rem; font-weight: 600; margin-bottom: 0.5rem; }
+        .card p { color: var(--muted); font-size: 0.9rem; }
+        .card .tag {
+            display: inline-block; padding: 0.2rem 0.6rem; border-radius: 4px;
+            font-size: 0.75rem; font-weight: 600; margin-top: 0.75rem;
+        }
+        .tag-ready { background: rgba(52,211,153,0.15); color: var(--success); }
+        .tag-soon { background: rgba(251,191,36,0.15); color: var(--warn); }
+
+        /* Architecture */
+        .arch-diagram {
+            background: var(--bg2); border: 1px solid var(--border); border-radius: 12px;
+            padding: 2rem; overflow-x: auto; margin: 2rem 0;
+        }
+        .arch-diagram pre {
+            font-family: 'Cascadia Code', 'Fira Code', monospace; font-size: 0.85rem;
+            color: var(--accent3); line-height: 1.5; white-space: pre;
+        }
+
+        /* Alpha packages */
+        .packages { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1.5rem; }
+        .package {
+            background: var(--bg2); border: 1px solid var(--border); border-radius: 12px;
+            padding: 1.75rem; text-align: center;
+        }
+        .package h3 { font-size: 1.2rem; margin: 0.75rem 0 0.5rem; }
+        .package .desc { color: var(--muted); font-size: 0.9rem; margin-bottom: 1rem; }
+        .package code {
+            display: block; background: var(--bg); padding: 0.5rem; border-radius: 6px;
+            font-size: 0.8rem; color: var(--cyan); margin-top: 0.75rem;
+        }
+
+        /* Signup form */
+        .signup-section {
+            background: linear-gradient(135deg, rgba(124,58,237,0.1), rgba(34,211,238,0.05));
+            border: 1px solid var(--border); border-radius: 16px;
+            padding: 3rem; text-align: center; margin: 3rem auto; max-width: 600px;
+        }
+        .signup-section h2 { margin-bottom: 0.5rem; }
+        .signup-section p { color: var(--muted); margin-bottom: 1.5rem; }
+        .form-row { display: flex; gap: 0.75rem; margin-bottom: 0.75rem; }
+        .form-row input, .form-row select {
+            flex: 1; padding: 0.7rem 1rem; border-radius: 8px;
+            border: 1px solid var(--border); background: var(--bg);
+            color: var(--text); font-size: 0.95rem; outline: none;
+        }
+        .form-row input:focus, .form-row select:focus { border-color: var(--accent2); }
+        .form-row select option { background: var(--bg2); }
+        #signup-form .btn { width: 100%; cursor: pointer; border: none; }
+        .form-msg { margin-top: 1rem; font-size: 0.9rem; display: none; }
+        .form-msg.success { color: var(--success); display: block; }
+        .form-msg.error { color: #f87171; display: block; }
+
+        /* Footer */
+        footer {
+            border-top: 1px solid var(--border); padding: 3rem 2rem; text-align: center;
+            color: var(--muted); font-size: 0.85rem;
+        }
+        footer .links { display: flex; gap: 1.5rem; justify-content: center; margin-bottom: 1rem; }
+
+        /* Responsive */
+        @media (max-width: 640px) {
+            nav .links a.hide-mobile { display: none; }
+            .form-row { flex-direction: column; }
+            .hero-stats { gap: 1.5rem; }
+        }
+    </style>
+</head>
+<body>
+
+<nav>
+    <div class="logo">AitherOS <span>Alpha</span></div>
+    <div class="links">
+        <a href="#features" class="hide-mobile">Features</a>
+        <a href="#architecture" class="hide-mobile">Architecture</a>
+        <a href="#alpha" class="hide-mobile">Alpha</a>
+        <a href="https://github.com/Aitherium/AitherOS-Alpha" class="btn btn-outline">GitHub</a>
+        <a href="#signup" class="btn btn-primary">Request Access</a>
+    </div>
+</nav>
+
+<div class="hero">
+    <div class="hero-badge"><span class="dot"></span> Alpha Release Available</div>
+    <h1>The <span class="gradient">Agentic Operating System</span></h1>
+    <p>97 microservices. 16 specialist AI agents. Pain-driven self-healing. Autonomous feedback loops. Built by one person over 15 months of daily development.</p>
+    <div class="hero-actions">
+        <a href="#signup" class="btn btn-primary btn-lg">Request Alpha Access</a>
+        <a href="https://github.com/Aitherium/AitherOS-Alpha" class="btn btn-outline btn-lg">View on GitHub</a>
+    </div>
+    <div class="hero-stats">
+        <div class="stat"><div class="stat-num">97</div><div class="stat-label">Microservices</div></div>
+        <div class="stat"><div class="stat-num">16</div><div class="stat-label">AI Agents</div></div>
+        <div class="stat"><div class="stat-num">2,600+</div><div class="stat-label">Passing Tests</div></div>
+        <div class="stat"><div class="stat-num">65</div><div class="stat-label">Docker Containers</div></div>
+        <div class="stat"><div class="stat-num">15</div><div class="stat-label">Months of Dev</div></div>
+    </div>
+</div>
+
+<section id="features">
+    <div class="section-label">What Makes It Different</div>
+    <h2>Not a chatbot with tools. A living system.</h2>
+    <p class="subtitle">AitherOS agents don't just respond to prompts. They act autonomously, coordinate with each other, feel pain, heal themselves, and improve over time.</p>
+    <div class="cards">
+        <div class="card">
+            <div class="card-icon">&#x1f9e0;</div>
+            <h3>Six Cognitive Pillars</h3>
+            <p>Intent recognition, reasoning chains, context pipelines, agent orchestration, content creation, and autonomous learning loops.</p>
+        </div>
+        <div class="card">
+            <div class="card-icon">&#x1fa78;</div>
+            <h3>Pain-Driven Self-Healing</h3>
+            <p>Services report pain on a 0-10 scale. High pain triggers automatic recovery, circuit breakers, remediation dispatch, and cascading alerts.</p>
+        </div>
+        <div class="card">
+            <div class="card-icon">&#x1f916;</div>
+            <h3>16 Specialist Agents</h3>
+            <p>Each with persistent identity, memory, personality, and domain expertise. Demiurge writes code. Atlas plans. Lyra researches. Athena audits security.</p>
+        </div>
+        <div class="card">
+            <div class="card-icon">&#x1f3ed;</div>
+            <h3>Dark Factory Autonomy</h3>
+            <p>Intent chains, playbook engine, session learning, frontier judge quality gates, and closed-loop self-modification. The system improves itself.</p>
+        </div>
+        <div class="card">
+            <div class="card-icon">&#x2699;&#xfe0f;</div>
+            <h3>Swarm Coding Engine</h3>
+            <p>11 specialized roles in a 4-phase pipeline: Architect, 8 parallel swarm agents (coders, testers, security, scribe), Review, Judge.</p>
+        </div>
+        <div class="card">
+            <div class="card-icon">&#x1f310;</div>
+            <h3>Multi-Tenant & Federated</h3>
+            <p>Caller isolation, tenant package management, RBAC, graph tenant isolation. Built for multi-user from day one.</p>
+        </div>
+        <div class="card">
+            <div class="card-icon">&#x1f3a8;</div>
+            <h3>Creative Pipeline</h3>
+            <p>Content production pipeline for presentations, articles, marketing, video (LTX-2.3), images (ComfyUI/SDXL), and multi-artifact bundles.</p>
+        </div>
+        <div class="card">
+            <div class="card-icon">&#x1f512;</div>
+            <h3>Security First</h3>
+            <p>HMAC-SHA256 capability tokens, prompt injection defense, RBAC with SQLite backend, intake guards, safety judges, and external agent sandboxing.</p>
+        </div>
+        <div class="card">
+            <div class="card-icon">&#x1f4ca;</div>
+            <h3>Expedition Manager</h3>
+            <p>Multi-session project orchestration. SOW analysis, phase decomposition, parallel task dispatch, human-in-the-loop gates, cost tracking, and retrospectives.</p>
+        </div>
+    </div>
+</section>
+
+<section id="architecture">
+    <div class="section-label">Architecture</div>
+    <h2>Three runtimes. Twelve layers. One system.</h2>
+    <p class="subtitle">AitherOS, AitherZero, and AitherVeil working together across a 12-layer service architecture.</p>
+    <div class="arch-diagram">
+<pre>
+LAYER 10  UI            AitherVeil (Next.js Dashboard :3000)
+LAYER 9   TRAINING      Prism, Trainer, Harvest, DaydreamCorpus
+LAYER 8.5 MESH          Mesh (:8125), Deployer (:8126), MCP Gateway (:8180)
+LAYER 8   SECURITY      Identity, Flux, Recover, Secrets, RBAC, Shield
+LAYER 7   AUTOMATION    Scheduler, Demand, Autonomic, PlaybookEngine
+LAYER 6   GPU           Parallel, Accel, Force, Exo, VRAM Coordinator
+LAYER 5   AGENTS        Council, A2A, Genesis/Orchestrator (:8001), AgentForge
+LAYER 3   COGNITION     Mind, Reasoning, Judge, Tag, Flow, Will, FrontierJudge
+LAYER 2   PERCEPTION    Voice, Vision, Portal, Reflex, Sense
+LAYER 1   CORE          Node (:8080), Pulse (:8081), Watch (:8082), MicroScheduler (:8150)
+LAYER 0   INFRA         Chronicle (:8121), Secrets (:8111), Nexus, Strata (:8136)
+
+LLM CHAIN  User -> ChatEngine -> UnifiedChatBackend -> LLMGateway -> MicroScheduler -> vLLM/Ollama/Cloud
+AGENTS     Request -> AgentForge -> EffortScaler -> UCB.chat() -> MicroScheduler (same path)
+HEALING    Pain Signal -> Pulse -> DarkFactory SSE -> RemediationEngine -> SelfMod -> Auto-deploy
+</pre>
+    </div>
+</section>
+
+<section id="alpha">
+    <div class="section-label">Alpha Release</div>
+    <h2>What you get today</h2>
+    <p class="subtitle">Four standalone packages you can run right now, plus the full platform for those who want everything.</p>
+    <div class="packages">
+        <div class="package">
+            <div class="card-icon">&#x1f5a5;&#xfe0f;</div>
+            <h3>AitherNode</h3>
+            <div class="desc">MCP server &amp; mesh client. 100+ tools. GPU discovery. Pull and run.</div>
+            <span class="tag tag-ready">Ready</span>
+            <code>docker pull aitheros/node</code>
+        </div>
+        <div class="package">
+            <div class="card-icon">&#x1f4bb;</div>
+            <h3>AitherDesktop</h3>
+            <div class="desc">Native PyQt6 overlay. Global hotkeys. System tray. Win+A to summon.</div>
+            <span class="tag tag-ready">Ready</span>
+            <code>pip install aither-desktop</code>
+        </div>
+        <div class="package">
+            <div class="card-icon">&#x1f30d;</div>
+            <h3>AitherConnect</h3>
+            <div class="desc">Chrome extension. Federated AI search. Side panel chat. Context menus.</div>
+            <span class="tag tag-ready">Ready</span>
+            <code>Chrome Web Store (sideload)</code>
+        </div>
+        <div class="package">
+            <div class="card-icon">&#x1f3ae;</div>
+            <h3>AitherVeil</h3>
+            <div class="desc">Next.js dashboard. Dark factory view. Expedition tracking. Social graph.</div>
+            <span class="tag tag-ready">Ready</span>
+            <code>docker pull aitheros/veil</code>
+        </div>
+    </div>
+</section>
+
+<section id="agents">
+    <div class="section-label">Agent Fleet</div>
+    <h2>16 specialist agents with persistent identity</h2>
+    <div class="cards" style="grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));">
+        <div class="card"><h3>Atlas</h3><p>Roadmap, planning, delegation, service discovery</p></div>
+        <div class="card"><h3>Demiurge</h3><p>The Divine Craftsman. Intent to working code.</p></div>
+        <div class="card"><h3>Lyra</h3><p>Research librarian. Scouts, neurons, deep research.</p></div>
+        <div class="card"><h3>Athena</h3><p>Security audits, threat analysis, vulnerability scanning.</p></div>
+        <div class="card"><h3>Hydra</h3><p>Code review, multi-perspective analysis.</p></div>
+        <div class="card"><h3>Apollo</h3><p>Performance optimization, bottleneck detection.</p></div>
+        <div class="card"><h3>Prometheus</h3><p>Infrastructure, DevOps, deployment automation.</p></div>
+        <div class="card"><h3>Iris</h3><p>Creative direction, image/video generation (ComfyUI).</p></div>
+        <div class="card"><h3>Vera</h3><p>Digital journalist, investigative content.</p></div>
+        <div class="card"><h3>Hera</h3><p>System-wide news wire and broadcast.</p></div>
+        <div class="card"><h3>Saga</h3><p>Epic storytelling, narrative generation.</p></div>
+        <div class="card"><h3>Scribe</h3><p>Documentation generation and maintenance.</p></div>
+        <div class="card"><h3>Viviane</h3><p>Memory keeper, knowledge graph queries.</p></div>
+        <div class="card"><h3>Themis</h3><p>Consumer advocacy, rights enforcement.</p></div>
+        <div class="card"><h3>Aither</h3><p>The unified orchestrator across all agents.</p></div>
+        <div class="card"><h3>Flow</h3><p>GitOps, CI/CD, deployment pipelines.</p></div>
+    </div>
+</section>
+
+<section id="signup">
+    <div class="signup-section">
+        <h2>Request Alpha Access</h2>
+        <p>Get early access to AitherOS. We'll send you setup instructions and an invite to the alpha program.</p>
+        <form id="signup-form" action="https://formsubmit.co/hello@aitherium.com" method="POST">
+            <input type="hidden" name="_subject" value="AitherOS Alpha Access Request">
+            <input type="hidden" name="_captcha" value="true">
+            <input type="hidden" name="_template" value="table">
+            <input type="hidden" name="_next" value="https://aitherium.github.io/AitherOS-Alpha/thankyou.html">
+            <div class="form-row">
+                <input type="text" name="name" placeholder="Your name" required>
+                <input type="email" name="email" placeholder="your@email.com" required>
+            </div>
+            <div class="form-row">
+                <select name="interest" required>
+                    <option value="" disabled selected>What interests you most?</option>
+                    <option value="full-platform">Full AitherOS platform</option>
+                    <option value="aither-node">AitherNode (MCP server)</option>
+                    <option value="aither-desktop">AitherDesktop (native app)</option>
+                    <option value="aither-connect">AitherConnect (browser extension)</option>
+                    <option value="agent-onboarding">Agent marketplace / onboarding</option>
+                    <option value="self-hosting">Self-hosting on my hardware</option>
+                    <option value="contributing">Contributing to the project</option>
+                </select>
+            </div>
+            <div class="form-row">
+                <input type="text" name="hardware" placeholder="Your hardware (e.g., RTX 4090, 32GB RAM) — optional">
+            </div>
+            <div class="form-row">
+                <textarea name="message" placeholder="Anything else you'd like us to know? (optional)" rows="3" style="flex:1;padding:0.7rem 1rem;border-radius:8px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:0.95rem;font-family:inherit;outline:none;resize:vertical;"></textarea>
+            </div>
+            <button type="submit" class="btn btn-primary btn-lg">Request Access</button>
+        </form>
+        <div id="form-msg" class="form-msg"></div>
+    </div>
+</section>
+
+<footer>
+    <div class="links">
+        <a href="https://github.com/Aitherium/AitherOS-Alpha">GitHub</a>
+        <a href="https://github.com/Aitherium/AitherOS-Alpha/blob/main/ROADMAP.md">Roadmap</a>
+        <a href="https://github.com/Aitherium/AitherOS-Alpha/blob/main/AGENTS.md">Agent Spec</a>
+        <a href="https://github.com/Aitherium/AitherOS-Alpha/blob/main/SKILLS.md">Skills Catalog</a>
+        <a href="mailto:security@aitherium.com">Security</a>
+    </div>
+    <p>Built with AitherOS, using AitherOS, to build more AitherOS.</p>
+    <p style="margin-top:0.5rem;">15 months. One person. 97 services. 16 agents. Zero shortcuts.</p>
+</footer>
+
+</body>
+</html>

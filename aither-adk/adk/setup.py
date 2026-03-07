@@ -1,0 +1,699 @@
+"""Programmatic agent self-setup — detect hardware, install backends, pull models.
+
+Agents can call these functions to bootstrap their own environment without
+human intervention. Wraps the logic from install.py in an async API.
+
+Usage:
+    from adk.setup import AgentSetup
+
+    setup = AgentSetup()
+    info = await setup.detect_hardware()
+    await setup.ensure_ollama()
+    await setup.pull_models(["llama3.2:3b", "nomic-embed-text"])
+    await setup.ensure_vllm(gpu_count=1)
+    report = await setup.full_setup()  # does everything
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import os
+import platform
+import re
+import shutil
+import subprocess
+import sys
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+from typing import Optional
+
+logger = logging.getLogger("adk.setup")
+
+
+# ---------------------------------------------------------------------------
+# Data structures
+# ---------------------------------------------------------------------------
+
+@dataclass
+class GPUInfo:
+    vendor: str = "none"  # nvidia, amd, apple, none
+    name: str = ""
+    vram_mb: int = 0
+    cuda_version: str = ""
+    driver_version: str = ""
+    count: int = 0
+
+
+@dataclass
+class VLLMInfo:
+    running: bool = False
+    ports: list[int] = field(default_factory=list)
+    models: list[str] = field(default_factory=list)
+
+
+@dataclass
+class SystemInfo:
+    os_name: str = ""
+    os_version: str = ""
+    arch: str = ""
+    python_version: str = ""
+    ram_gb: float = 0.0
+    gpu: GPUInfo = field(default_factory=GPUInfo)
+    ollama_installed: bool = False
+    ollama_running: bool = False
+    ollama_models: list[str] = field(default_factory=list)
+    vllm: VLLMInfo = field(default_factory=VLLMInfo)
+    docker_installed: bool = False
+    profile: str = "cpu_only"
+    # Which inference backend is active (detected at setup time)
+    active_backend: str = ""  # "vllm", "ollama", "openai", ""
+
+
+@dataclass
+class SetupReport:
+    """Result of a full_setup() call."""
+    system: SystemInfo = field(default_factory=SystemInfo)
+    profile: str = "cpu_only"
+    ollama_ready: bool = False
+    vllm_ready: bool = False
+    backend: str = ""  # "vllm", "ollama", "openai"
+    models_pulled: list[str] = field(default_factory=list)
+    models_available: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+    ready: bool = False
+
+
+# ---------------------------------------------------------------------------
+# Hardware detection (async wrappers around subprocess)
+# ---------------------------------------------------------------------------
+
+async def _run(cmd: list[str], timeout: float = 15.0) -> tuple[int, str, str]:
+    """Run a subprocess and return (returncode, stdout, stderr)."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        return proc.returncode or 0, stdout.decode(errors="replace"), stderr.decode(errors="replace")
+    except FileNotFoundError:
+        return -1, "", f"Command not found: {cmd[0]}"
+    except asyncio.TimeoutError:
+        return -2, "", f"Command timed out: {' '.join(cmd)}"
+    except Exception as e:
+        return -3, "", str(e)
+
+
+async def _detect_gpu() -> GPUInfo:
+    """Detect GPU hardware."""
+    gpu = GPUInfo()
+
+    # NVIDIA
+    rc, out, _ = await _run(["nvidia-smi", "--query-gpu=name,memory.total,driver_version",
+                              "--format=csv,noheader,nounits"])
+    if rc == 0 and out.strip():
+        lines = [l.strip() for l in out.strip().splitlines() if l.strip()]
+        gpu.vendor = "nvidia"
+        gpu.count = len(lines)
+        parts = lines[0].split(",")
+        if len(parts) >= 3:
+            gpu.name = parts[0].strip()
+            try:
+                gpu.vram_mb = int(float(parts[1].strip()))
+            except ValueError:
+                pass
+            gpu.driver_version = parts[2].strip()
+        # Total VRAM across all GPUs
+        total_vram = 0
+        for line in lines:
+            p = line.split(",")
+            if len(p) >= 2:
+                try:
+                    total_vram += int(float(p[1].strip()))
+                except ValueError:
+                    pass
+        if total_vram > gpu.vram_mb:
+            gpu.vram_mb = total_vram
+
+        # CUDA version
+        rc2, out2, _ = await _run(["nvidia-smi"])
+        if rc2 == 0:
+            m = re.search(r"CUDA Version:\s+([\d.]+)", out2)
+            if m:
+                gpu.cuda_version = m.group(1)
+        return gpu
+
+    # AMD
+    rc, out, _ = await _run(["rocm-smi", "--showmeminfo", "vram", "--csv"])
+    if rc == 0 and out.strip():
+        gpu.vendor = "amd"
+        gpu.count = 1
+        for line in out.splitlines():
+            if "total" in line.lower():
+                nums = re.findall(r"(\d+)", line)
+                if nums:
+                    gpu.vram_mb = int(nums[-1]) // (1024 * 1024) if int(nums[-1]) > 1_000_000 else int(nums[-1])
+        return gpu
+
+    # Apple Silicon
+    if platform.system() == "Darwin" and platform.machine() == "arm64":
+        gpu.vendor = "apple"
+        gpu.name = "Apple Silicon (unified memory)"
+        gpu.count = 1
+        # Unified memory = system RAM
+        rc, out, _ = await _run(["sysctl", "-n", "hw.memsize"])
+        if rc == 0:
+            try:
+                gpu.vram_mb = int(out.strip()) // (1024 * 1024)
+            except ValueError:
+                pass
+        return gpu
+
+    return gpu
+
+
+async def _detect_ram() -> float:
+    """Detect system RAM in GB."""
+    system = platform.system()
+    if system == "Windows":
+        rc, out, _ = await _run(["wmic", "computersystem", "get", "TotalPhysicalMemory", "/value"])
+        if rc == 0:
+            m = re.search(r"TotalPhysicalMemory=(\d+)", out)
+            if m:
+                return int(m.group(1)) / (1024 ** 3)
+    elif system == "Linux":
+        try:
+            with open("/proc/meminfo") as f:
+                for line in f:
+                    if line.startswith("MemTotal:"):
+                        return int(line.split()[1]) / (1024 * 1024)
+        except FileNotFoundError:
+            pass
+    elif system == "Darwin":
+        rc, out, _ = await _run(["sysctl", "-n", "hw.memsize"])
+        if rc == 0:
+            try:
+                return int(out.strip()) / (1024 ** 3)
+            except ValueError:
+                pass
+    return 0.0
+
+
+async def _check_ollama() -> tuple[bool, bool, list[str]]:
+    """Check Ollama: (installed, running, models)."""
+    installed = shutil.which("ollama") is not None
+    if not installed:
+        return False, False, []
+
+    # Check if running
+    rc, out, _ = await _run(["ollama", "list"])
+    if rc != 0:
+        return True, False, []
+
+    models = []
+    for line in out.strip().splitlines()[1:]:  # skip header
+        parts = line.split()
+        if parts:
+            models.append(parts[0])
+    return True, True, models
+
+
+async def _check_vllm() -> VLLMInfo:
+    """Check if vLLM is running on common ports (8200-8203 or custom)."""
+    import httpx
+
+    info = VLLMInfo()
+    ports_to_check = [8200, 8201, 8202, 8203, 8000]  # AitherOS standard + vLLM default
+
+    for port in ports_to_check:
+        try:
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                resp = await client.get(f"http://localhost:{port}/v1/models")
+                if resp.status_code == 200:
+                    info.running = True
+                    info.ports.append(port)
+                    data = resp.json()
+                    for m in data.get("data", []):
+                        model_id = m.get("id", "")
+                        if model_id and model_id not in info.models:
+                            info.models.append(model_id)
+        except Exception:
+            pass
+
+    # Also check for vLLM Docker containers
+    rc, out, _ = await _run(["docker", "ps", "--filter", "ancestor=vllm/vllm-openai", "--format", "{{.Names}} {{.Ports}}"])
+    if rc == 0 and out.strip():
+        info.running = True
+        for line in out.strip().splitlines():
+            # Extract published ports from Docker port mapping
+            import re as _re
+            for m in _re.finditer(r":(\d+)->", line):
+                p = int(m.group(1))
+                if p not in info.ports:
+                    info.ports.append(p)
+
+    return info
+
+
+async def _check_docker() -> bool:
+    """Check if Docker is available."""
+    rc, _, _ = await _run(["docker", "info"])
+    return rc == 0
+
+
+def _select_profile(gpu: GPUInfo, ram_gb: float) -> str:
+    """Select hardware profile based on detected hardware."""
+    if gpu.vendor == "none":
+        return "cpu_only"
+    if gpu.vendor == "apple":
+        return "apple_silicon"
+    if gpu.vendor == "amd":
+        return "amd"
+    # NVIDIA tiers
+    if gpu.vram_mb >= 48000:
+        return "nvidia_ultra"
+    if gpu.vram_mb >= 24000:
+        return "nvidia_high"
+    if gpu.vram_mb >= 12000:
+        return "nvidia_mid"
+    if gpu.vram_mb >= 6000:
+        return "nvidia_low"
+    return "minimal"
+
+
+def _recommended_models(profile: str) -> list[str]:
+    """Return recommended Ollama models for a profile."""
+    models = {
+        "cpu_only": ["llama3.2:1b", "nomic-embed-text"],
+        "minimal": ["llama3.2:3b", "nomic-embed-text"],
+        "nvidia_low": ["llama3.2:3b", "nomic-embed-text"],
+        "nvidia_mid": ["llama3.1:8b", "deepseek-r1:8b", "nomic-embed-text"],
+        "nvidia_high": ["llama3.1:8b", "deepseek-r1:14b", "nomic-embed-text", "codellama:13b"],
+        "nvidia_ultra": ["llama3.1:70b", "deepseek-r1:32b", "nomic-embed-text", "codellama:34b"],
+        "apple_silicon": ["llama3.1:8b", "deepseek-r1:8b", "nomic-embed-text"],
+        "amd": ["llama3.1:8b", "nomic-embed-text"],
+        "standard": ["llama3.1:8b", "deepseek-r1:8b", "nomic-embed-text"],
+        "workstation": ["llama3.1:8b", "deepseek-r1:14b", "nomic-embed-text", "codellama:13b"],
+        "server": ["llama3.1:70b", "deepseek-r1:32b", "nomic-embed-text"],
+    }
+    return models.get(profile, models["cpu_only"])
+
+
+# ---------------------------------------------------------------------------
+# AgentSetup — programmatic setup API
+# ---------------------------------------------------------------------------
+
+class AgentSetup:
+    """Programmatic environment setup for ADK agents.
+
+    Agents can use this to self-setup their inference backends:
+
+        setup = AgentSetup()
+        report = await setup.full_setup()
+        if report.ready:
+            agent = AitherAgent("atlas")
+            response = await agent.chat("Hello!")
+    """
+
+    def __init__(self, data_dir: str = ""):
+        self.data_dir = Path(data_dir or os.environ.get("AITHER_DATA_DIR", os.path.expanduser("~/.aither")))
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self._system: SystemInfo | None = None
+
+    async def detect_hardware(self) -> SystemInfo:
+        """Detect system hardware: GPU, RAM, OS, installed backends.
+
+        Detects both Ollama and vLLM to avoid conflicts. If vLLM is already
+        running and using GPU, Ollama model loading would cause VRAM crashes.
+        """
+        gpu, ram, ollama_check, vllm_info, docker = await asyncio.gather(
+            _detect_gpu(),
+            _detect_ram(),
+            _check_ollama(),
+            _check_vllm(),
+            _check_docker(),
+        )
+        ollama_installed, ollama_running, ollama_models = ollama_check
+
+        # Determine active backend — vLLM takes priority (it's holding GPU memory)
+        active_backend = ""
+        if vllm_info.running:
+            active_backend = "vllm"
+        elif ollama_running:
+            active_backend = "ollama"
+
+        info = SystemInfo(
+            os_name=platform.system(),
+            os_version=platform.version(),
+            arch=platform.machine(),
+            python_version=platform.python_version(),
+            ram_gb=round(ram, 1),
+            gpu=gpu,
+            ollama_installed=ollama_installed,
+            ollama_running=ollama_running,
+            ollama_models=ollama_models,
+            vllm=vllm_info,
+            docker_installed=docker,
+            profile=_select_profile(gpu, ram),
+            active_backend=active_backend,
+        )
+        self._system = info
+
+        backend_msg = f"active_backend={active_backend}" if active_backend else "no backend running"
+        if vllm_info.running:
+            backend_msg += f", vLLM on ports {vllm_info.ports} with {vllm_info.models}"
+        logger.info(f"Detected: {info.os_name} {info.arch}, GPU={gpu.vendor} "
+                     f"({gpu.name}, {gpu.vram_mb}MB), RAM={info.ram_gb}GB, "
+                     f"profile={info.profile}, {backend_msg}")
+        return info
+
+    async def ensure_ollama(self, auto_install: bool = True, force: bool = False) -> bool:
+        """Ensure Ollama is installed and running.
+
+        SAFETY: Will NOT start Ollama if vLLM is already running on GPU.
+        Starting Ollama would load models into VRAM and crash vLLM.
+        Use force=True to override (only if you know what you're doing).
+
+        On Linux, auto-installs via curl if not present.
+        On macOS, suggests brew install.
+        On Windows, suggests manual download.
+        Returns True if Ollama is ready.
+        """
+        if not self._system:
+            await self.detect_hardware()
+        assert self._system is not None
+
+        # CRITICAL: Don't start Ollama if vLLM is already using GPU
+        if self._system.vllm.running and not self._system.ollama_running and not force:
+            logger.warning(
+                "SKIPPING Ollama — vLLM is already running on ports %s. "
+                "Starting Ollama would load models into VRAM and crash vLLM. "
+                "Use the vLLM OpenAI-compatible API instead: "
+                "AITHER_LLM_BACKEND=openai OPENAI_BASE_URL=http://localhost:%d/v1",
+                self._system.vllm.ports,
+                self._system.vllm.ports[0] if self._system.vllm.ports else 8200,
+            )
+            return False
+
+        if self._system.ollama_running:
+            logger.info("Ollama already running")
+            return True
+
+        if not self._system.ollama_installed and auto_install:
+            system = platform.system()
+            if system == "Linux":
+                logger.info("Installing Ollama via curl...")
+                rc, _, err = await _run(
+                    ["bash", "-c", "curl -fsSL https://ollama.com/install.sh | sh"],
+                    timeout=120.0,
+                )
+                if rc != 0:
+                    logger.error(f"Ollama install failed: {err}")
+                    return False
+                logger.info("Ollama installed")
+            elif system == "Darwin":
+                if shutil.which("brew"):
+                    logger.info("Installing Ollama via brew...")
+                    rc, _, err = await _run(["brew", "install", "ollama"], timeout=120.0)
+                    if rc != 0:
+                        logger.error(f"brew install ollama failed: {err}")
+                        return False
+                else:
+                    logger.warning("Install Ollama: brew install ollama (or https://ollama.com)")
+                    return False
+            else:
+                logger.warning("Install Ollama from https://ollama.com/download")
+                return False
+
+        # Try to start Ollama serve in background
+        if not self._system.ollama_running:
+            logger.info("Starting Ollama serve...")
+            try:
+                proc = subprocess.Popen(
+                    ["ollama", "serve"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+                await asyncio.sleep(3)  # give it time to start
+                rc, _, _ = await _run(["ollama", "list"])
+                if rc == 0:
+                    logger.info("Ollama serve started")
+                    return True
+                logger.warning("Ollama serve started but not responding yet")
+                return False
+            except Exception as e:
+                logger.error(f"Failed to start Ollama: {e}")
+                return False
+
+        return True
+
+    async def pull_models(self, models: list[str] | None = None) -> list[str]:
+        """Pull Ollama models. Returns list of successfully pulled models.
+
+        If no models specified, pulls recommended models for detected profile.
+        """
+        if not self._system:
+            await self.detect_hardware()
+        assert self._system is not None
+
+        if models is None:
+            models = _recommended_models(self._system.profile)
+
+        # Skip already-installed models
+        existing = set(self._system.ollama_models)
+        to_pull = [m for m in models if m not in existing]
+
+        if not to_pull:
+            logger.info(f"All {len(models)} models already installed")
+            return models
+
+        pulled = []
+        for model in to_pull:
+            logger.info(f"Pulling {model}...")
+            rc, out, err = await _run(["ollama", "pull", model], timeout=600.0)
+            if rc == 0:
+                pulled.append(model)
+                logger.info(f"Pulled {model}")
+            else:
+                logger.error(f"Failed to pull {model}: {err}")
+
+        return [m for m in models if m in existing] + pulled
+
+    async def ensure_vllm(
+        self,
+        gpu_count: int = 1,
+        port: int = 8200,
+        model: str = "",
+    ) -> bool:
+        """Start a vLLM inference server via Docker.
+
+        Requires Docker and NVIDIA GPU. Returns True if vLLM is running.
+        """
+        if not self._system:
+            await self.detect_hardware()
+        assert self._system is not None
+
+        if not self._system.docker_installed:
+            logger.warning("Docker not installed — cannot start vLLM container")
+            return False
+
+        if self._system.gpu.vendor != "nvidia":
+            logger.warning("vLLM Docker requires NVIDIA GPU")
+            return False
+
+        if not model:
+            if self._system.gpu.vram_mb >= 24000:
+                model = "meta-llama/Llama-3.1-8B-Instruct"
+            else:
+                model = "meta-llama/Llama-3.2-3B-Instruct"
+
+        container_name = f"aither-vllm-{port}"
+
+        # Check if already running
+        rc, out, _ = await _run(["docker", "ps", "--filter", f"name={container_name}", "--format", "{{.Names}}"])
+        if rc == 0 and container_name in out:
+            logger.info(f"vLLM container {container_name} already running")
+            return True
+
+        logger.info(f"Starting vLLM container: {model} on port {port}...")
+        cmd = [
+            "docker", "run", "-d",
+            "--name", container_name,
+            "--gpus", f'"device={",".join(str(i) for i in range(gpu_count))}"',
+            "-p", f"{port}:8000",
+            "--shm-size", "4g",
+            "vllm/vllm-openai:latest",
+            "--model", model,
+            "--gpu-memory-utilization", "0.90",
+            "--max-model-len", "8192",
+        ]
+        if gpu_count > 1:
+            cmd.extend(["--tensor-parallel-size", str(gpu_count)])
+
+        rc, _, err = await _run(cmd, timeout=300.0)
+        if rc != 0:
+            logger.error(f"Failed to start vLLM: {err}")
+            return False
+
+        logger.info(f"vLLM container started: {container_name}")
+        return True
+
+    async def health_check(self) -> dict:
+        """Run a quick health check of the inference stack."""
+        import httpx
+
+        results: dict = {"ollama": False, "vllm": False, "models": []}
+
+        # Ollama
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get("http://localhost:11434/api/tags")
+                if resp.status_code == 200:
+                    results["ollama"] = True
+                    results["models"] = [m["name"] for m in resp.json().get("models", [])]
+        except Exception:
+            pass
+
+        # vLLM (check common ports)
+        for port in [8200, 8201, 8202, 8203]:
+            try:
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    resp = await client.get(f"http://localhost:{port}/v1/models")
+                    if resp.status_code == 200:
+                        results["vllm"] = True
+                        break
+            except Exception:
+                pass
+
+        return results
+
+    async def full_setup(
+        self,
+        models: list[str] | None = None,
+        install_ollama: bool = True,
+        start_vllm: bool = False,
+        vllm_port: int = 8200,
+    ) -> SetupReport:
+        """Full automated setup: detect hardware, configure inference backend.
+
+        SMART BACKEND DETECTION:
+        - If vLLM is already running → use it (don't touch Ollama)
+        - If Ollama is already running → use it
+        - If nothing running → start Ollama (unless vLLM containers exist)
+        - Never start Ollama when vLLM holds the GPU
+
+        Usage:
+            setup = AgentSetup()
+            report = await setup.full_setup()
+            print(f"Ready: {report.ready}, Backend: {report.backend}")
+        """
+        report = SetupReport()
+
+        # Step 1: Detect hardware + running backends
+        try:
+            info = await self.detect_hardware()
+            report.system = info
+            report.profile = info.profile
+        except Exception as e:
+            report.errors.append(f"Hardware detection failed: {e}")
+            return report
+
+        # Step 2: Choose backend strategy based on what's already running
+        if info.vllm.running:
+            # vLLM is already serving — use it via OpenAI-compatible API
+            report.vllm_ready = True
+            report.backend = "vllm"
+            report.models_available = info.vllm.models
+            vllm_port_str = str(info.vllm.ports[0]) if info.vllm.ports else "8200"
+            logger.info(
+                f"vLLM already running on port(s) {info.vllm.ports} with "
+                f"models {info.vllm.models}. Using OpenAI-compatible API. "
+                f"Set AITHER_LLM_BACKEND=openai OPENAI_BASE_URL=http://localhost:{vllm_port_str}/v1"
+            )
+            # Don't touch Ollama — it would fight vLLM for VRAM
+
+        elif info.ollama_running:
+            # Ollama already running — use it
+            report.ollama_ready = True
+            report.backend = "ollama"
+            report.models_available = info.ollama_models
+
+            # Pull additional models if requested
+            try:
+                pulled = await self.pull_models(models)
+                report.models_pulled = pulled
+                report.models_available = list(set(report.models_available + pulled))
+            except Exception as e:
+                report.errors.append(f"Model pull failed: {e}")
+
+        else:
+            # Nothing running — try to start Ollama (safe, no vLLM conflict)
+            try:
+                ollama_ok = await self.ensure_ollama(auto_install=install_ollama)
+                report.ollama_ready = ollama_ok
+                if ollama_ok:
+                    report.backend = "ollama"
+            except Exception as e:
+                report.errors.append(f"Ollama setup failed: {e}")
+
+            # Pull models if Ollama is ready
+            if report.ollama_ready:
+                try:
+                    pulled = await self.pull_models(models)
+                    report.models_pulled = pulled
+                    report.models_available = pulled
+                except Exception as e:
+                    report.errors.append(f"Model pull failed: {e}")
+
+            # Optional: start vLLM if requested and Ollama isn't the plan
+            if start_vllm and not report.ollama_ready:
+                if info.docker_installed and info.gpu.vendor == "nvidia":
+                    try:
+                        vllm_ok = await self.ensure_vllm(port=vllm_port)
+                        report.vllm_ready = vllm_ok
+                        if vllm_ok:
+                            report.backend = "vllm"
+                    except Exception as e:
+                        report.errors.append(f"vLLM setup failed: {e}")
+
+        # Check if we also have cloud API keys configured
+        if not report.backend:
+            if os.environ.get("OPENAI_API_KEY") or os.environ.get("ANTHROPIC_API_KEY"):
+                report.backend = "cloud"
+                report.ready = True
+                logger.info("No local backend — using cloud API keys")
+
+        report.ready = bool(report.backend)
+        logger.info(
+            f"Setup complete: ready={report.ready}, backend={report.backend}, "
+            f"profile={report.profile}, models={report.models_available}, "
+            f"errors={report.errors}"
+        )
+
+        # Save report
+        report_path = self.data_dir / "setup_report.json"
+        try:
+            report_path.write_text(json.dumps(asdict(report), indent=2))
+        except Exception:
+            pass
+
+        return report
+
+
+# ---------------------------------------------------------------------------
+# Convenience function for agents
+# ---------------------------------------------------------------------------
+
+async def auto_setup(**kwargs) -> SetupReport:
+    """One-liner for agents to setup their environment.
+
+    Usage:
+        from adk.setup import auto_setup
+        report = await auto_setup()
+    """
+    setup = AgentSetup()
+    return await setup.full_setup(**kwargs)
