@@ -1,323 +1,293 @@
-<p align="center">
-  <img src="https://raw.githubusercontent.com/Aitherium/AitherOS-Alpha/main/assets/logo.png" alt="AitherOS" width="200"/>
-</p>
+<div align="center">
 
-<h1 align="center">AitherOS</h1>
+<img src="assets/aitheros-logo.jpg" alt="AitherOS" width="200" />
 
-<p align="center">
-  <strong>A full-stack agentic operating system.</strong><br/>
-  97 microservices. 16 specialist agents. 2,600+ passing tests.<br/>
-  Built by one person over 15 months.
-</p>
+# AitherOS
 
-<p align="center">
-  <a href="#"><img src="https://img.shields.io/badge/status-alpha-orange?style=flat-square" alt="Alpha"/></a>
-  <a href="#"><img src="https://img.shields.io/badge/services-97-blue?style=flat-square" alt="97 Services"/></a>
-  <a href="#"><img src="https://img.shields.io/badge/agents-16-blue?style=flat-square" alt="16 Agents"/></a>
-  <a href="#"><img src="https://img.shields.io/badge/tests-2600%2B_passing-green?style=flat-square" alt="2600+ Tests"/></a>
-  <a href="#"><img src="https://img.shields.io/badge/license-Apache--2.0-blue?style=flat-square" alt="License"/></a>
-  <a href="https://pypi.org/project/aither-adk/"><img src="https://img.shields.io/pypi/v/aither-adk?style=flat-square&label=aither-adk" alt="PyPI"/></a>
-</p>
+**An Agentic Operating System — not a chatbot with tools.**
 
-<p align="center">
-  <a href="https://playground.aitherium.com">Playground</a> |
-  <a href="https://mcp.aitherium.com">MCP Server</a> |
-  <a href="https://gateway.aitherium.com">Gateway</a> |
-  <a href="https://chat.aitherium.com">Community</a> |
-  <a href="docs/GETTING_STARTED.md">Get Started</a>
-</p>
+97 microservices · 16 specialist agents · Dark factory autonomous loops
+2600+ tests · Expedition orchestration · Self-improving feedback loops
+
+[![Status](https://img.shields.io/badge/status-alpha-blueviolet?style=flat-square)](https://aitherium.com)
+[![Built By](https://img.shields.io/badge/built%20by-one%20person-cyan?style=flat-square)](#)
+[![Services](https://img.shields.io/badge/services-97-blue?style=flat-square)](#architecture)
+[![Tests](https://img.shields.io/badge/tests-2600%2B-green?style=flat-square)](#)
+[![Agents](https://img.shields.io/badge/agents-16-purple?style=flat-square)](#agents)
+
+**Start building agents today:**
+
+```bash
+pip install aither-adk
+```
+
+[Get Started](#get-started) |
+[Architecture](#architecture) |
+[Agents](#the-agents) |
+[ADK](#aither-adk) |
+[Roadmap](#roadmap) |
+[Stay Updated](#stay-updated)
+
+</div>
+
+---
+
+## Get Started
+
+### Option 1: Build an Agent (5 minutes)
+
+```bash
+pip install aither-adk
+```
+
+```python
+import asyncio
+from adk import AitherAgent
+
+async def main():
+    agent = AitherAgent("aither")  # Auto-detects Ollama on localhost
+    response = await agent.chat("Hello! What can you help me with?")
+    print(response.content)
+
+asyncio.run(main())
+```
+
+Works with Ollama, OpenAI, Anthropic, vLLM, LM Studio, or any OpenAI-compatible API.
+
+### Option 2: Run the Server
+
+```bash
+aither-serve --identity aither --port 8080
+```
+
+Now any client can talk to your agent via OpenAI-compatible API:
+
+```bash
+curl http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"llama3.2","messages":[{"role":"user","content":"hello"}]}'
+```
+
+### Option 3: Full AitherOS Stack (Docker)
+
+```bash
+git clone https://github.com/Aitherium/AitherOS-Alpha.git
+cd AitherOS-Alpha
+python install.py        # Detects hardware, installs deps, pulls models
+docker compose up -d     # Start everything
+# Dashboard at http://localhost:3000
+```
 
 ---
 
 ## What Is This?
 
-AitherOS is an AI-powered operating system built on 97 microservices organized in 12 architectural layers. It runs 16 specialist AI agents that collaborate to handle everything from code generation and security audits to infrastructure management and creative tasks.
+AitherOS is a full-stack **agentic operating system** built solo from the ground up. Not an AI wrapper, not a prompt chain, not a demo — it's 97 FastAPI microservices running across 12 architectural layers with 16 specialist AI agents that coordinate, remember, feel pain, and improve themselves.
 
-The **AitherADK** (Agent Development Kit) is the open-source entry point. It lets you run any of the 16 agents locally with 4 pip dependencies, connect to cloud tools through the gateway, or self-host the full stack on your own hardware.
+> *From Greek aither — the primordial god of light and the upper air. The invisible medium that makes creation possible.*
 
-This is the alpha release. Everything works. Some edges are rough.
-
----
-
-## Quick Start
-
-Three ways to get running, from simplest to most powerful.
-
-### Path A: pip install (simplest)
-
-```bash
-pip install aither-adk
-aither-serve --identity atlas --port 8080
-```
-
-Your agent is now live at `http://localhost:8080`. It auto-detects Ollama if running, or falls back to a built-in response. See the [Getting Started guide](docs/GETTING_STARTED.md) for full setup including Ollama.
-
-### Path B: Docker
-
-```bash
-git clone https://github.com/Aitherium/AitherOS-Alpha.git
-cd AitherOS-Alpha
-docker compose -f docker/docker-compose.alpha.yml up -d
-```
-
-Serves an agent on port 8080. Connects to Ollama on your host machine by default. See [Self-Hosting](docs/SELF_HOSTING.md) for GPU-accelerated vLLM setup.
-
-### Path C: Cloud (no local setup)
-
-Connect to **gateway.aitherium.com** and use AitherOS tools directly from your IDE or the browser-based playground. No local install required.
-
-- **Playground**: [playground.aitherium.com](https://playground.aitherium.com) -- chat with agents in your browser
-- **MCP Server**: Add `mcp.aitherium.com` to your IDE (see below)
-- **API**: `POST https://gateway.aitherium.com/api/v1/chat` with your API key
-
----
-
-## MCP Server
-
-The AitherOS MCP server at **mcp.aitherium.com** gives your IDE access to AitherOS tools -- code search, agent delegation, memory, and more. It works with any editor that supports the Model Context Protocol.
-
-### Claude Code
-
-Add to your `.mcp.json`:
-
-```json
-{
-  "mcpServers": {
-    "aitheros": {
-      "type": "sse",
-      "url": "https://mcp.aitherium.com/sse",
-      "headers": {
-        "Authorization": "Bearer YOUR_API_KEY"
-      }
-    }
-  }
-}
-```
-
-### Cursor
-
-Add to `.cursor/mcp.json`:
-
-```json
-{
-  "mcpServers": {
-    "aitheros": {
-      "type": "sse",
-      "url": "https://mcp.aitherium.com/sse",
-      "headers": {
-        "Authorization": "Bearer YOUR_API_KEY"
-      }
-    }
-  }
-}
-```
-
-### VS Code + Continue
-
-Add to your Continue configuration (`~/.continue/config.json`):
-
-```json
-{
-  "mcpServers": [
-    {
-      "name": "aitheros",
-      "transport": {
-        "type": "sse",
-        "url": "https://mcp.aitherium.com/sse",
-        "headers": {
-          "Authorization": "Bearer YOUR_API_KEY"
-        }
-      }
-    }
-  ]
-}
-```
-
-### Windsurf
-
-Add to your Windsurf MCP configuration:
-
-```json
-{
-  "mcpServers": {
-    "aitheros": {
-      "serverUrl": "https://mcp.aitherium.com/sse",
-      "headers": {
-        "Authorization": "Bearer YOUR_API_KEY"
-      }
-    }
-  }
-}
-```
-
-### Generic / Other Editors
-
-Any MCP-compatible client can connect to the SSE endpoint:
-
-```
-URL: https://mcp.aitherium.com/sse
-Auth: Bearer token in Authorization header
-```
-
-Get an API key by registering at [gateway.aitherium.com](https://gateway.aitherium.com) or through the [Playground](https://playground.aitherium.com).
-
----
-
-## Aither Playground
-
-[playground.aitherium.com](https://playground.aitherium.com) is a browser-based chat interface for talking to AitherOS agents. No install, no API key management -- just open the page and start a conversation.
-
-The playground connects to the same gateway infrastructure that powers the MCP server and API, so you get the full agent experience including tool use, memory, and multi-agent delegation.
-
----
-
-## AitherConnect
-
-AitherConnect is a Chrome extension that brings AitherOS into your browser. It connects through the gateway (or to a local AitherOS instance) and provides:
-
-- In-page agent assistance
-- Context-aware tool access
-- Quick access to any of the 16 agents
-
-Install from the Chrome Web Store or build from source in the `connect/` directory.
-
----
-
-## Community
-
-Join the conversation at [chat.aitherium.com](https://chat.aitherium.com) -- an RCS-style chat and forum for AitherOS users and contributors. Discuss features, share agent configurations, report issues, and connect with other builders.
+**AitherADK** is the standalone agent development kit extracted from this system. Build agents that work with any LLM backend, optionally connect back to the full AitherOS infrastructure.
 
 ---
 
 ## Architecture
 
 ```
-LAYER 10  UI            AitherVeil (web dashboard)
-LAYER 9   TRAINING      Model fine-tuning, data harvesting
-LAYER 8.5 MESH          Service mesh, deployment, external gateway
-LAYER 8   SECURITY      Identity, auth, secrets, recovery
-LAYER 7   AUTOMATION    Scheduling, demand routing, autonomic ops
-LAYER 6   GPU           VRAM coordination, acceleration, offload
-LAYER 5   AGENTS        Council, agent-to-agent mesh, orchestrator
-LAYER 3   COGNITION     Reasoning, judgment, intent, flow control
-LAYER 2   PERCEPTION    Voice, vision, portal, reflexes
-LAYER 1   CORE          Node, Pulse (heartbeat), Watch, MicroScheduler
-LAYER 0   INFRA         Chronicle (logging), Secrets, Nexus, Strata
+LAYER 10  UI          AitherVeil (Next.js dashboard)
+LAYER 9   TRAINING    Model lifecycle, daydream corpus, session harvesting
+LAYER 8.5 MESH        Distributed node network, GPU sharing
+LAYER 8   SECURITY    RBAC, secrets, flux monitoring, recovery
+LAYER 7   AUTOMATION  Scheduler, demand, autonomic routines
+LAYER 6   GPU         VRAM coordination, parallel inference, ComfyUI
+LAYER 5   AGENTS      Agent council, forge dispatch, genesis orchestration
+LAYER 3   COGNITION   Reasoning, judgment, flow control, will policies
+LAYER 2   PERCEPTION  Voice, vision, portal, reflex
+LAYER 1   CORE        Node, Pulse, Watch, MicroScheduler
+LAYER 0   INFRA       Chronicle, Secrets, Nexus, Strata
 ```
 
-97 microservices across 12 layers. 16 specialist agents. All services are defined in a single source-of-truth configuration file and boot in dependency order through a topological sort.
+**By the numbers:**
+- 97 microservices (23 compound containers absorbing 81 sub-services)
+- 65 Docker containers total
+- 2600+ passing tests across 120+ test files
+- 16 specialist agents with persistent identity
+- 170+ PowerShell automation scripts
+- 15 months of solo development
 
 ---
 
-## The 16 Agents
+## What Makes It an "Agentic OS"
 
-| Agent | Domain | Description |
-|-------|--------|-------------|
-| **Aither** | Orchestrator | System overseer -- coordination, synthesis, delegation |
-| **Atlas** | Project Management | Planning, tracking, service discovery, reporting |
-| **Demiurge** | Code | Code generation, refactoring, architecture |
-| **Lyra** | Research | Knowledge synthesis, deep research, analysis |
-| **Athena** | Security | Security audits, vulnerability analysis, threat modeling |
-| **Hydra** | Code Review | Quality assurance, test coverage, code review |
-| **Prometheus** | Infrastructure | Deployment, scaling, infrastructure management |
+| Requirement | How AitherOS Does It |
+|---|---|
+| **Persistent Identity** | 16 agents with memory, personality, skills, and domain expertise |
+| **Autonomous Action** | Dark factory loops — neuron firing, pain-driven remediation, model finetuning |
+| **Multi-Agent Coordination** | Expedition Manager orchestrates multi-session projects with gate approvals |
+| **Tool Use** | 100+ MCP tools, @tool decorator, function calling with any model |
+| **Environmental Awareness** | Pain system, health monitoring, context tiers, VRAM coordination |
+| **Self-Improvement** | Session learning, playbook auto-generation, model hot-swap |
+| **Human Governance** | Frontier Judge quality gates, human-in-the-loop expedition approvals |
+
+---
+
+## The Agents
+
+| Agent | Role | Specialty |
+|-------|------|-----------|
+| **Aither** | Orchestrator | System coordination, delegation, awareness synthesis |
+| **Atlas** | Project Manager | Roadmaps, research delegation, executive reporting |
+| **Demiurge** | Code Craftsman | Code generation, refactoring, architecture |
+| **Lyra** | Researcher | Knowledge synthesis, deep-dive analysis |
+| **Athena** | Security Oracle | Vulnerability analysis, threat assessment |
+| **Hydra** | Code Guardian | Multi-perspective code review, quality assurance |
+| **Prometheus** | Infra Titan | Infrastructure, deployment, scaling |
 | **Apollo** | Performance | Optimization, benchmarking, profiling |
-| **Iris** | Creative | Image generation, design, visual content |
-| **Viviane** | Memory | Knowledge retrieval, context management, recall |
-| **Vera** | Content | Writing, editing, social media, content strategy |
-| **Hera** | Community | Social engagement, publishing, outreach |
-| **Morgana** | Secrets | Encryption, key management, secure operations |
-| **Saga** | Documentation | Technical writing, API docs, guides |
-| **Themis** | Compliance | Ethics review, policy enforcement, fairness |
-| **Chaos** | Chaos Engineering | Resilience testing, failure injection, recovery |
+| **Iris** | Creative Muse | Image/video generation via ComfyUI |
+| **Viviane** | Memory Guardian | Knowledge retrieval, context preservation |
+| **Vera** | Content Creator | Writing, editing, social media |
+| **Hera** | Community | Social engagement, publishing |
+| **Morgana** | Secrets Keeper | Encryption, secure configuration |
+| **Saga** | Documentation | Technical writing, knowledge base |
+| **Themis** | Compliance | Ethics, fairness, policy enforcement |
+| **Chaos** | Chaos Engineer | Resilience testing, failure injection |
 
-Every agent has a distinct identity (system prompt, skills, personality) defined in YAML. You can use any of them through the ADK, the MCP server, or the playground.
-
----
-
-## What Works Offline vs Connected
-
-| Feature | Offline (ADK only) | Connected (Gateway) |
-|---------|-------------------|-------------------|
-| Chat with agents | Yes (local LLM) | Yes (cloud + local) |
-| Tool calling | Yes (local tools) | Yes (100+ MCP tools) |
-| Conversation memory | Yes (local SQLite) | Yes (persistent graph) |
-| Code search | No | Yes (CodeGraph) |
-| Multi-agent delegation | No | Yes (AgentForge) |
-| Model fine-tuning | No | Yes (training pipeline) |
-| Web dashboard | No | Yes (AitherVeil) |
-| OpenAI-compatible API | Yes | Yes |
-| MCP server | No | Yes (mcp.aitherium.com) |
-| Agent identities | Yes (all 16) | Yes (all 16) |
+All 16 identities ship with AitherADK as package data.
 
 ---
 
-## AitherDesktop
+## AitherADK
 
-AitherDesktop is a native Windows application (PyQt6 WebView shell) that provides a desktop-native interface to AitherOS. It connects to a local AitherOS instance or to the gateway for cloud access.
+The **Agent Development Kit** lets you build AI agents without the full AitherOS stack:
 
-Features:
-- System tray integration
-- Native notifications
-- Offline package verification
-- Auto-update
+```python
+from adk import AitherAgent, tool
+from adk.llm import LLMRouter
+
+# Custom tool
+@tool
+def search_web(query: str) -> str:
+    """Search the web for information."""
+    return f"Results for: {query}"
+
+# Agent with any backend
+agent = AitherAgent(
+    "research-bot",
+    identity="lyra",
+    llm=LLMRouter(provider="openai", api_key="sk-..."),
+)
+
+response = await agent.run("Research AI agent frameworks in 2026")
+```
+
+**Features:**
+- Multi-backend LLM (Ollama, OpenAI, Anthropic, vLLM, LM Studio)
+- `@tool` decorator for function calling
+- SQLite memory (conversations + KV store)
+- OpenAI-compatible server
+- MCP bridge to AitherOS tools via `mcp.aitherium.com`
+- 16 pre-built agent identities
+- Privacy-first opt-in telemetry
+
+See the [ADK documentation](aither-adk/README.md) for full details.
+
+---
+
+## Key Systems
+
+### Dark Factory
+Autonomous loops that run without human intervention:
+- **Neuron firing** — Proactive data gathering based on conversation patterns
+- **Pain-driven remediation** — Detects failures, generates fixes, deploys patches
+- **Session learning** — Extracts patterns from conversations, promotes to memory
+- **Playbook auto-generation** — Successful operations become reusable playbooks
+- **Model finetuning** — Daydream corpus feeds next training cycle
+
+### Expedition Manager
+Multi-session project orchestration:
+- SOW analysis and phase decomposition
+- Parallel task dispatch via AgentForge
+- Human-in-the-loop gate approvals
+- Security review, code review, deployment gates
+- Cost/token tracking per phase
+
+### Swarm Coding Engine
+11 specialized agents in a 4-phase pipeline:
+- ARCHITECT (design) -> SWARM (8 parallel workers) -> REVIEW -> JUDGE
+- 3 coders, 2 testers, 2 security reviewers, 1 documentation writer
+
+### Content Production Pipeline
+Universal artifact factory:
+- Presentations, articles, code projects, marketing, video, documents
+- Agent dispatch, quality gates, assembly, delivery
 
 ---
 
 ## Hardware Profiles
 
-The setup wizard (`python setup-vllm.py`) detects your hardware and recommends the best configuration. Five GPU tiers are supported for vLLM, plus an Ollama-only mode that works on any hardware:
+| Profile | GPU VRAM | RAM | Models |
+|---------|----------|-----|--------|
+| **CPU Only** | None | 8 GB | Cloud API fallback |
+| **Minimal** | 8-12 GB | 16 GB | llama3.2:3b, nomic-embed |
+| **Standard** | 24 GB | 32 GB | llama3.1:8b, deepseek-r1:8b |
+| **Workstation** | 48 GB+ | 64 GB | llama3.1:70b, deepseek-r1:14b |
+| **Server** | 80 GB+ | 128 GB+ | Multi-model vLLM deployment |
 
-| Tier | VRAM | Backend | Models | Use Case |
-|------|------|---------|--------|----------|
-| **nano** | 8-12 GB | vLLM | Qwen3-8B | Budget GPU, basic chat |
-| **lite** | 12-16 GB | vLLM | Nemotron Orchestrator 8B | Mid-range, good tool use |
-| **standard** | 20-24 GB | vLLM | Orchestrator + DeepSeek R1 14B | Enthusiast, chat + reasoning |
-| **full** | 24+ GB | vLLM | Orchestrator + R1 + Embeddings | Full stack, all capabilities |
-| **ollama** | Any | Ollama | Your choice | Any GPU (NVIDIA/AMD/Apple) or CPU |
-
-11 hardware profiles are included for fine-grained configuration: minimal, standard, workstation, nvidia_low, nvidia_mid, nvidia_high, nvidia_ultra, server, amd, apple_silicon, cpu_only.
-
-See [Self-Hosting](docs/SELF_HOSTING.md) for detailed setup instructions.
+The installer auto-detects your hardware and selects the right profile.
 
 ---
 
-## Documentation
+## Roadmap
 
-| Document | Description |
-|----------|-------------|
-| [Getting Started](docs/GETTING_STARTED.md) | Step-by-step quickstart guide |
-| [Gateway](docs/GATEWAY.md) | Cloud gateway connection and MCP setup |
-| [Self-Hosting](docs/SELF_HOSTING.md) | Running AitherOS on your own hardware |
-| [Roadmap](ROADMAP.md) | What is done, what is next |
-| [Changelog](CHANGELOG.md) | Release notes |
-| [ADK README](aither-adk/README.md) | AitherADK package documentation |
+### Done
+- 97 microservices across 12 layers
+- 16 specialist agents with persistent identity
+- Dark factory autonomous loops (neuron, pain, learning, playbook, finetune)
+- Expedition Manager for multi-session projects
+- Swarm Coding Engine (11 agents, 4 phases)
+- Content Production Pipeline
+- Social graph (profiles, friends, groups)
+- Package Manager (APM)
+- MCP SaaS Gateway at mcp.aitherium.com
+- RBAC with SQLite backend
+- Multi-tenant isolation
+- Pipeline prompt injection defense
+- 2600+ passing tests
+
+### Alpha (Now)
+- AitherADK — pip-installable agent development kit
+- AitherNode standalone mode with ADK server
+- Desktop/Connect fallback to Node when Genesis unavailable
+- Hardware profile auto-detection
+- Auto-installer for drivers, CUDA, PyTorch, models
+- Gateway at gateway.aitherium.com (Cloudflare Worker)
+
+### Next
+- Mobile companion app
+- JS/TS SDK
+- Federation between AitherOS instances
+- Agent marketplace
+- Kubernetes deployment option
 
 ---
 
-## Contributing
+## Stay Updated
 
-AitherOS is in alpha. Contributions are welcome.
+1. **Star** this repository
+2. **Watch** -> "Releases only" for minimal noise
+3. **Sign up** at [aitherium.com](https://aitherium.com) for alpha access
 
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Run the tests: `cd aither-adk && python -m pytest tests/`
-5. Submit a pull request
-
-For bugs, use `aither-bug "description"` (ships with the ADK) or open a GitHub issue.
-
-Join the discussion at [chat.aitherium.com](https://chat.aitherium.com).
+Contact: hello@aitherium.com
 
 ---
 
 ## License
 
-Apache-2.0. See [LICENSE](LICENSE) for the full text.
+Source code will be released under a dual license:
+- **AGPL-3.0** for open source use
+- **Commercial license** for enterprise deployments
+
+AitherADK is **Apache-2.0** (fully permissive).
 
 ---
 
-<p align="center">
-  <a href="https://github.com/Aitherium/AitherOS-Alpha">Star this repo</a> to follow development.
-  <br/>
-  <a href="https://github.com/Aitherium/AitherOS-Alpha/subscription">Watch</a> for release notifications.
-</p>
+*Built solo. Shipping real.*

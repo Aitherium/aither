@@ -3,34 +3,57 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Thanks — AitherOS Alpha</title>
+    <title>Thanks! — AitherOS</title>
     <style>
-        :root { --bg: #0a0a0f; --accent2: #a78bfa; --text: #e2e8f0; --muted: #94a3b8; --success: #34d399; }
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
-            background: var(--bg); color: var(--text);
-            min-height: 100vh; display: flex; align-items: center; justify-content: center;
-            text-align: center; padding: 2rem;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace;
+            background: #0a0a0f;
+            color: #e0e0e8;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
         }
-        .container { max-width: 500px; }
-        .check { font-size: 4rem; margin-bottom: 1.5rem; }
-        h1 { font-size: 2rem; margin-bottom: 1rem; }
-        p { color: var(--muted); margin-bottom: 1.5rem; line-height: 1.6; }
+        .card {
+            text-align: center;
+            max-width: 500px;
+            padding: 3rem;
+        }
+        h1 {
+            font-size: 2rem;
+            background: linear-gradient(135deg, #a855f7, #06b6d4);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 1rem;
+        }
+        p { color: #888; line-height: 1.6; margin-bottom: 1rem; }
         a {
-            display: inline-block; padding: 0.7rem 1.5rem; border-radius: 8px;
-            background: #7c3aed; color: white; text-decoration: none; font-weight: 600;
+            color: #a855f7;
+            text-decoration: none;
         }
-        a:hover { background: #6d28d9; }
+        a:hover { text-decoration: underline; }
+        .install {
+            background: #1a1a2e;
+            border: 1px solid #2a2a4e;
+            border-radius: 8px;
+            padding: 1rem;
+            font-family: 'Fira Code', monospace;
+            color: #06b6d4;
+            margin: 1.5rem 0;
+        }
     </style>
 </head>
 <body>
-    <div class="container">
-        <div class="check">&#x2705;</div>
-        <h1>You're on the list!</h1>
-        <p>We've received your alpha access request. You'll get an email with setup instructions and your invite shortly.</p>
-        <p>In the meantime, star the repo to stay updated on releases.</p>
-        <a href="https://github.com/Aitherium/AitherOS-Alpha">Back to GitHub</a>
+    <div class="card">
+        <h1>You're on the list.</h1>
+        <p>We'll email you when the alpha drops.</p>
+        <p>In the meantime, start building:</p>
+        <div class="install">$ pip install aither-adk</div>
+        <p>
+            <a href="https://github.com/Aitherium/AitherOS-Alpha">Back to GitHub</a> &middot;
+            <a href="GETTING_STARTED.html">Get Started</a>
+        </p>
     </div>
 </body>
 </html>

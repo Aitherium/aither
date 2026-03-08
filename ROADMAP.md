@@ -1,72 +1,123 @@
 # AitherOS Roadmap
 
+> Updated March 2026. This is the public-facing roadmap.
+
+## Done
+
+### Core Platform
+- [x] 97 FastAPI microservices across 12 architectural layers
+- [x] 23 compound Docker containers (absorbing 81 sub-services)
+- [x] 65 Docker containers total
+- [x] 2600+ passing tests across 120+ test files
+- [x] Genesis bootloader with topological-sort boot orchestration
+- [x] AitherZero automation framework (170+ scripts)
+
+### Agent Infrastructure
+- [x] 16 specialist agents with persistent identity and memory
+- [x] AgentForge dispatch with effort-based model selection
+- [x] CapabilityRegistry with heartbeat and tool-level tracking
+- [x] ToolGraph 3-tier selection (NanoGPT, hybrid, full)
+- [x] ReAct-style tool use loops with shared workspace
+
+### Dark Factory (Autonomous Loops)
+- [x] Neuron firing — proactive data gathering (33 patterns)
+- [x] Pain-driven remediation — detect, fix, deploy, verify
+- [x] Session learning — pattern extraction, memory promotion
+- [x] Playbook auto-generation after 3 successful occurrences
+- [x] Model finetuning via daydream corpus
+- [x] Strata feedback for effort/model calibration
+- [x] Intent chain routing with alternative agent fallback
+- [x] Escalation chain (retry with context, upgrade model)
+
+### Orchestration
+- [x] Expedition Manager — multi-session project orchestration
+- [x] Swarm Coding Engine — 11 agents, 4-phase pipeline
+- [x] Content Production Pipeline — 8 artifact types
+- [x] Frontier Judge — cloud-based quality gate (Anthropic)
+- [x] Clarification Gate — agent-to-human email workflow
+
+### Security & Multi-Tenancy
+- [x] RBAC with SQLite backend and PostgreSQL option
+- [x] Caller isolation (Platform/Public/Demo/Tenant/Anonymous)
+- [x] Multi-tenant graph isolation
+- [x] Pipeline prompt injection defense
+- [x] HMAC-SHA256 capability tokens (default-deny)
+- [x] GDPR Art.17 data erasure
+
+### Infrastructure
+- [x] MicroScheduler VRAM coordination
+- [x] Multi-model vLLM deployment (4 workers)
+- [x] FluxEmitter pub/sub event bus
+- [x] Context synthesis (extractive compression, no hard truncation)
+- [x] Context spillover + OODA tier manager
+- [x] Local voice (faster-whisper STT, Piper TTS)
+
+### Social & Communication
+- [x] Social graph (friends, groups, directory)
+- [x] MySpace-style customizable profile pages
+- [x] Agent email system (20 Proton Mail addresses)
+- [x] AitherRelay IRC bridge
+
+### Developer Experience
+- [x] MCP SaaS Gateway at mcp.aitherium.com
+- [x] Package Manager (APM) with tenant enablements
+- [x] Partner profile system (white-label deployment)
+- [x] 100+ MCP tools via AitherNode
+
 ---
 
-## Done (Alpha -- shipped 2026-03-07)
+## Alpha Release (Current Sprint)
 
-- AitherADK: Agent Development Kit (19 modules, 16 identities, pip-installable, 4 dependencies)
-- Gateway: gateway.aitherium.com (auth, mesh, MCP tools, chat, 13 lifecycle phases, 8 security layers)
-- MCP Server: mcp.aitherium.com (configurable in Claude Code, Cursor, VS Code, Windsurf, and any SSE-compatible editor)
-- Playground: playground.aitherium.com (browser-based chat with all 16 agents)
-- AitherConnect: Chrome extension for browser integration
-- AitherDesktop: Native Windows app (PyQt6 WebView shell)
-- Setup wizard: `setup-vllm.py` with 5 GPU tiers (nano, lite, standard, full, ollama)
-- 11 hardware profiles (minimal through nvidia_ultra, plus AMD, Apple Silicon, CPU-only)
-- Docker support (Dockerfile + compose with optional vLLM GPU profile)
-- 7 working examples (hello agent, custom tools, OpenClaw, OpenAI backend, multi-agent, federation, lifecycle test)
-- OpenAI-compatible API (`/v1/chat/completions`, `/v1/models`)
-- Multi-backend LLM routing (Ollama, vLLM, OpenAI, Anthropic, LM Studio, any OpenAI-compatible)
-- Streaming support
-- Local SQLite memory (conversation history + key-value store)
-- MCP bridge for cloud tool access
-- Privacy-first opt-in telemetry
-- Bug report CLI (`aither-bug`)
-- 97 microservices across 12 architectural layers
-- 16 specialist AI agents
-- 2,600+ passing tests
-- Apache-2.0 license
+### AitherADK
+- [x] Clean-room agent development kit (pip install aither-adk)
+- [x] Multi-backend LLM providers (Ollama, OpenAI, Anthropic)
+- [x] Agent class with @tool decorator and SQLite memory
+- [x] OpenAI-compatible server (aither-serve)
+- [x] 16 agent identities as package data
+- [x] MCP bridge to mcp.aitherium.com
+- [x] Privacy-centric opt-in telemetry
+- [x] Built-in bug reporting (CLI + API)
+- [x] 85 passing tests
 
----
+### Integration
+- [x] AitherNode standalone mode with ADK server
+- [x] Desktop fallback to Node when Genesis unavailable
+- [x] Connect extension standalone mode toggle
+- [ ] Hardware profile auto-detection (5 tiers)
+- [ ] Auto-installer for drivers/CUDA/PyTorch/models
 
-## Alpha (current release)
+### Gateway Infrastructure
+- [ ] Cloudflare Worker at gateway.aitherium.com
+- [ ] User registration and email verification
+- [ ] Agent capability advertisement and discovery
+- [ ] Bug report ingestion and GitHub issue creation
 
-What ships today:
-
-- The ADK works standalone with any LLM backend
-- The gateway handles auth, chat, and MCP tool proxying
-- The MCP server is live and configurable in major IDEs
-- The playground is live for browser-based interaction
-- Self-hosting works with Ollama or vLLM on your own hardware
-- AitherDesktop connects to local or cloud instances
-- All 16 agent identities are included and functional
-
-Known limitations:
-
-- The full 97-service stack is not yet containerized for public deployment
-- AitherNode (the 100+ tool MCP server) runs inside the full stack only
-- Some advanced features (training pipeline, multi-agent swarm, expedition system) are internal-only for now
-- Documentation is improving continuously
+### Documentation
+- [x] Alpha repo README rewrite
+- [x] Roadmap update
+- [ ] GETTING_STARTED.md replacing COMING_SOON.md
+- [ ] CHANGELOG.md with real release notes
+- [ ] Landing page update (hello@aitherium.com)
 
 ---
 
-## Next (Beta)
+## Next
 
-- **AitherNode Docker image** -- The full 100+ tool MCP server as a standalone container
-- **Full stack containers** -- Docker Compose for all 97 services (tiered profiles for different hardware)
-- **Mobile app** -- iOS and Android companion
-- **ComfyUI model wizard** -- Guided setup for image/video generation models
-- **Package marketplace** -- Install and share agent packages, tools, and workflows
-- **AitherVeil themes** -- Customizable web dashboard
-- **Federation protocol** -- Connect multiple AitherOS instances into a mesh
-- **Improved onboarding** -- Interactive tutorial in the playground
+### Post-Alpha
+- [ ] Mobile companion app (React Native)
+- [ ] JS/TS SDK for browser and Node.js
+- [ ] Agent marketplace
+- [ ] Federation between AitherOS instances
+- [ ] Plugin/extension system for community agents
+- [ ] vLLM pre-built Docker images per hardware tier
+
+### Future
+- [ ] Kubernetes deployment with Helm charts
+- [ ] Multi-node distributed agents via WireGuard overlay
+- [ ] Voice interface (wake word, continuous conversation)
+- [ ] Managed cloud offering
+- [ ] Visual workflow builder
 
 ---
 
-## Future
-
-- **Distributed training** -- Fine-tune models across federated nodes
-- **Edge deployment** -- Run agents on Raspberry Pi, Jetson, and other edge devices
-- **Multi-tenant SaaS** -- Hosted AitherOS for teams and organizations
-- **Plugin SDK** -- Third-party service integrations
-- **Voice interface** -- Local STT/TTS with VRAM coordination
-- **Autonomous operations** -- Full dark factory mode for self-managing infrastructure
+*Want to influence the roadmap? Star the repo and open a Discussion.*
