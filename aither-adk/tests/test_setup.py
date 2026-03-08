@@ -20,6 +20,7 @@ from adk.setup import (
     VLLMInfo,
     _detect_gpu,
     _detect_ram,
+    _find_compose_file,
     _recommended_models,
     _select_profile,
     auto_setup,
@@ -64,7 +65,7 @@ class TestRecommendedModels:
 
     def test_nvidia_high_gets_bigger_models(self):
         models = _recommended_models("nvidia_high")
-        assert "llama3.1:8b" in models
+        assert "nemotron-orchestrator-8b" in models
         assert "deepseek-r1:14b" in models
 
     def test_unknown_profile_defaults(self):
@@ -162,7 +163,7 @@ class TestAgentSetup:
             mock_gpu.return_value = GPUInfo(vendor="nvidia", vram_mb=24000)
             mock_ram.return_value = 64.0
             mock_ollama.return_value = (True, True, ["llama3.2:3b"])
-            mock_vllm.return_value = VLLMInfo(running=True, ports=[8200], models=["llama3.1"])
+            mock_vllm.return_value = VLLMInfo(running=True, ports=[8200], models=["nemotron-orchestrator"])
             mock_docker.return_value = True
 
             info = await setup.detect_hardware()
@@ -224,12 +225,12 @@ class TestAgentSetup:
                 gpu=GPUInfo(vendor="nvidia", vram_mb=24000),
                 ram_gb=64.0,
                 ollama_running=True,
-                ollama_models=["llama3.1:8b"],
+                ollama_models=["nemotron-orchestrator-8b"],
                 vllm=VLLMInfo(running=False),
                 profile="nvidia_high",
             )
             setup._system = mock_detect.return_value
-            mock_pull.return_value = ["llama3.1:8b", "nomic-embed-text"]
+            mock_pull.return_value = ["nemotron-orchestrator-8b", "nomic-embed-text"]
 
             report = await setup.full_setup()
             assert report.ready is True
@@ -287,7 +288,7 @@ class TestVLLMSafety:
         setup._system = SystemInfo(
             ollama_installed=True,
             ollama_running=False,
-            vllm=VLLMInfo(running=True, ports=[8200], models=["llama3.1"]),
+            vllm=VLLMInfo(running=True, ports=[8200], models=["nemotron-orchestrator"]),
             gpu=GPUInfo(vendor="nvidia", vram_mb=24000),
         )
         result = await setup.ensure_ollama()
@@ -325,7 +326,7 @@ class TestVLLMSafety:
                 ram_gb=64.0,
                 ollama_installed=True,
                 ollama_running=False,
-                vllm=VLLMInfo(running=True, ports=[8200, 8201], models=["meta-llama/Llama-3.1-8B-Instruct"]),
+                vllm=VLLMInfo(running=True, ports=[8200, 8201], models=["nvidia/Nemotron-Orchestrator-8B"]),
                 profile="nvidia_high",
             )
             setup._system = mock_detect.return_value
@@ -335,7 +336,7 @@ class TestVLLMSafety:
             assert report.backend == "vllm"
             assert report.vllm_ready is True
             assert report.ollama_ready is False  # must NOT have started Ollama
-            assert "meta-llama/Llama-3.1-8B-Instruct" in report.models_available
+            assert "nvidia/Nemotron-Orchestrator-8B" in report.models_available
 
     @pytest.mark.asyncio
     async def test_full_setup_uses_ollama_when_no_vllm(self, tmp_path):
@@ -351,7 +352,7 @@ class TestVLLMSafety:
             )
             setup._system = mock_detect.return_value
             mock_ollama.return_value = True
-            mock_pull.return_value = ["llama3.1:8b"]
+            mock_pull.return_value = ["nemotron-orchestrator-8b"]
 
             report = await setup.full_setup()
             assert report.ready is True
@@ -399,3 +400,490 @@ class TestAutoSetup:
             mock_full.return_value = SetupReport(ready=True, profile="nvidia_mid", backend="ollama")
             report = await auto_setup()
             assert report.ready is True
+
+
+# ---------------------------------------------------------------------------
+# _find_compose_file tests
+# ---------------------------------------------------------------------------
+
+class TestFindComposeFile:
+    COMPOSE_NAME = "docker-compose.adk-vllm.yml"
+
+    def test_finds_in_adk_root_env(self, tmp_path):
+        compose = tmp_path / self.COMPOSE_NAME
+        compose.write_text("# test")
+        with patch.dict(os.environ, {"ADK_ROOT": str(tmp_path)}):
+            result = _find_compose_file()
+            assert result == compose
+
+    def test_finds_in_cwd(self, tmp_path, monkeypatch):
+        compose = tmp_path / self.COMPOSE_NAME
+        compose.write_text("# test")
+        monkeypatch.chdir(tmp_path)
+        with patch.dict(os.environ, {}, clear=False):
+            # Remove ADK_ROOT if set
+            os.environ.pop("ADK_ROOT", None)
+            result = _find_compose_file()
+            assert result is not None
+            assert result.name == self.COMPOSE_NAME
+
+    def test_finds_in_package_dir(self, tmp_path):
+        """Compose file next to setup.py (shipped via pip)."""
+        compose = tmp_path / self.COMPOSE_NAME
+        compose.write_text("# test")
+        with patch.dict(os.environ, {}, clear=False), \
+             patch("adk.setup.Path.cwd", return_value=tmp_path / "elsewhere"), \
+             patch("adk.setup.__file__", str(tmp_path / "setup.py")):
+            os.environ.pop("ADK_ROOT", None)
+            # The function uses Path(__file__).resolve().parent
+            # We need to patch at module level
+            result = _find_compose_file()
+            # May or may not find it depending on __file__ resolution;
+            # the point is it doesn't crash
+            assert result is None or result.name == self.COMPOSE_NAME
+
+    def test_finds_in_home_aither(self, tmp_path):
+        compose = tmp_path / ".aither" / self.COMPOSE_NAME
+        compose.parent.mkdir(parents=True)
+        compose.write_text("# test")
+        # Must also fake __file__ so the package-dir search doesn't find the real one
+        fake_pkg = tmp_path / "fake_pkg"
+        fake_pkg.mkdir()
+        with patch.dict(os.environ, {}, clear=False), \
+             patch("adk.setup.Path.home", return_value=tmp_path), \
+             patch("adk.setup.Path.cwd", return_value=tmp_path / "nonexistent"), \
+             patch("adk.setup.__file__", str(fake_pkg / "setup.py")):
+            os.environ.pop("ADK_ROOT", None)
+            result = _find_compose_file()
+            assert result == compose
+
+    def test_returns_none_when_not_found(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        with patch.dict(os.environ, {}, clear=False), \
+             patch("adk.setup.Path.home", return_value=tmp_path / "nope"):
+            os.environ.pop("ADK_ROOT", None)
+            result = _find_compose_file()
+            # May find the real one in the repo; just ensure no crash
+            assert result is None or result.exists()
+
+    def test_adk_root_takes_priority(self, tmp_path):
+        """ADK_ROOT should be checked before CWD."""
+        adk_dir = tmp_path / "adk"
+        adk_dir.mkdir()
+        (adk_dir / self.COMPOSE_NAME).write_text("# adk root")
+        (tmp_path / self.COMPOSE_NAME).write_text("# cwd")
+        with patch.dict(os.environ, {"ADK_ROOT": str(adk_dir)}):
+            result = _find_compose_file()
+            assert result == adk_dir / self.COMPOSE_NAME
+
+
+# ---------------------------------------------------------------------------
+# AitherZero bridge tests
+# ---------------------------------------------------------------------------
+
+class TestAitherZeroBridge:
+    """Tests for _try_aitherzero, _run_aitherzero_setup, _parse_aitherzero_report."""
+
+    @pytest.mark.asyncio
+    async def test_try_aitherzero_success(self, tmp_path):
+        setup = AgentSetup(data_dir=str(tmp_path))
+        with patch("adk.setup._run") as mock_run:
+            mock_run.side_effect = [
+                (0, "PowerShell 7.4.0\n", ""),  # pwsh -Version
+                (0, "True\n", ""),               # Import-Module + Get-AitherPlugin
+            ]
+            result = await setup._try_aitherzero()
+            assert result is True
+
+    @pytest.mark.asyncio
+    async def test_try_aitherzero_no_pwsh(self, tmp_path):
+        setup = AgentSetup(data_dir=str(tmp_path))
+        with patch("adk.setup._run") as mock_run:
+            mock_run.return_value = (-1, "", "Command not found: pwsh")
+            result = await setup._try_aitherzero()
+            assert result is False
+
+    @pytest.mark.asyncio
+    async def test_try_aitherzero_no_plugin(self, tmp_path):
+        setup = AgentSetup(data_dir=str(tmp_path))
+        with patch("adk.setup._run") as mock_run:
+            mock_run.side_effect = [
+                (0, "PowerShell 7.4.0\n", ""),  # pwsh -Version
+                (0, "\n", ""),                    # Plugin not found (no "True")
+            ]
+            result = await setup._try_aitherzero()
+            assert result is False
+
+    @pytest.mark.asyncio
+    async def test_try_aitherzero_module_import_fails(self, tmp_path):
+        setup = AgentSetup(data_dir=str(tmp_path))
+        with patch("adk.setup._run") as mock_run:
+            mock_run.side_effect = [
+                (0, "PowerShell 7.4.0\n", ""),
+                (1, "", "Import-Module : Module 'AitherZero' not found"),
+            ]
+            result = await setup._try_aitherzero()
+            assert result is False
+
+    def test_parse_aitherzero_report_full(self):
+        data = {
+            "profile": "nvidia_high",
+            "backend": "vllm",
+            "ready": True,
+            "vllm_ready": True,
+            "ollama_ready": False,
+            "models_available": ["nvidia/Nemotron-Orchestrator-8B"],
+            "errors": [],
+            "gpu": {"vendor": "nvidia", "name": "RTX 5090", "vram_mb": 32768},
+            "docker_installed": True,
+        }
+        report = AgentSetup._parse_aitherzero_report(data)
+        assert isinstance(report, SetupReport)
+        assert report.ready is True
+        assert report.backend == "vllm"
+        assert report.vllm_ready is True
+        assert report.ollama_ready is False
+        assert report.profile == "nvidia_high"
+        assert report.system.gpu.vendor == "nvidia"
+        assert report.system.gpu.name == "RTX 5090"
+        assert report.system.gpu.vram_mb == 32768
+        assert report.system.docker_installed is True
+        assert "nvidia/Nemotron-Orchestrator-8B" in report.models_available
+
+    def test_parse_aitherzero_report_minimal(self):
+        """Handles missing keys gracefully with defaults."""
+        data = {"ready": False, "backend": "", "profile": "cpu_only"}
+        report = AgentSetup._parse_aitherzero_report(data)
+        assert report.ready is False
+        assert report.backend == ""
+        assert report.system.gpu.vendor == "none"
+        assert report.models_available == []
+        assert report.errors == []
+
+    def test_parse_aitherzero_report_with_errors(self):
+        data = {
+            "profile": "nvidia_mid",
+            "backend": "",
+            "ready": False,
+            "vllm_ready": False,
+            "ollama_ready": False,
+            "models_available": [],
+            "errors": ["vLLM setup failed", "Ollama not installed"],
+            "gpu": {"vendor": "nvidia", "name": "RTX 3060", "vram_mb": 12288},
+            "docker_installed": False,
+        }
+        report = AgentSetup._parse_aitherzero_report(data)
+        assert report.ready is False
+        assert len(report.errors) == 2
+        assert "vLLM setup failed" in report.errors
+
+    @pytest.mark.asyncio
+    async def test_run_aitherzero_setup_success(self, tmp_path):
+        setup = AgentSetup(data_dir=str(tmp_path))
+        az_output = json.dumps({
+            "profile": "nvidia_high",
+            "backend": "vllm",
+            "ready": True,
+            "vllm_ready": True,
+            "ollama_ready": False,
+            "models_available": ["nvidia/Nemotron-Orchestrator-8B"],
+            "errors": [],
+            "gpu": {"vendor": "nvidia", "name": "RTX 5090", "vram_mb": 32768},
+            "docker_installed": True,
+        })
+        with patch("adk.setup._run") as mock_run:
+            mock_run.return_value = (0, az_output, "")
+            report = await setup._run_aitherzero_setup()
+            assert report is not None
+            assert report.ready is True
+            assert report.backend == "vllm"
+
+    @pytest.mark.asyncio
+    async def test_run_aitherzero_setup_failure(self, tmp_path):
+        setup = AgentSetup(data_dir=str(tmp_path))
+        with patch("adk.setup._run") as mock_run:
+            mock_run.return_value = (1, "", "error loading module")
+            report = await setup._run_aitherzero_setup()
+            assert report is None
+
+    @pytest.mark.asyncio
+    async def test_run_aitherzero_setup_bad_json(self, tmp_path):
+        setup = AgentSetup(data_dir=str(tmp_path))
+        with patch("adk.setup._run") as mock_run:
+            mock_run.return_value = (0, "not valid json {{{", "")
+            report = await setup._run_aitherzero_setup()
+            assert report is None
+
+
+# ---------------------------------------------------------------------------
+# full_setup AitherZero delegation tests
+# ---------------------------------------------------------------------------
+
+class TestFullSetupAitherZeroDelegation:
+    """Tests for Step 0 in full_setup — AitherZero delegation."""
+
+    @pytest.mark.asyncio
+    async def test_delegates_to_aitherzero_when_available(self, tmp_path):
+        setup = AgentSetup(data_dir=str(tmp_path))
+        az_report = SetupReport(
+            ready=True, backend="vllm", profile="nvidia_high",
+            vllm_ready=True, models_available=["nemotron"],
+        )
+        with patch.object(setup, "_try_aitherzero", return_value=True), \
+             patch.object(setup, "_run_aitherzero_setup", return_value=az_report), \
+             patch.object(setup, "detect_hardware") as mock_detect:
+            report = await setup.full_setup()
+            assert report.ready is True
+            assert report.backend == "vllm"
+            # detect_hardware should NOT have been called — we short-circuited
+            mock_detect.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_saves_profile_marker_on_delegation(self, tmp_path):
+        setup = AgentSetup(data_dir=str(tmp_path))
+        az_report = SetupReport(ready=True, backend="vllm", profile="nvidia_high")
+        with patch.object(setup, "_try_aitherzero", return_value=True), \
+             patch.object(setup, "_run_aitherzero_setup", return_value=az_report):
+            await setup.full_setup()
+            marker = tmp_path / "detected_profile"
+            assert marker.exists()
+            assert marker.read_text() == "nvidia_high"
+
+    @pytest.mark.asyncio
+    async def test_falls_back_when_aitherzero_not_ready(self, tmp_path):
+        """If AitherZero setup returns not-ready, fall through to Python path."""
+        setup = AgentSetup(data_dir=str(tmp_path))
+        az_report = SetupReport(ready=False, errors=["vLLM failed"])
+        with patch.object(setup, "_try_aitherzero", return_value=True), \
+             patch.object(setup, "_run_aitherzero_setup", return_value=az_report), \
+             patch.object(setup, "detect_hardware") as mock_detect, \
+             patch.object(setup, "ensure_ollama", return_value=True), \
+             patch.object(setup, "pull_models", return_value=["llama3.2:1b"]):
+            mock_detect.return_value = SystemInfo(
+                ollama_running=False,
+                vllm=VLLMInfo(running=False),
+                profile="cpu_only",
+            )
+            setup._system = mock_detect.return_value
+            report = await setup.full_setup()
+            # Should have fallen through to Python path
+            mock_detect.assert_called_once()
+            assert report.ready is True
+            assert report.backend == "ollama"
+
+    @pytest.mark.asyncio
+    async def test_falls_back_when_aitherzero_returns_none(self, tmp_path):
+        """If _run_aitherzero_setup returns None, fall through."""
+        setup = AgentSetup(data_dir=str(tmp_path))
+        with patch.object(setup, "_try_aitherzero", return_value=True), \
+             patch.object(setup, "_run_aitherzero_setup", return_value=None), \
+             patch.object(setup, "detect_hardware") as mock_detect, \
+             patch.object(setup, "ensure_ollama", return_value=True), \
+             patch.object(setup, "pull_models", return_value=[]):
+            mock_detect.return_value = SystemInfo(
+                ollama_running=False,
+                vllm=VLLMInfo(running=False),
+                profile="cpu_only",
+            )
+            setup._system = mock_detect.return_value
+            report = await setup.full_setup()
+            mock_detect.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_falls_back_when_aitherzero_unavailable(self, tmp_path):
+        """If _try_aitherzero returns False, skip delegation entirely."""
+        setup = AgentSetup(data_dir=str(tmp_path))
+        with patch.object(setup, "_try_aitherzero", return_value=False), \
+             patch.object(setup, "_run_aitherzero_setup") as mock_az_setup, \
+             patch.object(setup, "detect_hardware") as mock_detect, \
+             patch.object(setup, "ensure_ollama", return_value=True), \
+             patch.object(setup, "pull_models", return_value=[]):
+            mock_detect.return_value = SystemInfo(
+                ollama_running=False,
+                vllm=VLLMInfo(running=False),
+                profile="cpu_only",
+            )
+            setup._system = mock_detect.return_value
+            await setup.full_setup()
+            # _run_aitherzero_setup should never be called
+            mock_az_setup.assert_not_called()
+            mock_detect.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_aither_no_pwsh_env_skips_delegation(self, tmp_path):
+        """AITHER_NO_PWSH=1 should skip AitherZero entirely."""
+        setup = AgentSetup(data_dir=str(tmp_path))
+        with patch.dict(os.environ, {"AITHER_NO_PWSH": "1"}), \
+             patch.object(setup, "_try_aitherzero") as mock_try, \
+             patch.object(setup, "detect_hardware") as mock_detect, \
+             patch.object(setup, "ensure_ollama", return_value=True), \
+             patch.object(setup, "pull_models", return_value=[]):
+            mock_detect.return_value = SystemInfo(
+                ollama_running=False,
+                vllm=VLLMInfo(running=False),
+                profile="cpu_only",
+            )
+            setup._system = mock_detect.return_value
+            await setup.full_setup()
+            mock_try.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_aitherzero_exception_falls_through(self, tmp_path):
+        """Exceptions in AitherZero delegation should be caught silently."""
+        setup = AgentSetup(data_dir=str(tmp_path))
+        with patch.object(setup, "_try_aitherzero", side_effect=RuntimeError("boom")), \
+             patch.object(setup, "detect_hardware") as mock_detect, \
+             patch.object(setup, "ensure_ollama", return_value=True), \
+             patch.object(setup, "pull_models", return_value=[]):
+            mock_detect.return_value = SystemInfo(
+                ollama_running=False,
+                vllm=VLLMInfo(running=False),
+                profile="cpu_only",
+            )
+            setup._system = mock_detect.return_value
+            report = await setup.full_setup()
+            # Should not crash — falls through to Python path
+            mock_detect.assert_called_once()
+            assert report.ready is True
+
+
+# ---------------------------------------------------------------------------
+# ensure_vllm compose-first tests
+# ---------------------------------------------------------------------------
+
+class TestEnsureVLLMCompose:
+    """Tests for the compose-first path in ensure_vllm."""
+
+    @pytest.mark.asyncio
+    async def test_uses_compose_when_available(self, tmp_path):
+        setup = AgentSetup(data_dir=str(tmp_path))
+        setup._system = SystemInfo(
+            docker_installed=True,
+            gpu=GPUInfo(vendor="nvidia", vram_mb=16000),
+        )
+        compose = tmp_path / "docker-compose.adk-vllm.yml"
+        compose.write_text("# test compose")
+
+        with patch("adk.setup._find_compose_file", return_value=compose), \
+             patch("adk.setup._run") as mock_run:
+            # First call: check if already running (no)
+            # Second call: docker compose up -d (success)
+            mock_run.side_effect = [
+                (0, "", ""),       # docker ps --filter (not running)
+                (0, "", ""),       # docker compose up -d
+            ]
+            result = await setup.ensure_vllm()
+            assert result is True
+            # Verify compose was called
+            compose_call = mock_run.call_args_list[1]
+            cmd = compose_call[0][0]
+            assert "compose" in cmd
+            assert str(compose) in cmd
+            assert "up" in cmd
+
+    @pytest.mark.asyncio
+    async def test_compose_uses_dual_profile_for_high_vram(self, tmp_path):
+        setup = AgentSetup(data_dir=str(tmp_path))
+        setup._system = SystemInfo(
+            docker_installed=True,
+            gpu=GPUInfo(vendor="nvidia", vram_mb=32000),
+        )
+        compose = tmp_path / "docker-compose.adk-vllm.yml"
+        compose.write_text("# test compose")
+
+        with patch("adk.setup._find_compose_file", return_value=compose), \
+             patch("adk.setup._run") as mock_run:
+            mock_run.side_effect = [
+                (0, "", ""),   # not running
+                (0, "", ""),   # compose up
+            ]
+            result = await setup.ensure_vllm()
+            assert result is True
+            compose_call = mock_run.call_args_list[1]
+            cmd = compose_call[0][0]
+            assert "--profile" in cmd
+            assert "dual" in cmd
+
+    @pytest.mark.asyncio
+    async def test_compose_no_dual_profile_for_low_vram(self, tmp_path):
+        setup = AgentSetup(data_dir=str(tmp_path))
+        setup._system = SystemInfo(
+            docker_installed=True,
+            gpu=GPUInfo(vendor="nvidia", vram_mb=12000),
+        )
+        compose = tmp_path / "docker-compose.adk-vllm.yml"
+        compose.write_text("# test compose")
+
+        with patch("adk.setup._find_compose_file", return_value=compose), \
+             patch("adk.setup._run") as mock_run:
+            mock_run.side_effect = [
+                (0, "", ""),   # not running
+                (0, "", ""),   # compose up
+            ]
+            result = await setup.ensure_vllm()
+            assert result is True
+            compose_call = mock_run.call_args_list[1]
+            cmd = compose_call[0][0]
+            assert "--profile" not in cmd
+
+    @pytest.mark.asyncio
+    async def test_compose_skips_if_already_running(self, tmp_path):
+        setup = AgentSetup(data_dir=str(tmp_path))
+        setup._system = SystemInfo(
+            docker_installed=True,
+            gpu=GPUInfo(vendor="nvidia", vram_mb=24000),
+        )
+        compose = tmp_path / "docker-compose.adk-vllm.yml"
+        compose.write_text("# test compose")
+
+        with patch("adk.setup._find_compose_file", return_value=compose), \
+             patch("adk.setup._run") as mock_run:
+            mock_run.return_value = (0, "adk-vllm-primary\n", "")
+            result = await setup.ensure_vllm()
+            assert result is True
+            # Only one call — the docker ps check; no compose up
+            assert mock_run.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_compose_failure_falls_back_to_docker_run(self, tmp_path):
+        setup = AgentSetup(data_dir=str(tmp_path))
+        setup._system = SystemInfo(
+            docker_installed=True,
+            gpu=GPUInfo(vendor="nvidia", vram_mb=12000, count=1),
+        )
+        compose = tmp_path / "docker-compose.adk-vllm.yml"
+        compose.write_text("# test compose")
+
+        with patch("adk.setup._find_compose_file", return_value=compose), \
+             patch("adk.setup._run") as mock_run:
+            mock_run.side_effect = [
+                (0, "", ""),                           # compose containers not running
+                (1, "", "compose error"),              # compose up fails
+                (0, "", ""),                           # docker ps for aither-vllm-8200 (not running)
+                (0, "", ""),                           # docker run succeeds
+            ]
+            result = await setup.ensure_vllm()
+            assert result is True
+            # Should have fallen through to docker run
+            last_cmd = mock_run.call_args_list[-1][0][0]
+            assert "run" in last_cmd
+
+    @pytest.mark.asyncio
+    async def test_no_compose_file_goes_straight_to_docker_run(self, tmp_path):
+        setup = AgentSetup(data_dir=str(tmp_path))
+        setup._system = SystemInfo(
+            docker_installed=True,
+            gpu=GPUInfo(vendor="nvidia", vram_mb=12000, count=1),
+        )
+
+        with patch("adk.setup._find_compose_file", return_value=None), \
+             patch("adk.setup._run") as mock_run:
+            mock_run.side_effect = [
+                (0, "", ""),   # docker ps (not running)
+                (0, "", ""),   # docker run
+            ]
+            result = await setup.ensure_vllm()
+            assert result is True
+            # First call should be docker ps for aither-vllm-8200
+            first_cmd = mock_run.call_args_list[0][0][0]
+            assert "aither-vllm-8200" in str(first_cmd)

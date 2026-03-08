@@ -2,20 +2,36 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import time
 import uuid
 from dataclasses import dataclass, field
 
 from adk.config import Config
 from adk.identity import Identity, load_identity
 from adk.llm import LLMRouter, Message, LLMResponse
+from adk.loop_guard import LoopGuard, LoopAction
 from adk.memory import Memory
+from adk.metering import AgentMeter, QuotaAction, get_meter
+from adk.metrics import get_metrics
 from adk.tools import ToolDef, ToolRegistry
+from adk.trace import get_trace_id
 
 logger = logging.getLogger("adk.agent")
 
 _MAX_TOOL_LOOPS = 10
+_conversations_store = None
+
+
+def _get_conversations():
+    """Lazy-load the global ConversationStore."""
+    global _conversations_store
+    if _conversations_store is None:
+        from adk.conversations import get_conversation_store
+        _conversations_store = get_conversation_store()
+    return _conversations_store
 
 
 @dataclass
@@ -83,6 +99,9 @@ class AitherAgent:
         # Memory
         self.memory = memory or Memory(agent_name=self.name)
 
+        # Metering (per-agent token & cost tracking)
+        self.meter = get_meter(self.name)
+
         # Session
         self._session_id = str(uuid.uuid4())[:8]
 
@@ -136,19 +155,45 @@ class AitherAgent:
 
         messages.append(Message(role="user", content=message))
 
-        # Store user message
+        # Store user message (in-memory + persistent JSON)
         await self.memory.add_message(sid, "user", message)
+        try:
+            store = _get_conversations()
+            await store.append_message(sid, "user", message, agent_name=self.name)
+        except Exception:
+            pass  # Non-fatal — persistent store is best-effort
 
         # Call LLM (with tool loop if tools registered)
         tools_schema = self._tools.to_openai_format() if self._tools.list_tools() else None
         tool_calls_made = []
+        loop_guard = LoopGuard(
+            warn_threshold=2,
+            block_threshold=3,
+            circuit_break_total=_MAX_TOOL_LOOPS + 5,
+        )
 
-        for _ in range(_MAX_TOOL_LOOPS):
+        for _loop_idx in range(_MAX_TOOL_LOOPS):
+            # Check if circuit breaker tripped from previous iteration
+            if loop_guard.tripped:
+                logger.info("Loop guard circuit breaker tripped — forcing synthesis")
+                break
+
             resp = await self.llm.chat(messages, tools=tools_schema, **kwargs)
 
             if not resp.tool_calls:
                 # No tool calls — we have the final answer
                 await self.memory.add_message(sid, "assistant", resp.content)
+                try:
+                    store = _get_conversations()
+                    await store.append_message(sid, "assistant", resp.content, agent_name=self.name)
+                except Exception:
+                    pass
+                # Record metering
+                self.meter.record_usage(
+                    tokens=resp.tokens_used,
+                    model=resp.model,
+                    latency_ms=resp.latency_ms,
+                )
                 return AgentResponse(
                     content=resp.content,
                     model=resp.model,
@@ -158,7 +203,7 @@ class AitherAgent:
                     session_id=sid,
                 )
 
-            # Execute tool calls
+            # Execute tool calls with loop guard checks
             messages.append(Message(
                 role="assistant",
                 content=resp.content or "",
@@ -169,8 +214,43 @@ class AitherAgent:
             ))
 
             for tc in resp.tool_calls:
+                verdict = loop_guard.check(tc.name, tc.arguments)
+
+                if verdict.action == LoopAction.CIRCUIT_BREAK:
+                    logger.warning("Loop guard CIRCUIT BREAK: %s", verdict.reason)
+                    messages.append(Message(role="system", content=verdict.nudge_message))
+                    tool_calls_made.append(f"{tc.name}[circuit_break]")
+                    messages.append(Message(
+                        role="tool",
+                        content=json.dumps({"error": "circuit_break", "message": verdict.reason}),
+                        tool_call_id=tc.id,
+                    ))
+                    # Fire metrics + Pulse alert
+                    get_metrics().record_loop_guard_break()
+                    _fire_pulse_loop_break(self.name, tc.name, loop_guard.stats.total_checks)
+                    continue
+
+                if verdict.action == LoopAction.BLOCK:
+                    logger.info("Loop guard BLOCKED: %s", verdict.reason)
+                    messages.append(Message(role="system", content=verdict.nudge_message))
+                    tool_calls_made.append(f"{tc.name}[blocked]")
+                    messages.append(Message(
+                        role="tool",
+                        content=json.dumps({"error": "blocked_duplicate", "message": verdict.reason}),
+                        tool_call_id=tc.id,
+                    ))
+                    continue
+
+                if verdict.action == LoopAction.WARN:
+                    logger.debug("Loop guard WARN: %s", verdict.reason)
+                    messages.append(Message(role="system", content=verdict.nudge_message))
+
+                # ALLOW or WARN — execute the tool
                 tool_calls_made.append(tc.name)
+                _tool_start = time.perf_counter()
                 result = await self._tools.execute(tc.name, tc.arguments)
+                _tool_ms = (time.perf_counter() - _tool_start) * 1000
+                get_metrics().record_tool_call(tool=tc.name, latency_ms=_tool_ms)
                 messages.append(Message(
                     role="tool",
                     content=result,
@@ -180,6 +260,17 @@ class AitherAgent:
         # Exhausted tool loops — return last response
         final = await self.llm.chat(messages, **kwargs)
         await self.memory.add_message(sid, "assistant", final.content)
+        try:
+            store = _get_conversations()
+            await store.append_message(sid, "assistant", final.content, agent_name=self.name)
+        except Exception:
+            pass
+        # Record metering for final response
+        self.meter.record_usage(
+            tokens=final.tokens_used,
+            model=final.model,
+            latency_ms=final.latency_ms,
+        )
         return AgentResponse(
             content=final.content,
             model=final.model,
@@ -222,3 +313,22 @@ class AitherAgent:
             llm_backend=self.llm.provider_name,
             include_logs=include_logs,
         )
+
+
+def _fire_pulse_loop_break(agent: str, tool: str, total_calls: int):
+    """Fire-and-forget Pulse pain signal for loop guard circuit break."""
+    async def _send():
+        try:
+            from adk.pulse import get_pulse
+            pulse = get_pulse()
+            await pulse.send_loop_break(
+                agent=agent, tool=tool,
+                total_calls=total_calls,
+                request_id=get_trace_id(),
+            )
+        except Exception:
+            pass
+    try:
+        asyncio.ensure_future(_send())
+    except RuntimeError:
+        pass  # No event loop — skip

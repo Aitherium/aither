@@ -10,15 +10,15 @@ gpu:
   max_vram_gb: 999
 
 models:
-  default: "llama3.1:70b-instruct-q4_K_M"
-  small: "llama3.1:8b"
-  large: "llama3.1:70b-instruct-q4_K_M"
+  default: "nemotron-orchestrator-8b"
+  small: "llama3.2:3b"
+  large: "deepseek-r1:32b"
   embedding: "nomic-embed-text"
 
 recommended_models:
-  - "llama3.1:8b"
-  - "deepseek-r1:14b"
-  - "llama3.1:70b-instruct-q4_K_M"
+  - "llama3.2:3b"
+  - "nemotron-orchestrator-8b"
+  - "deepseek-r1:32b"
   - "nomic-embed-text"
   - "qwen2.5-coder:32b"
 

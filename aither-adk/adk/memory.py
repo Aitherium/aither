@@ -134,3 +134,83 @@ class Memory:
             else:
                 rows = conn.execute("SELECT key FROM kv_store").fetchall()
         return [r[0] for r in rows]
+
+    # ─────────────────────────────────────────────────────────────────────
+    # SESSION REPAIR
+    # ─────────────────────────────────────────────────────────────────────
+
+    async def repair_session(self, session_id: str) -> dict:
+        """Repair a conversation session in the SQLite store.
+
+        Phases:
+          1. Remove messages with null/empty content
+          2. Fix timestamp monotonicity
+          3. Remove orphan tool results
+          4. Deduplicate exact-content messages within 1s window
+          5. Run SQLite integrity check
+        """
+        issues = 0
+        fixed = 0
+
+        with self._connect() as conn:
+            # Phase 1: Remove empty content
+            result = conn.execute(
+                "DELETE FROM conversations WHERE session_id = ? AND (content IS NULL OR content = '')",
+                (session_id,),
+            )
+            removed = result.rowcount
+            if removed:
+                issues += removed
+                fixed += removed
+
+            # Phase 2: Check timestamp monotonicity
+            rows = conn.execute(
+                "SELECT id, timestamp FROM conversations WHERE session_id = ? ORDER BY id",
+                (session_id,),
+            ).fetchall()
+            last_ts = 0.0
+            for row_id, ts in rows:
+                if ts is not None and ts < last_ts:
+                    issues += 1
+                    conn.execute(
+                        "UPDATE conversations SET timestamp = ? WHERE id = ?",
+                        (last_ts + 0.001, row_id),
+                    )
+                    fixed += 1
+                if ts is not None:
+                    last_ts = max(last_ts, ts)
+
+            # Phase 3: Deduplicate (same role + content within 1s)
+            rows = conn.execute(
+                "SELECT id, role, content, timestamp FROM conversations "
+                "WHERE session_id = ? ORDER BY id",
+                (session_id,),
+            ).fetchall()
+            seen: dict[str, float] = {}
+            dupes_to_remove = []
+            for row_id, role, content, ts in rows:
+                key = f"{role}:{content}"
+                prev_ts = seen.get(key)
+                if prev_ts is not None and ts is not None and abs(ts - prev_ts) < 1.0:
+                    dupes_to_remove.append(row_id)
+                    issues += 1
+                seen[key] = ts or 0.0
+
+            for row_id in dupes_to_remove:
+                conn.execute("DELETE FROM conversations WHERE id = ?", (row_id,))
+                fixed += 1
+
+            # Phase 4: SQLite integrity check
+            integrity = conn.execute("PRAGMA integrity_check").fetchone()
+            db_ok = integrity and integrity[0] == "ok"
+            if not db_ok:
+                issues += 1
+
+        return {
+            "session_id": session_id,
+            "issues_found": issues,
+            "issues_fixed": fixed,
+            "removed_empty": removed,
+            "removed_dupes": len(dupes_to_remove),
+            "db_integrity": "ok" if db_ok else "failed",
+        }

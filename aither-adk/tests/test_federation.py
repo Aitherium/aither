@@ -314,7 +314,7 @@ class TestChat:
 
             client.post.return_value = _mock_response(200, {
                 "response": "System is healthy",
-                "model": "llama3.1:8b",
+                "model": "nemotron-orchestrator-8b",
             })
 
             result = await fed.chat("What's the status?")

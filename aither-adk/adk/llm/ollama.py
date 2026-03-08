@@ -24,7 +24,7 @@ class OllamaProvider(LLMProvider):
     def __init__(
         self,
         host: str = "http://localhost:11434",
-        default_model: str = "llama3.2",
+        default_model: str = "nemotron-orchestrator-8b",
         timeout: float = 120.0,
     ):
         self.host = host.rstrip("/")

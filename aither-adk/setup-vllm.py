@@ -24,7 +24,7 @@ Models (vLLM):
     Embeddings:   nomic-ai/nomic-embed-text-v1.5 (fast vector search)
 
 Models (Ollama):
-    Chat:      llama3.2:3b, llama3.1:8b, qwen3:8b, gemma3:12b
+    Chat:      llama3.2:3b, nemotron-orchestrator-8b, qwen3:8b, gemma3:12b
     Reasoning: deepseek-r1:7b/14b/32b, qwen3:14b
     Coding:    qwen2.5-coder:7b/14b
     Vision:    llama3.2-vision:11b
@@ -244,7 +244,7 @@ class OllamaModel:
 OLLAMA_MODELS = {
     "chat": [
         OllamaModel("llama3.2:3b", "Meta Llama 3.2 3B — fast, efficient chat", 2.0, 4, "chat"),
-        OllamaModel("llama3.1:8b", "Meta Llama 3.1 8B — balanced chat + tools", 4.7, 8, "chat"),
+        OllamaModel("nemotron-orchestrator-8b", "NVIDIA Nemotron Orchestrator 8B — best tool use", 4.9, 8, "chat"),
         OllamaModel("qwen3:8b", "Qwen 3 8B — strong multilingual + reasoning", 4.9, 8, "chat"),
         OllamaModel("gemma3:12b", "Google Gemma 3 12B — high quality", 8.1, 12, "chat"),
     ],

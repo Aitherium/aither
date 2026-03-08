@@ -290,14 +290,14 @@ def _recommended_models(profile: str) -> list[str]:
         "cpu_only": ["llama3.2:1b", "nomic-embed-text"],
         "minimal": ["llama3.2:3b", "nomic-embed-text"],
         "nvidia_low": ["llama3.2:3b", "nomic-embed-text"],
-        "nvidia_mid": ["llama3.1:8b", "deepseek-r1:8b", "nomic-embed-text"],
-        "nvidia_high": ["llama3.1:8b", "deepseek-r1:14b", "nomic-embed-text", "codellama:13b"],
-        "nvidia_ultra": ["llama3.1:70b", "deepseek-r1:32b", "nomic-embed-text", "codellama:34b"],
-        "apple_silicon": ["llama3.1:8b", "deepseek-r1:8b", "nomic-embed-text"],
-        "amd": ["llama3.1:8b", "nomic-embed-text"],
-        "standard": ["llama3.1:8b", "deepseek-r1:8b", "nomic-embed-text"],
-        "workstation": ["llama3.1:8b", "deepseek-r1:14b", "nomic-embed-text", "codellama:13b"],
-        "server": ["llama3.1:70b", "deepseek-r1:32b", "nomic-embed-text"],
+        "nvidia_mid": ["nemotron-orchestrator-8b", "deepseek-r1:8b", "nomic-embed-text"],
+        "nvidia_high": ["nemotron-orchestrator-8b", "deepseek-r1:14b", "nomic-embed-text", "qwen2.5-coder:14b"],
+        "nvidia_ultra": ["nemotron-orchestrator-8b", "deepseek-r1:32b", "nomic-embed-text", "qwen2.5-coder:32b"],
+        "apple_silicon": ["nemotron-orchestrator-8b", "deepseek-r1:8b", "nomic-embed-text"],
+        "amd": ["nemotron-orchestrator-8b", "nomic-embed-text"],
+        "standard": ["nemotron-orchestrator-8b", "deepseek-r1:14b", "nomic-embed-text"],
+        "workstation": ["nemotron-orchestrator-8b", "deepseek-r1:32b", "nomic-embed-text", "qwen2.5-coder:14b"],
+        "server": ["nemotron-orchestrator-8b", "deepseek-r1:32b", "nomic-embed-text"],
     }
     return models.get(profile, models["cpu_only"])
 
@@ -305,6 +305,44 @@ def _recommended_models(profile: str) -> list[str]:
 # ---------------------------------------------------------------------------
 # AgentSetup — programmatic setup API
 # ---------------------------------------------------------------------------
+
+def _find_compose_file() -> Path | None:
+    """Find the ADK vLLM compose file.
+
+    Search order:
+    1. $ADK_ROOT/docker-compose.adk-vllm.yml
+    2. Package directory (shipped with pip install)
+    3. CWD
+    4. ~/.aither/docker-compose.adk-vllm.yml
+    """
+    name = "docker-compose.adk-vllm.yml"
+
+    # 1. ADK_ROOT env var
+    adk_root = os.environ.get("ADK_ROOT")
+    if adk_root:
+        p = Path(adk_root) / name
+        if p.exists():
+            return p
+
+    # 2. Package directory (next to this file, or parent)
+    pkg_dir = Path(__file__).resolve().parent
+    for d in [pkg_dir, pkg_dir.parent]:
+        p = d / name
+        if p.exists():
+            return p
+
+    # 3. CWD
+    p = Path.cwd() / name
+    if p.exists():
+        return p
+
+    # 4. ~/.aither/
+    p = Path.home() / ".aither" / name
+    if p.exists():
+        return p
+
+    return None
+
 
 class AgentSetup:
     """Programmatic environment setup for ADK agents.
@@ -322,6 +360,66 @@ class AgentSetup:
         self.data_dir = Path(data_dir or os.environ.get("AITHER_DATA_DIR", os.path.expanduser("~/.aither")))
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self._system: SystemInfo | None = None
+
+    async def _try_aitherzero(self) -> bool:
+        """Check if pwsh + AitherZero module + adk plugin are available."""
+        rc, _, _ = await _run(["pwsh", "-Version"])
+        if rc != 0:
+            return False
+        rc, out, _ = await _run([
+            "pwsh", "-NoProfile", "-Command",
+            "Import-Module AitherZero -ErrorAction Stop; "
+            "(Get-AitherPlugin -Name 'adk') -ne $null"
+        ])
+        return rc == 0 and "True" in out
+
+    async def _run_aitherzero_setup(self) -> SetupReport | None:
+        """Delegate setup to AitherZero's Invoke-ADKSetup, parse JSON into SetupReport."""
+        cmd = [
+            "pwsh", "-NoProfile", "-Command",
+            "Import-Module AitherZero; "
+            "Invoke-ADKSetup -Backend auto -NonInteractive | ConvertTo-Json -Depth 5"
+        ]
+        rc, out, err = await _run(cmd, timeout=600.0)
+        if rc != 0:
+            logger.warning("AitherZero setup failed (rc=%d): %s", rc, err)
+            return None
+        try:
+            data = json.loads(out)
+            return self._parse_aitherzero_report(data)
+        except (json.JSONDecodeError, KeyError) as exc:
+            logger.warning("Failed to parse AitherZero output: %s", exc)
+            return None
+
+    @staticmethod
+    def _parse_aitherzero_report(data: dict) -> SetupReport:
+        """Convert AitherZero Invoke-ADKSetup JSON output to SetupReport."""
+        gpu_data = data.get("gpu", {})
+        gpu = GPUInfo(
+            vendor=gpu_data.get("vendor", "none"),
+            name=gpu_data.get("name", ""),
+            vram_mb=gpu_data.get("vram_mb", 0),
+        )
+        system = SystemInfo(
+            os_name=platform.system(),
+            os_version=platform.version(),
+            arch=platform.machine(),
+            python_version=platform.python_version(),
+            gpu=gpu,
+            docker_installed=data.get("docker_installed", False),
+            profile=data.get("profile", "cpu_only"),
+            active_backend=data.get("backend", ""),
+        )
+        return SetupReport(
+            system=system,
+            profile=data.get("profile", "cpu_only"),
+            ollama_ready=data.get("ollama_ready", False),
+            vllm_ready=data.get("vllm_ready", False),
+            backend=data.get("backend", ""),
+            models_available=data.get("models_available", []),
+            errors=data.get("errors", []),
+            ready=data.get("ready", False),
+        )
 
     async def detect_hardware(self) -> SystemInfo:
         """Detect system hardware: GPU, RAM, OS, installed backends.
@@ -506,10 +604,43 @@ class AgentSetup:
             return False
 
         if not model:
-            if self._system.gpu.vram_mb >= 24000:
-                model = "meta-llama/Llama-3.1-8B-Instruct"
+            # Select vLLM model based on VRAM — use HuggingFace model IDs
+            if self._system.gpu.vram_mb >= 48000:
+                model = "nvidia/Nemotron-4-340B-Instruct"  # Ultra: 48GB+ VRAM
+            elif self._system.gpu.vram_mb >= 24000:
+                model = "nvidia/Nemotron-Orchestrator-8B"   # High: 24GB VRAM
+            elif self._system.gpu.vram_mb >= 12000:
+                model = "nvidia/Nemotron-Orchestrator-8B"   # Mid: 12GB VRAM (fits in 12GB)
+            elif self._system.gpu.vram_mb >= 6000:
+                model = "meta-llama/Llama-3.2-3B-Instruct"  # Low: 6GB VRAM
             else:
-                model = "meta-llama/Llama-3.2-3B-Instruct"
+                model = "meta-llama/Llama-3.2-1B-Instruct"  # Minimal
+
+        # Prefer compose file over raw docker run
+        compose_path = _find_compose_file()
+        if compose_path:
+            # Check if ADK compose containers are already running
+            rc, out, _ = await _run([
+                "docker", "ps", "--filter", "name=adk-vllm-primary",
+                "--format", "{{.Names}}"
+            ])
+            if rc == 0 and "adk-vllm-primary" in out:
+                logger.info("ADK vLLM containers already running (via compose)")
+                return True
+
+            vram = self._system.gpu.vram_mb
+            profile_flag = ["--profile", "dual"] if vram >= 24000 else []
+            cmd = (
+                ["docker", "compose", "-f", str(compose_path)]
+                + profile_flag
+                + ["up", "-d"]
+            )
+            logger.info("Starting vLLM via compose: %s", " ".join(cmd))
+            rc, _, err = await _run(cmd, timeout=300.0)
+            if rc == 0:
+                logger.info("ADK vLLM compose started successfully")
+                return True
+            logger.warning("Compose startup failed, falling back to docker run: %s", err)
 
         container_name = f"aither-vllm-{port}"
 
@@ -519,7 +650,12 @@ class AgentSetup:
             logger.info(f"vLLM container {container_name} already running")
             return True
 
-        logger.info(f"Starting vLLM container: {model} on port {port}...")
+        # Tune context length and memory for available VRAM
+        vram = self._system.gpu.vram_mb
+        max_model_len = "16384" if vram >= 24000 else "8192" if vram >= 12000 else "4096"
+        gpu_util = "0.92" if vram >= 24000 else "0.90" if vram >= 12000 else "0.85"
+
+        logger.info(f"Starting vLLM container: {model} on port {port} (VRAM: {vram}MB)...")
         cmd = [
             "docker", "run", "-d",
             "--name", container_name,
@@ -528,11 +664,14 @@ class AgentSetup:
             "--shm-size", "4g",
             "vllm/vllm-openai:latest",
             "--model", model,
-            "--gpu-memory-utilization", "0.90",
-            "--max-model-len", "8192",
+            "--gpu-memory-utilization", gpu_util,
+            "--max-model-len", max_model_len,
         ]
         if gpu_count > 1:
             cmd.extend(["--tensor-parallel-size", str(gpu_count)])
+        # Use fp8 quantization on smaller GPUs for better VRAM efficiency
+        if vram < 24000 and "Nemotron" in model:
+            cmd.extend(["--quantization", "fp8"])
 
         rc, _, err = await _run(cmd, timeout=300.0)
         if rc != 0:
@@ -575,16 +714,20 @@ class AgentSetup:
         self,
         models: list[str] | None = None,
         install_ollama: bool = True,
-        start_vllm: bool = False,
         vllm_port: int = 8200,
     ) -> SetupReport:
-        """Full automated setup: detect hardware, configure inference backend.
+        """Full automated setup: detect hardware, configure GPU-optimized inference.
 
-        SMART BACKEND DETECTION:
-        - If vLLM is already running → use it (don't touch Ollama)
-        - If Ollama is already running → use it
-        - If nothing running → start Ollama (unless vLLM containers exist)
-        - Never start Ollama when vLLM holds the GPU
+        PRIORITY ORDER:
+        1. vLLM already running → use it
+        2. NVIDIA GPU + Docker → start vLLM containers (PRIMARY path)
+        3. Ollama already running → use it (AMD, Apple Silicon, or no Docker)
+        4. Start Ollama as fallback (non-NVIDIA or Docker unavailable)
+        5. Cloud API keys
+
+        vLLM is the primary backend because it uses GPU memory efficiently with
+        paged attention, continuous batching, and tensor parallelism. Ollama is
+        the fallback for hardware/platforms where vLLM containers can't run.
 
         Usage:
             setup = AgentSetup()
@@ -592,6 +735,27 @@ class AgentSetup:
             print(f"Ready: {report.ready}, Backend: {report.backend}")
         """
         report = SetupReport()
+
+        # Step 0: Try AitherZero delegation (pwsh + ADK plugin)
+        if os.getenv("AITHER_NO_PWSH") != "1":
+            try:
+                if await self._try_aitherzero():
+                    logger.info("AitherZero + ADK plugin detected — delegating setup")
+                    az_report = await self._run_aitherzero_setup()
+                    if az_report and az_report.ready:
+                        # Save profile marker for Config.from_env()
+                        try:
+                            (self.data_dir / "detected_profile").write_text(az_report.profile)
+                        except Exception:
+                            pass
+                        return az_report
+                    elif az_report:
+                        logger.warning(
+                            "AitherZero setup completed but not ready: %s",
+                            az_report.errors,
+                        )
+            except Exception as exc:
+                logger.debug("AitherZero delegation failed: %s", exc)
 
         # Step 1: Detect hardware + running backends
         try:
@@ -602,65 +766,75 @@ class AgentSetup:
             report.errors.append(f"Hardware detection failed: {e}")
             return report
 
-        # Step 2: Choose backend strategy based on what's already running
+        # Step 2: Choose backend — vLLM first, Ollama fallback
         if info.vllm.running:
-            # vLLM is already serving — use it via OpenAI-compatible API
+            # vLLM is already serving — use it
             report.vllm_ready = True
             report.backend = "vllm"
             report.models_available = info.vllm.models
             vllm_port_str = str(info.vllm.ports[0]) if info.vllm.ports else "8200"
             logger.info(
-                f"vLLM already running on port(s) {info.vllm.ports} with "
-                f"models {info.vllm.models}. Using OpenAI-compatible API. "
-                f"Set AITHER_LLM_BACKEND=openai OPENAI_BASE_URL=http://localhost:{vllm_port_str}/v1"
+                "vLLM already running on port(s) %s with models %s",
+                info.vllm.ports, info.vllm.models,
             )
-            # Don't touch Ollama — it would fight vLLM for VRAM
 
-        elif info.ollama_running:
-            # Ollama already running — use it
-            report.ollama_ready = True
-            report.backend = "ollama"
-            report.models_available = info.ollama_models
-
-            # Pull additional models if requested
+        elif info.gpu.vendor == "nvidia" and info.docker_installed:
+            # NVIDIA GPU + Docker → spin up vLLM containers
+            logger.info(
+                "NVIDIA GPU detected (%s, %dMB VRAM) with Docker — starting vLLM",
+                info.gpu.name, info.gpu.vram_mb,
+            )
             try:
-                pulled = await self.pull_models(models)
-                report.models_pulled = pulled
-                report.models_available = list(set(report.models_available + pulled))
+                vllm_ok = await self.ensure_vllm(
+                    gpu_count=info.gpu.count,
+                    port=vllm_port,
+                )
+                report.vllm_ready = vllm_ok
+                if vllm_ok:
+                    report.backend = "vllm"
+                    # Re-check what models are available after startup
+                    await asyncio.sleep(5)  # give vLLM a moment to load model
+                    vllm_info = await _check_vllm()
+                    report.models_available = vllm_info.models
             except Exception as e:
-                report.errors.append(f"Model pull failed: {e}")
+                report.errors.append(f"vLLM setup failed: {e}")
 
-        else:
-            # Nothing running — try to start Ollama (safe, no vLLM conflict)
-            try:
-                ollama_ok = await self.ensure_ollama(auto_install=install_ollama)
-                report.ollama_ready = ollama_ok
-                if ollama_ok:
-                    report.backend = "ollama"
-            except Exception as e:
-                report.errors.append(f"Ollama setup failed: {e}")
+            # If vLLM failed, fall through to Ollama
+            if not report.vllm_ready:
+                logger.warning("vLLM setup failed — falling back to Ollama")
 
-            # Pull models if Ollama is ready
-            if report.ollama_ready:
+        # Ollama fallback — AMD, Apple Silicon, no Docker, or vLLM failed
+        if not report.backend:
+            if info.ollama_running:
+                report.ollama_ready = True
+                report.backend = "ollama"
+                report.models_available = info.ollama_models
+
                 try:
                     pulled = await self.pull_models(models)
                     report.models_pulled = pulled
-                    report.models_available = pulled
+                    report.models_available = list(set(report.models_available + pulled))
                 except Exception as e:
                     report.errors.append(f"Model pull failed: {e}")
 
-            # Optional: start vLLM if requested and Ollama isn't the plan
-            if start_vllm and not report.ollama_ready:
-                if info.docker_installed and info.gpu.vendor == "nvidia":
-                    try:
-                        vllm_ok = await self.ensure_vllm(port=vllm_port)
-                        report.vllm_ready = vllm_ok
-                        if vllm_ok:
-                            report.backend = "vllm"
-                    except Exception as e:
-                        report.errors.append(f"vLLM setup failed: {e}")
+            else:
+                try:
+                    ollama_ok = await self.ensure_ollama(auto_install=install_ollama)
+                    report.ollama_ready = ollama_ok
+                    if ollama_ok:
+                        report.backend = "ollama"
+                except Exception as e:
+                    report.errors.append(f"Ollama setup failed: {e}")
 
-        # Check if we also have cloud API keys configured
+                if report.ollama_ready:
+                    try:
+                        pulled = await self.pull_models(models)
+                        report.models_pulled = pulled
+                        report.models_available = pulled
+                    except Exception as e:
+                        report.errors.append(f"Model pull failed: {e}")
+
+        # Cloud API keys as last resort
         if not report.backend:
             if os.environ.get("OPENAI_API_KEY") or os.environ.get("ANTHROPIC_API_KEY"):
                 report.backend = "cloud"
@@ -678,6 +852,13 @@ class AgentSetup:
         report_path = self.data_dir / "setup_report.json"
         try:
             report_path.write_text(json.dumps(asdict(report), indent=2))
+        except Exception:
+            pass
+
+        # Save detected profile so Config.from_env() can apply it on next startup
+        profile_marker = self.data_dir / "detected_profile"
+        try:
+            profile_marker.write_text(report.profile)
         except Exception:
             pass
 

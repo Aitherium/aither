@@ -52,7 +52,8 @@ aither-bug = "adk.bugreport:main"
 [tool.hatch.build.targets.wheel]
 packages = ["adk"]
 
-[tool.hatch.build.targets.wheel.shared-data]
+[tool.hatch.build.targets.wheel.force-include]
+"docker-compose.adk-vllm.yml" = "adk/docker-compose.adk-vllm.yml"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

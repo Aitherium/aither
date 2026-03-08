@@ -30,7 +30,7 @@ _EFFORT_MODELS = {
     },
     "ollama": {
         "small": "llama3.2:3b",
-        "medium": "llama3.2",
+        "medium": "nemotron-orchestrator-8b",
         "large": "deepseek-r1:14b",
     },
     "openai": {
@@ -99,7 +99,7 @@ class LLMRouter:
             from .ollama import OllamaProvider
             return OllamaProvider(
                 host=base_url or "http://localhost:11434",
-                default_model=self._model or "llama3.2",
+                default_model=self._model or "nemotron-orchestrator-8b",
             )
         elif name in ("openai", "vllm", "lmstudio", "llamacpp", "groq", "together"):
             from .openai_compat import OpenAIProvider
@@ -122,7 +122,7 @@ class LLMRouter:
         try:
             from .ollama import OllamaProvider
             host = (self._config.ollama_host if self._config else None) or "http://localhost:11434"
-            p = OllamaProvider(host=host, default_model=self._model or "llama3.2")
+            p = OllamaProvider(host=host, default_model=self._model or "nemotron-orchestrator-8b")
             if await p.health_check():
                 self._provider_name = "ollama"
                 logger.info("Auto-detected Ollama at %s", host)
@@ -131,36 +131,66 @@ class LLMRouter:
             pass
         return None
 
-    async def _auto_detect(self) -> LLMProvider:
-        """Try backends in priority order. Default: gateway → Ollama → cloud APIs → demo.
+    async def _try_vllm(self) -> LLMProvider | None:
+        """Try vLLM on standard AitherOS ports (8200-8203) and vLLM default (8000).
 
-        Set AITHER_PREFER_LOCAL=true to try Ollama first, then gateway as fallback.
+        vLLM is the PRIMARY local inference backend — it runs optimized containers
+        on the user's GPU with proper batching, paged attention, and tensor parallelism.
+        """
+        from .openai_compat import OpenAIProvider
+        for port in (8200, 8201, 8202, 8203, 8000):
+            try:
+                url = f"http://localhost:{port}/v1"
+                p = OpenAIProvider(
+                    base_url=url,
+                    api_key="not-needed",
+                    default_model=self._model or "",
+                )
+                if await p.health_check():
+                    # Discover what model is loaded
+                    try:
+                        models = await p.list_models()
+                        if models and not self._model:
+                            p.default_model = models[0]
+                    except Exception:
+                        pass
+                    self._provider_name = "vllm"
+                    logger.info("Auto-detected vLLM at localhost:%d (model: %s)", port, p.default_model)
+                    return p
+            except Exception:
+                continue
+        return None
+
+    async def _auto_detect(self) -> LLMProvider:
+        """Try backends in priority order: vLLM → Ollama → gateway → cloud APIs → demo.
+
+        LOCAL GPU FIRST. vLLM containers are the primary backend — they use the GPU
+        efficiently with batching and paged attention. Ollama is the fallback for
+        AMD/Apple/no-Docker. Gateway is cloud fallback when no local GPU.
         """
         import os
-
-        prefer_local = (
-            (self._config.prefer_local if self._config else False)
-            or os.getenv("AITHER_PREFER_LOCAL", "").lower() in ("true", "1", "yes")
-        )
 
         gateway_key = (
             (self._config.aither_api_key if self._config else "")
             or os.getenv("AITHER_API_KEY", "")
         )
 
-        # When prefer_local is set, try Ollama BEFORE gateway
-        if prefer_local:
-            ollama = await self._try_ollama()
-            if ollama:
-                return ollama
+        # 1. vLLM containers — PRIMARY local backend (best GPU utilization)
+        vllm = await self._try_vllm()
+        if vllm:
+            return vllm
 
-        # Try gateway.aitherium.com (default for most users — no local GPU needed)
+        # 2. Ollama — fallback local backend (AMD, Apple Silicon, no Docker)
+        ollama = await self._try_ollama()
+        if ollama:
+            return ollama
+
+        # 3. Gateway — cloud inference via gateway.aitherium.com
         if gateway_key:
             gateway_url = (
                 (self._config.gateway_url if self._config else "")
                 or os.getenv("AITHER_GATEWAY_URL", _GATEWAY_INFERENCE_URL)
             )
-            # Ensure we hit the /v1 path for OpenAI-compat
             if not gateway_url.endswith("/v1"):
                 gateway_url = gateway_url.rstrip("/") + "/v1"
             try:
@@ -175,15 +205,9 @@ class LLMRouter:
                     logger.info("Connected to AitherOS gateway at %s", gateway_url)
                     return p
             except Exception:
-                logger.debug("Gateway not reachable, trying local backends")
+                logger.debug("Gateway not reachable, trying cloud API keys")
 
-        # Try Ollama on localhost (skip if already tried via prefer_local)
-        if not prefer_local:
-            ollama = await self._try_ollama()
-            if ollama:
-                return ollama
-
-        # Try config-based cloud API keys
+        # 4. Cloud API keys (Anthropic/OpenAI direct)
         if self._config:
             if self._config.anthropic_api_key:
                 self._provider_name = "anthropic"
@@ -198,7 +222,6 @@ class LLMRouter:
                     api_key=self._config.openai_api_key,
                 )
 
-        # 4. Check env vars
         if os.getenv("ANTHROPIC_API_KEY"):
             self._provider_name = "anthropic"
             return self._create_provider("anthropic", api_key=os.getenv("ANTHROPIC_API_KEY"))
@@ -210,13 +233,14 @@ class LLMRouter:
                 api_key=os.getenv("OPENAI_API_KEY"),
             )
 
-        # 5. No backend available — point user to the demo
+        # 5. No backend available
         raise ConnectionError(
             "No LLM backend available.\n\n"
+            "  Run setup:        python -m adk.setup\n"
             f"  Try the demo:     {_DEMO_URL}\n"
-            "  Get an API key:   https://gateway.aitherium.com\n"
-            "  Or install local: https://ollama.com\n\n"
-            "Set AITHER_API_KEY to connect to the AitherOS gateway for inference."
+            "  Get an API key:   https://gateway.aitherium.com\n\n"
+            "AitherOS Alpha uses vLLM containers for GPU inference.\n"
+            "Run auto_setup() to detect your GPU and start the right containers."
         )
 
     async def get_provider(self) -> LLMProvider:
@@ -233,10 +257,27 @@ class LLMRouter:
         return self._provider_name
 
     def model_for_effort(self, effort: int) -> str:
-        """Select model based on effort level (1-10)."""
+        """Select model based on effort level (1-10).
+
+        Priority: explicit model > config profile models > provider defaults.
+        """
         if self._model:
             return self._model
+
         tier = "small" if effort <= 3 else "medium" if effort <= 6 else "large"
+
+        # Check config profile models first (from hardware profile YAML)
+        if self._config and getattr(self._config, "profile_models", None):
+            pm = self._config.profile_models
+            profile_map = {
+                "small": pm.get("small", ""),
+                "medium": pm.get("default", pm.get("chat", "")),
+                "large": pm.get("large", pm.get("reasoning", "")),
+            }
+            if profile_map.get(tier):
+                return profile_map[tier]
+
+        # Fall back to provider defaults
         models = _EFFORT_MODELS.get(self._provider_name, {})
         return models.get(tier, self._model or "")
 

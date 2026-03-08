@@ -11,7 +11,7 @@ requirements:
   gpu_count: 2
 
 models:
-  chat: llama3.1:8b
+  chat: nemotron-orchestrator-8b
   reasoning: deepseek-r1:32b
   vision: llava:13b
   coding: qwen2.5-coder:14b
@@ -44,7 +44,7 @@ ollama:
   gpu_memory_fraction: 0.55
   num_parallel: 4
   models_to_pull:
-    - llama3.1:8b
+    - nemotron-orchestrator-8b
     - deepseek-r1:32b
     - llava:13b
     - qwen2.5-coder:14b

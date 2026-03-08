@@ -1,0 +1,410 @@
+"""Persistent Conversation Store — JSON file-based conversation storage.
+
+Lightweight port of AitherOS ConversationStore. Stores conversations as
+JSON files in ~/.aither/conversations/. Survives restarts.
+
+Enhanced with session repair:
+  - 7-phase message history validation
+  - Auto-recovery from corrupted/truncated sessions
+  - Role alternation enforcement
+  - Orphan tool-result detection and cleanup
+  - Timestamp monotonicity checks
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+import shutil
+import time
+from collections import OrderedDict
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger("adk.conversations")
+
+_LRU_MAX = 50  # Max conversations in LRU cache
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Session Repair (7-phase validation)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@dataclass
+class RepairReport:
+    """Report from session repair."""
+    session_id: str
+    phases_run: int = 0
+    issues_found: int = 0
+    issues_fixed: int = 0
+    messages_removed: int = 0
+    messages_reordered: int = 0
+    backup_created: bool = False
+    details: list[str] = field(default_factory=list)
+
+    @property
+    def clean(self) -> bool:
+        return self.issues_found == 0
+
+
+@dataclass
+class Conversation:
+    """A conversation session."""
+    session_id: str
+    agent_name: str
+    messages: list[dict] = field(default_factory=list)
+    created_at: float = 0.0
+    updated_at: float = 0.0
+    metadata: dict = field(default_factory=dict)
+
+
+class ConversationStore:
+    """Persistent conversation storage using JSON files.
+
+    Each session is stored as a separate JSON file for easy inspection
+    and backup. An LRU cache keeps hot sessions in memory.
+    """
+
+    def __init__(self, data_dir: str | Path | None = None):
+        if data_dir is None:
+            data_dir = Path.home() / ".aither" / "conversations"
+        self._dir = Path(data_dir)
+        self._dir.mkdir(parents=True, exist_ok=True)
+        self._cache: OrderedDict[str, Conversation] = OrderedDict()
+
+    def _path(self, session_id: str) -> Path:
+        # Sanitize session_id for filesystem
+        safe_id = "".join(c if c.isalnum() or c in "-_" else "_" for c in session_id)
+        return self._dir / f"{safe_id}.json"
+
+    def _load(self, session_id: str) -> Conversation | None:
+        """Load a conversation from disk."""
+        path = self._path(session_id)
+        if not path.exists():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return Conversation(
+                session_id=data.get("session_id", session_id),
+                agent_name=data.get("agent_name", ""),
+                messages=data.get("messages", []),
+                created_at=data.get("created_at", 0.0),
+                updated_at=data.get("updated_at", 0.0),
+                metadata=data.get("metadata", {}),
+            )
+        except Exception as e:
+            logger.warning("Failed to load conversation %s: %s", session_id, e)
+            return None
+
+    def _save(self, conv: Conversation) -> None:
+        """Save a conversation to disk."""
+        path = self._path(conv.session_id)
+        try:
+            data = {
+                "session_id": conv.session_id,
+                "agent_name": conv.agent_name,
+                "messages": conv.messages,
+                "created_at": conv.created_at,
+                "updated_at": conv.updated_at,
+                "metadata": conv.metadata,
+            }
+            path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        except Exception as e:
+            logger.error("Failed to save conversation %s: %s", conv.session_id, e)
+
+    def _touch_cache(self, session_id: str, conv: Conversation) -> None:
+        """Add/move to front of LRU cache."""
+        self._cache.pop(session_id, None)
+        self._cache[session_id] = conv
+        # Evict oldest if over limit
+        while len(self._cache) > _LRU_MAX:
+            self._cache.popitem(last=False)
+
+    async def get_or_create(self, session_id: str, agent_name: str = "") -> Conversation:
+        """Get an existing conversation or create a new one."""
+        # Check cache first
+        if session_id in self._cache:
+            conv = self._cache[session_id]
+            self._touch_cache(session_id, conv)
+            return conv
+
+        # Try disk
+        conv = self._load(session_id)
+        if conv is not None:
+            self._touch_cache(session_id, conv)
+            return conv
+
+        # Create new
+        now = time.time()
+        conv = Conversation(
+            session_id=session_id,
+            agent_name=agent_name,
+            created_at=now,
+            updated_at=now,
+        )
+        self._touch_cache(session_id, conv)
+        self._save(conv)
+        return conv
+
+    async def append_message(
+        self, session_id: str, role: str, content: str, agent_name: str = ""
+    ) -> None:
+        """Append a message to a conversation."""
+        conv = await self.get_or_create(session_id, agent_name)
+        conv.messages.append({
+            "role": role,
+            "content": content,
+            "timestamp": time.time(),
+        })
+        conv.updated_at = time.time()
+        self._save(conv)
+
+    async def get_recent(self, session_id: str, n: int = 20) -> list[dict]:
+        """Get the N most recent messages from a conversation."""
+        conv = await self.get_or_create(session_id)
+        return conv.messages[-n:]
+
+    async def list_sessions(self, agent_name: str | None = None) -> list[dict]:
+        """List all conversation sessions, optionally filtered by agent."""
+        sessions = []
+        for path in sorted(self._dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if agent_name and data.get("agent_name") != agent_name:
+                    continue
+                sessions.append({
+                    "session_id": data.get("session_id", path.stem),
+                    "agent_name": data.get("agent_name", ""),
+                    "message_count": len(data.get("messages", [])),
+                    "created_at": data.get("created_at", 0.0),
+                    "updated_at": data.get("updated_at", 0.0),
+                })
+            except Exception:
+                continue
+        return sessions
+
+    async def delete_session(self, session_id: str) -> bool:
+        """Delete a conversation session."""
+        self._cache.pop(session_id, None)
+        path = self._path(session_id)
+        if path.exists():
+            path.unlink()
+            return True
+        return False
+
+    # ─────────────────────────────────────────────────────────────────────
+    # SESSION REPAIR (7-phase validation)
+    # ─────────────────────────────────────────────────────────────────────
+
+    async def repair_session(self, session_id: str, auto_fix: bool = True) -> RepairReport:
+        """Run 7-phase session repair on a conversation.
+
+        Phases:
+          1. Schema validation — ensure required fields exist
+          2. Role validation — check role values are valid
+          3. Content validation — check for empty/null content
+          4. Timestamp monotonicity — ensure timestamps are non-decreasing
+          5. Role alternation — detect back-to-back same-role messages
+          6. Orphan tool results — find tool results without preceding assistant
+          7. Integrity check — verify message count and compute hash
+
+        Args:
+            session_id: The session to repair.
+            auto_fix: If True, automatically fix issues. If False, report only.
+
+        Returns:
+            RepairReport with details of what was found/fixed.
+        """
+        report = RepairReport(session_id=session_id)
+        conv = await self.get_or_create(session_id)
+
+        if not conv.messages:
+            report.phases_run = 7
+            return report
+
+        # Create backup before repair
+        if auto_fix:
+            backup_path = self._path(session_id).with_suffix(".json.bak")
+            try:
+                path = self._path(session_id)
+                if path.exists():
+                    shutil.copy2(path, backup_path)
+                    report.backup_created = True
+            except Exception as e:
+                logger.warning("Failed to create backup for %s: %s", session_id, e)
+
+        messages = conv.messages
+        valid_roles = {"system", "user", "assistant", "tool", "function"}
+
+        # Phase 1: Schema validation
+        report.phases_run = 1
+        for i, msg in enumerate(messages):
+            if not isinstance(msg, dict):
+                report.issues_found += 1
+                report.details.append(f"P1: Message {i} is not a dict")
+                if auto_fix:
+                    messages[i] = {"role": "system", "content": str(msg), "timestamp": time.time()}
+                    report.issues_fixed += 1
+            elif "role" not in msg or "content" not in msg:
+                report.issues_found += 1
+                report.details.append(f"P1: Message {i} missing role or content")
+                if auto_fix:
+                    msg.setdefault("role", "system")
+                    msg.setdefault("content", "")
+                    report.issues_fixed += 1
+
+        # Phase 2: Role validation
+        report.phases_run = 2
+        for i, msg in enumerate(messages):
+            if not isinstance(msg, dict):
+                continue
+            role = msg.get("role", "")
+            if role not in valid_roles:
+                report.issues_found += 1
+                report.details.append(f"P2: Message {i} has invalid role '{role}'")
+                if auto_fix:
+                    msg["role"] = "system"
+                    report.issues_fixed += 1
+
+        # Phase 3: Content validation
+        report.phases_run = 3
+        to_remove = []
+        for i, msg in enumerate(messages):
+            if not isinstance(msg, dict):
+                continue
+            content = msg.get("content")
+            if content is None or (isinstance(content, str) and not content.strip()):
+                # Empty tool results are OK, empty user/assistant messages are not
+                if msg.get("role") not in ("tool", "function"):
+                    report.issues_found += 1
+                    report.details.append(f"P3: Message {i} ({msg.get('role')}) has empty content")
+                    if auto_fix:
+                        to_remove.append(i)
+                        report.issues_fixed += 1
+
+        if auto_fix and to_remove:
+            for i in reversed(to_remove):
+                messages.pop(i)
+                report.messages_removed += 1
+
+        # Phase 4: Timestamp monotonicity
+        report.phases_run = 4
+        last_ts = 0.0
+        for i, msg in enumerate(messages):
+            if not isinstance(msg, dict):
+                continue
+            ts = msg.get("timestamp", 0.0)
+            if isinstance(ts, (int, float)) and ts < last_ts:
+                report.issues_found += 1
+                report.details.append(
+                    f"P4: Message {i} timestamp {ts} < previous {last_ts}"
+                )
+                if auto_fix:
+                    msg["timestamp"] = last_ts + 0.001
+                    report.issues_fixed += 1
+                    report.messages_reordered += 1
+            if isinstance(ts, (int, float)):
+                last_ts = max(last_ts, ts)
+
+        # Phase 5: Role alternation (detect loops)
+        report.phases_run = 5
+        consecutive_same = 0
+        last_role = None
+        for i, msg in enumerate(messages):
+            if not isinstance(msg, dict):
+                continue
+            role = msg.get("role")
+            if role == last_role and role in ("user", "assistant"):
+                consecutive_same += 1
+                if consecutive_same >= 3:
+                    report.issues_found += 1
+                    report.details.append(
+                        f"P5: {consecutive_same + 1} consecutive '{role}' messages at index {i}"
+                    )
+            else:
+                consecutive_same = 0
+            last_role = role
+
+        # Phase 6: Orphan tool results
+        report.phases_run = 6
+        orphan_indices = []
+        for i, msg in enumerate(messages):
+            if not isinstance(msg, dict):
+                continue
+            if msg.get("role") == "tool":
+                # Tool result should follow an assistant message with tool_calls
+                if i == 0:
+                    report.issues_found += 1
+                    report.details.append(f"P6: Orphan tool result at index {i} (first message)")
+                    orphan_indices.append(i)
+                else:
+                    prev = messages[i - 1] if i > 0 else None
+                    if prev and isinstance(prev, dict):
+                        prev_role = prev.get("role")
+                        if prev_role not in ("assistant", "tool"):
+                            report.issues_found += 1
+                            report.details.append(
+                                f"P6: Orphan tool result at index {i} "
+                                f"(preceded by '{prev_role}')"
+                            )
+                            orphan_indices.append(i)
+
+        if auto_fix and orphan_indices:
+            for i in reversed(orphan_indices):
+                messages.pop(i)
+                report.messages_removed += 1
+                report.issues_fixed += 1
+
+        # Phase 7: Integrity check
+        report.phases_run = 7
+        content_hash = hashlib.sha256(
+            json.dumps(messages, sort_keys=True, default=str).encode()
+        ).hexdigest()[:16]
+        conv.metadata["last_repair"] = {
+            "timestamp": time.time(),
+            "message_count": len(messages),
+            "content_hash": content_hash,
+            "issues_found": report.issues_found,
+            "issues_fixed": report.issues_fixed,
+        }
+
+        # Save repaired conversation
+        if auto_fix and report.issues_fixed > 0:
+            conv.messages = messages
+            conv.updated_at = time.time()
+            self._save(conv)
+            logger.info(
+                "Repaired session %s: %d issues found, %d fixed, %d messages removed",
+                session_id, report.issues_found, report.issues_fixed, report.messages_removed,
+            )
+
+        return report
+
+    async def validate_session(self, session_id: str) -> RepairReport:
+        """Validate a session without making changes (dry run)."""
+        return await self.repair_session(session_id, auto_fix=False)
+
+    async def repair_all(self, auto_fix: bool = True) -> list[RepairReport]:
+        """Repair all sessions on disk."""
+        reports = []
+        for path in self._dir.glob("*.json"):
+            if path.suffix == ".bak":
+                continue
+            session_id = path.stem
+            report = await self.repair_session(session_id, auto_fix=auto_fix)
+            if not report.clean:
+                reports.append(report)
+        return reports
+
+
+_store: ConversationStore | None = None
+
+
+def get_conversation_store() -> ConversationStore:
+    """Get the global conversation store singleton."""
+    global _store
+    if _store is None:
+        _store = ConversationStore()
+    return _store

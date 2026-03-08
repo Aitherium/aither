@@ -2,6 +2,35 @@
 
 All notable changes to AitherOS are documented here.
 
+## [0.2.0] - 2026-03-08
+
+### Added — AitherMesh Gateway Connection
+- Connect standalone/Alpha instances to `gateway.aitherium.com` for remote backend services
+- Gateway API routes: `/api/gateway/connect`, `/api/gateway/status`, `/api/gateway/proxy`
+- Gateway proxy forwards to 16 whitelisted backend services with bearer auth
+- Settings UI page at `/settings/gateway` with connection form, status display, feature cards
+- 3-tier connection detection: local → gateway → full-stack
+- `useCapabilities` hook: parallel node + gateway status fetch with feature merging
+- `FeatureGate` + `FeatureChip`: per-widget graceful degradation with gateway awareness
+- `LocalCapabilityBanner`: context-aware banners with "Connect to AitherMesh" CTA
+- 10+ Veil pages wrapped with `FeatureGate` for tier-appropriate degradation
+
+### Improved — ADK (Agent Development Kit)
+- `adk.server`: enhanced FastAPI server with OpenAI-compatible endpoints
+- `adk.config`: improved configuration management
+- `adk.identity`: expanded identity resolution
+- `adk.setup`: comprehensive hardware detection and profile matching
+- New modules: `builtin_tools`, `context`, `events`, `safety`, `services`
+- Updated hardware profiles for latest GPU generations
+- Expanded test coverage (test_setup.py: 500+ lines)
+
+### Added — ADK New Modules
+- `adk.builtin_tools` — built-in tool implementations
+- `adk.context` — context management for agent sessions
+- `adk.events` — event system for agent lifecycle
+- `adk.safety` — safety checks and guardrails
+- `adk.services` — service discovery and health checks
+
 ## [0.1.0-alpha.1] - 2026-03-07
 
 ### Added — AitherADK (Agent Development Kit)

@@ -8,14 +8,14 @@ gpu:
   vendor: apple
 
 models:
-  default: "llama3.1:8b"
+  default: "nemotron-orchestrator-8b"
   small: "llama3.2:3b"
-  large: "llama3.1:8b"
+  large: "deepseek-r1:8b"
   embedding: "nomic-embed-text"
 
 recommended_models:
   - "llama3.2:3b"
-  - "llama3.1:8b"
+  - "nemotron-orchestrator-8b"
   - "nomic-embed-text"
   - "deepseek-r1:8b"
 
