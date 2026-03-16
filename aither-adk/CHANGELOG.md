@@ -2,6 +2,26 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [0.9.0] - 2026-03-16
+
+The "connected world" release. Cross-platform identity pairing, voice capabilities, and multi-channel integration.
+
+### Added
+- **Pairing**: Cross-platform identity linking (`adk/pairing.py`)
+  - `PairingManager` — SQLite-backed identity linking with 6-char pairing codes
+  - Link users across Telegram, Discord, Slack, WhatsApp with 10min TTL codes
+  - Canonical session IDs for cross-channel conversation continuity
+  - `get_session_id()` returns "user-{id}" for paired users
+- **Voice**: Speech-to-text and text-to-speech client (`adk/voice.py`)
+  - `VoiceClient` — async STT/TTS/emotion via AitherVoice service
+  - Convenience functions: `hear()`, `say()`, `feel()`
+  - 6 voice options: alloy, echo, fable, nova, onyx, shimmer
+  - Emotion detection with intensity scoring
+- New exports: `PairingManager`, `PairingResult`, `PlatformIdentity`, `VoiceClient`, `TranscriptionResult`, `SynthesisResult`, `EmotionResult`
+
+### Changed
+- `__init__.py` exports expanded with pairing and voice symbols
+
 ## [0.6.0] - 2026-03-13
 
 The "group mind" release. Multi-agent group chat, creative tools, and Iris identity.

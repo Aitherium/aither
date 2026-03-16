@@ -1,6 +1,6 @@
 """AitherOS Alpha — Build AI agent fleets with any LLM backend."""
 
-__version__ = "0.6.0"
+__version__ = "0.9.0"
 
 from adk.agent import AitherAgent
 from adk.tools import tool, ToolRegistry
@@ -63,6 +63,15 @@ __all__ = [
     "Strata",
     "StrataBackend",
     "LocalBackend",
+    # Cross-platform pairing
+    "PairingManager",
+    "PairingResult",
+    "PlatformIdentity",
+    # Voice
+    "VoiceClient",
+    "TranscriptionResult",
+    "SynthesisResult",
+    "EmotionResult",
 ]
 
 
@@ -206,4 +215,25 @@ def __getattr__(name):
     if name == "LocalBackend":
         from adk.strata import LocalBackend
         return LocalBackend
+    if name == "PairingManager":
+        from adk.pairing import PairingManager
+        return PairingManager
+    if name == "PairingResult":
+        from adk.pairing import PairingResult
+        return PairingResult
+    if name == "PlatformIdentity":
+        from adk.pairing import PlatformIdentity
+        return PlatformIdentity
+    if name == "VoiceClient":
+        from adk.voice import VoiceClient
+        return VoiceClient
+    if name == "TranscriptionResult":
+        from adk.voice import TranscriptionResult
+        return TranscriptionResult
+    if name == "SynthesisResult":
+        from adk.voice import SynthesisResult
+        return SynthesisResult
+    if name == "EmotionResult":
+        from adk.voice import EmotionResult
+        return EmotionResult
     raise AttributeError(f"module 'adk' has no attribute {name!r}")

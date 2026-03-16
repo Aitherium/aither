@@ -35,6 +35,9 @@ class GatewayClient:
         h: dict[str, str] = {"Content-Type": "application/json"}
         if self.api_key:
             h["Authorization"] = f"Bearer {self.api_key}"
+            # PATs also work as X-API-Key for Veil middleware resolution
+            if self.api_key.startswith("aither_pat_"):
+                h["X-API-Key"] = self.api_key
         return h
 
     def _client(self) -> httpx.AsyncClient:
@@ -157,6 +160,17 @@ class GatewayClient:
             )
             resp.raise_for_status()
             return resp.json()
+
+    # ─── PAT factory ───
+
+    @classmethod
+    def from_pat(cls, pat: str, gateway_url: str = "https://gateway.aitherium.com") -> "GatewayClient":
+        """Create a GatewayClient authenticated with a Personal Access Token.
+
+        PATs (aither_pat_*) are long-lived tokens created via the Identity portal
+        or ``aither_auth.py pat create``. They work as both Bearer and X-API-Key.
+        """
+        return cls(gateway_url=gateway_url, api_key=pat)
 
     # ─── Health ───
 

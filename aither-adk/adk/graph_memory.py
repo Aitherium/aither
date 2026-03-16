@@ -14,7 +14,7 @@ Usage:
 
     graph = GraphMemory(agent_name="atlas")
     await graph.remember("AitherOS", "uses", "SQLite")
-    await graph.remember("AitherOS", "has", "97 microservices")
+    await graph.remember("AitherOS", "has", "203 microservices")
 
     results = await graph.search("What database does AitherOS use?")
     # [GraphNode(label="AitherOS", ...), GraphNode(label="SQLite", ...)]
