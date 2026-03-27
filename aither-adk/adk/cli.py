@@ -110,6 +110,28 @@ def cmd_init(args):
     print(f"  cd {target}")
     print(f"  aither run           # Start the server")
     print(f"  python agent.py      # Run directly")
+
+    # OpenClaw detection — prompt integration if detected
+    openclaw_dir = Path.home() / ".openclaw"
+    if openclaw_dir.exists():
+        oc_config = {}
+        oc_config_path = openclaw_dir / "openclaw.json"
+        if oc_config_path.exists():
+            try:
+                import json
+                oc_config = json.loads(oc_config_path.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+
+        aither_integrated = any(
+            "aither" in k.lower()
+            for k in oc_config.get("mcpServers", {})
+        )
+        if not aither_integrated:
+            print()
+            print(f"  OpenClaw detected! Connect it to AitherOS agents:")
+            print(f"  aither integrate openclaw")
+
     return 0
 
 
@@ -435,6 +457,30 @@ def cmd_connect(args):
             print()
             print("  https://aitherium.com/pricing")
 
+        # ── OpenClaw detection ───────────────────────────────────
+        from pathlib import Path as _Path
+        openclaw_dir = _Path.home() / ".openclaw"
+        if openclaw_dir.exists():
+            import json as _oc_json
+            oc_config = {}
+            oc_config_path = openclaw_dir / "openclaw.json"
+            if oc_config_path.exists():
+                try:
+                    oc_config = _oc_json.loads(oc_config_path.read_text(encoding="utf-8"))
+                except Exception:
+                    pass
+            already = any("aither" in k.lower() for k in oc_config.get("mcpServers", {}))
+            if not already:
+                print()
+                print("  " + "-" * 48)
+                print("  OPENCLAW DETECTED")
+                print()
+                print("  Connect OpenClaw to AitherOS agent fleet:")
+                print("    aither integrate openclaw")
+                print()
+                print("  This gives OpenClaw access to 29 agents, swarm coding,")
+                print("  memory graph, and 100+ MCP tools.")
+
         print()
         return 0
 
@@ -668,6 +714,616 @@ def cmd_deploy(args):
     return asyncio.run(_deploy())
 
 
+def cmd_onboard(args):
+    """Interactive onboarding — detect products, configure, integrate."""
+    import asyncio
+    import json as _json
+
+    async def _onboard():
+        # Inline ProductDetector (no AitherOS lib dependency)
+        from pathlib import Path
+        import shutil
+
+        home = Path.home()
+        aither_dir = home / ".aither"
+        openclaw_dir = home / ".openclaw"
+
+        print()
+        print("  AitherOS Onboarding")
+        print("  ===================")
+        print()
+
+        # ── 1. Detect products ────────────────────────────────
+        print("  SCANNING ENVIRONMENT")
+        print("  ────────────────────")
+
+        products = []
+
+        # ADK
+        aither_bin = shutil.which("aither")
+        if aither_bin:
+            products.append("aither-adk")
+            print("  [OK] AitherADK — installed")
+        else:
+            print("  [--] AitherADK — not found (you're running it though!)")
+
+        # Config
+        config = {}
+        config_path = aither_dir / "config.json"
+        if config_path.exists():
+            try:
+                config = _json.loads(config_path.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+
+        api_key = args.api_key or os.environ.get("AITHER_API_KEY", "")
+        if not api_key:
+            api_key = config.get("api_key", "")
+
+        if api_key:
+            print(f"  [OK] API key: {api_key[:16]}...")
+        else:
+            print("  [--] No API key — run 'aither register' for cloud access")
+
+        # Ollama
+        ollama_bin = shutil.which("ollama")
+        if ollama_bin:
+            products.append("ollama")
+            print("  [OK] Ollama — installed")
+
+        # vLLM (check via import or docker)
+        try:
+            import importlib.util
+            if importlib.util.find_spec("vllm"):
+                products.append("vllm")
+                print("  [OK] vLLM — installed (Python)")
+        except (ImportError, ModuleNotFoundError):
+            pass
+
+        # OpenClaw
+        openclaw_detected = openclaw_dir.exists()
+        if openclaw_detected:
+            products.append("openclaw")
+            oc_config = {}
+            oc_config_path = openclaw_dir / "openclaw.json"
+            if oc_config_path.exists():
+                try:
+                    oc_config = _json.loads(oc_config_path.read_text(encoding="utf-8"))
+                except Exception:
+                    pass
+
+            version = oc_config.get("version", "unknown")
+            aither_integrated = any(
+                "aither" in k.lower()
+                for k in oc_config.get("mcpServers", {})
+            )
+
+            if aither_integrated:
+                print(f"  [OK] OpenClaw v{version} — integrated with AitherOS")
+            else:
+                print(f"  [!!] OpenClaw v{version} — detected but NOT integrated")
+                print("       Run 'aither integrate openclaw' to connect agent fleets")
+
+        # GPU
+        gpu_name = ""
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=name,memory.total",
+                 "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                parts = result.stdout.strip().split(",")
+                gpu_name = parts[0].strip()
+                vram = float(parts[1].strip()) / 1024 if len(parts) > 1 else 0
+                print(f"  [OK] GPU: {gpu_name} ({vram:.0f}GB VRAM)")
+        except Exception:
+            print("  [--] No NVIDIA GPU detected")
+
+        # ── 2. Onboarding plan ────────────────────────────────
+        print()
+        print("  ONBOARDING PLAN")
+        print("  ───────────────")
+
+        step_num = 1
+
+        if not api_key:
+            print(f"  {step_num}. Register for Aitherium (free)")
+            print(f"     -> aither register")
+            step_num += 1
+
+        if not ollama_bin and not gpu_name:
+            print(f"  {step_num}. Set up inference backend")
+            print(f"     -> Install Ollama: https://ollama.com")
+            print(f"     -> Or use cloud: aither register")
+            step_num += 1
+
+        if openclaw_detected and not aither_integrated:
+            print(f"  {step_num}. Connect OpenClaw to AitherOS agent fleet")
+            print(f"     -> aither integrate openclaw")
+            step_num += 1
+
+        print(f"  {step_num}. Create your first agent")
+        print(f"     -> aither init my-agent && cd my-agent && aither run")
+        step_num += 1
+
+        if api_key:
+            print(f"  {step_num}. Publish to Elysium marketplace (optional)")
+            print(f"     -> aither publish")
+            step_num += 1
+
+        # ── 3. Quick actions ──────────────────────────────────
+        print()
+        print("  QUICK ACTIONS")
+        print("  ─────────────")
+        print("  aither register        — Create account + get API key")
+        print("  aither connect         — Detect backends + test cloud")
+        print("  aither init <name>     — Scaffold new agent project")
+        print("  aither integrate       — Connect external tools (OpenClaw, etc.)")
+        print("  aither publish         — Submit agent to Elysium marketplace")
+        print("  aither aeon            — Multi-agent group chat")
+        print()
+
+        # ── 4. Install other products ─────────────────────────
+        print("  INSTALL OTHER PRODUCTS")
+        print("  ──────────────────────")
+        print("  pip install aither-adk          # CLI + SDK (this package)")
+        print("  winget install Aitherium.Desktop # Native desktop app (Windows)")
+        print("  brew install --cask aither-desktop  # Desktop (macOS)")
+        print("  Chrome Web Store: AitherConnect  # Browser extension")
+        print()
+
+        if openclaw_detected and not aither_integrated:
+            print("  " + "=" * 50)
+            print("  OPENCLAW DETECTED — Integration available!")
+            print("  Run 'aither integrate openclaw' to connect:")
+            print("    - 29 specialized AI agents")
+            print("    - 100+ MCP tools (code, memory, search)")
+            print("    - Swarm coding (11 agents in parallel)")
+            print("    - Memory graph + knowledge base")
+            print("  " + "=" * 50)
+            print()
+
+        return 0
+
+    return asyncio.run(_onboard())
+
+
+def cmd_integrate(args):
+    """Integrate external tools with AitherOS."""
+    import asyncio
+    import json as _json
+
+    target = args.target
+
+    if target == "openclaw":
+        return _integrate_openclaw(args)
+    elif target == "list":
+        print()
+        print("  Available integrations:")
+        print("  ───────────────────────")
+        print("  openclaw    — Connect OpenClaw to AitherOS agent fleet")
+        print("  (more coming: cursor, windsurf, continue, cline)")
+        print()
+        print("  Usage: aither integrate <target>")
+        return 0
+    else:
+        print(f"  Unknown integration target: {target}")
+        print(f"  Run 'aither integrate list' to see available integrations")
+        return 1
+
+
+def _integrate_openclaw(args):
+    """Run OpenClaw <-> AitherOS integration."""
+    import asyncio
+    import json as _json
+    from pathlib import Path
+
+    async def _run():
+        home = Path.home()
+        openclaw_dir = home / ".openclaw"
+        aither_dir = home / ".aither"
+
+        print()
+        print("  OpenClaw <-> AitherOS Integration")
+        print("  ==================================")
+        print()
+
+        # 1. Detect OpenClaw
+        if not openclaw_dir.exists():
+            print("  [!!] OpenClaw not found at ~/.openclaw/")
+            print()
+            print("  Install OpenClaw first: https://openclaw.dev")
+            print("  Then run this command again.")
+            return 1
+
+        print("  [OK] OpenClaw detected at ~/.openclaw/")
+
+        # Parse config
+        oc_config = {}
+        oc_config_path = openclaw_dir / "openclaw.json"
+        if oc_config_path.exists():
+            try:
+                oc_config = _json.loads(oc_config_path.read_text(encoding="utf-8"))
+                version = oc_config.get("version", "unknown")
+                print(f"  [OK] Version: {version}")
+            except Exception:
+                pass
+
+        # Check workspace
+        workspace = openclaw_dir / "workspace"
+        if oc_config.get("agent", {}).get("workspace"):
+            workspace = Path(oc_config["agent"]["workspace"]).expanduser()
+
+        soul_files = []
+        if workspace.exists():
+            for f in ["SOUL.md", "IDENTITY.md", "AGENTS.md", "USER.md",
+                       "TOOLS.md", "STYLE.md"]:
+                if (workspace / f).exists():
+                    soul_files.append(f)
+            if soul_files:
+                print(f"  [OK] Workspace soul files: {', '.join(soul_files)}")
+
+        # Check agents
+        agents_dir = openclaw_dir / "agents"
+        if agents_dir.exists():
+            agent_count = sum(1 for d in agents_dir.iterdir() if d.is_dir())
+            if agent_count:
+                print(f"  [OK] Agent sessions: {agent_count} agent(s)")
+
+        # Already integrated?
+        existing_mcp = oc_config.get("mcpServers", {})
+        already = any("aither" in k.lower() for k in existing_mcp)
+        if already:
+            print()
+            print("  [!!] AitherOS MCP servers already configured!")
+            if not args.force:
+                print("  Use --force to reconfigure")
+                return 0
+
+        # 2. Detect mode
+        print()
+        mode = args.mode or "auto"
+
+        api_key = args.api_key or os.environ.get("AITHER_API_KEY", "")
+        if not api_key:
+            aither_config = aither_dir / "config.json"
+            if aither_config.exists():
+                try:
+                    cfg = _json.loads(aither_config.read_text(encoding="utf-8"))
+                    api_key = cfg.get("api_key", "")
+                except Exception:
+                    pass
+
+        # Auto-detect local AitherOS
+        local_running = False
+        try:
+            import httpx
+            resp = httpx.get("http://localhost:8080/health", timeout=2.0)
+            local_running = resp.status_code == 200
+        except Exception:
+            pass
+
+        if mode == "auto":
+            if local_running and api_key:
+                mode = "hybrid"
+            elif local_running:
+                mode = "local"
+            elif api_key:
+                mode = "cloud"
+            else:
+                mode = "local"
+
+        print(f"  Integration mode: {mode}")
+        if local_running:
+            print("  [OK] AitherOS Node running locally (port 8080)")
+        if api_key:
+            print(f"  [OK] API key: {api_key[:16]}...")
+
+        # 3. Generate MCP config
+        print()
+        print("  CONFIGURING MCP SERVERS")
+        print("  ───────────────────────")
+
+        mcp_servers = {}
+
+        if mode in ("local", "hybrid"):
+            mcp_servers["aither-local"] = {
+                "url": "http://localhost:8080/mcp/sse",
+                "transport": "sse",
+                "description": "AitherOS local — 29 agents, 100+ tools",
+            }
+            print("  [+] aither-local: localhost:8080/mcp/sse")
+
+        if mode in ("cloud", "hybrid"):
+            server_cfg = {
+                "url": "https://mcp.aitherium.com/mcp/sse",
+                "transport": "sse",
+                "description": "AitherOS cloud — inference, agents, memory",
+            }
+            if api_key:
+                server_cfg["env"] = {"AITHER_API_KEY": api_key}
+                server_cfg["headers"] = {
+                    "Authorization": f"Bearer {api_key}",
+                }
+            mcp_servers["aither-cloud"] = server_cfg
+            print("  [+] aither-cloud: mcp.aitherium.com/mcp/sse")
+
+        # A2A endpoint
+        mcp_servers["aither-a2a"] = {
+            "url": "http://localhost:8766",
+            "transport": "a2a",
+            "description": "AitherOS A2A — direct agent-to-agent dispatch",
+        }
+        print("  [+] aither-a2a: localhost:8766 (agent-to-agent)")
+
+        if args.dry_run:
+            print()
+            print("  DRY RUN — would write:")
+            print(_json.dumps({"mcpServers": mcp_servers}, indent=2))
+            return 0
+
+        # 4. Write config
+        print()
+        print("  WRITING CONFIGURATION")
+        print("  ─────────────────────")
+
+        existing_mcp.update(mcp_servers)
+        oc_config["mcpServers"] = existing_mcp
+
+        try:
+            oc_config_path.write_text(
+                _json.dumps(oc_config, indent=2), encoding="utf-8"
+            )
+            print(f"  [OK] Updated {oc_config_path}")
+        except OSError as e:
+            print(f"  [!!] Failed to write openclaw.json: {e}")
+            return 1
+
+        # 5. Write fleet config
+        fleet_path = openclaw_dir / "aither-fleet.json"
+        fleet_config = {
+            "provider": "aitheros",
+            "endpoint": "http://localhost:8080",
+            "cloud_endpoint": "https://mcp.aitherium.com",
+            "agents": [
+                {"name": "demiurge", "role": "Code generation & refactoring", "tier": "pro"},
+                {"name": "athena", "role": "Security analysis & threat modeling", "tier": "pro"},
+                {"name": "hydra", "role": "Multi-perspective code review", "tier": "pro"},
+                {"name": "apollo", "role": "Performance optimization", "tier": "pro"},
+                {"name": "atlas", "role": "Service discovery & architecture", "tier": "free"},
+                {"name": "viviane", "role": "Memory & knowledge recall", "tier": "free"},
+                {"name": "scribe", "role": "Documentation generation", "tier": "pro"},
+                {"name": "saga", "role": "Creative writing & content", "tier": "free"},
+                {"name": "lyra", "role": "Research & web search", "tier": "pro"},
+            ],
+        }
+        try:
+            fleet_path.write_text(
+                _json.dumps(fleet_config, indent=2), encoding="utf-8"
+            )
+            print(f"  [OK] Wrote {fleet_path}")
+        except OSError as e:
+            print(f"  [!!] Failed to write fleet config: {e}")
+
+        # 6. Summary
+        print()
+        print("  " + "=" * 50)
+        print("  INTEGRATION COMPLETE!")
+        print()
+        print("  Next steps:")
+        print("  1. Restart OpenClaw to pick up the new MCP servers")
+        print("  2. Try: 'use the aither agent fleet to review my code'")
+        print("  3. Try: 'ask demiurge to refactor this function'")
+        print("  4. Try: 'use aither swarm to implement feature X'")
+        print()
+
+        if not api_key:
+            print("  Want cloud agents too?")
+            print("    aither register     — Get free API key")
+            print("    aither integrate openclaw --mode hybrid")
+            print()
+
+        agents_str = ", ".join(a["name"] for a in fleet_config["agents"])
+        print(f"  Available agents: {agents_str}")
+        print()
+
+        return 0
+
+    return asyncio.run(_run())
+
+
+def cmd_publish(args):
+    """Publish an agent to the Elysium marketplace."""
+    import asyncio
+    import json as _json
+
+    async def _publish():
+        project_dir = Path(args.directory or ".").resolve()
+
+        print()
+        print("  Elysium Marketplace Publisher")
+        print("  =============================")
+        print()
+
+        # Check for agent.py
+        if not (project_dir / "agent.py").exists():
+            print("  [!!] No agent.py found in current directory.")
+            print("  Run 'aither init my-agent' to create a project first.")
+            return 1
+
+        # Read config
+        agent_name = args.name
+        config_file = project_dir / "config.yaml"
+        if not agent_name and config_file.exists():
+            try:
+                import yaml
+                cfg = yaml.safe_load(config_file.read_text(encoding="utf-8"))
+                agent_name = cfg.get("identity", project_dir.name)
+            except Exception:
+                agent_name = project_dir.name
+
+        if not agent_name:
+            agent_name = project_dir.name
+
+        print(f"  Agent: {agent_name}")
+        print(f"  Directory: {project_dir}")
+
+        # Get API key
+        api_key = args.api_key or os.environ.get("AITHER_API_KEY", "")
+        if not api_key:
+            saved = load_saved_config()
+            api_key = saved.get("api_key", "")
+
+        if not api_key:
+            print()
+            print("  [!!] No API key found.")
+            print("  Run 'aither register' to create an account first.")
+            return 1
+
+        # Validate
+        print()
+        print("  VALIDATION")
+        print("  ──────────")
+
+        errors = []
+        warnings = []
+
+        if not (project_dir / "agent.py").exists():
+            errors.append("Missing agent.py")
+        if not config_file.exists():
+            warnings.append("No config.yaml — using defaults")
+        if not (project_dir / "README.md").exists():
+            warnings.append("No README.md — recommended for discoverability")
+
+        # Check for secrets
+        for f in project_dir.rglob("*.py"):
+            try:
+                content = f.read_text(encoding="utf-8", errors="ignore")
+                for pattern in ["sk-", "sk_live_", "PRIVATE_KEY"]:
+                    if pattern in content:
+                        warnings.append(f"Possible secret in {f.name}")
+                        break
+            except OSError:
+                pass
+
+        for e in errors:
+            print(f"  [!!] {e}")
+        for w in warnings:
+            print(f"  [??] {w}")
+
+        if errors:
+            print()
+            print("  Fix errors above and try again.")
+            return 1
+
+        if not errors:
+            print("  [OK] Validation passed")
+
+        if args.dry_run:
+            print()
+            print("  DRY RUN — would publish to Elysium marketplace")
+            return 0
+
+        # Package and submit
+        print()
+        print("  PUBLISHING")
+        print("  ──────────")
+
+        try:
+            import httpx
+            import tempfile
+            import zipfile
+
+            gateway = args.gateway or "https://gateway.aitherium.com"
+
+            # Package
+            print("  Packaging project...")
+            with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
+                tmp_path = tmp.name
+
+            with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                for f in project_dir.rglob("*"):
+                    if f.is_file() and not any(
+                        part.startswith(".") or part == "__pycache__"
+                        for part in f.relative_to(project_dir).parts
+                    ):
+                        zf.write(f, f.relative_to(project_dir))
+
+            zip_size = os.path.getsize(tmp_path)
+            print(f"  Package size: {zip_size / 1024:.1f} KB")
+
+            # Register
+            print("  Registering with gateway...")
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(
+                    f"{gateway}/v1/agents/register",
+                    json={
+                        "agent_name": agent_name,
+                        "description": args.description or f"ADK agent: {agent_name}",
+                        "capabilities": (
+                            args.capabilities.split(",") if args.capabilities else ["chat"]
+                        ),
+                        "version": args.version or "0.1.0",
+                    },
+                    headers={"Authorization": f"Bearer {api_key}"},
+                )
+
+                if resp.status_code not in (200, 201):
+                    print(f"  [!!] Registration failed: {resp.text[:200]}")
+                    return 1
+
+                data = resp.json()
+                agent_id = data.get("agent_id", "")
+                print(f"  Registered: {agent_id}")
+
+                # Submit listing
+                print("  Submitting marketplace listing...")
+                resp = await client.post(
+                    f"{gateway}/v1/marketplace/listings",
+                    json={
+                        "agent_id": agent_id,
+                        "name": agent_name,
+                        "description": args.description or f"ADK agent: {agent_name}",
+                        "version": args.version or "0.1.0",
+                        "pricing": args.pricing or "free",
+                        "tier": args.tier or "agent",
+                        "category": args.category or "general",
+                    },
+                    headers={"Authorization": f"Bearer {api_key}"},
+                )
+
+                if resp.status_code in (200, 201):
+                    listing = resp.json()
+                    print(f"  Listing created: {listing.get('listing_id', '')}")
+                elif resp.status_code == 404:
+                    print("  [??] Marketplace endpoint not yet available")
+                    print("       Agent registered but listing pending.")
+
+            os.unlink(tmp_path)
+
+        except ImportError:
+            print("  [!!] httpx not installed. Run: pip install httpx")
+            return 1
+        except Exception as e:
+            print(f"  [!!] Error: {e}")
+            return 1
+
+        print()
+        print("  " + "=" * 50)
+        print(f"  PUBLISHED: {agent_name}")
+        print(f"  Marketplace: https://aitherium.com/marketplace/{agent_name}")
+        print(f"  Status: pending_review")
+        print()
+        print("  Your agent will be reviewed and listed within 24 hours.")
+        print()
+
+        return 0
+
+    return asyncio.run(_publish())
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="aither",
@@ -736,6 +1392,40 @@ def main():
     deploy_p.add_argument("--description", help="Agent description")
     deploy_p.add_argument("--version", help="Agent version")
 
+    # aither onboard — interactive onboarding wizard
+    onboard_p = sub.add_parser("onboard", help="Interactive onboarding — detect, configure, integrate")
+    onboard_p.add_argument("--api-key", help="AITHER_API_KEY")
+
+    # aither integrate — connect external tools
+    integrate_p = sub.add_parser("integrate", help="Connect external tools (OpenClaw, etc.)")
+    integrate_p.add_argument("target", nargs="?", default="list",
+                             help="Integration target: openclaw, list")
+    integrate_p.add_argument("--mode", choices=["local", "cloud", "hybrid", "auto"],
+                             help="Integration mode (default: auto-detect)")
+    integrate_p.add_argument("--api-key", help="AITHER_API_KEY for cloud mode")
+    integrate_p.add_argument("--dry-run", action="store_true",
+                             help="Show config without writing")
+    integrate_p.add_argument("--force", action="store_true",
+                             help="Overwrite existing integration config")
+
+    # aither publish — submit to Elysium marketplace
+    publish_p = sub.add_parser("publish", help="Publish agent to Elysium marketplace")
+    publish_p.add_argument("name", nargs="?", help="Agent name (default: from config.yaml)")
+    publish_p.add_argument("-d", "--directory", help="Project directory (default: .)")
+    publish_p.add_argument("--api-key", help="AITHER_API_KEY")
+    publish_p.add_argument("--gateway", help="Gateway URL (default: gateway.aitherium.com)")
+    publish_p.add_argument("--description", help="Agent description for marketplace")
+    publish_p.add_argument("--capabilities", help="Comma-separated capabilities")
+    publish_p.add_argument("--version", help="Agent version (default: 0.1.0)")
+    publish_p.add_argument("--pricing", default="free",
+                           help="Pricing model: free, per_request, flat_monthly")
+    publish_p.add_argument("--tier", default="agent",
+                           help="Agent tier: reflex, agent, reasoning, orchestrator")
+    publish_p.add_argument("--category", default="general",
+                           help="Category: general, engineering, content, research, security")
+    publish_p.add_argument("--dry-run", action="store_true",
+                           help="Validate without publishing")
+
     args = parser.parse_args()
 
     if args.command == "init":
@@ -753,6 +1443,12 @@ def main():
         sys.exit(cmd_aeon(args))
     elif args.command == "deploy":
         sys.exit(cmd_deploy(args))
+    elif args.command == "onboard":
+        sys.exit(cmd_onboard(args))
+    elif args.command == "integrate":
+        sys.exit(cmd_integrate(args))
+    elif args.command == "publish":
+        sys.exit(cmd_publish(args))
     else:
         parser.print_help()
         sys.exit(1)

@@ -1,0 +1,40 @@
+# winget manifest for AitherADK
+# Install: winget install Aitherium.ADK
+# Repo: https://github.com/microsoft/winget-pkgs
+
+PackageIdentifier: Aitherium.ADK
+PackageVersion: 0.9.0
+PackageName: AitherADK
+Publisher: Aitherium
+License: Proprietary
+ShortDescription: Agent Development Kit — build AI agent fleets with any LLM backend
+Description: |-
+  AitherADK is the Agent Development Kit for AitherOS. Build, test, and deploy
+  AI agent fleets with any LLM backend (Ollama, vLLM, OpenAI, Anthropic).
+  Your hardware, your models, your data stays yours.
+
+  Features:
+  - Multi-backend LLM support (Ollama, vLLM, OpenAI, Anthropic)
+  - @tool decorator for custom agent capabilities
+  - A2A protocol for agent-to-agent communication
+  - MCP server for tool exposure
+  - Elysium marketplace for agent publishing
+  - OpenClaw integration for existing agent frameworks
+Tags:
+  - ai
+  - agents
+  - llm
+  - development
+  - python
+  - machine-learning
+PackageUrl: https://github.com/Aitherium/aither
+Installers:
+  - Architecture: x64
+    InstallerType: exe
+    InstallerUrl: https://aitherium.com/download/aither-adk-0.9.0-win64.exe
+    InstallerSha256: PLACEHOLDER_SHA256
+    InstallerSwitches:
+      Silent: /S
+      SilentWithProgress: /S
+ManifestType: singleton
+ManifestVersion: 1.4.0
