@@ -73,7 +73,7 @@ agent = AitherAgent("atlas", llm=LLMRouter(provider="anthropic", api_key="sk-ant
 
 ## Local Inference with vLLM + TurboQuant
 
-For maximum performance, run vLLM with [aither-kvcache](https://github.com/Aitherium/aitherkvcache) — sub-byte KV cache compression that fits 1.88x more context in GPU VRAM.
+For maximum performance, run vLLM with [aither-kvcache](https://github.com/Aitherium/aitherkvcache) — sub-byte KV cache compression that fits 3.8x more KV data per byte than FP16 (up to 7.1x at 2-bit).
 
 ```bash
 # Auto-setup: detects GPU, pulls models, starts vLLM containers
@@ -205,7 +205,7 @@ AitherADK is the SDK layer. The full AitherOS stack adds deployment, monitoring,
 | **AitherNode** | MCP server — 100+ tools for Claude Code, Cursor, Copilot | Port 8080 |
 | **AitherDesktop** | Native Windows app — Win+A hotkey, system tray | Installer |
 | **AitherConnect** | Chrome extension — AI on any webpage | Extension store |
-| **aither-kvcache** | KV cache compression — 1.88x more context in VRAM | `pip install aither-kvcache` |
+| **aither-kvcache** | KV cache compression — 3.8x vs FP16 (up to 7.1x at 2-bit) | `pip install aither-kvcache` |
 | **vLLM containers** | Local inference — Nemotron-8B, DeepSeek-R1, vision | Docker Compose |
 
 ### Deploying with AitherZero
