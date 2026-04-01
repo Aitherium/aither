@@ -1,6 +1,6 @@
 """AitherOS Alpha — Build AI agent fleets with any LLM backend."""
 
-__version__ = "0.11.0"
+__version__ = "0.12.0"
 
 from adk.agent import AitherAgent
 from adk.tools import tool, ToolRegistry
@@ -37,6 +37,9 @@ __all__ = [
     "NanoGPT",
     "NeuronPool",
     "AutoNeuronFire",
+    "DegenerationDetector",
+    "strip_internal_tags",
+    "CATEGORY_TOOLS",
     # Elysium cloud
     "Elysium",
     # Mesh relay
@@ -158,6 +161,15 @@ def __getattr__(name):
     if name == "AutoNeuronFire":
         from adk.neurons import AutoNeuronFire
         return AutoNeuronFire
+    if name == "DegenerationDetector":
+        from adk.llm.base import DegenerationDetector
+        return DegenerationDetector
+    if name == "strip_internal_tags":
+        from adk.llm.base import strip_internal_tags
+        return strip_internal_tags
+    if name == "CATEGORY_TOOLS":
+        from adk.neurons import CATEGORY_TOOLS
+        return CATEGORY_TOOLS
     if name == "Elysium":
         from adk.elysium import Elysium
         return Elysium

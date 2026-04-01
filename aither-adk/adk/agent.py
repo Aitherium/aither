@@ -6,13 +6,14 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
 
 from adk.config import Config
 from adk.identity import Identity, load_identity
-from adk.llm import LLMRouter, Message, LLMResponse
+from adk.llm import DegenerationDetector, LLMRouter, Message, LLMResponse, strip_internal_tags
 from adk.loop_guard import LoopGuard, LoopAction
 from adk.memory import Memory
 from adk.metering import AgentMeter, QuotaAction, get_meter
@@ -23,6 +24,37 @@ from adk.trace import get_trace_id
 logger = logging.getLogger("adk.agent")
 
 _MAX_TOOL_LOOPS = 10
+
+# Essential tools that must always be available when agent has tools
+_ESSENTIAL_TOOL_NAMES = frozenset({
+    "read_file", "write_file", "replace_text", "search_files", "list_directory",
+})
+
+# Steering message injected when LLM returns text-only on turn 1 with tools available
+_TOOL_STEERING_MSG = (
+    "You have tools available. You MUST use them to complete the user's request. "
+    "Do not describe what you would do — actually call the appropriate tool function. "
+    "Re-read the user's message and select the right tool."
+)
+
+# Patterns that indicate the user wants an action (not just conversation)
+_ACTION_PATTERNS = re.compile(
+    r'(?i)(?:read|write|edit|create|delete|search|find|list|run|execute|check|fix|'
+    r'refactor|deploy|build|test|commit|push|pull|install|update|remove|send|fetch|'
+    r'open|close|show\s+me\s+(?:the\s+)?(?:file|code|log|error))',
+)
+
+
+def _should_steer_tool_use(message: str, tool_choice: str | dict | None) -> bool:
+    """Determine if we should retry with tool-steering on turn 1.
+
+    Only steers when: tool_choice was explicitly set, OR the message
+    contains action verbs that strongly suggest tool use is needed.
+    Simple greetings like "Hello" should NOT trigger steering.
+    """
+    if tool_choice and tool_choice != "auto":
+        return True
+    return bool(_ACTION_PATTERNS.search(message))
 _conversations_store = None
 
 
@@ -50,10 +82,15 @@ class AgentResponse:
     content: str
     model: str = ""
     tokens_used: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
     latency_ms: float = 0.0
     tool_calls_made: list[str] = field(default_factory=list)
     artifacts: list[dict] = field(default_factory=list)
     session_id: str = ""
+    finish_reason: str = "stop"
+    effort_level: int = 0
+    cache_status: str = ""
 
 
 class AitherAgent:
@@ -337,23 +374,151 @@ class AitherAgent:
         # Call LLM (with tool loop if tools registered)
         tools_schema = self._tools.to_openai_format() if self._tools.list_tools() else None
         tool_calls_made = []
+        # Extract inference controls from kwargs (null=auto pattern)
+        _tool_choice = kwargs.pop("tool_choice", None)
+        _top_p = kwargs.pop("top_p", None)
+        _repetition_penalty = kwargs.pop("repetition_penalty", None)
+        _effort = kwargs.pop("effort", None)
+        _effort_int = _effort if isinstance(_effort, int) else 5
         loop_guard = LoopGuard(
             warn_threshold=2,
-            block_threshold=3,
+            block_threshold=4,
             circuit_break_total=_MAX_TOOL_LOOPS + 5,
+            effort_level=_effort_int,
         )
+        _steered_once = False  # Track turn-1 tool-call steering
+        _token_counts_per_iter: list[int] = []  # Gap H: diminishing returns tracking
+        _max_output_escalated = False  # Gap 3: track if we already escalated
 
         for _loop_idx in range(_MAX_TOOL_LOOPS):
             # Check if circuit breaker tripped from previous iteration
-            if loop_guard.tripped:
+            if loop_guard.tripped and _effort_int < 4:
                 logger.info("Loop guard circuit breaker tripped — forcing synthesis")
                 break
 
-            resp = await self.llm.chat(messages, tools=tools_schema, **kwargs)
+            # ── Gap K: Message normalization ──
+            # Merge consecutive same-role messages and strip empties
+            _normalized: list[Message] = []
+            for _msg in messages:
+                if not _msg.content and _msg.role not in ("assistant",) and not _msg.tool_calls and not _msg.tool_call_id:
+                    continue  # Strip empty non-assistant messages with no tool data
+                if (_normalized and _msg.role == _normalized[-1].role
+                        and _msg.role in ("system", "user")
+                        and not _msg.tool_call_id and not _normalized[-1].tool_calls):
+                    _normalized[-1] = Message(
+                        role=_msg.role,
+                        content=(_normalized[-1].content or "") + "\n" + (_msg.content or ""),
+                    )
+                else:
+                    _normalized.append(_msg)
+            messages = _normalized
+
+            # ── Gap 6: Micro-compaction of old tool results ──
+            # If there are more than 5 tool result messages, clear old ones
+            _tool_msg_indices = [
+                i for i, m in enumerate(messages) if m.role == "tool"
+            ]
+            if len(_tool_msg_indices) > 5:
+                _stale = _tool_msg_indices[:-5]
+                for _idx in _stale:
+                    messages[_idx] = Message(
+                        role="tool",
+                        content="[Prior result cleared]",
+                        tool_call_id=messages[_idx].tool_call_id,
+                    )
+
+            # ── Gap 4: Tool result pairing guarantee ──
+            # Scan for assistant messages with tool_calls that lack matching tool results
+            _seen_tool_ids: set[str] = set()
+            for _msg in messages:
+                if _msg.role == "tool" and _msg.tool_call_id:
+                    _seen_tool_ids.add(_msg.tool_call_id)
+            _orphan_patches: list[Message] = []
+            for _i, _msg in enumerate(messages):
+                if _msg.role == "assistant" and _msg.tool_calls:
+                    for _tc in _msg.tool_calls:
+                        _tc_id = _tc.get("id", "") if isinstance(_tc, dict) else getattr(_tc, "id", "")
+                        if _tc_id and _tc_id not in _seen_tool_ids:
+                            _orphan_patches.append(Message(
+                                role="tool",
+                                content=json.dumps({"error": "orphaned_tool_call", "message": "No result was returned for this tool call."}),
+                                tool_call_id=_tc_id,
+                            ))
+                            _seen_tool_ids.add(_tc_id)
+            if _orphan_patches:
+                logger.debug("[REACT] Injecting %d synthetic tool results for orphaned calls", len(_orphan_patches))
+                messages.extend(_orphan_patches)
+
+            resp = await self.llm.chat(
+                messages, tools=tools_schema, effort=_effort,
+                tool_choice=_tool_choice, top_p=_top_p,
+                repetition_penalty=_repetition_penalty, **kwargs,
+            )
+
+            # ── Gap 3: max_output_tokens escalation ──
+            # If response was truncated (finish_reason == "length"), retry with doubled tokens
+            if resp.finish_reason == "length" and not _max_output_escalated:
+                _max_output_escalated = True
+                _current_max = kwargs.get("max_tokens", 4096)
+                logger.debug("[REACT] Response truncated — retrying with max_tokens=%d", _current_max * 2)
+                # Inject partial response + continuation prompt
+                messages.append(Message(role="assistant", content=resp.content or ""))
+                messages.append(Message(
+                    role="user",
+                    content="Your previous response was truncated. Continue exactly where you left off.",
+                ))
+                _escalation_kwargs = {**kwargs, "max_tokens": _current_max * 2}
+                resp = await self.llm.chat(
+                    messages, tools=tools_schema, effort=_effort,
+                    tool_choice=_tool_choice, top_p=_top_p,
+                    repetition_penalty=_repetition_penalty, **_escalation_kwargs,
+                )
+                # If still truncated, try one more time with 3x
+                if resp.finish_reason == "length":
+                    messages.append(Message(role="assistant", content=resp.content or ""))
+                    messages.append(Message(
+                        role="user",
+                        content="Your previous response was truncated. Continue exactly where you left off.",
+                    ))
+                    _escalation_kwargs["max_tokens"] = _current_max * 3
+                    resp = await self.llm.chat(
+                        messages, tools=tools_schema, effort=_effort,
+                        tool_choice=_tool_choice, top_p=_top_p,
+                        repetition_penalty=_repetition_penalty, **_escalation_kwargs,
+                    )
+
+            # ── Gap H: Diminishing returns detection ──
+            _iter_tokens = resp.completion_tokens or len((resp.content or "").split())
+            _token_counts_per_iter.append(_iter_tokens)
+            if len(_token_counts_per_iter) >= 3:
+                _recent = _token_counts_per_iter[-3:]
+                if all(t < 500 for t in _recent):
+                    logger.debug("[REACT] Diminishing returns — 3+ iterations with < 500 tokens each")
+                    messages.append(Message(
+                        role="system",
+                        content=(
+                            "[DIMINISHING RETURNS] The last 3 iterations produced very little output. "
+                            "Consider concluding with a synthesis of what you have found so far."
+                        ),
+                    ))
 
             if not resp.tool_calls:
+                # Turn-1 tool-call steering: if LLM didn't use tools on first
+                # turn and tools are available AND the user explicitly requested
+                # an action (not just chatting), inject steering and retry once.
+                # Heuristic: steer if tool_choice was explicitly set, or if the
+                # message contains action verbs typical of tool-requiring tasks.
+                if (_loop_idx == 0 and tools_schema and not _steered_once
+                        and _effort_int >= 6
+                        and _should_steer_tool_use(message, _tool_choice)):
+                    _steered_once = True
+                    logger.debug("[REACT] Turn-1 no tool call — injecting steering retry")
+                    messages.append(Message(role="assistant", content=resp.content or ""))
+                    messages.append(Message(role="system", content=_TOOL_STEERING_MSG))
+                    continue
+
                 # No tool calls — we have the final answer
-                content = resp.content
+                content = strip_internal_tags(resp.content)
                 # Output safety check
                 if self._safety:
                     try:
@@ -398,10 +563,15 @@ class AitherAgent:
                     content=content,
                     model=resp.model,
                     tokens_used=resp.tokens_used,
+                    prompt_tokens=resp.prompt_tokens,
+                    completion_tokens=resp.completion_tokens,
                     latency_ms=resp.latency_ms,
                     tool_calls_made=tool_calls_made,
                     artifacts=[a.to_dict() for a in _get_session_artifacts(sid)],
                     session_id=sid,
+                    finish_reason=resp.finish_reason,
+                    effort_level=resp.effort_level,
+                    cache_status=resp.cache_status,
                 )
 
             # Execute tool calls with loop guard checks
@@ -484,8 +654,11 @@ class AitherAgent:
                 ))
 
         # Exhausted tool loops — return last response
-        final = await self.llm.chat(messages, **kwargs)
-        content = final.content
+        final = await self.llm.chat(
+            messages, effort=_effort, top_p=_top_p,
+            repetition_penalty=_repetition_penalty, **kwargs,
+        )
+        content = strip_internal_tags(final.content)
         # Output safety check
         if self._safety:
             try:
@@ -530,10 +703,15 @@ class AitherAgent:
             content=content,
             model=final.model,
             tokens_used=final.tokens_used,
+            prompt_tokens=final.prompt_tokens,
+            completion_tokens=final.completion_tokens,
             latency_ms=final.latency_ms,
             tool_calls_made=tool_calls_made,
             artifacts=[a.to_dict() for a in _get_session_artifacts(sid)],
             session_id=sid,
+            finish_reason=final.finish_reason,
+            effort_level=final.effort_level,
+            cache_status=final.cache_status,
         )
 
     async def chat_stream(
@@ -547,6 +725,9 @@ class AitherAgent:
 
         If the agent has tools and the LLM requests tool use, falls back
         to non-streaming chat() (tool loops can't stream mid-execution).
+
+        Includes degeneration detection — if the model starts repeating,
+        the stream is killed and trimmed to the last clean sentence.
         """
         sid = session_id or self._session_id
 
@@ -587,12 +768,33 @@ class AitherAgent:
                 messages.append(Message(role=h["role"], content=h["content"]))
         messages.append(Message(role="user", content=message))
 
-        # Stream
+        # Extract inference controls
+        _effort = kwargs.pop("effort", None)
+        _top_p = kwargs.pop("top_p", None)
+        _repetition_penalty = kwargs.pop("repetition_penalty", None)
+
+        # Stream with degeneration detection
         full_content = ""
-        async for chunk in self.llm.chat_stream(messages, **kwargs):
+        _degenerated = False
+        async for chunk in self.llm.chat_stream(
+            messages, effort=_effort, top_p=_top_p,
+            repetition_penalty=_repetition_penalty, **kwargs,
+        ):
+            if chunk.finish_reason == "degeneration":
+                _degenerated = True
+                logger.warning("Degeneration detected in stream for agent %s", self.name)
+                break
             if chunk.content:
                 full_content += chunk.content
                 yield chunk.content
+
+        # If degenerated, trim to clean content
+        if _degenerated and full_content:
+            detector = DegenerationDetector()
+            full_content = detector.trim_clean(full_content)
+
+        # Strip internal tags from full response
+        full_content = strip_internal_tags(full_content)
 
         # Output safety check on full response
         if self._safety and full_content:
@@ -614,6 +816,7 @@ class AitherAgent:
                 await self._events.emit(
                     "chat_response", agent=self.name,
                     session_id=sid, streaming=True,
+                    degenerated=_degenerated,
                 )
             except Exception:
                 pass

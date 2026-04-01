@@ -647,6 +647,23 @@ def create_app(
                         await bridge.register_on_agent(a)
                 elif _state["agent"]:
                     await bridge.register_on_agent(_state["agent"])
+            else:
+                # Visible warning when AitherOS is not detected
+                import sys
+                agent = _state.get("agent")
+                builtin_count = len(agent._tools.list_tools()) if agent else 0
+                print(
+                    "\n\033[33m\u26a0  STANDALONE MODE \u2014 AitherOS not detected\033[0m\n"
+                    "   AitherNode (localhost:8080) and Genesis (localhost:8001) "
+                    "are unreachable.\n"
+                    f"   Only {builtin_count} built-in tools available "
+                    f"(vs 449+ with AitherOS).\n"
+                    "   Start AitherOS or set AITHER_NODE_URL to connect.\n",
+                    file=sys.stderr,
+                )
+                # Start background reconnect so we auto-upgrade when
+                # AitherOS services come online
+                await bridge.start_background_reconnect()
 
             logger.info("ServiceBridge mode: %s (tools: %d)",
                         status.mode, status.tools_count)

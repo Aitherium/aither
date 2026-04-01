@@ -5,7 +5,16 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from .base import LLMProvider, LLMResponse, Message, StreamChunk, ToolCall
+from .base import (
+    DegenerationDetector,
+    LLMProvider,
+    LLMResponse,
+    Message,
+    StreamChunk,
+    ToolCall,
+    llm_retry,
+    strip_internal_tags,
+)
 
 if TYPE_CHECKING:
     from adk.config import Config
@@ -13,12 +22,15 @@ if TYPE_CHECKING:
 logger = logging.getLogger("adk.llm")
 
 __all__ = [
+    "DegenerationDetector",
     "LLMProvider",
     "LLMResponse",
     "LLMRouter",
     "Message",
     "StreamChunk",
     "ToolCall",
+    "llm_retry",
+    "strip_internal_tags",
 ]
 
 # Effort-based model selection defaults (static fallback when llmfit unavailable)
@@ -148,12 +160,37 @@ class LLMRouter:
         return None
 
     async def _try_vllm(self) -> LLMProvider | None:
-        """Try vLLM on standard AitherOS ports (8200-8203) and vLLM default (8000).
+        """Try vLLM on configured URL, standard AitherOS ports, and vLLM default.
 
         vLLM is the PRIMARY local inference backend — it runs optimized containers
         on the user's GPU with proper batching, paged attention, and tensor parallelism.
+
+        Priority: AITHER_VLLM_URL env → VLLM_URL env → port scan (8120, 8200-8203, 8000)
         """
+        import os
         from .openai_compat import OpenAIProvider
+
+        # Check explicit env var first
+        vllm_env = os.environ.get("AITHER_VLLM_URL") or os.environ.get("VLLM_URL", "")
+        if vllm_env:
+            try:
+                url = vllm_env.rstrip("/")
+                if not url.endswith("/v1"):
+                    url = f"{url}/v1"
+                p = OpenAIProvider(base_url=url, api_key="not-needed", default_model=self._model or "")
+                if await p.health_check():
+                    try:
+                        models = await p.list_models()
+                        if models and not self._model:
+                            p.default_model = models[0]
+                    except Exception:
+                        pass
+                    self._provider_name = "vllm"
+                    logger.info("vLLM from env var at %s (model: %s)", url, p.default_model)
+                    return p
+            except Exception:
+                pass
+
         for port in (8120, 8200, 8201, 8202, 8203, 8000):
             try:
                 url = f"http://localhost:{port}/v1"
@@ -397,23 +434,55 @@ class LLMRouter:
 
         return None
 
+    @llm_retry(max_retries=5, base_delay_ms=500, max_delay_ms=16000)
     async def chat(
         self,
         messages: list[Message],
         model: str | None = None,
         effort: int | None = None,
+        tool_choice: str | dict | None = None,
+        top_p: float | None = None,
+        repetition_penalty: float | None = None,
         **kwargs,
     ) -> LLMResponse:
         """Route a chat request to the active provider."""
         provider = await self.get_provider()
         if model is None and effort is not None:
             model = self.model_for_effort(effort)
-        return await provider.chat(messages, model=model, **kwargs)
+        resp = await provider.chat(
+            messages, model=model, tool_choice=tool_choice,
+            top_p=top_p, repetition_penalty=repetition_penalty, **kwargs,
+        )
+        if effort is not None:
+            resp.effort_level = effort
+        return resp
 
-    async def chat_stream(self, messages: list[Message], model: str | None = None, **kwargs):
-        """Stream a chat response."""
+    async def chat_stream(
+        self,
+        messages: list[Message],
+        model: str | None = None,
+        effort: int | None = None,
+        tool_choice: str | dict | None = None,
+        top_p: float | None = None,
+        repetition_penalty: float | None = None,
+        **kwargs,
+    ):
+        """Stream a chat response with degeneration detection."""
         provider = await self.get_provider()
-        async for chunk in provider.chat_stream(messages, model=model, **kwargs):
+        if model is None and effort is not None:
+            model = self.model_for_effort(effort)
+        detector = DegenerationDetector()
+        async for chunk in provider.chat_stream(
+            messages, model=model, tool_choice=tool_choice,
+            top_p=top_p, repetition_penalty=repetition_penalty, **kwargs,
+        ):
+            if chunk.content and detector.feed(chunk.content):
+                # Degeneration detected — signal done with special finish_reason
+                yield StreamChunk(
+                    content="", done=True, model=chunk.model,
+                    finish_reason="degeneration",
+                )
+                return
             yield chunk
 
     async def list_models(self) -> list[str]:

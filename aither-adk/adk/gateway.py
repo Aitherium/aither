@@ -20,16 +20,16 @@ except ImportError:
     logger.debug("aithersdk not installed — using local GatewayClient fallback")
 
     class GatewayClient:  # noqa: F811
-    """Client for the AitherOS gateway at gateway.aitherium.com.
+        """Client for the AitherOS gateway at gateway.aitherium.com.
 
-    All features are optional — agents work fully offline without the gateway.
+        All features are optional — agents work fully offline without the gateway.
 
-    Features:
-    - User registration and authentication
-    - Agent capability advertisement
-    - Agent discovery (find other agents on the network)
-    - Remote inference proxy (future paid tier)
-    """
+        Features:
+        - User registration and authentication
+        - Agent capability advertisement
+        - Agent discovery (find other agents on the network)
+        - Remote inference proxy (future paid tier)
+        """
 
     def __init__(
         self,

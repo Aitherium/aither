@@ -1,4 +1,14 @@
-"""Environment-based configuration for ADK."""
+"""Environment-based configuration for ADK.
+
+Security boundary:
+    LOCAL mode (localhost connections): No auth required. All services on the same
+    machine trust each other via localhost binding (127.0.0.1). Docker services are
+    only exposed on 127.0.0.1, not 0.0.0.0, so LAN peers cannot reach them.
+
+    REMOTE/CLOUD mode: All requests carry Authorization: Bearer <AITHER_API_KEY>.
+    The API key is stored in ~/.aither/config.json or AITHER_API_KEY env var.
+    Cloud gateway (mcp.aitherium.com) enforces HMAC tenant isolation.
+"""
 
 from __future__ import annotations
 
@@ -16,22 +26,35 @@ logger = logging.getLogger("adk.config")
 # ~/.aither/config.json helpers
 # ---------------------------------------------------------------------------
 
-_CONFIG_PATH = Path.home() / ".aither" / "config.json"
+_CONFIG_PATH_JSON = Path.home() / ".aither" / "config.json"
+_CONFIG_PATH_YAML = Path.home() / ".aither" / "config.yaml"
+# Prefer YAML (shared with AitherShell), fall back to JSON (legacy)
+_CONFIG_PATH = _CONFIG_PATH_YAML if _CONFIG_PATH_YAML.exists() else _CONFIG_PATH_JSON
 
 
 def load_saved_config(config_path: Path | None = None) -> dict[str, Any]:
-    """Load the persisted ADK config from ``~/.aither/config.json``.
+    """Load persisted config from ``~/.aither/config.yaml`` or ``config.json``.
 
+    Tries YAML first (shared with AitherShell), falls back to JSON (legacy).
     Returns an empty dict when the file does not exist or cannot be parsed.
     """
-    path = config_path or _CONFIG_PATH
-    if not path.exists():
-        return {}
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        logger.debug("Failed to read saved config from %s", path)
-        return {}
+    # Try YAML first
+    yaml_path = config_path or _CONFIG_PATH_YAML
+    if yaml_path.exists() and yaml_path.suffix in (".yaml", ".yml"):
+        try:
+            import yaml
+            return yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            logger.debug("Failed to read YAML config from %s", yaml_path)
+
+    # Fall back to JSON
+    json_path = config_path or _CONFIG_PATH_JSON
+    if json_path.exists():
+        try:
+            return json.loads(json_path.read_text(encoding="utf-8"))
+        except Exception:
+            logger.debug("Failed to read JSON config from %s", json_path)
+    return {}
 
 
 def save_saved_config(data: dict[str, Any], config_path: Path | None = None) -> Path:

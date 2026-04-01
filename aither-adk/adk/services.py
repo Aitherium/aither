@@ -36,7 +36,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("adk.services")
 
+# Port 8080 = AitherNode MCP server (tool protocol)
+# Port 8090 = AitherNode ADK standalone HTTP (OpenAI-compatible /v1/chat/completions)
+# ServiceBridge connects to the MCP server for tool discovery
 _DEFAULT_NODE_URL = "http://localhost:8080"
+_DEFAULT_GENESIS_URL = "http://localhost:8001"
 _DEFAULT_GATEWAY_URL = "https://mcp.aitherium.com"
 
 
@@ -52,6 +56,8 @@ class ServiceStatus:
     node_url: str = ""
     gateway_url: str = ""
     last_check: float = 0.0
+    node_version: str = ""
+    genesis_version: str = ""
 
 
 class ServiceBridge:
@@ -83,6 +89,7 @@ class ServiceBridge:
         self._status = ServiceStatus()
         self._mcp_bridge = None  # Lazy: MCPBridge instance
         self._connected = False
+        self._reconnect_task: Optional[asyncio.Task] = None
 
     @property
     def connected(self) -> bool:
@@ -113,6 +120,7 @@ class ServiceBridge:
                     self._status.node_url = self.node_url
                     data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
                     self._status.services_discovered = data.get("services", [])
+                    self._status.node_version = data.get("version", "")
                     logger.info("AitherNode available at %s", self.node_url)
         except Exception:
             self._status.node_available = False
@@ -120,10 +128,13 @@ class ServiceBridge:
         # Check Genesis (full AitherOS)
         if self._status.node_available:
             try:
+                genesis_url = os.getenv("GENESIS_URL", _DEFAULT_GENESIS_URL)
                 async with httpx.AsyncClient(timeout=3.0) as client:
-                    resp = await client.get("http://localhost:8001/health")
+                    resp = await client.get(f"{genesis_url}/health")
                     if resp.status_code == 200:
                         self._status.genesis_available = True
+                        data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
+                        self._status.genesis_version = data.get("version", "")
                         logger.info("Genesis available — full AitherOS mode")
             except Exception:
                 self._status.genesis_available = False
@@ -152,8 +163,51 @@ class ServiceBridge:
             self._status.mode = "standalone"
 
         self._connected = True
+        self._check_version_compat()
         logger.info("Service bridge mode: %s", self._status.mode)
         return self._status
+
+    def _check_version_compat(self) -> None:
+        """Warn if remote service versions are incompatible with this ADK."""
+        from adk import __version__
+        local_parts = __version__.split(".")[:2]  # major.minor
+        for name, remote_ver in [
+            ("AitherNode", self._status.node_version),
+            ("Genesis", self._status.genesis_version),
+        ]:
+            if not remote_ver:
+                continue
+            remote_parts = remote_ver.split(".")[:2]
+            if remote_parts[0] != local_parts[0]:
+                logger.warning(
+                    "VERSION MISMATCH: ADK %s vs %s %s — major version differs, "
+                    "some features may not work", __version__, name, remote_ver
+                )
+            elif remote_parts != local_parts:
+                logger.info("Version note: ADK %s, %s %s", __version__, name, remote_ver)
+
+    async def start_background_reconnect(self, interval: float = 30.0) -> None:
+        """Start background reconnect loop when in standalone mode."""
+        if self._reconnect_task and not self._reconnect_task.done():
+            return  # Already running
+        self._reconnect_task = asyncio.create_task(self._reconnect_loop(interval))
+
+    async def _reconnect_loop(self, interval: float) -> None:
+        """Background loop that re-probes services when disconnected."""
+        while True:
+            await asyncio.sleep(interval)
+            if self._status.mode != "standalone":
+                continue  # Already connected, just keep checking
+            old_mode = self._status.mode
+            try:
+                await self.connect()
+                if self._status.mode != old_mode:
+                    logger.info(
+                        "ServiceBridge upgraded: %s -> %s",
+                        old_mode, self._status.mode,
+                    )
+            except Exception as e:
+                logger.debug("Reconnect probe failed: %s", e)
 
     async def register_on_agent(self, agent: AitherAgent) -> int:
         """Register available service tools on an agent.
@@ -223,6 +277,8 @@ class ServiceBridge:
             "node_url": self._status.node_url,
             "gateway_url": self._status.gateway_url,
             "last_check": self._status.last_check,
+            "node_version": self._status.node_version,
+            "genesis_version": self._status.genesis_version,
         }
 
     async def get_available_services(self) -> list[str]:

@@ -1324,9 +1324,71 @@ def cmd_publish(args):
     return asyncio.run(_publish())
 
 
+def cmd_test(args):
+    """Run agent tests."""
+    import subprocess
+    project_dir = args.directory or "."
+    test_dir = os.path.join(project_dir, "tests")
+    if not os.path.exists(test_dir):
+        print(f"No tests/ directory in {project_dir}")
+        print("Create tests/test_agent.py to get started.")
+        return 1
+    cmd = ["python", "-m", "pytest", test_dir, "-v"]
+    if args.coverage:
+        cmd.extend(["--cov", project_dir, "--cov-report", "term-missing"])
+    result = subprocess.run(cmd)
+    return result.returncode
+
+
+def cmd_status(args):
+    """Show backend and service status."""
+    import asyncio
+
+    async def _status():
+        import httpx
+        checks = {
+            "Genesis": os.environ.get("AITHER_URL", "http://localhost:8001"),
+            "vLLM": os.environ.get("AITHER_VLLM_URL", os.environ.get("VLLM_URL", "http://localhost:8120")),
+            "Ollama": os.environ.get("OLLAMA_HOST", "http://localhost:11434"),
+            "AitherNode": "http://localhost:8090",
+            "Gateway": os.environ.get("AITHER_GATEWAY_URL", "https://gateway.aitherium.com"),
+        }
+        print("AitherADK Backend Status")
+        print("=" * 50)
+        for name, url in checks.items():
+            try:
+                async with httpx.AsyncClient(timeout=3.0) as c:
+                    hp = "/api/tags" if name == "Ollama" else "/health"
+                    r = await c.get(f"{url.rstrip('/')}{hp}")
+                    status = "UP" if r.status_code == 200 else f"HTTP {r.status_code}"
+            except Exception:
+                status = "DOWN"
+            icon = "+" if status == "UP" else "-"
+            print(f"  [{icon}] {name:12s} {url:45s} {status}")
+
+        # API key check
+        api_key = os.environ.get("AITHER_API_KEY", "")
+        if api_key:
+            print(f"\n  API Key: {api_key[:16]}...{api_key[-4:]}")
+        else:
+            saved = {}
+            try:
+                from adk.config import load_saved_config
+                saved = load_saved_config()
+            except Exception:
+                pass
+            if saved.get("api_key"):
+                print(f"\n  API Key (saved): {saved['api_key'][:16]}...")
+            else:
+                print("\n  No API key. Run: adk connect --api-key <key>")
+
+    asyncio.run(_status())
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(
-        prog="aither",
+        prog="adk",
         description="AitherADK — Build AI agent fleets with any LLM backend",
     )
     sub = parser.add_subparsers(dest="command")
@@ -1391,6 +1453,10 @@ def main():
     deploy_p.add_argument("--capabilities", help="Comma-separated capabilities")
     deploy_p.add_argument("--description", help="Agent description")
     deploy_p.add_argument("--version", help="Agent version")
+    deploy_p.add_argument("--target", choices=["gateway", "docker", "kubernetes", "systemd", "cloud-gpu"],
+                           default="gateway", help="Deploy target (default: gateway)")
+    deploy_p.add_argument("--strategy", choices=["rolling", "blue-green", "canary", "recreate"],
+                           default="rolling", help="Deployment strategy (for container targets)")
 
     # aither onboard — interactive onboarding wizard
     onboard_p = sub.add_parser("onboard", help="Interactive onboarding — detect, configure, integrate")
@@ -1408,7 +1474,16 @@ def main():
     integrate_p.add_argument("--force", action="store_true",
                              help="Overwrite existing integration config")
 
-    # aither publish — submit to Elysium marketplace
+    # adk test
+    test_p = sub.add_parser("test", help="Run agent tests")
+    test_p.add_argument("-d", "--directory", help="Project directory (default: .)")
+    test_p.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
+    test_p.add_argument("--coverage", action="store_true", help="Show coverage report")
+
+    # adk status
+    status_p = sub.add_parser("status", help="Show backend and service status")
+
+    # adk publish — submit to Elysium marketplace
     publish_p = sub.add_parser("publish", help="Publish agent to Elysium marketplace")
     publish_p.add_argument("name", nargs="?", help="Agent name (default: from config.yaml)")
     publish_p.add_argument("-d", "--directory", help="Project directory (default: .)")
@@ -1449,6 +1524,10 @@ def main():
         sys.exit(cmd_integrate(args))
     elif args.command == "publish":
         sys.exit(cmd_publish(args))
+    elif args.command == "test":
+        sys.exit(cmd_test(args))
+    elif args.command == "status":
+        sys.exit(cmd_status(args))
     else:
         parser.print_help()
         sys.exit(1)

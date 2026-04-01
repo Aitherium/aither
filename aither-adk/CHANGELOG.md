@@ -2,6 +2,43 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [0.12.0] - 2026-04-01
+
+### Bootstrap & Service Discovery
+- Version handshake -- ADK checks major.minor compatibility with Genesis/Node
+- Background reconnect loop -- ServiceBridge re-probes every 30s in standalone mode
+- Port 8080/8090 documented -- MCP vs OpenAI-compat clearly separated
+- Genesis URL configurable via GENESIS_URL env var (was hardcoded)
+- Standalone mode warning -- visible stderr alert when AitherOS not detected
+- Auto-reconnect on startup when services come online
+
+### Elysium Cloud Inference
+- Unified gateway URL -- gateway.aitherium.com handles auth + billing + inference
+- Streaming inference -- SSE passthrough for /v1/chat/completions with stream=true
+- Auth proxy routes -- /v1/auth/register, /v1/auth/login, /v1/auth/me
+- Billing proxy -- /v1/billing/balance through gateway
+- AitherConnect Elysium fallback -- cloud inference when local Genesis is down
+- AitherDesktop Elysium fallback -- third-tier chat fallback after Node
+
+### Infrastructure
+- /discovery endpoint on Genesis -- unified service URLs/versions/health
+- /api/config/services on Veil -- runtime port config for client-side JS
+- Veil healthcheck gates on Genesis -- unhealthy when backend is down
+- Desktop crash detection 90s->60s (threshold 3->2)
+
+## [0.11.0] - 2026-04-01
+
+### Agent Execution Quality (Claude Code Parity)
+- Raise loop guard block threshold from 3 to 4 -- agents get more room for iterative search
+- Soft synthesis nudge for effort >= 4 (no tool stripping, trust the model)
+- max_output_tokens escalation -- retry up to 3x when response is truncated
+- Tool result pairing guarantee -- synthetic error for orphaned tool_use blocks
+- Micro-compaction of old tool results -- save context tokens on long sessions
+- First-turn tool forcing only for effort >= 6 (trust model for lower effort)
+- Diminishing returns detection -- nudge agent when 3+ turns produce < 500 tokens
+- Message normalization -- merge consecutive same-role messages, strip empties
+- LLM retry with exponential backoff (5 retries, 500ms-16s, jitter)
+
 ## [0.9.0] - 2026-03-16
 
 The "connected world" release. Cross-platform identity pairing, voice capabilities, and multi-channel integration.
