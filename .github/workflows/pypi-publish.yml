@@ -8,7 +8,7 @@ permissions:
   id-token: write
 
 jobs:
-  publish:
+  publish-adk:
     runs-on: ubuntu-latest
     environment: pypi
     defaults:
@@ -16,18 +16,34 @@ jobs:
         working-directory: aither-adk
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
       - name: Install build tools
         run: pip install build
-
-      - name: Build package
+      - name: Build aither-adk
         run: python -m build
-
-      - name: Publish to PyPI
+      - name: Publish aither-adk to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: aither-adk/dist/
+
+  publish-sdk:
+    runs-on: ubuntu-latest
+    environment: pypi
+    defaults:
+      run:
+        working-directory: aithersdk
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install build tools
+        run: pip install build
+      - name: Build aithersdk
+        run: python -m build
+      - name: Publish aithersdk to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: aithersdk/dist/
