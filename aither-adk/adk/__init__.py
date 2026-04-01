@@ -1,6 +1,6 @@
 """AitherOS Alpha — Build AI agent fleets with any LLM backend."""
 
-__version__ = "0.9.0"
+__version__ = "0.11.0"
 
 from adk.agent import AitherAgent
 from adk.tools import tool, ToolRegistry
