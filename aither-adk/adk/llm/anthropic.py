@@ -65,6 +65,9 @@ class AnthropicProvider(LLMProvider):
         temperature: float = 0.7,
         max_tokens: int = 4096,
         tools: list[dict] | None = None,
+        tool_choice: str | dict | None = None,
+        top_p: float | None = None,
+        repetition_penalty: float | None = None,
         **kwargs,
     ) -> LLMResponse:
         model = model or self.default_model
@@ -78,6 +81,9 @@ class AnthropicProvider(LLMProvider):
         }
         if system:
             payload["system"] = system
+        if top_p is not None:
+            payload["top_p"] = top_p
+        # Anthropic doesn't have repetition_penalty — skip silently
 
         if tools:
             anthropic_tools = []
@@ -89,6 +95,16 @@ class AnthropicProvider(LLMProvider):
                     "input_schema": fn.get("parameters", {}),
                 })
             payload["tools"] = anthropic_tools
+            # Map tool_choice for Anthropic format
+            if tool_choice is not None:
+                if tool_choice == "auto":
+                    payload["tool_choice"] = {"type": "auto"}
+                elif tool_choice == "required":
+                    payload["tool_choice"] = {"type": "any"}
+                elif tool_choice == "none":
+                    pass  # Don't send tools
+                elif isinstance(tool_choice, dict):
+                    payload["tool_choice"] = tool_choice
 
         start = _timer()
         async with self._client() as client:
@@ -129,6 +145,9 @@ class AnthropicProvider(LLMProvider):
         temperature: float = 0.7,
         max_tokens: int = 4096,
         tools: list[dict] | None = None,
+        tool_choice: str | dict | None = None,
+        top_p: float | None = None,
+        repetition_penalty: float | None = None,
         **kwargs,
     ) -> AsyncIterator[StreamChunk]:
         model = model or self.default_model

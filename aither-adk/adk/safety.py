@@ -148,7 +148,10 @@ _OUTPUT_PATTERNS = [
     (r"(?i)(?:ghp_[a-zA-Z0-9]{30,})", "Possible GitHub token in output"),
     (r"(?i)(?:AKIA[A-Z0-9]{16})", "Possible AWS key in output"),
     # Internal prompt leakage
-    (r"\[SYSTEM\]|\[AXIOMS\]|\[RULES\]|\[IDENTITY\]", "System prompt leakage"),
+    (r"\[SYSTEM\]|\[AXIOMS\]|\[RULES\]|\[IDENTITY\]|\[CAPABILITIES\]|\[AFFECT\]", "System prompt leakage"),
+    # Leaked tool_call XML tags (model exposed internal markup)
+    (r"<tool_call>.*?</tool_call>", "Leaked tool_call XML in output"),
+    (r"<tool_call>[^<]*$", "Truncated tool_call XML in output"),
 ]
 
 _OUTPUT_COMPILED = [(re.compile(p), msg) for p, msg in _OUTPUT_PATTERNS]

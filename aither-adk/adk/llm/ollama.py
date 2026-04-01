@@ -41,17 +41,25 @@ class OllamaProvider(LLMProvider):
         temperature: float = 0.7,
         max_tokens: int = 4096,
         tools: list[dict] | None = None,
+        tool_choice: str | dict | None = None,
+        top_p: float | None = None,
+        repetition_penalty: float | None = None,
         **kwargs,
     ) -> LLMResponse:
         model = model or self.default_model
+        options: dict = {
+            "temperature": temperature,
+            "num_predict": max_tokens,
+        }
+        if top_p is not None:
+            options["top_p"] = top_p
+        if repetition_penalty is not None:
+            options["repeat_penalty"] = repetition_penalty
         payload: dict = {
             "model": model,
             "messages": messages_to_dicts(messages),
             "stream": False,
-            "options": {
-                "temperature": temperature,
-                "num_predict": max_tokens,
-            },
+            "options": options,
         }
         if tools:
             payload["tools"] = tools
@@ -91,17 +99,25 @@ class OllamaProvider(LLMProvider):
         temperature: float = 0.7,
         max_tokens: int = 4096,
         tools: list[dict] | None = None,
+        tool_choice: str | dict | None = None,
+        top_p: float | None = None,
+        repetition_penalty: float | None = None,
         **kwargs,
     ) -> AsyncIterator[StreamChunk]:
         model = model or self.default_model
+        options: dict = {
+            "temperature": temperature,
+            "num_predict": max_tokens,
+        }
+        if top_p is not None:
+            options["top_p"] = top_p
+        if repetition_penalty is not None:
+            options["repeat_penalty"] = repetition_penalty
         payload: dict = {
             "model": model,
             "messages": messages_to_dicts(messages),
             "stream": True,
-            "options": {
-                "temperature": temperature,
-                "num_predict": max_tokens,
-            },
+            "options": options,
         }
         if tools:
             payload["tools"] = tools

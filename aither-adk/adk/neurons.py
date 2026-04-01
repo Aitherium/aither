@@ -188,6 +188,123 @@ class GraphNeuron(BaseNeuron):
             )
 
 
+class WebNeuron(BaseNeuron):
+    """Proactive web context gathering for news/current events.
+
+    Unlike WebSearchNeuron (user-triggered), this fires automatically
+    when the query involves current events, trending topics, or news.
+    """
+
+    name = "web"
+    description = "Proactive web context for current events and news"
+
+    def __init__(self, limit: int = 3):
+        self._limit = limit
+
+    async def fire(self, query: str, **kwargs) -> NeuronResult:
+        start = time.perf_counter()
+        try:
+            from adk.builtin_tools import web_search
+            raw = await web_search(query, limit=self._limit)
+            data = json.loads(raw)
+            if "error" in data:
+                return NeuronResult(neuron=self.name, content="", relevance=0.0,
+                                    latency_ms=(time.perf_counter() - start) * 1000)
+            lines = []
+            for r in data.get("results", []):
+                title = r.get("title", "")
+                snippet = r.get("snippet", "")
+                url = r.get("url", "")
+                if title or snippet:
+                    lines.append(f"- {title}: {snippet[:200]} [{url}]")
+            content = "\n".join(lines) if lines else ""
+            return NeuronResult(
+                neuron=self.name, content=content,
+                relevance=0.7 if content else 0.0,
+                latency_ms=(time.perf_counter() - start) * 1000,
+                source="web_proactive",
+            )
+        except Exception as e:
+            logger.debug("WebNeuron failed: %s", e)
+            return NeuronResult(neuron=self.name, content="", relevance=0.0,
+                                latency_ms=(time.perf_counter() - start) * 1000)
+
+
+class ToolInventoryNeuron(BaseNeuron):
+    """Inventory of available tools — injected as context so the LLM knows what it can do."""
+
+    name = "tool_inventory"
+    description = "List available tools for the current agent"
+
+    def __init__(self, agent: AitherAgent | None = None):
+        self._agent = agent
+
+    async def fire(self, query: str, **kwargs) -> NeuronResult:
+        agent = kwargs.get("agent", self._agent)
+        if not agent:
+            return NeuronResult(neuron=self.name, content="", relevance=0.0)
+        try:
+            tools = agent._tools.list_tools()
+            if not tools:
+                return NeuronResult(neuron=self.name, content="", relevance=0.0)
+            lines = [f"- {t.name}: {t.description}" for t in tools[:30]]
+            return NeuronResult(
+                neuron=self.name,
+                content=f"Available tools ({len(tools)}):\n" + "\n".join(lines),
+                relevance=0.5,
+                source="tool_inventory",
+            )
+        except Exception:
+            return NeuronResult(neuron=self.name, content="", relevance=0.0)
+
+
+class AgentInventoryNeuron(BaseNeuron):
+    """Inventory of known agent identities."""
+
+    name = "agent_inventory"
+    description = "List known agent identities and their capabilities"
+
+    async def fire(self, query: str, **kwargs) -> NeuronResult:
+        try:
+            from adk.identity import list_identities
+            identities = list_identities()
+            if not identities:
+                return NeuronResult(neuron=self.name, content="", relevance=0.0)
+            lines = [f"- {name}" for name in identities[:20]]
+            return NeuronResult(
+                neuron=self.name,
+                content=f"Known agents ({len(identities)}):\n" + "\n".join(lines),
+                relevance=0.4,
+                source="agent_inventory",
+            )
+        except Exception:
+            return NeuronResult(neuron=self.name, content="", relevance=0.0)
+
+
+class ServiceInventoryNeuron(BaseNeuron):
+    """Inventory of reachable AitherOS services."""
+
+    name = "service_inventory"
+    description = "List reachable AitherOS services"
+
+    async def fire(self, query: str, **kwargs) -> NeuronResult:
+        try:
+            from adk.services import ServiceBridge
+            bridge = ServiceBridge()
+            services = await bridge.list_services()
+            if not services:
+                return NeuronResult(neuron=self.name, content="", relevance=0.0)
+            lines = [f"- {s}" for s in services[:20]]
+            return NeuronResult(
+                neuron=self.name,
+                content=f"Reachable services ({len(services)}):\n" + "\n".join(lines),
+                relevance=0.3,
+                source="service_inventory",
+            )
+        except Exception:
+            return NeuronResult(neuron=self.name, content="", relevance=0.0)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Neuron Pool
 # ─────────────────────────────────────────────────────────────────────────────
@@ -203,8 +320,12 @@ class NeuronPool:
 
         # Register defaults
         self.register(WebSearchNeuron())
+        self.register(WebNeuron())
         self.register(MemoryNeuron(agent))
         self.register(GraphNeuron(agent))
+        self.register(ToolInventoryNeuron(agent))
+        self.register(AgentInventoryNeuron())
+        self.register(ServiceInventoryNeuron())
 
     def register(self, neuron: BaseNeuron):
         """Register a neuron."""
@@ -279,6 +400,8 @@ _AUTO_PATTERNS: list[tuple[re.Pattern, list[str]]] = [
     # Web search triggers
     (re.compile(r'(?:search|look\s+up|find|google|latest|current|news|today)', re.I), ["web_search"]),
     (re.compile(r'(?:what\s+is|who\s+is|where\s+is|when\s+(?:was|is|did))', re.I), ["web_search", "graph"]),
+    # Proactive web triggers (news, current events, trending)
+    (re.compile(r'(?:trending|breaking|recent\s+(?:news|events|updates))', re.I), ["web"]),
     # Memory triggers
     (re.compile(r'(?:remember|recall|previous|earlier|last\s+time|history|we\s+discussed)', re.I), ["memory", "graph"]),
     # Graph triggers
@@ -286,7 +409,22 @@ _AUTO_PATTERNS: list[tuple[re.Pattern, list[str]]] = [
     (re.compile(r'(?:what\s+do\s+(?:I|you|we)\s+know|tell\s+me\s+about)', re.I), ["graph", "memory"]),
     # Code/technical triggers
     (re.compile(r'(?:how\s+does|architecture|implementation|module|class|function)', re.I), ["graph", "memory"]),
+    # System/tool/agent inventory triggers
+    (re.compile(r'(?:what\s+tools|available\s+tools|what\s+can\s+you)', re.I), ["tool_inventory"]),
+    (re.compile(r'(?:what\s+agents|which\s+agent|list\s+agents)', re.I), ["agent_inventory"]),
+    (re.compile(r'(?:what\s+services|which\s+services|status|running)', re.I), ["service_inventory"]),
 ]
+
+# Intent category → tools that should be available (ported from monorepo UCB)
+CATEGORY_TOOLS: dict[str, list[str]] = {
+    "system_status": ["get_system_status", "get_service_status"],
+    "communication": ["check_inbox", "send_email", "read_email"],
+    "code": ["read_file", "write_file", "replace_text", "search_files", "list_directory"],
+    "git": ["git_status", "git_log", "git_diff", "git_commit"],
+    "memory": ["recall", "remember", "query_memory"],
+    "content": ["blog_list_posts", "blog_create_post"],
+    "search": ["web_search", "search_knowledge"],
+}
 
 
 class AutoNeuronFire:
@@ -301,8 +439,14 @@ class AutoNeuronFire:
         self._cache: dict[str, tuple[float, str]] = {}
         self._cache_ttl = 60.0  # seconds
 
-    def detect_neurons(self, query: str) -> list[str]:
-        """Detect which neurons should fire for this query."""
+    def detect_neurons(self, query: str, intent_category: str | None = None) -> list[str]:
+        """Detect which neurons should fire for this query.
+
+        Args:
+            query: The user's message.
+            intent_category: Optional intent classification (e.g., "code", "system_status").
+                If provided, category-specific neurons are also included.
+        """
         needed: set[str] = set()
         for pattern, neurons in _AUTO_PATTERNS:
             if pattern.search(query):
@@ -311,6 +455,11 @@ class AutoNeuronFire:
         # Always include graph if available (low-cost, high-value)
         if self._agent and getattr(self._agent, '_graph', None):
             needed.add("graph")
+
+        # Category-based neuron injection
+        if intent_category and intent_category in CATEGORY_TOOLS:
+            # Include tool inventory so LLM knows what's available
+            needed.add("tool_inventory")
 
         return list(needed)
 
@@ -340,8 +489,12 @@ class AutoNeuronFire:
         for r in sorted(results, key=lambda x: x.relevance, reverse=True):
             label = {
                 "web_search": "WEB SEARCH",
+                "web": "WEB CONTEXT",
                 "memory": "AGENT MEMORY",
                 "graph": "KNOWLEDGE GRAPH",
+                "tool_inventory": "AVAILABLE TOOLS",
+                "agent_inventory": "KNOWN AGENTS",
+                "service_inventory": "SERVICES",
             }.get(r.neuron, r.neuron.upper())
             sections.append(f"[{label}]\n{r.content}")
 

@@ -110,12 +110,37 @@ def create_app(
     _server_api_key = os.getenv("AITHER_SERVER_API_KEY", "")
     _SKIP_AUTH_PATHS = {"/health", "/docs", "/openapi.json", "/metrics", "/demo", "/redoc"}
 
+    # Valid caller types for header validation (prevents spoofing)
+    _VALID_CALLER_TYPES = {"PLATFORM", "PUBLIC", "DEMO", "TENANT", "ANONYMOUS"}
+
     @app.middleware("http")
     async def _auth_middleware(request: Request, call_next):
-        """Bearer token auth middleware. Disabled when no key is configured."""
-        if not _server_api_key:
-            return await call_next(request)
+        """Bearer token auth + caller-type header validation.
+
+        Validates X-Caller-Type header to prevent header-spoofing attacks.
+        External requests cannot claim PLATFORM caller type.
+        """
         if request.url.path in _SKIP_AUTH_PATHS:
+            return await call_next(request)
+
+        # Validate X-Caller-Type if present (prevent spoofing)
+        caller_type = request.headers.get("x-caller-type", "")
+        if caller_type:
+            if caller_type not in _VALID_CALLER_TYPES:
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": f"Invalid X-Caller-Type: {caller_type}"},
+                )
+            # External requests cannot claim PLATFORM — that's internal-only
+            if caller_type == "PLATFORM" and _server_api_key:
+                auth_header = request.headers.get("authorization", "")
+                if not auth_header.startswith("Bearer ") or auth_header[7:] != _server_api_key:
+                    return JSONResponse(
+                        status_code=403,
+                        content={"error": "PLATFORM caller type requires valid API key"},
+                    )
+
+        if not _server_api_key:
             return await call_next(request)
         auth_header = request.headers.get("authorization", "")
         if not auth_header.startswith("Bearer "):
@@ -342,9 +367,26 @@ def create_app(
         agent_name = body.get("agent")
         request_id = get_trace_id()
 
+        # Inference controls (null=auto pattern — only pass if explicitly set)
+        chat_kwargs: dict[str, Any] = {}
+        if body.get("effort") is not None:
+            chat_kwargs["effort"] = int(body["effort"])
+        if body.get("temperature") is not None:
+            chat_kwargs["temperature"] = float(body["temperature"])
+        if body.get("top_p") is not None:
+            chat_kwargs["top_p"] = float(body["top_p"])
+        if body.get("repetition_penalty") is not None:
+            chat_kwargs["repetition_penalty"] = float(body["repetition_penalty"])
+        if body.get("max_tokens") is not None:
+            chat_kwargs["max_tokens"] = int(body["max_tokens"])
+        if body.get("model") is not None:
+            chat_kwargs["model"] = body["model"]
+        if body.get("tool_choice") is not None:
+            chat_kwargs["tool_choice"] = body["tool_choice"]
+
         a = await get_agent(agent_name)
         start = time.time()
-        resp = await a.chat(message, session_id=session_id)
+        resp = await a.chat(message, session_id=session_id, **chat_kwargs)
         latency_ms = (time.time() - start) * 1000
 
         # Record metrics (safe — latency_ms may be MagicMock in tests)
@@ -378,11 +420,38 @@ def create_app(
             "agent": a.name,
             "model": resp.model,
             "tokens_used": resp.tokens_used,
+            "prompt_tokens": resp.prompt_tokens,
+            "completion_tokens": resp.completion_tokens,
             "session_id": resp.session_id,
             "tool_calls": resp.tool_calls_made,
             "artifacts": resp.artifacts,
             "request_id": request_id,
+            "finish_reason": resp.finish_reason,
+            "effort_level": resp.effort_level,
+            "cache_status": resp.cache_status,
         }
+
+    # ─── AitherOS-typed SSE streaming ───
+
+    @app.post("/stream")
+    async def stream_chat(request: Request):
+        """SSE stream using AitherOS event protocol.
+
+        Emits typed events: session_start, thinking, tool_call, tool_result,
+        token, answer, complete — matching the Genesis/MicroScheduler protocol
+        so shell-core's useAitherStream works identically against ADK and Genesis.
+        """
+        body = await request.json()
+        message = body.get("message", body.get("content", ""))
+        session_id = body.get("session_id") or f"adk-{uuid.uuid4().hex[:8]}"
+        agent_name = body.get("agent")
+        reasoning = body.get("reasoning", False)
+
+        return StreamingResponse(
+            _aitheros_stream(get_agent, message, session_id, agent_name, reasoning),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     # ─── Artifact endpoints ───
 
@@ -1181,6 +1250,86 @@ def create_app(
         }
 
     return app
+
+
+async def _aitheros_stream(get_agent_fn, message: str, session_id: str, agent_name: str | None, reasoning: bool):
+    """SSE generator emitting AitherOS-typed events.
+
+    Uses the app-level get_agent() for shared memory/tools/fleet support.
+    Emits heartbeat during sync tool execution to prevent frontend timeout.
+
+    Protocol:
+      event: session_start  -> {session_id, agent, model}
+      event: heartbeat      -> {} (every 2s during tool execution)
+      event: tool_call      -> {tools: [{name, args}]}
+      event: tool_result    -> {results: [{tool, success, output}]}
+      event: token          -> {t: "chunk", n: count}
+      event: answer         -> {answer: "full response"}
+      event: complete       -> {duration_ms, tokens_used}
+    """
+    start = time.time()
+    try:
+        agent = await get_agent_fn(agent_name)
+        model_name = getattr(agent.llm, "provider_name", "unknown")
+
+        # session_start
+        yield f"event: session_start\ndata: {json.dumps({'type': 'session_start', 'session_id': session_id, 'agent': agent.name, 'model': model_name})}\n\n"
+
+        # If agent has tools, use sync chat with background heartbeat
+        if agent._tools.list_tools():
+            # Run chat in a task with heartbeat to keep SSE alive
+            chat_task = asyncio.ensure_future(agent.chat(message, session_id=session_id))
+            while not chat_task.done():
+                yield f"event: heartbeat\ndata: {json.dumps({'type': 'heartbeat'})}\n\n"
+                await asyncio.sleep(2)
+            resp = chat_task.result()
+
+            # Emit tool calls if any
+            if resp.tool_calls_made:
+                for tc in resp.tool_calls_made:
+                    yield f"event: tool_call\ndata: {json.dumps({'type': 'tool_call', 'tools': [{'name': tc.get('name', '?'), 'args': tc.get('args', {})}]})}\n\n"
+                    yield f"event: tool_result\ndata: {json.dumps({'type': 'tool_result', 'results': [{'tool': tc.get('name', '?'), 'success': True, 'output': str(tc.get('output', ''))[:500]}]})}\n\n"
+
+            yield f"event: answer\ndata: {json.dumps({'type': 'answer', 'answer': resp.content})}\n\n"
+
+            duration_ms = int((time.time() - start) * 1000)
+            yield f"event: complete\ndata: {json.dumps({'type': 'complete', 'duration_ms': duration_ms, 'tokens_used': resp.tokens_used, 'model': resp.model, 'session_id': session_id})}\n\n"
+
+            # Fire-and-forget Strata + Chronicle
+            asyncio.ensure_future(_strata_ingest(
+                agent=agent.name, session_id=session_id,
+                user_message=message, assistant_response=resp.content,
+                model=resp.model, tokens_used=resp.tokens_used,
+                latency_ms=resp.latency_ms, tool_calls=resp.tool_calls_made,
+            ))
+            return
+
+        # Streaming path — no tools
+        full_content = ""
+        token_count = 0
+        async for chunk in agent.chat_stream(message, session_id=session_id):
+            if chunk:
+                full_content += chunk
+                token_count += 1
+                yield f"event: token\ndata: {json.dumps({'type': 'token', 't': chunk, 'n': token_count})}\n\n"
+
+        yield f"event: answer\ndata: {json.dumps({'type': 'answer', 'answer': full_content})}\n\n"
+
+        duration_ms = int((time.time() - start) * 1000)
+        yield f"event: complete\ndata: {json.dumps({'type': 'complete', 'duration_ms': duration_ms, 'tokens_used': token_count, 'model': model_name, 'session_id': session_id})}\n\n"
+
+        asyncio.ensure_future(_strata_ingest(
+            agent=agent.name, session_id=session_id,
+            user_message=message, assistant_response=full_content,
+            model=model_name, tokens_used=token_count,
+            latency_ms=duration_ms, tool_calls=[],
+        ))
+
+    except Exception as exc:
+        logger.error("AitherOS stream error: %s", exc)
+        yield f"event: error\ndata: {json.dumps({'type': 'error', 'error': str(exc)})}\n\n"
+        duration_ms = int((time.time() - start) * 1000)
+        yield f"event: complete\ndata: {json.dumps({'type': 'complete', 'duration_ms': duration_ms})}\n\n"
 
 
 async def _stream_agent_response(agent, message: str, history: list[dict], model: str | None):

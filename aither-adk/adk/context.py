@@ -61,6 +61,13 @@ class ContextManager:
 
     Keeps messages within max_tokens by dropping oldest non-system messages.
     Always preserves: system prompt + last `preserve_turns` turns.
+
+    Context layers (ported from monorepo UCB context pipeline):
+      [SYSTEM FACTS] — Authoritative framing of system state
+      [IDENTITY]     — Agent identity / persona
+      [RULES]        — Behavioral rules
+      [CONTEXT]      — Conversation context
+      [MEMORIES]     — Retrieved memories
     """
 
     def __init__(
@@ -73,6 +80,7 @@ class ContextManager:
         self.preserve_turns = preserve_turns
         self.reserve = reserve_for_response
         self._messages: list[ContextMessage] = []
+        self._system_facts: str | None = None
 
     def add(self, role: str, content: str, **kwargs) -> ContextMessage:
         """Add a message to the context."""
@@ -80,7 +88,21 @@ class ContextManager:
         self._messages.append(msg)
         return msg
 
+    def set_system_facts(self, facts: dict) -> None:
+        """Set authoritative system facts that frame the agent's state.
+
+        These are injected as a [SYSTEM FACTS] layer before the identity prompt.
+        """
+        lines = ["[SYSTEM FACTS]"]
+        for key, value in facts.items():
+            lines.append(f"- {key}: {value}")
+        self._system_facts = "\n".join(lines)
+
     def add_system(self, content: str) -> ContextMessage:
+        # If system facts are set, prepend them to the first system message
+        if self._system_facts:
+            content = f"{self._system_facts}\n\n{content}"
+            self._system_facts = None  # Only inject once
         return self.add("system", content)
 
     def add_user(self, content: str) -> ContextMessage:

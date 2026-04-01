@@ -6,8 +6,9 @@ counting per hash, and issuing graduated verdicts:
 
     Allow  → first occurrence, proceed normally
     Warn   → 2nd duplicate, inject nudge message
-    Block  → 3rd+ duplicate, skip the call entirely
+    Block  → 4th+ duplicate, skip the call entirely
     CircuitBreak → N+ unique-but-similar calls, force synthesis
+                   (soft nudge when effort_level >= 4)
 
 SHA256 gives collision resistance. Canonical JSON sort ensures
 `{"a":1,"b":2}` == `{"b":2,"a":1}`.
@@ -85,26 +86,30 @@ class LoopGuard:
 
     Args:
         warn_threshold: Number of identical calls before WARN (default: 2).
-        block_threshold: Number of identical calls before BLOCK (default: 3).
+        block_threshold: Number of identical calls before BLOCK (default: 4).
         circuit_break_total: Total calls in window before CIRCUIT_BREAK (default: 15).
         window_seconds: Rolling window for circuit breaker (0 = no window).
         similarity_threshold: Number of calls to same tool (any args) before
             counting toward circuit break (default: 5).
+        effort_level: Agent effort level (1-10). When >= 4, circuit break
+            becomes a soft nudge (no tool stripping, trust the model).
     """
 
     def __init__(
         self,
         warn_threshold: int = 2,
-        block_threshold: int = 3,
+        block_threshold: int = 4,
         circuit_break_total: int = 15,
         window_seconds: float = 0.0,
         similarity_threshold: int = 5,
+        effort_level: int = 5,
     ):
         self.warn_threshold = warn_threshold
         self.block_threshold = block_threshold
         self.circuit_break_total = circuit_break_total
         self.window_seconds = window_seconds
         self.similarity_threshold = similarity_threshold
+        self.effort_level = effort_level
 
         # State
         self._hash_counts: Dict[str, int] = defaultdict(int)
@@ -126,6 +131,20 @@ class LoopGuard:
         Returns a LoopVerdict with the recommended action.
         """
         if self._tripped:
+            # Soft nudge for effort >= 4: don't force stop, just advise
+            if self.effort_level >= 4:
+                return LoopVerdict(
+                    action=LoopAction.WARN,
+                    tool_name=tool_name,
+                    call_hash="",
+                    hit_count=0,
+                    reason="Circuit breaker tripped — soft nudge (effort >= 4)",
+                    nudge_message=(
+                        "[SYNTHESIS NUDGE] You have been calling tools for a while. "
+                        "Consider synthesizing a response from the data you have, "
+                        "or continue if you are making progress."
+                    ),
+                )
             return LoopVerdict(
                 action=LoopAction.CIRCUIT_BREAK,
                 tool_name=tool_name,
@@ -159,6 +178,23 @@ class LoopGuard:
         if active_calls >= self.circuit_break_total:
             self._tripped = True
             self._circuit_breaks += 1
+            # Soft nudge for effort >= 4: trust the model, don't force stop
+            if self.effort_level >= 4:
+                return LoopVerdict(
+                    action=LoopAction.WARN,
+                    tool_name=tool_name,
+                    call_hash=call_hash,
+                    hit_count=hit_count,
+                    reason=(
+                        f"Circuit break (soft): {active_calls} total calls "
+                        f"(limit: {self.circuit_break_total}, effort: {self.effort_level})"
+                    ),
+                    nudge_message=(
+                        "[SYNTHESIS NUDGE] You have made many tool calls. "
+                        "Consider synthesizing a response from the data gathered, "
+                        "or continue if you are making meaningful progress."
+                    ),
+                )
             return LoopVerdict(
                 action=LoopAction.CIRCUIT_BREAK,
                 tool_name=tool_name,

@@ -1,15 +1,25 @@
-"""Client for gateway.aitherium.com — auth, agent registration, discovery, remote inference."""
+"""Client for gateway.aitherium.com — auth, agent registration, discovery, remote inference.
+
+NOTE: The canonical GatewayClient is now in aithersdk.gateway.
+This module re-exports it for backward compatibility. New code should use:
+    from aithersdk.gateway import GatewayClient
+"""
 
 from __future__ import annotations
 
 import logging
 
-import httpx
-
 logger = logging.getLogger("adk.gateway")
 
+# Re-export from aithersdk if available, otherwise use local fallback
+try:
+    from aithersdk.gateway import GatewayClient  # noqa: F401
+    logger.debug("Using GatewayClient from aithersdk")
+except ImportError:
+    import httpx
+    logger.debug("aithersdk not installed — using local GatewayClient fallback")
 
-class GatewayClient:
+    class GatewayClient:  # noqa: F811
     """Client for the AitherOS gateway at gateway.aitherium.com.
 
     All features are optional — agents work fully offline without the gateway.

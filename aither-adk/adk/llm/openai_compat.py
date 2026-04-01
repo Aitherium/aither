@@ -49,6 +49,9 @@ class OpenAIProvider(LLMProvider):
         temperature: float = 0.7,
         max_tokens: int = 4096,
         tools: list[dict] | None = None,
+        tool_choice: str | dict | None = None,
+        top_p: float | None = None,
+        repetition_penalty: float | None = None,
         **kwargs,
     ) -> LLMResponse:
         model = model or self.default_model
@@ -60,6 +63,13 @@ class OpenAIProvider(LLMProvider):
         }
         if tools:
             payload["tools"] = tools
+        if tool_choice is not None and tools:
+            payload["tool_choice"] = tool_choice
+        if top_p is not None:
+            payload["top_p"] = top_p
+        if repetition_penalty is not None:
+            # OpenAI uses frequency_penalty; vLLM accepts repetition_penalty
+            payload["frequency_penalty"] = repetition_penalty - 1.0  # normalize: 1.3 -> 0.3
 
         start = _timer()
         async with self._client() as client:
@@ -105,6 +115,9 @@ class OpenAIProvider(LLMProvider):
         temperature: float = 0.7,
         max_tokens: int = 4096,
         tools: list[dict] | None = None,
+        tool_choice: str | dict | None = None,
+        top_p: float | None = None,
+        repetition_penalty: float | None = None,
         **kwargs,
     ) -> AsyncIterator[StreamChunk]:
         model = model or self.default_model
@@ -117,6 +130,12 @@ class OpenAIProvider(LLMProvider):
         }
         if tools:
             payload["tools"] = tools
+        if tool_choice is not None and tools:
+            payload["tool_choice"] = tool_choice
+        if top_p is not None:
+            payload["top_p"] = top_p
+        if repetition_penalty is not None:
+            payload["frequency_penalty"] = repetition_penalty - 1.0
 
         async with self._client() as client:
             async with client.stream(

@@ -194,6 +194,23 @@ class ConversationStore:
             return True
         return False
 
+    async def bulk_delete_sessions(self, session_ids: list[str]) -> int:
+        """Delete multiple conversation sessions. Returns count deleted."""
+        deleted = 0
+        for sid in session_ids:
+            if await self.delete_session(sid):
+                deleted += 1
+        return deleted
+
+    async def load_full_history(self, session_id: str) -> list[dict]:
+        """Load the complete message history for a session.
+
+        Unlike get_recent() which returns the last N messages, this returns
+        ALL messages. Used when switching sessions to restore full context.
+        """
+        conv = await self.get_or_create(session_id)
+        return list(conv.messages)
+
     # ─────────────────────────────────────────────────────────────────────
     # SESSION REPAIR (7-phase validation)
     # ─────────────────────────────────────────────────────────────────────
