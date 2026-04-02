@@ -188,7 +188,7 @@ class TestNeuronPool:
         stats = pool.stats()
         assert "registered" in stats
         assert "total_fires" in stats
-        assert len(stats["registered"]) == 3
+        assert len(stats["registered"]) == 7  # web_search, web, memory, graph, tool/agent/service inventory
 
 
 # ─── AutoNeuronFire ───────────────────────────────────────────────────────────

@@ -1386,12 +1386,441 @@ def cmd_status(args):
     return 0
 
 
+def cmd_start(args):
+    """Zero-config agent start — index, connect, chat. Works for anyone."""
+    import asyncio
+    import time as _time
+    import shutil
+
+    target = os.path.abspath(args.path or ".")
+    project_name = os.path.basename(target)
+
+    # ── Banner ──────────────────────────────────────────────────────
+    print()
+    print(f"  AitherADK")
+    print(f"  =========")
+    print()
+
+    # ── Step 1: Detect project ──────────────────────────────────────
+    _SKIP = {".git", "__pycache__", "node_modules", ".venv", "venv",
+             ".tox", "dist", "build", ".mypy_cache", "site-packages"}
+
+    def _count_files(root, ext):
+        count = 0
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames if d not in _SKIP]
+            count += sum(1 for f in filenames if f.endswith(ext))
+            if count > 5000:
+                break  # Good enough
+        return count
+
+    py_count = _count_files(target, ".py")
+    ts_count = _count_files(target, ".ts")
+    js_count = _count_files(target, ".js")
+
+    # Count all file types for a richer picture
+    all_count = sum(1 for _ in os.scandir(target) if _.is_file())
+    md_count = _count_files(target, ".md")
+    txt_count = _count_files(target, ".txt")
+    json_count = _count_files(target, ".json")
+    yaml_count = _count_files(target, ".yaml") + _count_files(target, ".yml")
+    total_files = py_count + ts_count + js_count + md_count + txt_count + json_count + yaml_count
+
+    # Classify workspace type
+    lang = None
+    if py_count >= ts_count and py_count >= js_count and py_count > 5:
+        lang = "Python"
+    elif ts_count > 5:
+        lang = "TypeScript"
+    elif js_count > 5:
+        lang = "JavaScript"
+
+    workspace_parts = []
+    if lang:
+        workspace_parts.append(f"{lang} ({py_count or ts_count or js_count} files)")
+    if md_count > 0:
+        workspace_parts.append(f"{md_count} docs")
+    if json_count + yaml_count > 0:
+        workspace_parts.append(f"{json_count + yaml_count} configs")
+    if txt_count > 0:
+        workspace_parts.append(f"{txt_count} text files")
+
+    if workspace_parts:
+        print(f"  Workspace:  {project_name} -- {', '.join(workspace_parts)}")
+    else:
+        print(f"  Workspace:  {project_name} (empty or no recognized files)")
+    print(f"  Directory:  {target}")
+
+    # ── Step 2: Detect LLM backend ──────────────────────────────────
+    llm_info = _detect_llm_backend()
+    print(f"  LLM:        {llm_info['display']}")
+
+    # ── Step 3: Index codebase (if applicable) ────────────────────
+    code_graph = None
+    if lang == "Python" and py_count > 0:
+        from adk.faculties.code_graph import CodeGraph
+        code_graph = CodeGraph()
+        print()
+        print(f"  Indexing {py_count} Python files...", end="", flush=True)
+        t0 = _time.perf_counter()
+        stats = asyncio.run(code_graph.index_codebase(target))
+        elapsed = _time.perf_counter() - t0
+        print(f" {stats['total_chunks']:,} chunks in {elapsed:.1f}s")
+    elif total_files > 0:
+        print(f"  Code index: Skipped (no Python files -- code search works with Python)")
+    else:
+        print(f"  Code index: Skipped (empty directory)")
+
+    # ── Step 4: Set up memory ───────────────────────────────────────
+    # Suppress noisy warnings for casual use
+    _logging = __import__("logging")
+    _logging.getLogger("adk.faculties.base").setLevel(_logging.ERROR)
+    _logging.getLogger("adk.faculties.memory_graph").setLevel(_logging.ERROR)
+    _logging.getLogger("adk.identity").setLevel(_logging.ERROR)
+
+    memory_dir = os.path.join(os.path.expanduser("~/.aither"), "memory", project_name)
+    from adk.faculties.memory_graph import MemoryGraph
+    memory_graph = MemoryGraph(data_dir=memory_dir)
+    mem_stats = memory_graph.get_stats()
+    if mem_stats["nodes"] > 0:
+        print(f"  Memory:     {mem_stats['nodes']} memories restored from previous sessions")
+    else:
+        print(f"  Memory:     New (will persist to {memory_dir})")
+
+    # ── Step 5: Build agent ─────────────────────────────────────────
+    print()
+
+    from adk.agent import AitherAgent
+    from adk.llm import LLMRouter
+
+    llm_kwargs = {}
+    if llm_info.get("provider"):
+        llm_kwargs["provider"] = llm_info["provider"]
+    if llm_info.get("base_url"):
+        llm_kwargs["base_url"] = llm_info["base_url"]
+    if llm_info.get("model"):
+        llm_kwargs["model"] = llm_info["model"]
+    if llm_info.get("api_key"):
+        llm_kwargs["api_key"] = llm_info["api_key"]
+
+    llm = LLMRouter(**llm_kwargs) if llm_kwargs else None
+
+    # Build system prompt based on what's available
+    prompt_parts = [
+        f"You are a helpful assistant for the '{project_name}' workspace.",
+        f"The workspace is at: {target}",
+    ]
+    if code_graph:
+        prompt_parts.append(
+            "You have code_search and code_context tools — ALWAYS search before answering code questions."
+        )
+    prompt_parts.append(
+        "You have remember/recall tools for persistent memory across sessions. "
+        "Use them proactively to store important findings and user preferences."
+    )
+    prompt_parts.append(
+        "You also have file tools (read_file, write_file, search_files, list_directory) "
+        "for working with any files in the workspace."
+    )
+    prompt_parts.append(
+        "Be direct and helpful. If you're unsure, search first, then answer."
+    )
+
+    agent = AitherAgent(
+        name=project_name,
+        llm=llm,
+        system_prompt=" ".join(prompt_parts),
+    )
+
+    if code_graph:
+        agent.set_code_graph(code_graph)
+    agent.set_memory_graph(memory_graph)
+
+    # ── Step 6: Interactive chat loop ───────────────────────────────
+    print()
+    capabilities = []
+    if code_graph:
+        capabilities.append("search your code")
+    capabilities.append("read/write files")
+    capabilities.append("remember things across sessions")
+    print(f"  Ready! I can {', '.join(capabilities)}.")
+    print("  Just ask a question. Type /help for commands, /quit to exit.")
+    print()
+
+    session_id = agent.new_session()
+
+    async def _chat_loop():
+        while True:
+            try:
+                user_input = input("  You > ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                break
+
+            if not user_input:
+                continue
+
+            if user_input.lower() in ("/quit", "/exit", "/q"):
+                break
+
+            if user_input.lower() == "/help":
+                print()
+                print("  /quit     Exit")
+                print("  /stats    Show index stats")
+                print("  /memory   Show memory stats")
+                print("  /forget   Clear session memory")
+                print("  /reindex  Re-index the codebase")
+                print()
+                continue
+
+            if user_input.lower() == "/stats":
+                if code_graph:
+                    print(f"  Code index: {len(code_graph.chunks):,} chunks, "
+                          f"{code_graph.total_files} files, "
+                          f"{code_graph.memory_usage_mb:.1f}MB")
+                ms = memory_graph.get_stats()
+                print(f"  Memory:     {ms['nodes']} memories, {ms['edges']} connections")
+                print(f"  Workspace:  {target}")
+                continue
+
+            if user_input.lower() == "/memory":
+                ms = memory_graph.get_stats()
+                print(f"  Nodes: {ms['nodes']}, Edges: {ms['edges']}, "
+                      f"Embeddings: {ms['embeddings_cached']}")
+                continue
+
+            if user_input.lower() == "/forget":
+                agent.new_session()
+                print("  Session cleared.")
+                continue
+
+            if user_input.lower() == "/reindex":
+                if code_graph:
+                    print("  Re-indexing...", end="", flush=True)
+                    stats = await code_graph.index_codebase(target)
+                    print(f" {stats['total_chunks']:,} chunks")
+                continue
+
+            # Chat
+            try:
+                response = await agent.chat(
+                    user_input,
+                    session_id=session_id,
+                    effort=5,
+                )
+                print()
+                print(f"  {response.content}")
+                print()
+                if response.tool_calls_made:
+                    tools_used = ", ".join(set(
+                        t.split("[")[0] for t in response.tool_calls_made
+                    ))
+                    print(f"  [tools: {tools_used}]")
+                    print()
+            except Exception as e:
+                print(f"\n  Error: {e}\n")
+
+    asyncio.run(_chat_loop())
+
+    # Save memory on exit (suppress noisy HMAC warnings)
+    logging = __import__("logging")
+    logging.getLogger("adk.faculties").setLevel(logging.ERROR)
+    memory_graph.save()
+    print("  Memory saved. Goodbye!")
+    return 0
+
+
+def _detect_llm_backend():
+    """Detect available LLM backend. Returns dict with provider info."""
+    import shutil
+    import subprocess
+
+    # 1. Check for Ollama
+    ollama_bin = shutil.which("ollama")
+    if ollama_bin:
+        try:
+            import httpx
+            resp = httpx.get("http://localhost:11434/api/tags", timeout=2.0)
+            if resp.status_code == 200:
+                models = resp.json().get("models", [])
+                model_names = [m["name"] for m in models]
+                # Pick best available model
+                preferred = [
+                    "llama3.2:latest", "llama3.2:3b", "llama3.1:8b",
+                    "mistral:latest", "qwen2.5:7b",
+                ]
+                chosen = None
+                for p in preferred:
+                    if p in model_names:
+                        chosen = p
+                        break
+                if not chosen and model_names:
+                    chosen = model_names[0]
+                if chosen:
+                    return {
+                        "provider": "ollama",
+                        "model": chosen,
+                        "display": f"Ollama ({chosen})",
+                    }
+                else:
+                    return {
+                        "provider": "ollama",
+                        "display": "Ollama (no models pulled — run: ollama pull llama3.2)",
+                    }
+        except Exception:
+            pass
+
+    # 2. Check for vLLM
+    try:
+        import httpx
+        for port in (8200, 8120, 8116):
+            try:
+                resp = httpx.get(f"http://localhost:{port}/v1/models", timeout=1.0)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    model_id = data["data"][0]["id"] if data.get("data") else "unknown"
+                    return {
+                        "provider": "openai",
+                        "base_url": f"http://localhost:{port}/v1",
+                        "model": model_id,
+                        "api_key": "not-needed",
+                        "display": f"vLLM ({model_id})",
+                    }
+            except Exception:
+                continue
+    except ImportError:
+        pass
+
+    # 3. Check for Elysium API key
+    api_key = os.environ.get("AITHER_API_KEY", "")
+    if not api_key:
+        config_path = Path.home() / ".aither" / "config.json"
+        if config_path.exists():
+            try:
+                import json as _j
+                cfg = _j.loads(config_path.read_text(encoding="utf-8"))
+                api_key = cfg.get("api_key", "")
+            except Exception:
+                pass
+    if api_key:
+        return {
+            "provider": "gateway",
+            "base_url": "https://mcp.aitherium.com/v1",
+            "api_key": api_key,
+            "model": "aither-orchestrator",
+            "display": "Elysium Cloud (aither-orchestrator)",
+        }
+
+    # 4. Check for OpenAI key
+    openai_key = os.environ.get("OPENAI_API_KEY", "")
+    if openai_key:
+        return {
+            "provider": "openai",
+            "api_key": openai_key,
+            "model": "gpt-4o-mini",
+            "display": "OpenAI (gpt-4o-mini)",
+        }
+
+    # 5. Check for Anthropic key
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if anthropic_key:
+        return {
+            "provider": "anthropic",
+            "api_key": anthropic_key,
+            "model": "claude-sonnet-4-20250514",
+            "display": "Anthropic (claude-sonnet-4-20250514)",
+        }
+
+    return {
+        "display": "None detected! Install Ollama (ollama.com) or set AITHER_API_KEY",
+    }
+
+
+def cmd_index(args):
+    """Index a codebase for code search via CodeGraph."""
+    import asyncio
+    import time as _time
+
+    target = os.path.abspath(args.path)
+    if not os.path.isdir(target):
+        print(f"Error: {target} is not a directory")
+        return 1
+
+    print(f"Indexing: {target}")
+    print()
+
+    from adk.faculties.code_graph import CodeGraph
+
+    cg = CodeGraph()
+
+    def on_progress(frac, msg):
+        bar_len = 30
+        filled = int(bar_len * frac)
+        bar = "#" * filled + "-" * (bar_len - filled)
+        print(f"\r  [{bar}] {frac*100:5.1f}%  {msg:<50}", end="", flush=True)
+
+    t0 = _time.perf_counter()
+    stats = asyncio.run(cg.index_codebase(target, on_progress=on_progress))
+    elapsed = _time.perf_counter() - t0
+    print()  # newline after progress bar
+    print()
+    print(f"  Files:      {stats['total_files']:,}")
+    print(f"  Functions:  {stats['functions']:,}")
+    print(f"  Methods:    {stats['methods']:,}")
+    print(f"  Classes:    {stats['classes']:,}")
+    print(f"  Total:      {stats['total_chunks']:,} chunks in {elapsed:.1f}s")
+
+    if args.embed:
+        print()
+        print("Generating embeddings...")
+        try:
+            embed_stats = asyncio.run(cg.embed_chunks(on_progress=on_progress))
+            print()
+            print(f"  Embedded:   {embed_stats.get('new', 0)} new, {embed_stats.get('cached', 0)} cached")
+            print(f"  Backend:    {embed_stats.get('model', 'unknown')}")
+        except Exception as e:
+            print(f"\n  Embedding failed: {e}")
+            print("  (Install sentence-transformers for local embeddings, or set AITHER_API_KEY for cloud)")
+
+    if args.stats:
+        print()
+        metrics = cg.get_python_metrics()
+        print(f"  Total lines:      {metrics['total_py_lines']:,}")
+        print(f"  Avg complexity:   {metrics['avg_complexity']}")
+        print(f"  Test functions:   {metrics['test_functions']:,}")
+        if metrics.get("top_complex_files"):
+            print(f"  Most complex:")
+            for name, cx in metrics["top_complex_files"][:5]:
+                print(f"    {name}: {cx}")
+
+    # Test a sample query
+    print()
+    sample_results = asyncio.run(cg.query("main", max_results=3))
+    if sample_results:
+        print("  Sample query 'main':")
+        for r in sample_results:
+            print(f"    {r.chunk_type.value}: {r.name} @ {Path(r.source_path).name}:{r.start_line}")
+
+    print()
+    print("Done! Use in your agent:")
+    print()
+    print("    from adk.faculties import CodeGraph")
+    print(f"    cg = CodeGraph()")
+    print(f"    await cg.index_codebase(\"{target}\")")
+    print("    agent.set_code_graph(cg)")
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="adk",
         description="AitherADK — Build AI agent fleets with any LLM backend",
     )
     sub = parser.add_subparsers(dest="command")
+
+    # adk start — the main entry point for everyone
+    start_p = sub.add_parser("start", help="Start chatting with your codebase (zero config)")
+    start_p.add_argument("path", nargs="?", default=".", help="Project directory (default: current)")
 
     # aither init
     init_p = sub.add_parser("init", help="Scaffold a new agent project")
@@ -1474,6 +1903,12 @@ def main():
     integrate_p.add_argument("--force", action="store_true",
                              help="Overwrite existing integration config")
 
+    # adk index — index a codebase for CodeGraph
+    index_p = sub.add_parser("index", help="Index a codebase for code search (CodeGraph)")
+    index_p.add_argument("path", nargs="?", default=".", help="Path to index (default: current directory)")
+    index_p.add_argument("--embed", action="store_true", help="Also generate embeddings for semantic search")
+    index_p.add_argument("--stats", action="store_true", help="Show Python metrics after indexing")
+
     # adk test
     test_p = sub.add_parser("test", help="Run agent tests")
     test_p.add_argument("-d", "--directory", help="Project directory (default: .)")
@@ -1503,7 +1938,9 @@ def main():
 
     args = parser.parse_args()
 
-    if args.command == "init":
+    if args.command == "start":
+        sys.exit(cmd_start(args))
+    elif args.command == "init":
         sys.exit(cmd_init(args))
     elif args.command == "run":
         cmd_run(args)
@@ -1524,10 +1961,16 @@ def main():
         sys.exit(cmd_integrate(args))
     elif args.command == "publish":
         sys.exit(cmd_publish(args))
+    elif args.command == "index":
+        sys.exit(cmd_index(args))
     elif args.command == "test":
         sys.exit(cmd_test(args))
     elif args.command == "status":
         sys.exit(cmd_status(args))
+    elif args.command is None:
+        # No command — default to start
+        args.path = "."
+        sys.exit(cmd_start(args))
     else:
         parser.print_help()
         sys.exit(1)

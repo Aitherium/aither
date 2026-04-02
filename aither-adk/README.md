@@ -319,7 +319,7 @@ async def main():
 
     # Store knowledge triples
     await agent.graph_remember("AitherOS", "uses", "SQLite")
-    await agent.graph_remember("AitherOS", "has", "203 microservices")
+    await agent.graph_remember("AitherOS", "has", "196 microservices")
 
     # Query the graph
     results = await agent.graph_query("What database does AitherOS use?")

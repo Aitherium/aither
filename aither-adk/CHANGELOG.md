@@ -2,6 +2,36 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [0.13.0] - 2026-04-02
+
+### Graph Faculties — Local Knowledge for Every Agent
+- **CodeGraph** (2,799 lines) — Full Python AST indexer with call graph, keyword/semantic/hybrid query, embedding matrix cache, incremental re-indexing, multi-hop chain expansion
+- **MemoryGraph** (1,339 lines) — Graph-based persistent agent memory with 10 edge types, hybrid query (keyword + semantic + graph expansion), multi-hop recall, pickle persistence
+- **EmbeddingProvider** — 4-backend fallback chain: sentence-transformers (GPU/CPU) -> Ollama -> Elysium cloud -> feature hashing (zero deps)
+- **BaseFacultyGraph** — Abstract base with HMAC-SHA256 validated pickle persistence
+
+### Agent Integration
+- `agent.set_code_graph(cg)` — auto-registers `code_search` + `code_context` tools
+- `agent.set_memory_graph(mg)` — auto-registers `remember` + `recall` + `memory_stats` tools
+- Both graphs inject context into LLM prompts automatically during chat
+
+### Zero-Config Onboarding
+- `adk start` / `adk` (no args) — auto-detect project, index code, detect LLM, persistent memory, interactive chat
+- Works for any directory: Python codebases, doc folders, mixed workspaces
+- Auto-detects LLM: Ollama -> vLLM -> Elysium -> OpenAI -> Anthropic
+- Per-project persistent memory in `~/.aither/memory/<project>`
+- `adk index <path>` — standalone indexing with progress bar and stats
+
+### MCP Gateway
+- `POST /v1/embeddings` — OpenAI-compatible embedding proxy to vLLM-embeddings:8209
+- Available to all tiers (embeddings are free)
+- ADK EmbeddingProvider uses this as Elysium cloud fallback
+
+### Optional Dependencies
+- `pip install aither-adk[graphs]` — numpy for 10x cosine similarity speedup
+- `pip install aither-adk[embedding]` — sentence-transformers + torch for local GPU embeddings
+- `pip install aither-adk` alone — graphs work with feature hashing (zero deps)
+
 ## [0.12.0] - 2026-04-01
 
 ### Bootstrap & Service Discovery

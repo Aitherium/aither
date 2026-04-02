@@ -121,10 +121,11 @@ class TestAgentRun:
         agent = AitherAgent("test", llm=mock_llm, memory=tmp_memory)
         resp = await agent.run("Build a REST API")
         assert resp.content == "Mock response"
-        call_args = mock_llm.chat.call_args
-        messages = call_args[0][0]
-        user_msg = messages[-1]
-        assert "Build a REST API" in user_msg.content
+        # The task message may be in the first or second call (steering retry)
+        all_messages = []
+        for call in mock_llm.chat.call_args_list:
+            all_messages.extend(call[0][0])
+        assert any("Build a REST API" in m.content for m in all_messages)
 
 
 class TestAgentMemory:

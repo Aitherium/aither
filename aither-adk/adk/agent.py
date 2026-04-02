@@ -845,6 +845,53 @@ class AitherAgent:
         self._session_id = str(uuid.uuid4())[:8]
         return self._session_id
 
+    # ── Faculty graph integration ────────────────────────────────────
+
+    def set_code_graph(self, code_graph) -> None:
+        """Attach a CodeGraph to this agent.
+
+        When a CodeGraph is attached, the agent automatically gains
+        ``code_search`` and ``code_context`` built-in tools. The graph
+        is also used to inject relevant code snippets into the LLM context
+        when the user's message looks like a code question.
+
+        Usage::
+
+            from adk.faculties import CodeGraph
+
+            cg = CodeGraph()
+            await cg.index_codebase("./my-project")
+            agent.set_code_graph(cg)
+        """
+        self._code_graph = code_graph
+        try:
+            from adk.builtin_tools import _register_code_graph_tools
+            _register_code_graph_tools(self, code_graph)
+        except Exception:
+            pass
+
+    def set_memory_graph(self, memory_graph) -> None:
+        """Attach a MemoryGraph to this agent.
+
+        When a MemoryGraph is attached, the agent automatically gains
+        ``remember``, ``recall``, and ``query_memory`` built-in tools.
+        The graph is also queried during chat to inject relevant memories
+        into the system prompt.
+
+        Usage::
+
+            from adk.faculties import MemoryGraph
+
+            mg = MemoryGraph(data_dir="~/.aither/memory")
+            agent.set_memory_graph(mg)
+        """
+        self._memory_graph = memory_graph
+        try:
+            from adk.builtin_tools import _register_memory_graph_tools
+            _register_memory_graph_tools(self, memory_graph)
+        except Exception:
+            pass
+
     async def graph_remember(self, subject: str, relation: str, object_: str):
         """Store a knowledge triple in the agent's graph memory."""
         if not self._graph:

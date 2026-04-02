@@ -580,6 +580,295 @@ def image_smart(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Git tools — essential for coding agents
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def git_status(path: str = ".") -> str:
+    """Show working tree status (modified, staged, untracked files)."""
+    try:
+        r = subprocess.run(
+            ["git", "status", "--short"],
+            capture_output=True, text=True, timeout=10, cwd=path,
+        )
+        return r.stdout or "(clean)"
+    except Exception as e:
+        return f"Error: {e}"
+
+
+def git_diff(path: str = ".", staged: bool = False) -> str:
+    """Show file changes. Set staged=true for staged changes only."""
+    cmd = ["git", "diff"]
+    if staged:
+        cmd.append("--staged")
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=15, cwd=path)
+        return r.stdout[:20000] or "(no changes)"
+    except Exception as e:
+        return f"Error: {e}"
+
+
+def git_log(path: str = ".", count: int = 10) -> str:
+    """Show recent commit history."""
+    try:
+        r = subprocess.run(
+            ["git", "log", f"-{count}", "--oneline", "--no-decorate"],
+            capture_output=True, text=True, timeout=10, cwd=path,
+        )
+        return r.stdout or "(no commits)"
+    except Exception as e:
+        return f"Error: {e}"
+
+
+def git_add(files: str, path: str = ".") -> str:
+    """Stage files for commit. Use '.' for all changes."""
+    try:
+        r = subprocess.run(
+            ["git", "add"] + files.split(),
+            capture_output=True, text=True, timeout=10, cwd=path,
+        )
+        return r.stdout + r.stderr or "Staged"
+    except Exception as e:
+        return f"Error: {e}"
+
+
+def git_commit(message: str, path: str = ".") -> str:
+    """Create a commit with the given message."""
+    try:
+        r = subprocess.run(
+            ["git", "commit", "-m", message],
+            capture_output=True, text=True, timeout=15, cwd=path,
+        )
+        return r.stdout + r.stderr
+    except Exception as e:
+        return f"Error: {e}"
+
+
+def git_branch_list(path: str = ".") -> str:
+    """List all branches, marking the current one."""
+    try:
+        r = subprocess.run(
+            ["git", "branch", "-a", "--no-color"],
+            capture_output=True, text=True, timeout=10, cwd=path,
+        )
+        return r.stdout or "(no branches)"
+    except Exception as e:
+        return f"Error: {e}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Code search — grep/ripgrep for coding agents
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def code_search(pattern: str, path: str = ".", file_glob: str = "", max_results: int = 50) -> str:
+    """Search code for a regex pattern. Uses ripgrep if available, falls back to grep.
+
+    Args:
+        pattern: Regex pattern to search for.
+        path: Directory to search in.
+        file_glob: Optional file pattern filter (e.g. '*.py', '*.ts').
+        max_results: Max matching lines to return.
+    """
+    # Try ripgrep first (much faster)
+    for cmd_name in ["rg", "grep"]:
+        try:
+            cmd = [cmd_name, "-n", "--no-heading"]
+            if cmd_name == "rg":
+                cmd.extend(["--max-count", str(max_results)])
+                if file_glob:
+                    cmd.extend(["--glob", file_glob])
+            elif cmd_name == "grep":
+                cmd.extend(["-r", f"--include={file_glob}" if file_glob else "-r"])
+            cmd.extend([pattern, path])
+
+            r = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=30,
+            )
+            output = r.stdout[:30000]
+            lines = output.strip().split("\n")
+            if len(lines) > max_results:
+                lines = lines[:max_results]
+                lines.append(f"... ({len(output.strip().split(chr(10)))} total matches, showing {max_results})")
+            return "\n".join(lines) or "(no matches)"
+        except FileNotFoundError:
+            continue
+        except Exception as e:
+            return f"Error: {e}"
+    return "Error: neither rg nor grep found"
+
+
+def code_symbols(path: str, pattern: str = "") -> str:
+    """List function/class definitions in a file. Optionally filter by pattern."""
+    import ast as _ast
+    try:
+        source = Path(path).read_text(encoding="utf-8")
+        tree = _ast.parse(source)
+        symbols = []
+        for node in _ast.walk(tree):
+            if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+                name = f"def {node.name}() line {node.lineno}"
+                if not pattern or pattern.lower() in node.name.lower():
+                    symbols.append(name)
+            elif isinstance(node, _ast.ClassDef):
+                name = f"class {node.name} line {node.lineno}"
+                if not pattern or pattern.lower() in node.name.lower():
+                    symbols.append(name)
+        return "\n".join(symbols) or "(no symbols found)"
+    except Exception as e:
+        return f"Error: {e}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Faculty Graph Tools (registered when agent.set_code_graph/set_memory_graph)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _register_code_graph_tools(agent: "AitherAgent", code_graph) -> int:
+    """Register CodeGraph-backed tools on an agent.
+
+    Called by agent.set_code_graph(). Adds code_search and code_context tools.
+    """
+    import asyncio as _asyncio
+
+    def cg_search(query: str, max_results: int = 10) -> str:
+        """Search indexed code for functions/classes matching a query.
+
+        query: Natural language or keyword query (e.g. 'authentication middleware')
+        max_results: Maximum results to return (default 10)
+        """
+        try:
+            try:
+                loop = _asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+            if loop and loop.is_running():
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                    results = pool.submit(_asyncio.run, code_graph.query(query, max_results=max_results)).result(timeout=30)
+            else:
+                results = _asyncio.run(code_graph.query(query, max_results=max_results))
+            items = []
+            for chunk in results:
+                items.append({
+                    "name": chunk.name,
+                    "type": chunk.chunk_type.value,
+                    "file": chunk.source_path,
+                    "line": chunk.start_line,
+                    "signature": chunk.signature,
+                    "calls": chunk.calls[:5],
+                    "called_by": chunk.called_by[:5],
+                })
+            return json.dumps({"results": items, "count": len(items)})
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
+    def cg_context(chunk_id: str) -> str:
+        """Get full context for a code chunk including callers and callees.
+
+        chunk_id: The chunk ID from a code_search result
+        """
+        try:
+            ctx = code_graph.get_context_for_chunk(chunk_id)
+            if not ctx:
+                return json.dumps({"error": "Chunk not found"})
+            chunk = ctx["chunk"]
+            result = {
+                "name": chunk.name,
+                "signature": chunk.signature,
+                "docstring": chunk.docstring,
+                "file": chunk.source_path,
+                "lines": f"{chunk.start_line}-{chunk.end_line}",
+                "callers": [{"name": c.name, "file": c.source_path} for c in ctx.get("callers", [])],
+                "callees": [{"name": c.name, "file": c.source_path} for c in ctx.get("callees", [])],
+            }
+            body = code_graph.get_full_body(chunk_id)
+            if body:
+                result["body"] = body[:5000]
+            return json.dumps(result)
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
+    agent._tools.register(cg_search, name="code_search", description="Search indexed code for functions/classes matching a query")
+    agent._tools.register(cg_context, name="code_context", description="Get full context for a code chunk including callers and callees")
+    logger.info("Registered CodeGraph tools (code_search, code_context) on agent %s", agent.name)
+    return 2
+
+
+def _register_memory_graph_tools(agent: "AitherAgent", memory_graph) -> int:
+    """Register MemoryGraph-backed tools on an agent.
+
+    Called by agent.set_memory_graph(). Adds mg_remember, mg_recall, mg_query tools.
+    """
+    from types import SimpleNamespace
+    import hashlib as _hl
+
+    def mg_remember(content: str, title: str = "", tags: str = "") -> str:
+        """Store a memory in the agent's knowledge graph.
+
+        content: The memory content to store
+        title: Short title for the memory (optional)
+        tags: Comma-separated tags (optional)
+        """
+        try:
+            tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
+            mid = _hl.md5(content[:200].encode()).hexdigest()
+            mem = SimpleNamespace(
+                id=mid,
+                title=title or content[:80],
+                content=content,
+                memory_type="episodic",
+                tags=tag_list,
+                source_agent=agent.name,
+                importance=0.5,
+                embedding=None,
+                created_at=time.time(),
+                archived=False,
+                scope="shared",
+            )
+            memory_graph.add_node(mem, upsert=True)
+            memory_graph.save()
+            return json.dumps({"success": True, "id": mid})
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
+    def mg_recall(query: str, max_results: int = 5) -> str:
+        """Search agent memory for relevant past knowledge.
+
+        query: What to search for in memory
+        max_results: Maximum memories to return (default 5)
+        """
+        try:
+            results = memory_graph.hybrid_query(query, max_results=max_results)
+            items = []
+            for node, score in results:
+                mem = node.memory
+                items.append({
+                    "title": getattr(mem, "title", ""),
+                    "content": getattr(mem, "content", "")[:500],
+                    "tags": list(getattr(mem, "tags", []) or []),
+                    "score": score,
+                })
+            return json.dumps({"results": items, "count": len(items)})
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
+    def mg_stats() -> str:
+        """Get memory graph statistics (node count, edges, etc.)."""
+        try:
+            stats = memory_graph.get_stats()
+            return json.dumps(stats)
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
+    agent._tools.register(mg_remember, name="remember", description="Store a memory in the agent's knowledge graph")
+    agent._tools.register(mg_recall, name="recall", description="Search agent memory for relevant past knowledge")
+    agent._tools.register(mg_stats, name="memory_stats", description="Get memory graph statistics")
+    logger.info("Registered MemoryGraph tools (remember, recall, memory_stats) on agent %s", agent.name)
+    return 3
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Registration
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -591,19 +880,21 @@ TOOL_CATEGORIES = {
     "web": [web_search, web_fetch],
     "secrets": [secret_get, secret_set, secret_list],
     "creative": [image_generate, image_refine, image_smart],
+    "git": [git_status, git_diff, git_log, git_add, git_commit, git_branch_list],
+    "code": [code_search, code_symbols],
 }
 
 # Default categories for common identity profiles
 IDENTITY_DEFAULTS = {
-    "demiurge": ["file_io", "shell", "python", "web"],
-    "atlas": ["file_io", "web", "secrets"],
-    "aither": ["file_io", "shell", "python", "web", "secrets", "creative"],
+    "demiurge": ["file_io", "shell", "python", "web", "git", "code"],
+    "atlas": ["file_io", "web", "secrets", "code"],
+    "aither": ["file_io", "shell", "python", "web", "secrets", "creative", "git", "code"],
     "lyra": ["file_io", "web"],
-    "hydra": ["file_io", "shell", "python"],
-    "prometheus": ["file_io", "shell", "secrets"],
-    "apollo": ["file_io", "shell", "python"],
-    "athena": ["file_io", "web", "secrets"],
-    "scribe": ["file_io", "web"],
+    "hydra": ["file_io", "shell", "python", "git", "code"],
+    "prometheus": ["file_io", "shell", "secrets", "git"],
+    "apollo": ["file_io", "shell", "python", "code"],
+    "athena": ["file_io", "web", "secrets", "code"],
+    "scribe": ["file_io", "web", "code"],
     "iris": ["file_io", "web", "creative"],
     "muse": ["file_io", "web", "creative"],
 }

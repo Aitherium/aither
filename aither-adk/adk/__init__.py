@@ -1,6 +1,6 @@
 """AitherOS Alpha — Build AI agent fleets with any LLM backend."""
 
-__version__ = "0.12.0"
+__version__ = "0.13.0"
 
 from adk.agent import AitherAgent
 from adk.tools import tool, ToolRegistry
@@ -42,6 +42,10 @@ __all__ = [
     "CATEGORY_TOOLS",
     # Elysium cloud
     "Elysium",
+    # Faculty graphs (local knowledge)
+    "CodeGraph",
+    "MemoryGraph",
+    "EmbeddingProvider",
     # Mesh relay
     "AitherNetRelay",
     # Chat + Mail
@@ -170,6 +174,15 @@ def __getattr__(name):
     if name == "CATEGORY_TOOLS":
         from adk.neurons import CATEGORY_TOOLS
         return CATEGORY_TOOLS
+    if name == "CodeGraph":
+        from adk.faculties.code_graph import CodeGraph
+        return CodeGraph
+    if name == "MemoryGraph":
+        from adk.faculties.memory_graph import MemoryGraph
+        return MemoryGraph
+    if name == "EmbeddingProvider":
+        from adk.faculties.embeddings import EmbeddingProvider
+        return EmbeddingProvider
     if name == "Elysium":
         from adk.elysium import Elysium
         return Elysium

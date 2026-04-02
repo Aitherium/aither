@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "aither-adk"
-version = "0.12.0"
+version = "0.13.0"
 description = "Agent development kit for AitherOS. Your hardware, your models, your data stays yours."
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -34,7 +34,19 @@ dependencies = [
 anthropic = ["anthropic>=0.18.0"]
 openai = ["openai>=1.0.0"]
 sdk = ["aithersdk>=0.1.0"]
-all = ["anthropic>=0.18.0", "openai>=1.0.0", "aithersdk>=0.1.0"]
+graphs = [
+    "numpy>=1.24.0",
+]
+embedding = [
+    "sentence-transformers>=2.3.0",
+    "torch>=2.0.0",
+]
+all = [
+    "aither-adk[graphs,embedding]",
+    "anthropic>=0.18.0",
+    "openai>=1.0.0",
+    "aithersdk>=0.1.0",
+]
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.23.0",
