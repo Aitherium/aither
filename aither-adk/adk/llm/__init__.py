@@ -41,7 +41,7 @@ _EFFORT_MODELS = {
         "large": "aither-reasoning",
     },
     "ollama": {
-        "small": "llama3.2:3b",
+        "small": "gemma4:4b",
         "medium": "nemotron-orchestrator-8b",
         "large": "deepseek-r1:14b",
     },
@@ -121,7 +121,7 @@ class LLMRouter:
             from .ollama import OllamaProvider
             return OllamaProvider(
                 host=base_url or "http://localhost:11434",
-                default_model=self._model or "nemotron-orchestrator-8b",
+                default_model=self._model or "gemma4:4b",
             )
         elif name in ("openai", "vllm", "lmstudio", "llamacpp", "groq", "together"):
             from .openai_compat import OpenAIProvider
@@ -150,7 +150,7 @@ class LLMRouter:
         try:
             from .ollama import OllamaProvider
             host = (self._config.ollama_host if self._config else None) or "http://localhost:11434"
-            p = OllamaProvider(host=host, default_model=self._model or "nemotron-orchestrator-8b")
+            p = OllamaProvider(host=host, default_model=self._model or "gemma4:4b")
             if await p.health_check():
                 self._provider_name = "ollama"
                 logger.info("Auto-detected Ollama at %s", host)

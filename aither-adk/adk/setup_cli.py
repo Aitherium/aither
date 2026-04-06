@@ -79,10 +79,12 @@ def step(n: int, total: int, msg: str) -> None:
 class GPUInfo:
     vendor: str = "none"
     name: str = "Unknown"
-    vram_mb: int = 0
+    vram_mb: int = 0          # Best single GPU VRAM (for Ollama profile selection)
     cuda_version: str = ""
     driver_version: str = ""
     gpu_count: int = 0
+    total_vram_mb: int = 0    # Sum of all GPUs (for vLLM tier selection)
+    all_gpus: list = field(default_factory=list)  # List of {"name": str, "vram_mb": int}
 
 
 def _run(cmd: list[str], timeout: int = 10) -> Optional[str]:
@@ -101,20 +103,40 @@ def detect_gpu() -> GPUInfo:
                     "--format=csv,noheader,nounits"])
         if out:
             lines = [l.strip() for l in out.strip().split("\n") if l.strip()]
-            parts = [p.strip() for p in lines[0].split(",")]
             cuda_out = _run([smi])
             cuda_ver = ""
             if cuda_out:
                 m = re.search(r"CUDA Version:\s*([\d.]+)", cuda_out)
                 if m:
                     cuda_ver = m.group(1)
+
+            # Parse all GPUs, find best (max VRAM), sum total
+            all_gpus = []
+            best_name = "NVIDIA GPU"
+            best_vram = 0
+            total_vram = 0
+            best_driver = ""
+            for line in lines:
+                parts = [p.strip() for p in line.split(",")]
+                g_name = parts[0] if parts else "NVIDIA GPU"
+                g_vram = int(float(parts[1])) if len(parts) > 1 else 0
+                g_driver = parts[2] if len(parts) > 2 else ""
+                all_gpus.append({"name": g_name, "vram_mb": g_vram})
+                total_vram += g_vram
+                if g_vram > best_vram:
+                    best_vram = g_vram
+                    best_name = g_name
+                    best_driver = g_driver
+
             return GPUInfo(
                 vendor="nvidia",
-                name=parts[0] if parts else "NVIDIA GPU",
-                vram_mb=int(float(parts[1])) if len(parts) > 1 else 0,
-                driver_version=parts[2] if len(parts) > 2 else "",
+                name=best_name,
+                vram_mb=best_vram,
+                driver_version=best_driver,
                 cuda_version=cuda_ver,
                 gpu_count=len(lines),
+                total_vram_mb=total_vram,
+                all_gpus=all_gpus,
             )
 
     rocm = shutil.which("rocm-smi")
@@ -235,7 +257,8 @@ TIERS: dict[str, dict] = {
 def recommend_tier(gpu: GPUInfo) -> str:
     if gpu.vendor != "nvidia":
         return "ollama"
-    vram = gpu.vram_mb / 1024 * 0.85
+    # Use total VRAM for vLLM tier — workers spread across GPUs
+    vram = (gpu.total_vram_mb or gpu.vram_mb) / 1024 * 0.85
     if vram >= 24: return "full"
     if vram >= 18: return "standard"
     if vram >= 10: return "lite"
@@ -645,12 +668,19 @@ def cmd_setup(args) -> int:
     vram_gb = gpu.vram_mb / 1024 if gpu.vram_mb else 0
 
     if gpu.vendor == "nvidia":
-        info(f"GPU: {bold(gpu.name)}")
-        info(f"VRAM: {bold(f'{vram_gb:.0f}GB')}")
+        if gpu.gpu_count > 1 and gpu.all_gpus:
+            info(f"GPUs: {bold(str(gpu.gpu_count))} detected")
+            for i, g in enumerate(gpu.all_gpus):
+                g_vram = g['vram_mb'] / 1024
+                info(f"  GPU {i}: {g['name']} ({g_vram:.0f}GB)")
+            total_gb = gpu.total_vram_mb / 1024 if gpu.total_vram_mb else vram_gb
+            info(f"Best GPU: {bold(gpu.name)} ({vram_gb:.0f}GB)")
+            info(f"Total VRAM: {bold(f'{total_gb:.0f}GB')}")
+        else:
+            info(f"GPU: {bold(gpu.name)}")
+            info(f"VRAM: {bold(f'{vram_gb:.0f}GB')}")
         if gpu.cuda_version:
             info(f"CUDA: {gpu.cuda_version}")
-        if gpu.gpu_count > 1:
-            info(f"GPUs: {gpu.gpu_count}")
     elif gpu.vendor == "amd":
         info(f"GPU: {bold(gpu.name)} (AMD)")
         warn("AMD GPUs work with Ollama. vLLM requires NVIDIA CUDA.")

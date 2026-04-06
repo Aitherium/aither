@@ -814,10 +814,26 @@ def cmd_onboard(args):
                 capture_output=True, text=True, timeout=5,
             )
             if result.returncode == 0 and result.stdout.strip():
-                parts = result.stdout.strip().split(",")
-                gpu_name = parts[0].strip()
-                vram = float(parts[1].strip()) / 1024 if len(parts) > 1 else 0
-                print(f"  [OK] GPU: {gpu_name} ({vram:.0f}GB VRAM)")
+                lines = [l.strip() for l in result.stdout.strip().splitlines() if l.strip()]
+                if len(lines) > 1:
+                    # Multi-GPU: show all, highlight best
+                    best_vram = 0
+                    total_vram = 0
+                    for i, line in enumerate(lines):
+                        parts = [p.strip() for p in line.split(",")]
+                        g_name = parts[0] if parts else "GPU"
+                        g_vram = float(parts[1]) / 1024 if len(parts) > 1 else 0
+                        total_vram += g_vram
+                        if g_vram > best_vram:
+                            best_vram = g_vram
+                            gpu_name = g_name
+                        print(f"  [OK] GPU {i}: {g_name} ({g_vram:.0f}GB VRAM)")
+                    print(f"  [OK] Total VRAM: {total_vram:.0f}GB across {len(lines)} GPUs")
+                else:
+                    parts = [p.strip() for p in lines[0].split(",")]
+                    gpu_name = parts[0].strip()
+                    vram = float(parts[1].strip()) / 1024 if len(parts) > 1 else 0
+                    print(f"  [OK] GPU: {gpu_name} ({vram:.0f}GB VRAM)")
         except Exception:
             print("  [--] No NVIDIA GPU detected")
 

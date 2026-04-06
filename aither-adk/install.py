@@ -147,9 +147,12 @@ class GPUInfo:
     """Detected GPU information."""
     vendor: str = "none"  # "nvidia", "amd", "apple", "none"
     name: str = ""
-    vram_mb: int = 0
+    vram_mb: int = 0          # Best single GPU VRAM (for profile selection)
     cuda_version: str = ""
     driver_version: str = ""
+    gpu_count: int = 0
+    total_vram_mb: int = 0    # Sum of all GPUs
+    all_gpus: list = field(default_factory=list)  # List of {"name": str, "vram_mb": int}
 
 
 @dataclass
@@ -455,18 +458,35 @@ def detect_nvidia_gpu() -> Optional[GPUInfo]:
     if not csv_output:
         return None
 
-    # Parse first GPU line
-    first_line = csv_output.splitlines()[0]
-    parts = [p.strip() for p in first_line.split(",")]
-    if len(parts) < 3:
+    lines = [l.strip() for l in csv_output.splitlines() if l.strip()]
+    if not lines:
         return None
 
-    gpu_name = parts[0]
-    try:
-        vram_mb = int(float(parts[1]))
-    except (ValueError, IndexError):
-        vram_mb = 0
-    driver_ver = parts[2]
+    # Parse all GPUs, find best (max VRAM), sum total
+    all_gpus = []
+    best_name = "NVIDIA GPU"
+    best_vram = 0
+    total_vram = 0
+    best_driver = ""
+    for line in lines:
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 3:
+            continue
+        g_name = parts[0]
+        try:
+            g_vram = int(float(parts[1]))
+        except (ValueError, IndexError):
+            g_vram = 0
+        g_driver = parts[2]
+        all_gpus.append({"name": g_name, "vram_mb": g_vram})
+        total_vram += g_vram
+        if g_vram > best_vram:
+            best_vram = g_vram
+            best_name = g_name
+            best_driver = g_driver
+
+    if not all_gpus:
+        return None
 
     # Detect CUDA version
     cuda_ver = ""
@@ -478,10 +498,13 @@ def detect_nvidia_gpu() -> Optional[GPUInfo]:
 
     return GPUInfo(
         vendor="nvidia",
-        name=gpu_name,
-        vram_mb=vram_mb,
+        name=best_name,
+        vram_mb=best_vram,
         cuda_version=cuda_ver,
-        driver_version=driver_ver,
+        driver_version=best_driver,
+        gpu_count=len(all_gpus),
+        total_vram_mb=total_vram,
+        all_gpus=all_gpus,
     )
 
 
@@ -831,8 +854,17 @@ def print_system_summary(sys_info: SystemInfo) -> None:
     if gpu.vendor == "none":
         print(f"    GPU:     {dim('None detected')}")
     else:
-        vram_str = f"{gpu.vram_mb / 1024:.1f} GB VRAM" if gpu.vram_mb else "VRAM unknown"
-        print(f"    GPU:     {gpu.name} ({vram_str})")
+        if gpu.gpu_count > 1 and gpu.all_gpus:
+            print(f"    GPUs:    {gpu.gpu_count} detected")
+            for i, g in enumerate(gpu.all_gpus):
+                g_vram = g['vram_mb'] / 1024
+                print(f"      GPU {i}: {g['name']} ({g_vram:.1f} GB)")
+            total_gb = gpu.total_vram_mb / 1024 if gpu.total_vram_mb else gpu.vram_mb / 1024
+            print(f"    Best:    {gpu.name} ({gpu.vram_mb / 1024:.1f} GB VRAM)")
+            print(f"    Total:   {total_gb:.1f} GB VRAM")
+        else:
+            vram_str = f"{gpu.vram_mb / 1024:.1f} GB VRAM" if gpu.vram_mb else "VRAM unknown"
+            print(f"    GPU:     {gpu.name} ({vram_str})")
         if gpu.cuda_version:
             print(f"    CUDA:    {gpu.cuda_version}")
         if gpu.driver_version:

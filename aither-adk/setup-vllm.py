@@ -99,11 +99,13 @@ def step(n: int, total: int, msg: str) -> None:
 class GPUInfo:
     vendor: str = "none"
     name: str = "Unknown"
-    vram_mb: int = 0
+    vram_mb: int = 0          # Best single GPU VRAM (for Ollama profile selection)
     cuda_version: str = ""
     driver_version: str = ""
     compute_capability: str = ""
     gpu_count: int = 0
+    total_vram_mb: int = 0    # Sum of all GPUs (for vLLM tier selection)
+    all_gpus: list = field(default_factory=list)  # List of {"name": str, "vram_mb": int}
 
 
 def _run_cmd(cmd: list[str], timeout: int = 10) -> Optional[str]:
@@ -121,7 +123,7 @@ def detect_nvidia_gpu() -> Optional[GPUInfo]:
         return None
 
     # Get GPU name and VRAM
-    out = _run_cmd([smi, "--query-gpu=name,memory.total,driver_version,count",
+    out = _run_cmd([smi, "--query-gpu=name,memory.total,driver_version",
                     "--format=csv,noheader,nounits"])
     if not out:
         return None
@@ -130,10 +132,23 @@ def detect_nvidia_gpu() -> Optional[GPUInfo]:
     if not lines:
         return None
 
-    parts = [p.strip() for p in lines[0].split(",")]
-    name = parts[0] if len(parts) > 0 else "Unknown NVIDIA GPU"
-    vram_mb = int(float(parts[1])) if len(parts) > 1 else 0
-    driver = parts[2] if len(parts) > 2 else ""
+    # Parse all GPUs, find best (max VRAM), sum total
+    all_gpus = []
+    best_name = "Unknown NVIDIA GPU"
+    best_vram = 0
+    total_vram = 0
+    best_driver = ""
+    for line in lines:
+        parts = [p.strip() for p in line.split(",")]
+        g_name = parts[0] if len(parts) > 0 else "Unknown NVIDIA GPU"
+        g_vram = int(float(parts[1])) if len(parts) > 1 else 0
+        g_driver = parts[2] if len(parts) > 2 else ""
+        all_gpus.append({"name": g_name, "vram_mb": g_vram})
+        total_vram += g_vram
+        if g_vram > best_vram:
+            best_vram = g_vram
+            best_name = g_name
+            best_driver = g_driver
 
     # CUDA version
     cuda_out = _run_cmd([smi])
@@ -143,20 +158,26 @@ def detect_nvidia_gpu() -> Optional[GPUInfo]:
         if m:
             cuda_ver = m.group(1)
 
-    # Compute capability
+    # Compute capability (from best GPU — first line with max VRAM)
     cc = ""
     cc_out = _run_cmd([smi, "--query-gpu=compute_cap", "--format=csv,noheader"])
     if cc_out:
-        cc = cc_out.strip().split("\n")[0].strip()
+        cc_lines = [l.strip() for l in cc_out.strip().split("\n") if l.strip()]
+        # Find CC for best GPU by index
+        best_idx = next((i for i, g in enumerate(all_gpus) if g["vram_mb"] == best_vram), 0)
+        if best_idx < len(cc_lines):
+            cc = cc_lines[best_idx]
 
     return GPUInfo(
         vendor="nvidia",
-        name=name,
-        vram_mb=vram_mb,
+        name=best_name,
+        vram_mb=best_vram,
         cuda_version=cuda_ver,
-        driver_version=driver,
+        driver_version=best_driver,
         compute_capability=cc,
-        gpu_count=len(lines),
+        gpu_count=len(all_gpus),
+        total_vram_mb=total_vram,
+        all_gpus=all_gpus,
     )
 
 
@@ -247,6 +268,7 @@ OLLAMA_MODELS = {
         OllamaModel("nemotron-orchestrator-8b", "NVIDIA Nemotron Orchestrator 8B — best tool use", 4.9, 8, "chat"),
         OllamaModel("qwen3:8b", "Qwen 3 8B — strong multilingual + reasoning", 4.9, 8, "chat"),
         OllamaModel("gemma3:12b", "Google Gemma 3 12B — high quality", 8.1, 12, "chat"),
+        OllamaModel("gemma4:27b", "Google Gemma 4 27B — multimodal, 256K context, Apache 2.0", 17.0, 24, "chat"),
     ],
     "reasoning": [
         OllamaModel("deepseek-r1:7b", "DeepSeek-R1 7B — compact reasoning", 4.7, 8, "reasoning"),
@@ -426,8 +448,12 @@ TIERS = {
 # ---------------------------------------------------------------------------
 
 def recommend_tier(gpu: GPUInfo) -> str:
-    """Recommend tier based on available VRAM."""
-    vram_gb = gpu.vram_mb / 1024
+    """Recommend tier based on available VRAM.
+
+    Uses total_vram_mb for vLLM tier — workers spread across GPUs.
+    """
+    # Use total VRAM for vLLM tier selection
+    vram_gb = (gpu.total_vram_mb or gpu.vram_mb) / 1024
     usable = vram_gb * 0.85
 
     if gpu.vendor != "nvidia":
@@ -896,16 +922,23 @@ def main() -> int:
         warn("No GPU detected — will use Ollama with CPU inference")
         warn("This works but is slower. Consider a cloud API for better performance.")
     elif gpu.vendor == "nvidia":
-        info(f"GPU: {bold(gpu.name)}")
-        info(f"VRAM: {bold(f'{vram_gb:.0f}GB')}")
+        if gpu.gpu_count > 1 and gpu.all_gpus:
+            info(f"GPUs: {bold(str(gpu.gpu_count))} detected")
+            for i, g in enumerate(gpu.all_gpus):
+                g_vram = g['vram_mb'] / 1024
+                info(f"  GPU {i}: {g['name']} ({g_vram:.0f}GB)")
+            total_gb = gpu.total_vram_mb / 1024 if gpu.total_vram_mb else vram_gb
+            info(f"Best GPU: {bold(gpu.name)} ({vram_gb:.0f}GB)")
+            info(f"Total VRAM: {bold(f'{total_gb:.0f}GB')}")
+        else:
+            info(f"GPU: {bold(gpu.name)}")
+            info(f"VRAM: {bold(f'{vram_gb:.0f}GB')}")
         if gpu.cuda_version:
             info(f"CUDA: {gpu.cuda_version}")
         if gpu.driver_version:
             info(f"Driver: {gpu.driver_version}")
         if gpu.compute_capability:
             info(f"Compute: sm_{gpu.compute_capability.replace('.', '')}")
-        if gpu.gpu_count > 1:
-            info(f"GPUs: {gpu.gpu_count}")
     elif gpu.vendor == "amd":
         info(f"GPU: {bold(gpu.name)} (AMD)")
         if vram_gb:

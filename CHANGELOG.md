@@ -1,169 +1,203 @@
 # Changelog
 
-All notable changes to AitherOS are documented here.
+All notable changes to aither-adk will be documented in this file.
 
-## [0.3.0] - 2026-03-08
+## [0.13.0] - 2026-04-02
 
-### Added — Knowledge Graph Memory
-- `adk.graph_memory` — SQLite-backed knowledge graph with embedding-based search
-- Ollama `nomic-embed-text` embeddings with feature-hashing fallback (works offline)
-- Hybrid search: keyword inverted index + semantic cosine similarity, query-type-weighted
-- Entity extraction: CamelCase services, capitalized phrases, file paths, code identifiers
-- Relation extraction: "X uses Y", "X depends on Y", "X contains Y" triples
-- Auto-edge detection: TAG_SIBLING (shared tags), SAME_SESSION, RELATED (embedding sim)
-- BFS graph traversal: `get_related("entity", depth=2)` for multi-hop exploration
-- Conversation auto-ingestion: entities and relations extracted after every chat()
-- Agent convenience: `graph_remember()`, `graph_query()`, `graph_stats()`
+### Graph Faculties — Local Knowledge for Every Agent
+- **CodeGraph** (2,799 lines) — Full Python AST indexer with call graph, keyword/semantic/hybrid query, embedding matrix cache, incremental re-indexing, multi-hop chain expansion
+- **MemoryGraph** (1,339 lines) — Graph-based persistent agent memory with 10 edge types, hybrid query (keyword + semantic + graph expansion), multi-hop recall, pickle persistence
+- **EmbeddingProvider** — 4-backend fallback chain: sentence-transformers (GPU/CPU) -> Ollama -> Elysium cloud -> feature hashing (zero deps)
+- **BaseFacultyGraph** — Abstract base with HMAC-SHA256 validated pickle persistence
 
-### Added — Neuron Architecture
-- `adk.neurons` — Auto-firing context neurons before LLM calls
-- WebSearchNeuron (DuckDuckGo, no API key), MemoryNeuron, GraphNeuron
-- NeuronPool: manages and fires neurons in parallel with timeout protection
-- AutoNeuronFire: 6-category pattern detection, result caching, auto-injects context
-- Custom neuron registration via `BaseNeuron` ABC
+### Agent Integration
+- `agent.set_code_graph(cg)` — auto-registers `code_search` + `code_context` tools
+- `agent.set_memory_graph(mg)` — auto-registers `remember` + `recall` + `memory_stats` tools
+- Both graphs inject context into LLM prompts automatically during chat
 
-### Added — NanoGPT Trainer
-- `adk.nanogpt` — Zero-dependency character-level transformer
-- Pure Python autograd engine (Value class with backward pass)
-- Multi-head attention, RMSNorm, MLP with ReLU
-- LoRA hypernetwork adapters for document-specific memory
-- Async training via `asyncio.to_thread()` (non-blocking)
-- Save/load model weights to JSON, generation with temperature sampling
-- Use cases: topic classification, anomaly detection, intent prediction
+### Zero-Config Onboarding
+- `adk start` / `adk` (no args) — auto-detect project, index code, detect LLM, persistent memory, interactive chat
+- Works for any directory: Python codebases, doc folders, mixed workspaces
+- Auto-detects LLM: Ollama -> vLLM -> Elysium -> OpenAI -> Anthropic
+- Per-project persistent memory in `~/.aither/memory/<project>`
+- `adk index <path>` — standalone indexing with progress bar and stats
 
-### Added — Full Pipeline Wiring
-- **Safety**: IntakeGuard wired into chat() input (blocks injection), output (redacts leaks), forge dispatch, streaming
-- **Context**: ContextManager token-aware truncation replaces manual message assembly
-- **Events**: EventEmitter fires chat_request/response, tool_call/result, forge_dispatch/complete
-- **Builtin Tools**: Identity-based registration (12 tools: file_io, shell, python, web, secrets)
-- **ServiceBridge**: Auto-discovery at server startup (Node -> Genesis -> Gateway -> standalone)
+### MCP Gateway
+- `POST /v1/embeddings` — OpenAI-compatible embedding proxy to vLLM-embeddings:8209
+- Available to all tiers (embeddings are free)
+- ADK EmbeddingProvider uses this as Elysium cloud fallback
 
-### Added — Agent Features
-- `chat_stream()` — agent-level streaming with full safety pipeline, tool fallback to sync
-- Server auth middleware: `AITHER_SERVER_API_KEY` env var, Bearer token validation
-- CLI scaffolding: `aither init <name>` creates project, `aither run` starts server
-- Skip-auth paths: /health, /docs, /openapi.json, /metrics, /demo, /redoc
+### Optional Dependencies
+- `pip install aither-adk[graphs]` — numpy for 10x cosine similarity speedup
+- `pip install aither-adk[embedding]` — sentence-transformers + torch for local GPU embeddings
+- `pip install aither-adk` alone — graphs work with feature hashing (zero deps)
 
-### Tests
-- 183 new tests across 9 test files
-- 522 total ADK tests passing (0 regressions)
+## [0.12.0] - 2026-04-01
 
-## [0.2.0] - 2026-03-08
+### Bootstrap & Service Discovery
+- Version handshake -- ADK checks major.minor compatibility with Genesis/Node
+- Background reconnect loop -- ServiceBridge re-probes every 30s in standalone mode
+- Port 8080/8090 documented -- MCP vs OpenAI-compat clearly separated
+- Genesis URL configurable via GENESIS_URL env var (was hardcoded)
+- Standalone mode warning -- visible stderr alert when AitherOS not detected
+- Auto-reconnect on startup when services come online
 
-### Added — AitherMesh Gateway Connection
-- Connect standalone/Alpha instances to `gateway.aitherium.com` for remote backend services
-- Gateway API routes: `/api/gateway/connect`, `/api/gateway/status`, `/api/gateway/proxy`
-- Gateway proxy forwards to 16 whitelisted backend services with bearer auth
-- Settings UI page at `/settings/gateway` with connection form, status display, feature cards
-- 3-tier connection detection: local → gateway → full-stack
-- `useCapabilities` hook: parallel node + gateway status fetch with feature merging
-- `FeatureGate` + `FeatureChip`: per-widget graceful degradation with gateway awareness
-- `LocalCapabilityBanner`: context-aware banners with "Connect to AitherMesh" CTA
-- 10+ Veil pages wrapped with `FeatureGate` for tier-appropriate degradation
-
-### Improved — ADK (Agent Development Kit)
-- `adk.server`: enhanced FastAPI server with OpenAI-compatible endpoints
-- `adk.config`: improved configuration management
-- `adk.identity`: expanded identity resolution
-- `adk.setup`: comprehensive hardware detection and profile matching
-- New modules: `builtin_tools`, `context`, `events`, `safety`, `services`
-- Updated hardware profiles for latest GPU generations
-- Expanded test coverage (test_setup.py: 500+ lines)
-
-### Added — ADK New Modules
-- `adk.builtin_tools` — built-in tool implementations
-- `adk.context` — context management for agent sessions
-- `adk.events` — event system for agent lifecycle
-- `adk.safety` — safety checks and guardrails
-- `adk.services` — service discovery and health checks
-
-## [0.1.0-alpha.1] - 2026-03-07
-
-### Added — AitherADK (Agent Development Kit)
-- Clean-room Python package: `pip install aither-adk`
-- Multi-backend LLM providers: Ollama, OpenAI, Anthropic, vLLM, LM Studio
-- `AitherAgent` class with @tool decorator and ReAct-style tool loops
-- `LLMRouter` with auto-detection and effort-based model selection
-- `Memory` — SQLite-backed conversation history and KV store
-- `Server` — FastAPI with OpenAI-compatible `/v1/chat/completions`
-- `MCPBridge` — connect to AitherOS tools via mcp.aitherium.com
-- 16 agent identities shipped as package data
-- `aither-serve` CLI entry point
-- `aither-bug` CLI for built-in bug reporting
-- Privacy-centric opt-in telemetry (phonehome)
-- Gateway client for agent registration and discovery
-- 85 passing tests
-
-### Added — Standalone Mode
-- AitherNode mounts ADK server when Genesis unreachable
-- AitherDesktop falls back to Node:8090 via OpenAI-compatible format
-- AitherConnect sidepanel supports standalone mode toggle
-- Node ADK endpoint at `/v1/chat/completions` for universal client access
-
-### Added — Dark Factory (Autonomous Loops)
-- Background loops: neuron firing (4hr), orchestrator (daily), finetune (12hr)
-- Pulse SSE pain subscriber with auto-reconnect
-- SelfModification pipeline with post-merge verification
-- IntentChainRunner for multi-agent dispatch chains
-- StrataFeedback for effort/model calibration
-- SessionLearner with pattern extraction and memory promotion
-- PlaybookEngine with YAML operational runbooks and auto-generation
-- ContextTierManager OODA loop (observe/orient/decide/act)
-- ClosedLoopController with model hot-swap on deploy
-
-### Added — Expedition Manager
-- Multi-session project orchestration with SQLite persistence
-- SOW analysis, phase decomposition, parallel task dispatch
-- Human-in-the-loop gate approvals (CODE_REVIEW, DEPLOYMENT, SOW, TECH)
-- Forge artifact extraction with auto-REVISE
-- Phase integration tests, Athena security review
-- Cost/token tracking per phase, budget variance alerts
-- Auto-deploy with rollback on smoke failure
-- 250 passing tests
-
-### Added — Swarm Coding Engine
-- 11 specialized agents, 4-phase pipeline (ARCHITECT->SWARM->REVIEW->JUDGE)
-- 3 execution modes: LLM (fast), FORGE (full tools), PLAN_ONLY
-- AgentForge-backed dispatch with identity mapping
-- Sandbox testing and bundle delivery
-
-### Added — Security & Multi-Tenancy
-- Caller isolation: Platform/Public/Demo/Tenant/Anonymous types
-- Public tenant auto-routing for external requests
-- Multi-tenant graph isolation across all graph subsystems
-- Pipeline prompt injection defense (3 insertion points)
-- RBAC SQLite backend with JSON seed data migration
-- GDPR Art.17 data erasure endpoints
-
-### Added — Infrastructure
-- Content Production Pipeline (8 artifact types, agent dispatch, quality gates)
-- Agent-to-Agent full mesh (forge_dispatch tools, heartbeat, MCP indexing)
-- Social graph (friends, groups, directory, MySpace-style profiles)
-- Package Manager (APM) with tenant enablements and HMAC entitlements
-- Frontier Judge with Anthropic Claude quality gates
-- Agent email system (20 Proton Mail addresses)
-- Context synthesis replacing hard truncation
-- Local voice (faster-whisper STT, Piper TTS, VRAM coordination)
-- MCP SaaS Gateway at mcp.aitherium.com
-- LTX-2.3 video generation via Iris + ComfyUI
+### Elysium Cloud Inference
+- Unified gateway URL -- gateway.aitherium.com handles auth + billing + inference
+- Streaming inference -- SSE passthrough for /v1/chat/completions with stream=true
+- Auth proxy routes -- /v1/auth/register, /v1/auth/login, /v1/auth/me
+- Billing proxy -- /v1/billing/balance through gateway
+- AitherConnect Elysium fallback -- cloud inference when local Genesis is down
+- AitherDesktop Elysium fallback -- third-tier chat fallback after Node
 
 ### Infrastructure
-- 203 microservices (23 compound containers, 65 Docker total)
-- 2600+ passing tests across 120+ test files
-- 170+ PowerShell automation scripts
-- Multi-model vLLM deployment (4 workers)
-- Hardware profile auto-detection (5 tiers)
+- /discovery endpoint on Genesis -- unified service URLs/versions/health
+- /api/config/services on Veil -- runtime port config for client-side JS
+- Veil healthcheck gates on Genesis -- unhealthy when backend is down
+- Desktop crash detection 90s->60s (threshold 3->2)
 
----
+## [0.11.0] - 2026-04-01
 
-## [Pre-Alpha] - 2024-12 through 2026-02
+### Agent Execution Quality (Claude Code Parity)
+- Raise loop guard block threshold from 3 to 4 -- agents get more room for iterative search
+- Soft synthesis nudge for effort >= 4 (no tool stripping, trust the model)
+- max_output_tokens escalation -- retry up to 3x when response is truncated
+- Tool result pairing guarantee -- synthetic error for orphaned tool_use blocks
+- Micro-compaction of old tool results -- save context tokens on long sessions
+- First-turn tool forcing only for effort >= 6 (trust model for lower effort)
+- Diminishing returns detection -- nudge agent when 3+ turns produce < 500 tokens
+- Message normalization -- merge consecutive same-role messages, strip empties
+- LLM retry with exponential backoff (5 retries, 500ms-16s, jitter)
 
-### Foundation
-- Initial 203 microservices built across 12 architectural layers
-- Genesis bootloader with 7-phase boot sequence
-- AitherZero PowerShell automation framework
-- AitherVeil Next.js dashboard
-- Pain system and self-healing infrastructure
-- Five-tier memory architecture
-- Multi-model LLM routing via MicroScheduler
-- FluxEmitter event bus for inter-agent communication
+## [0.9.0] - 2026-03-16
+
+The "connected world" release. Cross-platform identity pairing, voice capabilities, and multi-channel integration.
+
+### Added
+- **Pairing**: Cross-platform identity linking (`adk/pairing.py`)
+  - `PairingManager` — SQLite-backed identity linking with 6-char pairing codes
+  - Link users across Telegram, Discord, Slack, WhatsApp with 10min TTL codes
+  - Canonical session IDs for cross-channel conversation continuity
+  - `get_session_id()` returns "user-{id}" for paired users
+- **Voice**: Speech-to-text and text-to-speech client (`adk/voice.py`)
+  - `VoiceClient` — async STT/TTS/emotion via AitherVoice service
+  - Convenience functions: `hear()`, `say()`, `feel()`
+  - 6 voice options: alloy, echo, fable, nova, onyx, shimmer
+  - Emotion detection with intensity scoring
+- New exports: `PairingManager`, `PairingResult`, `PlatformIdentity`, `VoiceClient`, `TranscriptionResult`, `SynthesisResult`, `EmotionResult`
+
+### Changed
+- `__init__.py` exports expanded with pairing and voice symbols
+
+## [0.6.0] - 2026-03-13
+
+The "group mind" release. Multi-agent group chat, creative tools, and Iris identity.
+
+### Added
+- **Aeon**: Multi-agent group chat engine (`adk/aeon.py`)
+  - `AeonSession` — persistent group chat with parallel agent execution
+  - 7 presets: balanced, creative, technical, security, minimal, duo_code, research
+  - Orchestrator synthesis: Aither summarizes all agent responses
+  - Serial execution for Ollama, parallel for vLLM/cloud
+  - ConversationStore persistence with `type: "aeon"` metadata
+  - `group_chat()` one-shot convenience function
+- `aither aeon` CLI command — interactive terminal group chat with color-coded agents
+  - `-p/--preset`, `-a/--agents`, `-r/--rounds`, `--no-synthesize` flags
+  - `reset` and `quit` commands
+- Server endpoints: `POST /aeon/chat`, `GET /aeon/presets`, `GET /aeon/sessions/{id}`
+- Creative tools in builtin_tools: `image_generate`, `image_refine`, `image_search`, `video_generate`
+- Iris agent identity with visual generation capabilities
+- 48 Aeon tests (data models, presets, chat, context, persistence, server, exports)
+
+### Changed
+- `__init__.py` exports: `AeonSession`, `AeonResponse`, `AeonMessage`, `group_chat`, `AEON_PRESETS`
+
+## [0.5.0] - 2026-03-13
+
+The "tenant-ready" release. Multi-tenant admin, permission grants, safety profiles, and a full setup wizard.
+
+### Added
+- `aither setup` interactive setup wizard with hardware detection, model selection, identity config
+- Strata storage backend: SQLite WAL persistence for conversations, memories, knowledge graphs
+- CLI test runner: `aither test` with auto-discovery and parallel execution
+- Permission grants system for MCP tool access control
+- MCP account management tools
+- LLM provider auto-detection for Ollama and vLLM endpoints
+- Apache-2.0 LICENSE file
+- Elysium desktop sync module
+- Comprehensive CLI test suite (493 tests)
+- Strata storage test suite (972 tests)
+- LLM provider tests (82 tests)
+
+### Changed
+- CLI expanded: `aither setup`, `aither test`, `aither bugreport`, `aither doctor`
+- Strata module rewritten as full local-first storage engine
+- Server startup includes Strata initialization
+- README rewritten with clearer quickstart and architecture docs
+
+### Fixed
+- Dead documentation links
+- Python 3.11 compatibility issues
+- Ruff per-file-ignores configuration
+- Identity provisioning edge cases
+- Docker node-gyp native dependency builds (python3 + build tools)
+
+## [0.4.0] - 2026-03-13
+
+The "own your AI" release. Self-hosted agent OS for people who don't want their data on someone else's servers.
+
+### Added
+- Muse agent identity (creative/artistic generation)
+- Port 8120 to vLLM scan for ExoNodes discovery
+- Public roadmap with milestone-based porting schedule
+- Competitive positioning: self-hosted alternative to cloud-locked AI appliances
+
+### Changed
+- LLM router: compute-aware effort routing (replaces effort-level context gating)
+- README rewritten for sovereignty-first messaging
+- Package description updated
+- Promoted from alpha to stable release
+
+### Fixed
+- Version string consistency between pyproject.toml and __init__.py
+- vLLM port scanning now includes port 8120 (ExoNodes)
+
+## [0.3.1] - 2026-03-09
+
+### Added
+- GraphMemory: SQLite knowledge graph with Ollama embeddings and hybrid search
+- NeuronPool: auto-fire pre-LLM data gathering agents
+- NanoGPT: pure Python char-level transformer with LoRA fine-tuning
+- Safety gates: IntakeGuard (input), LoopGuard (recursion), Sandbox (code exec)
+- Event system: EventEmitter with chat/tool/forge event types
+- Builtin tools: identity-based tool selection
+- ServiceBridge: auto-discovery of AitherOS services
+- Streaming: chat_stream with safety gate integration
+- Auth middleware: Bearer token authentication
+- CLI: `aither init` and `aither serve` commands
+
+### Changed
+- Wired 5 previously disconnected modules into agent loop
+- 522 total passing tests (up from 85)
+
+## [0.3.0] - 2026-03-07
+
+### Added
+- Clean-room agent development kit
+- Multi-backend LLM providers (Ollama, OpenAI, Anthropic)
+- AitherAgent class with @tool decorator
+- SQLite conversation memory
+- OpenAI-compatible server (`aither-serve`)
+- 16 agent identities as package data
+- MCP bridge to mcp.aitherium.com
+- Privacy-centric opt-in telemetry
+- Bug reporting CLI and API
+- FastAPI server with OpenAI-compatible endpoints
+- Hardware auto-detection (5 tiers, 11 profiles)
+- Fleet orchestration and multi-agent coordination
+- A2A mesh protocol
+- Federation protocol for cross-instance agent dispatch
+
+### Initial release
+- 85 passing tests
+- Apache-2.0 license

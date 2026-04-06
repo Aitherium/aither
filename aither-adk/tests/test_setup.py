@@ -60,7 +60,7 @@ class TestProfileSelection:
 class TestRecommendedModels:
     def test_cpu_only_gets_small_models(self):
         models = _recommended_models("cpu_only")
-        assert "llama3.2:1b" in models
+        assert "gemma4:4b" in models
         assert "nomic-embed-text" in models
 
     def test_nvidia_high_gets_bigger_models(self):
@@ -108,7 +108,40 @@ class TestGPUDetection:
             ]
             gpu = await _detect_gpu()
             assert gpu.count == 2
-            assert gpu.vram_mb == 49128  # 2x24564
+            assert gpu.vram_mb == 24564       # Best single GPU
+            assert gpu.total_vram_mb == 49128  # Sum of all GPUs
+            assert len(gpu.all_gpus) == 2
+
+    @pytest.mark.asyncio
+    async def test_asymmetric_multi_gpu_selects_best(self):
+        """Jeff's scenario: P1000 (4GB) + RTX 3090 (24GB) — best GPU wins."""
+        with patch("adk.setup._run") as mock_run:
+            mock_run.side_effect = [
+                (0, "Quadro P1000, 4096, 580.142\nNVIDIA GeForce RTX 3090, 24576, 580.142\n", ""),
+                (0, "CUDA Version: 12.6", ""),
+            ]
+            gpu = await _detect_gpu()
+            assert gpu.count == 2
+            assert gpu.name == "NVIDIA GeForce RTX 3090"
+            assert gpu.vram_mb == 24576        # Best GPU VRAM
+            assert gpu.total_vram_mb == 28672   # 4096 + 24576
+            assert len(gpu.all_gpus) == 2
+            assert gpu.all_gpus[0]["name"] == "Quadro P1000"
+            assert gpu.all_gpus[1]["name"] == "NVIDIA GeForce RTX 3090"
+
+    @pytest.mark.asyncio
+    async def test_profile_uses_best_gpu_not_total(self):
+        """2x 12GB GPUs → nvidia_mid (12GB best), not nvidia_high (24GB total)."""
+        with patch("adk.setup._run") as mock_run:
+            mock_run.side_effect = [
+                (0, "RTX 4070, 12288, 560.35\nRTX 4070, 12288, 560.35\n", ""),
+                (0, "CUDA Version: 12.4", ""),
+            ]
+            gpu = await _detect_gpu()
+            assert gpu.vram_mb == 12288         # Best single GPU
+            assert gpu.total_vram_mb == 24576    # Total
+            profile = _select_profile(gpu, 32.0)
+            assert profile == "nvidia_mid"       # Based on 12GB best, not 24GB total
 
 
 # ---------------------------------------------------------------------------

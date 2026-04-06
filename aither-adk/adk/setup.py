@@ -40,10 +40,12 @@ logger = logging.getLogger("adk.setup")
 class GPUInfo:
     vendor: str = "none"  # nvidia, amd, apple, none
     name: str = ""
-    vram_mb: int = 0
+    vram_mb: int = 0          # Best single GPU VRAM (for profile selection)
     cuda_version: str = ""
     driver_version: str = ""
     count: int = 0
+    total_vram_mb: int = 0    # Sum of all GPUs (for vLLM tier selection)
+    all_gpus: list = field(default_factory=list)  # List of {"name": str, "vram_mb": int}
 
 
 @dataclass
@@ -118,25 +120,33 @@ async def _detect_gpu() -> GPUInfo:
         lines = [l.strip() for l in out.strip().splitlines() if l.strip()]
         gpu.vendor = "nvidia"
         gpu.count = len(lines)
-        parts = lines[0].split(",")
-        if len(parts) >= 3:
-            gpu.name = parts[0].strip()
-            try:
-                gpu.vram_mb = int(float(parts[1].strip()))
-            except ValueError:
-                pass
-            gpu.driver_version = parts[2].strip()
-        # Total VRAM across all GPUs
+
+        # Parse all GPUs, find best (max VRAM), sum total
+        all_gpus = []
+        best_vram = 0
         total_vram = 0
         for line in lines:
-            p = line.split(",")
+            p = [x.strip() for x in line.split(",")]
+            g_name = p[0] if p else "NVIDIA GPU"
+            g_vram = 0
+            g_driver = ""
             if len(p) >= 2:
                 try:
-                    total_vram += int(float(p[1].strip()))
+                    g_vram = int(float(p[1]))
                 except ValueError:
                     pass
-        if total_vram > gpu.vram_mb:
-            gpu.vram_mb = total_vram
+            if len(p) >= 3:
+                g_driver = p[2]
+            all_gpus.append({"name": g_name, "vram_mb": g_vram})
+            total_vram += g_vram
+            if g_vram > best_vram:
+                best_vram = g_vram
+                gpu.name = g_name
+                gpu.driver_version = g_driver
+
+        gpu.vram_mb = best_vram
+        gpu.total_vram_mb = total_vram
+        gpu.all_gpus = all_gpus
 
         # CUDA version
         rc2, out2, _ = await _run(["nvidia-smi"])
@@ -291,17 +301,17 @@ def _recommended_models(profile: str) -> list[str]:
     sidecar is reachable.
     """
     models = {
-        "cpu_only": ["llama3.2:1b", "nomic-embed-text"],
-        "minimal": ["llama3.2:3b", "nomic-embed-text"],
-        "nvidia_low": ["llama3.2:3b", "nomic-embed-text"],
+        "cpu_only": ["gemma4:4b", "nomic-embed-text"],
+        "minimal": ["gemma4:4b", "nomic-embed-text"],
+        "nvidia_low": ["gemma4:4b", "nomic-embed-text"],
         "nvidia_mid": ["nemotron-orchestrator-8b", "deepseek-r1:8b", "nomic-embed-text"],
-        "nvidia_high": ["nemotron-orchestrator-8b", "deepseek-r1:14b", "nomic-embed-text", "qwen2.5-coder:14b"],
-        "nvidia_ultra": ["nemotron-orchestrator-8b", "deepseek-r1:32b", "nomic-embed-text", "qwen2.5-coder:32b"],
-        "apple_silicon": ["nemotron-orchestrator-8b", "deepseek-r1:8b", "nomic-embed-text"],
-        "amd": ["nemotron-orchestrator-8b", "nomic-embed-text"],
-        "standard": ["nemotron-orchestrator-8b", "deepseek-r1:14b", "nomic-embed-text"],
-        "workstation": ["nemotron-orchestrator-8b", "deepseek-r1:32b", "nomic-embed-text", "qwen2.5-coder:14b"],
-        "server": ["nemotron-orchestrator-8b", "deepseek-r1:32b", "nomic-embed-text"],
+        "nvidia_high": ["nemotron-orchestrator-8b", "deepseek-r1:14b", "nomic-embed-text", "gemma4:27b"],
+        "nvidia_ultra": ["nemotron-orchestrator-8b", "deepseek-r1:32b", "nomic-embed-text", "gemma4:27b"],
+        "apple_silicon": ["gemma4:4b", "deepseek-r1:8b", "nomic-embed-text"],
+        "amd": ["gemma4:4b", "nomic-embed-text"],
+        "standard": ["nemotron-orchestrator-8b", "deepseek-r1:14b", "nomic-embed-text", "gemma4:27b"],
+        "workstation": ["nemotron-orchestrator-8b", "deepseek-r1:32b", "nomic-embed-text", "gemma4:27b"],
+        "server": ["nemotron-orchestrator-8b", "deepseek-r1:32b", "nomic-embed-text", "gemma4:27b"],
     }
     return models.get(profile, models["cpu_only"])
 

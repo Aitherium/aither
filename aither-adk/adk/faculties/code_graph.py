@@ -619,7 +619,7 @@ async def discover_python_files(root: Path) -> Tuple[List[Path], float]:
         "Worktrees", "worktrees", ".worktrees",
         "site-packages", "dist-packages",
         "runtime", "training-data", "test_artifacts",
-        "_archive", "_DARKMATTERS", "_KODOKEVO",
+        "_archive",
         "Canvas-Studio", "external", "AEON_PORTRAITS",
         "affect_gallery", "simulator-temp",
     })

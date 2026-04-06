@@ -469,7 +469,7 @@ class TestSetupIntegration:
         assert "nomic-embed-text" in models
 
         models = _recommended_models("cpu_only")
-        assert "llama3.2:1b" in models
+        assert "gemma4:4b" in models
 
         models = _recommended_models("unknown_profile")
         assert models == _recommended_models("cpu_only")
