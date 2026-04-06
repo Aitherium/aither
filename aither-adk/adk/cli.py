@@ -1889,19 +1889,74 @@ def main():
     aeon_p.add_argument("-r", "--rounds", type=int, default=1, help="Discussion rounds per message (default: 1)")
     aeon_p.add_argument("--no-synthesize", action="store_true", help="Skip orchestrator synthesis")
 
-    # aither deploy
-    deploy_p = sub.add_parser("deploy", help="Deploy an agent to AitherOS")
-    deploy_p.add_argument("name", nargs="?", help="Agent name (default: from config.yaml)")
-    deploy_p.add_argument("-d", "--directory", help="Project directory (default: .)")
-    deploy_p.add_argument("--api-key", help="AITHER_API_KEY")
-    deploy_p.add_argument("--gateway", help="Gateway URL (default: gateway.aitherium.com)")
-    deploy_p.add_argument("--capabilities", help="Comma-separated capabilities")
-    deploy_p.add_argument("--description", help="Agent description")
-    deploy_p.add_argument("--version", help="Agent version")
-    deploy_p.add_argument("--target", choices=["gateway", "docker", "kubernetes", "systemd", "cloud-gpu"],
-                           default="gateway", help="Deploy target (default: gateway)")
-    deploy_p.add_argument("--strategy", choices=["rolling", "blue-green", "canary", "recreate"],
-                           default="rolling", help="Deployment strategy (for container targets)")
+    # aither deploy — component deployment OR agent deployment
+    deploy_p = sub.add_parser("deploy", help="Deploy AitherOS components or agents")
+    deploy_sub = deploy_p.add_subparsers(dest="component")
+
+    # aither deploy ollama
+    d_ollama = deploy_sub.add_parser("ollama", help="Install Ollama + pull models for your GPU")
+    d_ollama.add_argument("--models", help="Comma-separated model list (default: auto-select by GPU)")
+    d_ollama.add_argument("--dry-run", action="store_true", help="Show what would happen")
+
+    # aither deploy vllm
+    d_vllm = deploy_sub.add_parser("vllm", help="Deploy vLLM inference containers (NVIDIA GPU)")
+    d_vllm.add_argument("--tier", choices=["nano", "lite", "standard", "full"],
+                        help="Force a specific tier (default: auto-detect)")
+    d_vllm.add_argument("--hf-token", default="", help="HuggingFace token for gated models")
+    d_vllm.add_argument("--dry-run", action="store_true", help="Show what would happen")
+
+    # aither deploy node
+    d_node = deploy_sub.add_parser("node", help="AitherNode MCP server + Genesis orchestrator")
+    d_node.add_argument("--gpu", action="store_true", help="Enable GPU-accelerated services")
+    d_node.add_argument("--dashboard", action="store_true", help="Enable AitherVeil dashboard (port 3000)")
+    d_node.add_argument("--mesh", action="store_true", help="Enable mesh networking")
+    d_node.add_argument("--tag", default="latest", help="Docker image tag (default: latest)")
+    d_node.add_argument("--api-key", help="AITHER_API_KEY (or set env var)")
+    d_node.add_argument("--dry-run", action="store_true", help="Show what would happen")
+
+    # aither deploy core
+    d_core = deploy_sub.add_parser("core", help="Core services (Node, Pulse, Watch, Genesis, Veil)")
+    d_core.add_argument("--tag", default="latest", help="Docker image tag (default: latest)")
+    d_core.add_argument("--api-key", help="AITHER_API_KEY (or set env var)")
+    d_core.add_argument("--dry-run", action="store_true", help="Show what would happen")
+
+    # aither deploy full
+    d_full = deploy_sub.add_parser("full", help="Full AitherOS stack (~31 containers)")
+    d_full.add_argument("--profile", default="chat-agents",
+                        choices=["chat-minimal", "chat-full", "chat-agents"],
+                        help="Docker Compose profile (default: chat-agents)")
+    d_full.add_argument("--tag", default="latest", help="Docker image tag (default: latest)")
+    d_full.add_argument("--api-key", help="AITHER_API_KEY (or set env var)")
+    d_full.add_argument("--dry-run", action="store_true", help="Show what would happen")
+
+    # aither deploy connect
+    d_connect = deploy_sub.add_parser("connect", help="AitherConnect browser extension")
+    d_connect.add_argument("--api-key", help="AITHER_API_KEY (or set env var)")
+    d_connect.add_argument("--dry-run", action="store_true", help="Show what would happen")
+
+    # aither deploy desktop
+    d_desktop = deploy_sub.add_parser("desktop", help="AitherDesktop native application")
+    d_desktop.add_argument("--api-key", help="AITHER_API_KEY (or set env var)")
+    d_desktop.add_argument("--dry-run", action="store_true", help="Show what would happen")
+
+    # aither deploy stop <component>
+    d_stop = deploy_sub.add_parser("stop", help="Stop a running deployment")
+    d_stop.add_argument("stop_target", nargs="?",
+                        help="Component to stop: ollama, vllm, node, core, full, all")
+
+    # aither deploy agent (existing agent-to-gateway deployment)
+    d_agent = deploy_sub.add_parser("agent", help="Deploy an agent to AitherOS gateway")
+    d_agent.add_argument("name", nargs="?", help="Agent name (default: from config.yaml)")
+    d_agent.add_argument("-d", "--directory", help="Project directory (default: .)")
+    d_agent.add_argument("--api-key", help="AITHER_API_KEY")
+    d_agent.add_argument("--gateway", help="Gateway URL (default: gateway.aitherium.com)")
+    d_agent.add_argument("--capabilities", help="Comma-separated capabilities")
+    d_agent.add_argument("--description", help="Agent description")
+    d_agent.add_argument("--version", help="Agent version")
+    d_agent.add_argument("--target", choices=["gateway", "docker", "kubernetes", "systemd", "cloud-gpu"],
+                          default="gateway", help="Deploy target (default: gateway)")
+    d_agent.add_argument("--strategy", choices=["rolling", "blue-green", "canary", "recreate"],
+                          default="rolling", help="Deployment strategy (for container targets)")
 
     # aither onboard — interactive onboarding wizard
     onboard_p = sub.add_parser("onboard", help="Interactive onboarding — detect, configure, integrate")
@@ -1970,7 +2025,12 @@ def main():
     elif args.command == "aeon":
         sys.exit(cmd_aeon(args))
     elif args.command == "deploy":
-        sys.exit(cmd_deploy(args))
+        component = getattr(args, "component", None)
+        if component == "agent":
+            sys.exit(cmd_deploy(args))
+        else:
+            from adk.deploy import cmd_deploy_component
+            sys.exit(cmd_deploy_component(args))
     elif args.command == "onboard":
         sys.exit(cmd_onboard(args))
     elif args.command == "integrate":
