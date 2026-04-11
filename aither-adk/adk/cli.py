@@ -719,6 +719,9 @@ def cmd_onboard(args):
     import asyncio
     import json as _json
 
+    tenant_slug = getattr(args, 'tenant', None) or os.environ.get('AITHER_TENANT_SLUG', '')
+    non_interactive = getattr(args, 'non_interactive', False) or os.environ.get('CI') == 'true'
+
     async def _onboard():
         # Inline ProductDetector (no AitherOS lib dependency)
         from pathlib import Path
@@ -727,6 +730,20 @@ def cmd_onboard(args):
         home = Path.home()
         aither_dir = home / ".aither"
         openclaw_dir = home / ".openclaw"
+
+        # If tenant provided, write it to config immediately
+        if tenant_slug:
+            aither_dir.mkdir(parents=True, exist_ok=True)
+            config_path = aither_dir / "config.json"
+            existing = {}
+            if config_path.exists():
+                try:
+                    existing = _json.loads(config_path.read_text(encoding="utf-8"))
+                except Exception:
+                    pass
+            existing["tenant_slug"] = tenant_slug
+            existing["tenant_id"] = f"tnt_{tenant_slug.replace('-', '_')}"
+            config_path.write_text(_json.dumps(existing, indent=2), encoding="utf-8")
 
         print()
         print("  AitherOS Onboarding")
@@ -869,7 +886,133 @@ def cmd_onboard(args):
             print(f"     -> aither publish")
             step_num += 1
 
-        # ── 3. Quick actions ──────────────────────────────────
+        # ── 3. Auto-configure IDE MCP servers ────────────────
+        print()
+        print("  CONFIGURING MCP SERVERS")
+        print("  ���─────────────────────")
+
+        mcp_url = "http://localhost:8080"
+        mcp_configured = []
+
+        # Claude Code — .mcp.json goes in PROJECT ROOT (CWD), not ~/.claude/
+        # Claude Code reads MCP config from the working directory, not global.
+        claude_dir = home / ".claude"
+        mcp_json = {
+            "mcpServers": {
+                "aitheros": {
+                    "command": "npx",
+                    "args": ["-y", "aither-mcp-server"],
+                    "disabled": False,
+                }
+            }
+        }
+
+        def _write_mcp(target: Path, label: str):
+            """Write or merge MCP config into a .mcp.json file."""
+            try:
+                if target.exists():
+                    existing = _json.loads(target.read_text(encoding="utf-8"))
+                    servers = existing.get("mcpServers", {})
+                    if "aitheros" not in servers:
+                        servers["aitheros"] = mcp_json["mcpServers"]["aitheros"]
+                        existing["mcpServers"] = servers
+                        target.write_text(_json.dumps(existing, indent=2), encoding="utf-8")
+                        print(f"  [OK] {label} — AitherOS MCP added to existing config")
+                        return True
+                    else:
+                        print(f"  [OK] {label} — AitherOS MCP already configured")
+                        return True
+                else:
+                    target.write_text(_json.dumps(mcp_json, indent=2), encoding="utf-8")
+                    print(f"  [OK] {label} — MCP configured at {target}")
+                    return True
+            except Exception as e:
+                print(f"  [!!] {label} — failed: {e}")
+                return False
+
+        # 1. Write to current project directory (primary — Claude Code reads from CWD)
+        cwd_mcp = Path.cwd() / ".mcp.json"
+        if _write_mcp(cwd_mcp, "Claude Code (project)"):
+            mcp_configured.append("claude-code")
+
+        # 2. Also write to ~/.claude/.mcp.json as global fallback
+        if claude_dir.exists():
+            _write_mcp(claude_dir / ".mcp.json", "Claude Code (global)")
+        else:
+            print("  [--] Claude Code global — ~/.claude/ not found (project-level config is sufficient)")
+
+        # Cursor — write to ~/.cursor/mcp.json
+        cursor_dir = home / ".cursor"
+        if cursor_dir.exists():
+            cursor_mcp = cursor_dir / "mcp.json"
+            cursor_config = {
+                "mcpServers": {
+                    "aitheros": {
+                        "url": f"{mcp_url}/sse",
+                    }
+                }
+            }
+            try:
+                if cursor_mcp.exists():
+                    existing = _json.loads(cursor_mcp.read_text(encoding="utf-8"))
+                    if "aitheros" not in existing.get("mcpServers", {}):
+                        existing.setdefault("mcpServers", {})["aitheros"] = cursor_config["mcpServers"]["aitheros"]
+                        cursor_mcp.write_text(_json.dumps(existing, indent=2), encoding="utf-8")
+                        print(f"  [OK] Cursor — AitherOS MCP added")
+                        mcp_configured.append("cursor")
+                    else:
+                        print(f"  [OK] Cursor — AitherOS MCP already configured")
+                        mcp_configured.append("cursor")
+                else:
+                    cursor_mcp.write_text(_json.dumps(cursor_config, indent=2), encoding="utf-8")
+                    print(f"  [OK] Cursor — MCP configured at {cursor_mcp}")
+                    mcp_configured.append("cursor")
+            except Exception as e:
+                print(f"  [!!] Cursor — failed to write config: {e}")
+        else:
+            print("  [--] Cursor — not detected (~/.cursor/ not found)")
+
+        # OpenClaw — use aither integrate openclaw
+        if openclaw_detected and not aither_integrated:
+            try:
+                oc_config_path = openclaw_dir / "openclaw.json"
+                if oc_config_path.exists():
+                    oc_config = _json.loads(oc_config_path.read_text(encoding="utf-8"))
+                    oc_config.setdefault("mcpServers", {})["aither_mcp_configured"] = {
+                        "command": "npx",
+                        "args": ["-y", "aither-mcp-server"],
+                        "disabled": False,
+                    }
+                    oc_config_path.write_text(_json.dumps(oc_config, indent=2), encoding="utf-8")
+                    print(f"  [OK] OpenClaw — AitherOS MCP added")
+                    mcp_configured.append("openclaw")
+            except Exception as e:
+                print(f"  [!!] OpenClaw — failed to integrate: {e}")
+        elif openclaw_detected and aither_integrated:
+            print(f"  [OK] OpenClaw — already integrated")
+            mcp_configured.append("openclaw")
+
+        # VS Code — write to .vscode/mcp.json in current dir
+        vscode_dir = Path.cwd() / ".vscode"
+        if vscode_dir.exists():
+            vscode_mcp = vscode_dir / "mcp.json"
+            if not vscode_mcp.exists():
+                try:
+                    vscode_mcp.write_text(_json.dumps({
+                        "servers": {
+                            "aitheros": {"url": f"{mcp_url}/sse"}
+                        }
+                    }, indent=2), encoding="utf-8")
+                    print(f"  [OK] VS Code — MCP configured in .vscode/mcp.json")
+                    mcp_configured.append("vscode")
+                except Exception:
+                    pass
+
+        if not mcp_configured:
+            print("  [--] No IDE detected — configure manually:")
+            print(f"       MCP server URL: {mcp_url}/sse")
+
+        # ── 4. Quick actions ──────────────────────────────────
         print()
         print("  QUICK ACTIONS")
         print("  ─────────────")
@@ -1961,6 +2104,8 @@ def main():
     # aither onboard — interactive onboarding wizard
     onboard_p = sub.add_parser("onboard", help="Interactive onboarding — detect, configure, integrate")
     onboard_p.add_argument("--api-key", help="AITHER_API_KEY")
+    onboard_p.add_argument("--tenant", help="Tenant slug to associate this node with")
+    onboard_p.add_argument("--non-interactive", action="store_true", help="Skip prompts, use defaults")
 
     # aither integrate — connect external tools
     integrate_p = sub.add_parser("integrate", help="Connect external tools (OpenClaw, etc.)")

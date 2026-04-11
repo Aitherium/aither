@@ -1,4 +1,4 @@
-# AitherOS ADK (Agent Development Kit)
+# Aither ADK (Agent Development Kit)
 
 > Build AI agent fleets with any LLM backend. Local-first with vLLM/Ollama, cloud via Elysium. One `pip install`, one line to connect.
 

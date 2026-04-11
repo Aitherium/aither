@@ -1,4 +1,4 @@
-"""AitherOS Alpha — Build AI agent fleets with any LLM backend."""
+"""Aither ADK — Build AI agent fleets with any LLM backend."""
 
 __version__ = "0.15.0"
 

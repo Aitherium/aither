@@ -1,4 +1,4 @@
-# AitherOS ADK — Full Documentation
+# Aither ADK — Full Documentation
 
 > Build AI agent fleets with any LLM backend. Local GPU inference via vLLM, CPU/Mac via Ollama, cloud via Elysium. Register agents on the Aitherium network. OpenAI-compatible API. MCP bridge for 200+ tools.
 

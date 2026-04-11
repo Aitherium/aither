@@ -1,4 +1,4 @@
-# AitherADK — Build AI Agent Fleets
+# Aither ADK — Build AI Agent Fleets
 
 **3 lines. Any backend. Local or cloud.**
 
@@ -14,9 +14,9 @@ aither init my-agent && cd my-agent && python agent.py
 
 Try it now at [chat.aitherium.com](https://chat.aitherium.com) — free, unlimited, no sign-up.
 
-### Why AitherOS?
+### Why Aither?
 
-| Locked appliances | AitherOS ADK |
+| Locked appliances | Aither ADK |
 |---|---|
 | Their hardware, their cloud | **Your hardware, your rules** |
 | 1 AI assistant | **48 specialized agents** that delegate to each other |
@@ -91,7 +91,7 @@ aither-serve --fleet fleet.yaml --port 8080
 
 ## Scale Up: Connect to Elysium
 
-Start local. When you need more power, connect your agents to the AitherOS cloud — same agents, same code, massively accelerated.
+Start local. When you need more power, connect your agents to the Aitherium cloud — same agents, same code, massively accelerated.
 
 ```bash
 # Set your API key (free tier available)
@@ -147,9 +147,9 @@ await fed.join_mesh(capabilities=["inference", "code_review"])
 | **Compute** | Single machine | + AitherMesh, cloud GPU overflow | + Dedicated GPU fleet |
 | **Security** | Input/output safety | + Gateway auth, rate limiting | + Ed25519 signing, capability tokens |
 | **Support** | Community | Priority | Dedicated + SLA |
-| **Deploy** | `pip install` | + `aither deploy` to cloud | + Full AitherOS on your infra |
+| **Deploy** | `pip install` | + `aither deploy` to cloud | + Full Aither on your infra |
 
-Enterprise gets the full 97-microservice AitherOS stack deployed on their infrastructure. Their data never leaves their network. Same agents, same tools, same mesh — completely sovereign.
+Enterprise gets the full Aither stack deployed on their infrastructure. Their data never leaves their network. Same agents, same tools, same mesh — completely sovereign.
 
 **Get started:** https://aitherium.com
 
@@ -245,7 +245,7 @@ agent = AitherAgent("atlas", llm=LLMRouter(
 
 ### Effort-Based Model Routing
 
-AitherOS Alpha automatically selects the right model based on task complexity:
+Aither automatically selects the right model based on task complexity:
 
 | Effort | vLLM (primary) | Ollama (fallback) | OpenAI | Anthropic | Use Case |
 |--------|----------------|-------------------|--------|-----------|----------|
@@ -282,7 +282,7 @@ Agent              — Agent with identity, tools, memory, LLM
   Safety Guard     — Input/output safety (injection detection)
   Context Manager  — Token-aware message truncation
   Event Emitter    — Async event bus (chat, tool, forge events)
-  Service Bridge   — Auto-discovery of AitherOS services
+  Service Bridge   — Auto-discovery of Aither services
   Tool Registry    — @tool decorator, OpenAI function calling format
   Identity         — 48 YAML-based agent personas
 ```
@@ -318,11 +318,11 @@ async def main():
     agent = AitherAgent("atlas")
 
     # Store knowledge triples
-    await agent.graph_remember("AitherOS", "uses", "SQLite")
-    await agent.graph_remember("AitherOS", "has", "196 microservices")
+    await agent.graph_remember("Aither", "uses", "SQLite")
+    await agent.graph_remember("Aither", "has", "48 agent identities")
 
     # Query the graph
-    results = await agent.graph_query("What database does AitherOS use?")
+    results = await agent.graph_query("What database does Aither use?")
     for node in results:
         print(f"{node.label}: {node.content}")
 
@@ -491,7 +491,7 @@ aither init my-agent
 
 ## Agent Identities
 
-48 pre-built identities ship with the package (16 included in the SDK, 48 total in AitherOS):
+48 pre-built identities ship with the package:
 
 | Identity | Role | Best For |
 |----------|------|----------|
@@ -514,7 +514,7 @@ aither init my-agent
 
 ## How It Fits Together
 
-AitherOS ADK is the open-source foundation. Everything else builds on top.
+Aither ADK is the foundation. Everything else builds on top.
 
 ```
 pip install aither-adk              You are here
@@ -526,7 +526,7 @@ pip install aither-adk              You are here
   aither deploy                     Push agents to cloud
         |
         v
-  Full AitherOS deployment          Enterprise sovereign (contact sales)
+  Full Aither deployment             Enterprise sovereign (contact sales)
 ```
 
 **Entry points into the ecosystem:**
@@ -543,7 +543,7 @@ All entry points connect to the same backend. Your agents, tools, and data work 
 
 ## Hardware Profiles
 
-AitherOS Alpha auto-detects your hardware and selects the right models:
+Aither auto-detects your hardware and selects the right models:
 
 | Profile | GPU VRAM | Default Model | Reasoning Model | Coding Model |
 |---------|----------|---------------|-----------------|--------------|
@@ -563,7 +563,7 @@ Alpha is designed as the gateway to Elysium. Three operating modes:
 Everything runs locally — agents, LLM, memory, tools. Zero network dependencies.
 
 ### Hybrid (best of both worlds)
-Run agents locally but use Elysium for the heavy lifting — MCP tools, knowledge graph, training data, mesh compute. Your agents keep local autonomy but gain access to 100+ tools and the full AitherOS infrastructure.
+Run agents locally but use Elysium for the heavy lifting — MCP tools, knowledge graph, training data, mesh compute. Your agents keep local autonomy but gain access to 100+ tools and the full Aither infrastructure.
 
 ```python
 from adk import AitherAgent
@@ -595,7 +595,7 @@ status = await fed.get_system_status()
 ```
 
 ### Gateway Inference
-No local GPU? Use the AitherOS gateway for inference — same API, cloud-hosted models.
+No local GPU? Use the Aither gateway for inference — same API, cloud-hosted models.
 
 ```bash
 export AITHER_API_KEY=your-key
@@ -613,7 +613,7 @@ aither-serve --identity aither  # Uses gateway.aitherium.com for LLM
 | `OPENAI_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible endpoint |
 | `OPENAI_API_KEY` | | OpenAI API key |
 | `ANTHROPIC_API_KEY` | | Anthropic API key |
-| `AITHER_API_KEY` | | AitherOS gateway API key |
+| `AITHER_API_KEY` | | Aitherium cloud API key |
 | `AITHER_PORT` | `8080` | Server port |
 | `AITHER_HOST` | `0.0.0.0` | Server bind address |
 | `AITHER_DATA_DIR` | `~/.aither` | Data directory for memory/conversations |

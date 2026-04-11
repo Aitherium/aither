@@ -5,14 +5,14 @@ build-backend = "hatchling.build"
 [project]
 name = "aither-adk"
 version = "0.15.0"
-description = "Agent development kit for AitherOS. Your hardware, your models, your data stays yours."
+description = "Build AI agent fleets. Any backend, local or cloud. Effort-based routing, 48 identities, knowledge graph memory."
 readme = "README.md"
 license = {file = "LICENSE"}
 requires-python = ">=3.10"
 authors = [
     { name = "Aitherium", email = "hello@aitherium.com" },
 ]
-keywords = ["ai", "agents", "llm", "aitheros", "ollama", "openai", "anthropic"]
+keywords = ["ai", "agents", "llm", "aither", "ollama", "openai", "anthropic", "vllm", "fleet", "multi-agent"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
