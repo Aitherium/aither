@@ -77,6 +77,13 @@ def create_app(
         except Exception:
             pass
         yield
+        # ── Shutdown cleanup ──
+        bridge = _state.get("aither_bridge")
+        if bridge:
+            await bridge.stop()
+        chat = _state.get("chat_relay")
+        if chat:
+            await chat.stop_irc_server()
 
     app = FastAPI(
         title=f"AitherADK — {'Fleet' if is_fleet else identity}",
@@ -841,6 +848,16 @@ def create_app(
             except Exception as irc_exc:
                 logger.debug("IRC server startup failed (non-fatal): %s", irc_exc)
 
+            # Start Aither ↔ IRC bridge (AT Protocol social feed in IRC)
+            try:
+                from adk.aither_bridge import init_aither_bridge
+                bridge = await init_aither_bridge(chat)
+                if bridge:
+                    _state["aither_bridge"] = bridge
+                    logger.info("Aither ↔ IRC bridge active")
+            except Exception as bridge_exc:
+                logger.debug("Aither bridge startup failed (non-fatal): %s", bridge_exc)
+
             logger.info("Chat relay initialized (channels=%d)", len(chat._channels))
         except Exception as exc:
             logger.debug("Chat relay init failed (non-fatal): %s", exc)
@@ -995,6 +1012,14 @@ def create_app(
         if not chat:
             return {"active": False, "message": "Chat relay not initialized"}
         return {**chat.status(), "active": True}
+
+    @app.get("/bridge/status")
+    async def bridge_status():
+        """Aither ↔ IRC bridge status."""
+        bridge = _state.get("aither_bridge")
+        if not bridge:
+            return {"active": False, "message": "Aither bridge not running"}
+        return {**bridge.status(), "active": True}
 
     # ── Mail REST endpoints ──
 

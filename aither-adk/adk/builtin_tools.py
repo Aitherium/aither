@@ -698,6 +698,76 @@ def code_search(pattern: str, path: str = ".", file_glob: str = "", max_results:
     return "Error: neither rg nor grep found"
 
 
+def repowise_search(query: str, max_results: int = 10) -> str:
+    """Search codebase using Repowise semantic + keyword hybrid search.
+
+    Uses the Repowise intelligence service for deep code understanding.
+    Falls back to ripgrep code_search if Repowise is unavailable.
+
+    Args:
+        query: Natural language or keyword query
+        max_results: Maximum results to return
+    """
+    import json as _json
+    repowise_url = os.environ.get("AITHER_REPOWISE_URL", "http://localhost:7337")
+    try:
+        import httpx
+        with httpx.Client(timeout=15) as client:
+            resp = client.post(
+                f"{repowise_url}/v1/search",
+                json={"query": query, "limit": max_results},
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                results = []
+                for r in data.get("results", []):
+                    results.append({
+                        "file": r.get("file", ""),
+                        "symbol": r.get("symbol", ""),
+                        "snippet": r.get("snippet", "")[:200],
+                        "score": round(r.get("score", 0), 3),
+                    })
+                return _json.dumps({"results": results, "count": len(results), "source": "repowise"})
+    except Exception:
+        pass
+    # Fallback to ripgrep
+    return code_search(pattern=query, max_results=max_results)
+
+
+def swarm_code(problem: str, mode: str = "forge", effort: int = 8) -> str:
+    """Dispatch to AitherOS swarm coding engine for complex implementation tasks.
+
+    The swarm runs 11 specialized agents in 4 phases:
+    ARCHITECT -> SWARM (8 parallel) -> REVIEW -> JUDGE
+
+    Args:
+        problem: Task or feature description to implement
+        mode: "llm" (text-only), "forge" (with tools/sandbox), "plan_only" (design only)
+        effort: Effort level 1-10 (affects model selection)
+    """
+    import json as _json
+    genesis_url = os.environ.get("AITHER_GENESIS_URL", "http://localhost:8001")
+    try:
+        import httpx
+        resp = httpx.post(
+            f"{genesis_url}/swarm/code/sync",
+            json={"problem": problem, "mode": mode, "effort": effort},
+            timeout=600,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            return _json.dumps({
+                "status": data.get("status", "unknown"),
+                "plan": data.get("architect_plan", "")[:2000],
+                "code": data.get("code", "")[:5000],
+                "tests": data.get("tests", "")[:2000],
+                "artifacts": data.get("artifacts", []),
+            })
+        return _json.dumps({"error": f"Genesis returned {resp.status_code}"})
+    except Exception as e:
+        return _json.dumps({"error": str(e)})
+
+
 def code_symbols(path: str, pattern: str = "") -> str:
     """List function/class definitions in a file. Optionally filter by pattern."""
     import ast as _ast
@@ -882,6 +952,8 @@ TOOL_CATEGORIES = {
     "creative": [image_generate, image_refine, image_smart],
     "git": [git_status, git_diff, git_log, git_add, git_commit, git_branch_list],
     "code": [code_search, code_symbols],
+    "repowise": [repowise_search],
+    "swarm": [swarm_code],
 }
 
 # Default categories for common identity profiles

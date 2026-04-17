@@ -912,6 +912,66 @@ class AitherAgent:
         stats["enabled"] = True
         return stats
 
+    async def swarm(
+        self,
+        problem: str,
+        mode: str = "forge",
+        effort: int = 8,
+        max_seconds: int = 300,
+    ) -> dict:
+        """Dispatch problem to the AitherOS swarm coding engine.
+
+        Requires AitherOS Genesis service running.
+
+        Args:
+            problem: Task description
+            mode: "llm", "forge" (with tools), or "plan_only"
+            effort: Effort level 1-10
+            max_seconds: Maximum execution time
+
+        Returns:
+            Dict with status, plan, code, tests, artifacts
+        """
+        import httpx
+
+        genesis_url = os.environ.get("AITHER_GENESIS_URL", "http://localhost:8001")
+        try:
+            async with httpx.AsyncClient(timeout=max_seconds + 10) as client:
+                resp = await client.post(
+                    f"{genesis_url}/swarm/code/sync",
+                    json={
+                        "problem": problem,
+                        "mode": mode,
+                        "effort": effort,
+                        "timeout_seconds": max_seconds,
+                    },
+                )
+                if resp.status_code == 200:
+                    return resp.json()
+                return {"status": "failed", "error": f"HTTP {resp.status_code}: {resp.text[:200]}"}
+        except httpx.TimeoutException:
+            return {"status": "failed", "error": f"Swarm timed out after {max_seconds}s"}
+        except Exception as e:
+            return {"status": "failed", "error": str(e)}
+
+    async def code_search(self, query: str, max_results: int = 10) -> list[dict]:
+        """Search codebase via Repowise (semantic) with ripgrep fallback.
+
+        Args:
+            query: Natural language or keyword query
+            max_results: Maximum results
+
+        Returns:
+            List of {file, symbol, snippet, score} dicts
+        """
+        from .builtin_tools import repowise_search
+        raw = repowise_search(query, max_results=max_results)
+        try:
+            data = json.loads(raw)
+            return data.get("results", [])
+        except Exception:
+            return [{"file": "", "snippet": raw[:500], "score": 0}]
+
     async def report_bug(self, description: str, include_logs: bool = True) -> dict:
         """Report a bug programmatically."""
         from adk.bugreport import submit_bug_report
