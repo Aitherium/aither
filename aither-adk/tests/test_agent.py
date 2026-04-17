@@ -151,6 +151,92 @@ class TestAgentSession:
         assert new_session != old_session
 
 
+class TestAgentSwarm:
+    @pytest.mark.asyncio
+    async def test_swarm_success(self, mock_llm):
+        agent = AitherAgent("test", llm=mock_llm)
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "status": "completed",
+            "architect_plan": "Plan here",
+            "code": "print('hello')",
+        }
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            result = await agent.swarm("Build a feature")
+            assert result["status"] == "completed"
+            assert "Plan here" in result["architect_plan"]
+
+    @pytest.mark.asyncio
+    async def test_swarm_timeout(self, mock_llm):
+        import httpx
+        agent = AitherAgent("test", llm=mock_llm)
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(side_effect=httpx.TimeoutException("timed out"))
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            result = await agent.swarm("task", max_seconds=10)
+            assert result["status"] == "failed"
+            assert "timed out" in result["error"].lower()
+
+    @pytest.mark.asyncio
+    async def test_swarm_connection_error(self, mock_llm):
+        agent = AitherAgent("test", llm=mock_llm)
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(side_effect=Exception("Connection refused"))
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            result = await agent.swarm("task")
+            assert result["status"] == "failed"
+            assert "Connection refused" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_swarm_http_error(self, mock_llm):
+        agent = AitherAgent("test", llm=mock_llm)
+        mock_resp = MagicMock()
+        mock_resp.status_code = 500
+        mock_resp.text = "Internal Server Error"
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            result = await agent.swarm("task")
+            assert result["status"] == "failed"
+            assert "500" in result["error"]
+
+
+class TestAgentCodeSearch:
+    @pytest.mark.asyncio
+    async def test_code_search_returns_list(self, mock_llm):
+        agent = AitherAgent("test", llm=mock_llm)
+        mock_result = '{"results": [{"file": "a.py", "symbol": "foo", "snippet": "def foo():", "score": 0.9}], "count": 1, "source": "repowise"}'
+        with patch("adk.builtin_tools.repowise_search", return_value=mock_result):
+            results = await agent.code_search("foo function")
+            assert isinstance(results, list)
+            assert len(results) == 1
+            assert results[0]["file"] == "a.py"
+
+    @pytest.mark.asyncio
+    async def test_code_search_fallback_on_parse_error(self, mock_llm):
+        agent = AitherAgent("test", llm=mock_llm)
+        with patch("adk.builtin_tools.repowise_search", return_value="not json"):
+            results = await agent.code_search("query")
+            assert isinstance(results, list)
+            assert len(results) == 1
+            assert results[0]["snippet"] == "not json"
+
+
 class TestAgentToolDecorator:
     @pytest.mark.asyncio
     async def test_tool_decorator(self, mock_llm, tmp_memory):

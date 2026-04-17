@@ -958,15 +958,15 @@ TOOL_CATEGORIES = {
 
 # Default categories for common identity profiles
 IDENTITY_DEFAULTS = {
-    "demiurge": ["file_io", "shell", "python", "web", "git", "code"],
+    "demiurge": ["file_io", "shell", "python", "web", "git", "code", "repowise", "swarm"],
     "atlas": ["file_io", "web", "secrets", "code"],
-    "aither": ["file_io", "shell", "python", "web", "secrets", "creative", "git", "code"],
+    "aither": ["file_io", "shell", "python", "web", "secrets", "creative", "git", "code", "repowise", "swarm"],
     "lyra": ["file_io", "web"],
-    "hydra": ["file_io", "shell", "python", "git", "code"],
+    "hydra": ["file_io", "shell", "python", "git", "code", "repowise"],
     "prometheus": ["file_io", "shell", "secrets", "git"],
-    "apollo": ["file_io", "shell", "python", "code"],
+    "apollo": ["file_io", "shell", "python", "code", "repowise"],
     "athena": ["file_io", "web", "secrets", "code"],
-    "scribe": ["file_io", "web", "code"],
+    "scribe": ["file_io", "web", "code", "repowise"],
     "iris": ["file_io", "web", "creative"],
     "muse": ["file_io", "web", "creative"],
 }

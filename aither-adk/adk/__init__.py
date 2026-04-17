@@ -1,6 +1,6 @@
 """Aither ADK — Build AI agent fleets with any LLM backend."""
 
-__version__ = "0.15.0"
+__version__ = "0.16.0"
 
 from adk.agent import AitherAgent
 from adk.tools import tool, ToolRegistry
@@ -46,6 +46,9 @@ __all__ = [
     "CodeGraph",
     "MemoryGraph",
     "EmbeddingProvider",
+    # Standalone tools
+    "repowise_search",
+    "swarm_code",
     # Mesh relay
     "AitherNetRelay",
     # Chat + Mail
@@ -186,6 +189,12 @@ def __getattr__(name):
     if name == "Elysium":
         from adk.elysium import Elysium
         return Elysium
+    if name == "repowise_search":
+        from adk.builtin_tools import repowise_search
+        return repowise_search
+    if name == "swarm_code":
+        from adk.builtin_tools import swarm_code
+        return swarm_code
     if name == "AitherNetRelay":
         from adk.relay import AitherNetRelay
         return AitherNetRelay

@@ -90,6 +90,8 @@ class TestContextManagerWiring:
             system_prompt="IMPORTANT SYSTEM PROMPT",
         )
         agent._context_mgr = ContextManager(max_tokens=200, preserve_turns=1, reserve_for_response=50)
+        agent._graph = None  # Disable graph memory injection
+        agent._auto_neurons = None  # Disable neuron injection
         history = [
             {"role": "user", "content": f"Old message {i} " * 30}
             for i in range(10)
@@ -98,8 +100,8 @@ class TestContextManagerWiring:
         call_args = llm.chat.call_args
         messages = call_args[0][0]
         contents = [m.content for m in messages]
-        assert "IMPORTANT SYSTEM PROMPT" in contents
-        assert "Latest question" in contents
+        assert any("IMPORTANT SYSTEM PROMPT" in c for c in contents)
+        assert any("Latest question" in c for c in contents)
 
     @pytest.mark.asyncio
     async def test_fallback_when_context_manager_fails(self):

@@ -12,7 +12,7 @@ from adk.elysium import Elysium, ElysiumStatus
 class TestElysiumCreation:
     def test_create_default(self):
         e = Elysium()
-        assert "mcp.aitherium.com" in e.inference_url
+        assert "gateway.aitherium.com" in e.inference_url
         assert "gateway.aitherium.com" in e.gateway_url
 
     def test_create_with_api_key(self):

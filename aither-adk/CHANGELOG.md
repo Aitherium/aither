@@ -2,6 +2,18 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [0.16.0] - 2026-04-16
+
+### Swarm Coding Engine & Repowise Integration
+- **`repowise_search` tool** — Semantic + keyword hybrid code search via Repowise, with ripgrep fallback
+- **`swarm_code` tool** — Dispatch complex tasks to 11-agent swarm pipeline (ARCHITECT->SWARM->REVIEW->JUDGE)
+- **`agent.swarm()`** — Async convenience method with configurable mode, effort, timeout
+- **`agent.code_search()`** — Async convenience method returning structured results
+- New tool categories: `repowise` and `swarm` in TOOL_CATEGORIES
+- `repowise_search` and `swarm_code` added to `__init__.py` exports with lazy loading
+- `IDENTITY_DEFAULTS` updated: repowise for code-focused agents, swarm for orchestration agents
+- Standalone graceful degradation: repowise falls back to ripgrep, swarm returns structured error
+
 ## [0.13.0] - 2026-04-02
 
 ### Graph Faculties — Local Knowledge for Every Agent

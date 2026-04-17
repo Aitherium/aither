@@ -1404,6 +1404,15 @@ class IRCServer:
 
     # ── Relay Event Handlers (ChatRelay → IRC clients) ────────────────
 
+    def _fire_and_forget(self, coro):
+        """Schedule a coroutine on the running event loop, or discard if none."""
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(coro)
+        except RuntimeError:
+            # No running event loop — close the coroutine to avoid warnings
+            coro.close()
+
     def _on_relay_message(self, data: dict):
         """Handle message events from ChatRelay — broadcast to IRC clients."""
         nick = data.get("nick", "")
@@ -1419,7 +1428,7 @@ class IRCServer:
             return
 
         line = f":{nick}!{nick}@{self._server_name} PRIVMSG {channel} :{content}"
-        asyncio.ensure_future(self._broadcast_to_channel(channel, line))
+        self._fire_and_forget(self._broadcast_to_channel(channel, line))
 
     def _on_relay_join(self, data: dict):
         """Handle join events from ChatRelay — notify IRC clients."""
@@ -1430,7 +1439,7 @@ class IRCServer:
             return  # IRC client already got the JOIN echo
 
         line = f":{nick}!{nick}@{self._server_name} JOIN {channel}"
-        asyncio.ensure_future(self._broadcast_to_channel(channel, line))
+        self._fire_and_forget(self._broadcast_to_channel(channel, line))
 
     def _on_relay_part(self, data: dict):
         """Handle part events from ChatRelay — notify IRC clients."""
@@ -1441,7 +1450,7 @@ class IRCServer:
             return
 
         line = f":{nick}!{nick}@{self._server_name} PART {channel} :Left"
-        asyncio.ensure_future(self._broadcast_to_channel(channel, line))
+        self._fire_and_forget(self._broadcast_to_channel(channel, line))
 
     def _on_relay_topic(self, data: dict):
         """Handle topic change events from ChatRelay."""
@@ -1453,7 +1462,7 @@ class IRCServer:
             return
 
         line = f":{nick}!{nick}@{self._server_name} TOPIC {channel} :{topic}"
-        asyncio.ensure_future(self._broadcast_to_channel(channel, line))
+        self._fire_and_forget(self._broadcast_to_channel(channel, line))
 
     def _on_relay_dm(self, data: dict):
         """Handle DM events from ChatRelay — deliver to IRC clients."""
@@ -1474,7 +1483,7 @@ class IRCServer:
                 for real_nick in self._clients:
                     if real_nick.lower() == recipient:
                         line = f":{nick}!{nick}@{self._server_name} PRIVMSG {real_nick} :{content}"
-                        asyncio.ensure_future(self._send_to_nick(real_nick, line))
+                        self._fire_and_forget(self._send_to_nick(real_nick, line))
                         break
 
     def _on_relay_action(self, data: dict):
@@ -1493,7 +1502,7 @@ class IRCServer:
             action_text = content
 
         line = f":{nick}!{nick}@{self._server_name} PRIVMSG {channel} :\x01ACTION {action_text}\x01"
-        asyncio.ensure_future(self._broadcast_to_channel(channel, line))
+        self._fire_and_forget(self._broadcast_to_channel(channel, line))
 
 
 # ── Singleton ────────────────────────────────────────────────────────────

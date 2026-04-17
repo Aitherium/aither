@@ -545,3 +545,198 @@ class TestRegistration:
     def test_shell_exec_returns_string(self, mock_run):
         mock_run.return_value = MagicMock(returncode=0, stdout="ok", stderr="")
         assert isinstance(bt.shell_exec("echo ok"), str)
+
+
+# ---------------------------------------------------------------------------
+# Repowise search
+# ---------------------------------------------------------------------------
+
+class TestRepowiseSearch:
+    def test_repowise_categories_defined(self):
+        assert "repowise" in bt.TOOL_CATEGORIES
+        assert bt.repowise_search in bt.TOOL_CATEGORIES["repowise"]
+
+    @patch("httpx.Client")
+    def test_repowise_search_success(self, mock_client_cls):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "results": [
+                {"file": "lib/core/agent.py", "symbol": "AgentKernel", "snippet": "class AgentKernel:", "score": 0.95},
+                {"file": "lib/core/forge.py", "symbol": "AgentForge", "snippet": "class AgentForge:", "score": 0.87},
+            ]
+        }
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client_cls.return_value = mock_client
+
+        result = bt.repowise_search("agent kernel")
+        data = json.loads(result)
+        assert data["source"] == "repowise"
+        assert data["count"] == 2
+        assert data["results"][0]["file"] == "lib/core/agent.py"
+        assert data["results"][0]["score"] == 0.95
+
+    @patch("httpx.Client")
+    def test_repowise_search_truncates_snippet(self, mock_client_cls):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "results": [{"file": "a.py", "symbol": "x", "snippet": "y" * 500, "score": 0.5}]
+        }
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client_cls.return_value = mock_client
+
+        result = bt.repowise_search("query")
+        data = json.loads(result)
+        assert len(data["results"][0]["snippet"]) <= 200
+
+    @patch("httpx.Client")
+    def test_repowise_search_respects_max_results(self, mock_client_cls):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"results": []}
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client_cls.return_value = mock_client
+
+        bt.repowise_search("test", max_results=3)
+        call_json = mock_client.post.call_args[1]["json"]
+        assert call_json["limit"] == 3
+
+    @patch("httpx.Client")
+    @patch("adk.builtin_tools.code_search")
+    def test_repowise_search_fallback_to_ripgrep(self, mock_code_search, mock_client_cls):
+        """When Repowise is unavailable, falls back to code_search (ripgrep)."""
+        mock_client = MagicMock()
+        mock_client.post.side_effect = Exception("Connection refused")
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client_cls.return_value = mock_client
+        mock_code_search.return_value = "file.py:10:match"
+
+        result = bt.repowise_search("search term")
+        mock_code_search.assert_called_once_with(pattern="search term", max_results=10)
+        assert result == "file.py:10:match"
+
+    @patch("httpx.Client")
+    @patch("adk.builtin_tools.code_search")
+    def test_repowise_search_fallback_on_non200(self, mock_code_search, mock_client_cls):
+        """Non-200 status triggers ripgrep fallback."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 500
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client_cls.return_value = mock_client
+        mock_code_search.return_value = "(no matches)"
+
+        result = bt.repowise_search("query")
+        mock_code_search.assert_called_once()
+
+    def test_repowise_search_custom_url(self, monkeypatch):
+        """AITHER_REPOWISE_URL env var is respected."""
+        monkeypatch.setenv("AITHER_REPOWISE_URL", "http://custom:9999")
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"results": []}
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+
+        with patch("httpx.Client", return_value=mock_client):
+            bt.repowise_search("test")
+            url = mock_client.post.call_args[0][0]
+            assert url.startswith("http://custom:9999")
+
+
+# ---------------------------------------------------------------------------
+# Swarm code
+# ---------------------------------------------------------------------------
+
+class TestSwarmCode:
+    def test_swarm_categories_defined(self):
+        assert "swarm" in bt.TOOL_CATEGORIES
+        assert bt.swarm_code in bt.TOOL_CATEGORIES["swarm"]
+
+    @patch("httpx.post")
+    def test_swarm_code_success(self, mock_post):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "status": "completed",
+            "architect_plan": "Step 1: Design API\nStep 2: Implement",
+            "code": "def handler(): pass",
+            "tests": "def test_handler(): assert True",
+            "artifacts": ["api.py"],
+        }
+        mock_post.return_value = mock_resp
+
+        result = bt.swarm_code("Build a REST API endpoint")
+        data = json.loads(result)
+        assert data["status"] == "completed"
+        assert "Design API" in data["plan"]
+        assert "def handler" in data["code"]
+        assert "api.py" in data["artifacts"]
+
+    @patch("httpx.post")
+    def test_swarm_code_sends_correct_params(self, mock_post):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"status": "ok"}
+        mock_post.return_value = mock_resp
+
+        bt.swarm_code("task", mode="plan_only", effort=5)
+        call_json = mock_post.call_args[1]["json"]
+        assert call_json["problem"] == "task"
+        assert call_json["mode"] == "plan_only"
+        assert call_json["effort"] == 5
+
+    @patch("httpx.post")
+    def test_swarm_code_non200(self, mock_post):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 503
+        mock_post.return_value = mock_resp
+
+        result = bt.swarm_code("task")
+        data = json.loads(result)
+        assert "error" in data
+        assert "503" in data["error"]
+
+    @patch("httpx.post")
+    def test_swarm_code_connection_error(self, mock_post):
+        mock_post.side_effect = Exception("Connection refused")
+
+        result = bt.swarm_code("task")
+        data = json.loads(result)
+        assert "error" in data
+        assert "Connection refused" in data["error"]
+
+    @patch("httpx.post")
+    def test_swarm_code_timeout(self, mock_post):
+        import httpx
+        mock_post.side_effect = httpx.TimeoutException("timed out")
+
+        result = bt.swarm_code("task")
+        data = json.loads(result)
+        assert "error" in data
+
+    def test_swarm_code_custom_genesis_url(self, monkeypatch):
+        monkeypatch.setenv("AITHER_GENESIS_URL", "http://custom:9001")
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"status": "ok"}
+
+        with patch("httpx.post", return_value=mock_resp) as mock_post:
+            bt.swarm_code("task")
+            url = mock_post.call_args[0][0]
+            assert url.startswith("http://custom:9001")
