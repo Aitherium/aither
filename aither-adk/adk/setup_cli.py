@@ -704,6 +704,24 @@ def cmd_setup(args) -> int:
     else:
         info("Ollama: not installed (not needed with vLLM)")
 
+    # Auto-install llmfit for hardware-aware model selection
+    llmfit_ok = bool(shutil.which("llmfit"))
+    if llmfit_ok:
+        info("llmfit: installed (hardware-aware model selection)")
+    elif not dry_run:
+        info("llmfit: not found — installing for smart model selection...")
+        import asyncio as _aio
+        from adk.setup import AgentSetup as _AS
+        _setup = _AS()
+        try:
+            llmfit_ok = _aio.get_event_loop().run_until_complete(_setup.ensure_llmfit())
+            if llmfit_ok:
+                info(f"llmfit: {green('installed')}")
+            else:
+                warn("llmfit: install failed (model selection will use static profiles)")
+        except Exception:
+            warn("llmfit: install failed (model selection will use static profiles)")
+
     # Decide path
     can_vllm = docker_ok and gpu.vendor == "nvidia" and vram_gb >= 6
     forced_tier = args.tier

@@ -1,12 +1,17 @@
 """LLMFit integration — hardware-aware model recommendations for ADK agents.
 
-This module provides a lightweight async client for the llmfit REST API
-sidecar. llmfit is a Rust CLI/TUI + REST server that detects GPU/CPU/RAM
-specs and scores 200+ LLM models across quality, speed, fit, and context
-dimensions.
+This module provides a lightweight async client for llmfit, a Rust CLI/TUI
+tool that detects GPU/CPU/RAM specs and scores 200+ LLM models across
+quality, speed, fit, and context dimensions.
+
+Two execution modes (tried in order):
+  1. REST API — if ``llmfit serve`` is running (or the Docker sidecar is up).
+  2. CLI subprocess — shells out to the ``llmfit`` binary with ``--json``
+     flags.  No server required; just ``cargo install llmfit`` or grab a
+     release binary.
 
 Upstream:
-    Repository: https://github.com/wizzense/llmfit
+    Repository: https://github.com/AlexsJones/llmfit
     Author:     Alex Jones (@AlexsJones)
     License:    MIT
 
@@ -20,10 +25,10 @@ llmfit for *actual* hardware-scored recommendations that account for:
 Usage:
     from adk.llmfit import get_llmfit, LLMFitClient
 
-    # Singleton client (auto-resolves URL)
+    # Singleton client (auto-resolves URL, falls back to CLI)
     fit = get_llmfit()
 
-    # Check if llmfit sidecar is available
+    # Check if llmfit is available (REST server or CLI binary)
     if await fit.is_available():
         # Get top models for coding tasks
         models = await fit.top_models(use_case="coding", limit=5)
@@ -42,8 +47,12 @@ Usage:
 
 from __future__ import annotations
 
+import asyncio
+import json as _json
 import logging
 import os
+import shutil
+import subprocess
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -107,7 +116,11 @@ class ModelFit:
 
 
 class LLMFitClient:
-    """Async client for the llmfit REST API sidecar.
+    """Async client for llmfit — REST API with CLI subprocess fallback.
+
+    Execution priority:
+      1. REST API (``llmfit serve`` or Docker sidecar)
+      2. CLI binary (``llmfit recommend --json``, ``llmfit --json system``, etc.)
 
     Resilient by design — all methods return sensible defaults when llmfit
     is unavailable so callers can degrade gracefully.
@@ -134,6 +147,39 @@ class LLMFitClient:
             return f"http://aither-llmfit:{_DEFAULT_PORT}"
         return f"http://localhost:{_DEFAULT_PORT}"
 
+    @staticmethod
+    def _find_binary() -> str | None:
+        """Find the llmfit binary on PATH."""
+        return shutil.which("llmfit")
+
+    def _cli_run(self, args: list[str], timeout: float = 30.0) -> dict | None:
+        """Run llmfit CLI with --json and return parsed JSON, or None."""
+        binary = self._find_binary()
+        if not binary:
+            return None
+        cmd = [binary] + args
+        # Ensure --json is present for machine-readable output
+        if "--json" not in cmd and "recommend" not in cmd:
+            # recommend defaults to JSON; others need --json flag
+            cmd.insert(1, "--json")
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+            if result.returncode != 0:
+                logger.debug("llmfit CLI returned %d: %s", result.returncode, result.stderr[:200])
+                return None
+            return _json.loads(result.stdout)
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
+            logger.debug("llmfit CLI unavailable: %s", e)
+            return None
+        except _json.JSONDecodeError as e:
+            logger.debug("llmfit CLI returned invalid JSON: %s", e)
+            return None
+
     async def _get_client(self):
         if self._client is None:
             try:
@@ -158,16 +204,20 @@ class LLMFitClient:
     # ── Health ──────────────────────────────────────────────────────────────
 
     async def is_available(self, force: bool = False) -> bool:
-        """Check if llmfit sidecar is reachable. Cached for 30s."""
+        """Check if llmfit is reachable (REST API or local CLI binary). Cached for 30s."""
         now = time.monotonic()
         if not force and self._available is not None and (now - self._last_health) < _HEALTH_TTL:
             return self._available
+        # Try REST first
         try:
             client = await self._get_client()
             resp = await client.get("/health")
             self._available = resp.status_code == 200
         except Exception:
             self._available = False
+        # Fall back to CLI binary detection
+        if not self._available:
+            self._available = self._find_binary() is not None
         self._last_health = now
         return self._available
 
@@ -178,29 +228,40 @@ class LLMFitClient:
         now = time.monotonic()
         if self._system_cache and (now - self._system_cache_time) < _SYSTEM_TTL:
             return self._system_cache
+
+        sys_data = None
+        # Try REST API first
         try:
             client = await self._get_client()
             resp = await client.get("/api/v1/system")
             if resp.status_code == 200:
                 data = resp.json()
                 sys_data = data.get("system", data)
-                self._system_cache = {
-                    "cpu_cores": sys_data.get("cpu_cores", 0),
-                    "cpu_name": sys_data.get("cpu_name", ""),
-                    "total_ram_gb": sys_data.get("total_ram_gb", 0.0),
-                    "available_ram_gb": sys_data.get("available_ram_gb", 0.0),
-                    "has_gpu": sys_data.get("has_gpu", False),
-                    "gpu_name": sys_data.get("gpu_name", ""),
-                    "gpu_vram_gb": sys_data.get("gpu_vram_gb", 0.0),
-                    "backend": sys_data.get("backend", "cpu_x86"),
-                    "unified_memory": sys_data.get("unified_memory", False),
-                    "gpu_count": sys_data.get("gpu_count", 0),
-                    "raw": data,
-                }
-                self._system_cache_time = now
-                return self._system_cache
         except Exception as e:
-            logger.debug("llmfit system info unavailable: %s", e)
+            logger.debug("llmfit REST system info unavailable: %s", e)
+
+        # Fall back to CLI: `llmfit --json system`
+        if sys_data is None:
+            cli_out = self._cli_run(["system"])
+            if cli_out:
+                sys_data = cli_out.get("system", cli_out)
+
+        if sys_data:
+            self._system_cache = {
+                "cpu_cores": sys_data.get("cpu_cores", 0),
+                "cpu_name": sys_data.get("cpu_name", ""),
+                "total_ram_gb": sys_data.get("total_ram_gb", 0.0),
+                "available_ram_gb": sys_data.get("available_ram_gb", 0.0),
+                "has_gpu": sys_data.get("has_gpu", False),
+                "gpu_name": sys_data.get("gpu_name", ""),
+                "gpu_vram_gb": sys_data.get("gpu_vram_gb", 0.0),
+                "backend": sys_data.get("backend", "cpu_x86"),
+                "unified_memory": sys_data.get("unified_memory", False),
+                "gpu_count": sys_data.get("gpu_count", 0),
+                "raw": sys_data,
+            }
+            self._system_cache_time = now
+            return self._system_cache
         return None
 
     # ── Model Queries ───────────────────────────────────────────────────────
@@ -218,6 +279,9 @@ class LLMFitClient:
         if cache_key in self._models_cache and (now - self._models_cache_time) < _MODELS_TTL:
             return self._models_cache[cache_key]
 
+        models_list = None
+
+        # Try REST API first
         try:
             client = await self._get_client()
             params: dict[str, Any] = {"min_fit": min_fit, "limit": limit, "sort": sort}
@@ -228,25 +292,46 @@ class LLMFitClient:
             if resp.status_code == 200:
                 data = resp.json()
                 models_list = data.get("models", data if isinstance(data, list) else [])
-                results = [ModelFit.from_json(m) for m in models_list]
-                self._models_cache[cache_key] = results
-                self._models_cache_time = now
-                return results
         except Exception as e:
-            logger.debug("llmfit top_models unavailable: %s", e)
+            logger.debug("llmfit REST top_models unavailable: %s", e)
+
+        # Fall back to CLI: `llmfit recommend --json --limit N [--use-case X]`
+        if models_list is None:
+            cli_args = ["recommend", "--json", "--limit", str(limit), "--min-fit", min_fit]
+            if use_case:
+                cli_args.extend(["--use-case", use_case])
+            cli_out = self._cli_run(cli_args)
+            if cli_out:
+                models_list = cli_out.get("models", [])
+
+        if models_list:
+            results = [ModelFit.from_json(m) for m in models_list]
+            self._models_cache[cache_key] = results
+            self._models_cache_time = now
+            return results
         return []
 
     async def search_model(self, query: str) -> list[ModelFit]:
         """Search for a model by name."""
+        models_list = None
+        # Try REST API first
         try:
             client = await self._get_client()
             resp = await client.get(f"/api/v1/models/{query}")
             if resp.status_code == 200:
                 data = resp.json()
                 models_list = data.get("models", data if isinstance(data, list) else [])
-                return [ModelFit.from_json(m) for m in models_list]
         except Exception as e:
-            logger.debug("llmfit search unavailable: %s", e)
+            logger.debug("llmfit REST search unavailable: %s", e)
+
+        # Fall back to CLI: `llmfit info "query" --json`
+        if models_list is None:
+            cli_out = self._cli_run(["info", query])
+            if cli_out:
+                models_list = cli_out.get("models", [])
+
+        if models_list:
+            return [ModelFit.from_json(m) for m in models_list]
         return []
 
     async def best_for_task(

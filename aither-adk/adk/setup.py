@@ -570,6 +570,81 @@ class AgentSetup:
                      f"profile={info.profile}, {backend_msg}")
         return info
 
+    async def ensure_llmfit(self, auto_install: bool = True) -> bool:
+        """Ensure llmfit CLI is installed for hardware-aware model selection.
+
+        Auto-installs via the official installer on Linux/macOS, or via
+        scoop/cargo on Windows. Returns True if llmfit is available.
+        """
+        if shutil.which("llmfit"):
+            logger.info("llmfit already installed")
+            return True
+
+        if not auto_install:
+            logger.info("llmfit not installed (auto_install=False)")
+            return False
+
+        system = platform.system()
+        logger.info("Installing llmfit for hardware-aware model selection...")
+
+        if system in ("Linux", "Darwin"):
+            # Official install script (same pattern as Ollama)
+            rc, _, err = await _run(
+                ["bash", "-c",
+                 "curl -fsSL https://raw.githubusercontent.com/AlexsJones/llmfit/main/install.sh | bash"],
+                timeout=120.0,
+            )
+            if rc == 0 and shutil.which("llmfit"):
+                logger.info("llmfit installed via install script")
+                return True
+            # Fallback: cargo install
+            if shutil.which("cargo"):
+                logger.info("Install script failed, trying cargo install...")
+                rc, _, err = await _run(
+                    ["cargo", "install", "llmfit"],
+                    timeout=300.0,
+                )
+                if rc == 0:
+                    logger.info("llmfit installed via cargo")
+                    return True
+            if system == "Darwin" and shutil.which("brew"):
+                logger.info("Trying brew install...")
+                rc, _, err = await _run(["brew", "install", "llmfit"], timeout=120.0)
+                if rc == 0:
+                    logger.info("llmfit installed via brew")
+                    return True
+            logger.warning("Failed to auto-install llmfit: %s", err[:200] if err else "unknown")
+            return False
+
+        elif system == "Windows":
+            # Try scoop first (most common for Rust CLI tools on Windows)
+            if shutil.which("scoop"):
+                rc, _, err = await _run(
+                    ["scoop", "install", "llmfit"],
+                    timeout=120.0,
+                )
+                if rc == 0:
+                    logger.info("llmfit installed via scoop")
+                    return True
+            # Try cargo
+            if shutil.which("cargo"):
+                rc, _, err = await _run(
+                    ["cargo", "install", "llmfit"],
+                    timeout=300.0,
+                )
+                if rc == 0:
+                    logger.info("llmfit installed via cargo")
+                    return True
+            logger.warning(
+                "Could not auto-install llmfit on Windows. "
+                "Install manually: scoop install llmfit, cargo install llmfit, "
+                "or download from https://github.com/AlexsJones/llmfit/releases"
+            )
+            return False
+
+        logger.warning("Unsupported platform for llmfit auto-install: %s", system)
+        return False
+
     async def ensure_ollama(self, auto_install: bool = True, force: bool = False) -> bool:
         """Ensure Ollama is installed and running.
 
@@ -879,6 +954,12 @@ class AgentSetup:
         except Exception as e:
             report.errors.append(f"Hardware detection failed: {e}")
             return report
+
+        # Step 1b: Ensure llmfit is installed for smart model selection
+        try:
+            await self.ensure_llmfit(auto_install=True)
+        except Exception as exc:
+            logger.debug("llmfit auto-install failed (non-fatal): %s", exc)
 
         # Step 2: Choose backend — vLLM first, Ollama fallback
         if info.vllm.running:
