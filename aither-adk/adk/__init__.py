@@ -82,6 +82,39 @@ __all__ = [
     "TranscriptionResult",
     "SynthesisResult",
     "EmotionResult",
+    # Secrets
+    "SecretHandle",
+    "SecretStore",
+    "EnvStore",
+    "FileStore",
+    "KeyringStore",
+    "ChainStore",
+    "SecretNotFound",
+    "SecretCapabilityDenied",
+    "resolve_secret",
+    # OpenTelemetry
+    "OTelTracer",
+    "OTelNotInstalled",
+    "try_build_otel_tracer",
+    # Tracer abstraction
+    "Tracer",
+    "Span",
+    "NoOpTracer",
+    "LoggingTracer",
+    "get_tracer",
+    "set_tracer",
+    # FS sandbox
+    "FSGuard",
+    "PathEscape",
+    "UnsafeArgv",
+    "RunResult",
+    # Vector memory
+    "VectorMemory",
+    "VectorHit",
+    "VectorRecord",
+    "InMemoryVectorStore",
+    "VectorStore",
+    "Embedder",
 ]
 
 
@@ -270,4 +303,93 @@ def __getattr__(name):
     if name == "EmotionResult":
         from adk.voice import EmotionResult
         return EmotionResult
+    # ── Secrets ────────────────────────────────────────────────────────────
+    if name == "SecretHandle":
+        from adk.secrets import SecretHandle
+        return SecretHandle
+    if name == "SecretStore":
+        from adk.secrets import SecretStore
+        return SecretStore
+    if name == "EnvStore":
+        from adk.secrets import EnvStore
+        return EnvStore
+    if name == "FileStore":
+        from adk.secrets import FileStore
+        return FileStore
+    if name == "KeyringStore":
+        from adk.secrets import KeyringStore
+        return KeyringStore
+    if name == "ChainStore":
+        from adk.secrets import ChainStore
+        return ChainStore
+    if name == "SecretNotFound":
+        from adk.secrets import SecretNotFound
+        return SecretNotFound
+    if name == "SecretCapabilityDenied":
+        from adk.secrets import SecretCapabilityDenied
+        return SecretCapabilityDenied
+    if name == "resolve_secret":
+        from adk.secrets import resolve
+        return resolve
+    # ── OpenTelemetry ──────────────────────────────────────────────────────
+    if name == "OTelTracer":
+        from adk.otel import OTelTracer
+        return OTelTracer
+    if name == "OTelNotInstalled":
+        from adk.otel import OTelNotInstalled
+        return OTelNotInstalled
+    if name == "try_build_otel_tracer":
+        from adk.otel import try_build_otel_tracer
+        return try_build_otel_tracer
+    # ── Tracer abstraction ─────────────────────────────────────────────────
+    if name == "Tracer":
+        from adk.otel import Tracer
+        return Tracer
+    if name == "Span":
+        from adk.otel import Span
+        return Span
+    if name == "NoOpTracer":
+        from adk.otel import NoOpTracer
+        return NoOpTracer
+    if name == "LoggingTracer":
+        from adk.otel import LoggingTracer
+        return LoggingTracer
+    if name == "get_tracer":
+        from adk.otel import get_tracer
+        return get_tracer
+    if name == "set_tracer":
+        from adk.otel import set_tracer
+        return set_tracer
+    # ── FS sandbox ─────────────────────────────────────────────────────────
+    if name == "FSGuard":
+        from adk.fs_sandbox import FSGuard
+        return FSGuard
+    if name == "PathEscape":
+        from adk.fs_sandbox import PathEscape
+        return PathEscape
+    if name == "UnsafeArgv":
+        from adk.fs_sandbox import UnsafeArgv
+        return UnsafeArgv
+    if name == "RunResult":
+        from adk.fs_sandbox import RunResult
+        return RunResult
+    # ── Vector memory ──────────────────────────────────────────────────────
+    if name == "VectorMemory":
+        from adk.vector_memory import VectorMemory
+        return VectorMemory
+    if name == "VectorHit":
+        from adk.vector_memory import VectorHit
+        return VectorHit
+    if name == "VectorRecord":
+        from adk.vector_memory import VectorRecord
+        return VectorRecord
+    if name == "InMemoryVectorStore":
+        from adk.vector_memory import InMemoryVectorStore
+        return InMemoryVectorStore
+    if name == "VectorStore":
+        from adk.vector_memory import VectorStore
+        return VectorStore
+    if name == "Embedder":
+        from adk.vector_memory import Embedder
+        return Embedder
     raise AttributeError(f"module 'adk' has no attribute {name!r}")
