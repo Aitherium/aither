@@ -2,6 +2,21 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [1.0.0] - 2026-05-18
+
+### Breaking
+- Package consolidated — `aither_adk` namespace replaced by `adk` + `adk.platform`
+- 93 duplicate files removed from `AitherOS/packages/aither_adk/`
+
+### Added
+- Standalone core primitives (`adk.core`: Agent, Tool, Memory, ModelBackend, Capability, Trace)
+- `adk.platform` sub-package merging all platform toolkit modules
+- Compatibility shims for legacy `from aither_adk.*` imports
+
+### Changed
+- Version synced across pyproject.toml, `adk/__init__.py`, `adk/platform/__init__.py`, npm package
+- Classifier promoted from Alpha to Beta
+
 ## [0.16.0] - 2026-04-16
 
 ### Swarm Coding Engine & Repowise Integration

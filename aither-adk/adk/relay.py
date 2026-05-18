@@ -113,6 +113,17 @@ class AitherNetRelay:
         self.api_key = api_key or os.getenv("AITHER_API_KEY", "")
         self.gateway_url = (gateway_url or os.getenv("AITHER_GATEWAY_URL", _GATEWAY_URL)).rstrip("/")
         self.relay_hub_url = relay_hub_url or os.getenv("AITHERNET_RELAY_URL", _RELAY_HUB_URL)
+
+        # Override relay hub URL from saved config (for desktop direct relay)
+        if not relay_hub_url and not os.getenv("AITHERNET_RELAY_URL"):
+            try:
+                from adk.config import load_saved_config  # noqa: lazy import
+                saved = load_saved_config()
+                elysium_relay = saved.get("elysium_relay_url", "")
+                if elysium_relay:
+                    self.relay_hub_url = elysium_relay
+            except (ImportError, OSError, ValueError):
+                pass
         self.node_name = node_name or platform.node() or f"node-{secrets.token_hex(4)}"
         self.capabilities = capabilities or []
         self.agents = agents or []
@@ -461,6 +472,10 @@ class AitherNetRelay:
         if msg_type == "mcp_list" and req_id:
             await self._handle_inbound_mcp_list(msg)
 
+        # Inbound inference — run through local LLM and return result
+        if msg_type == "inference" and req_id:
+            await self._handle_inbound_inference(msg)
+
         # Inbound agent call — route to local agent
         if msg_type == "agent_call" and req_id:
             await self._handle_inbound_agent_call(msg)
@@ -515,6 +530,40 @@ class AitherNetRelay:
 
         if from_node:
             await self.send(from_node, "mcp_response", response_payload)
+
+    async def _handle_inbound_inference(self, msg: dict):
+        """Handle an incoming inference request from another node.
+
+        Runs the request through the local LLMRouter and returns the response
+        via relay. This enables the desktop to offload inference to this node
+        when it has available GPU capacity.
+        """
+        payload = msg.get("payload", {})
+        from_node = msg.get("from_node", payload.get("_return_to", ""))
+        request_id = payload.get("_request_id", "")
+
+        try:
+            from adk.llm import LLMRouter, Message
+
+            router = LLMRouter()
+            messages = [
+                Message(role=m.get("role", "user"), content=m.get("content", ""))
+                for m in payload.get("messages", [])
+            ]
+            model = payload.get("model", "")
+            resp = await router.chat(messages, model=model or None)
+            response_payload = {
+                "ok": True,
+                "content": resp.content,
+                "model": resp.model,
+                "tokens_used": resp.tokens_used,
+                "_request_id": request_id,
+            }
+        except Exception as exc:
+            response_payload = {"ok": False, "error": str(exc), "_request_id": request_id}
+
+        if from_node:
+            await self.send(from_node, "inference_response", response_payload)
 
     async def _handle_inbound_agent_call(self, msg: dict):
         """Handle an incoming agent call from another node."""

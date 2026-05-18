@@ -60,6 +60,16 @@ _EFFORT_MODELS = {
         "medium": "picolm",
         "large": "picolm",
     },
+    "desktop": {
+        "small": "",          # let MicroScheduler choose
+        "medium": "",
+        "large": "",
+    },
+    "dual": {
+        "small": "gemma4:4b",               # local Ollama
+        "medium": "aither-orchestrator",     # remote desktop
+        "large": "aither-reasoning",         # remote desktop
+    },
 }
 
 # Default inference URL — mcp.aitherium.com hosts the OpenAI-compatible
@@ -98,6 +108,12 @@ class LLMRouter:
         self._provider: LLMProvider | None = None
         self._model = model
         self._config = config
+        # Dual-mode: local provider for low effort, remote for high effort
+        self._local_provider: LLMProvider | None = None
+        self._remote_provider: LLMProvider | None = None
+        self._remote_provider_name: str = ""
+        self._remote_healthy: bool = True
+        self._remote_health_checked: float = 0.0
 
         if provider:
             self._provider = self._create_provider(provider, base_url, api_key)
@@ -214,12 +230,82 @@ class LLMRouter:
                 continue
         return None
 
+    async def _try_desktop(self) -> LLMProvider | None:
+        """Try connecting to a desktop AitherOS MicroScheduler for remote inference.
+
+        Reads AITHER_CORE_LLM_URL from env or ~/.aither/config.json.
+        Returns an OpenAI-compatible provider pointing at the desktop's MicroScheduler.
+        """
+        import os
+        from .openai_compat import OpenAIProvider
+        from adk.config import load_saved_config
+
+        # Check env var first, then saved config
+        desktop_url = os.environ.get("AITHER_CORE_LLM_URL", "")
+        if not desktop_url:
+            try:
+                saved = load_saved_config()
+                desktop_url = saved.get("core_llm_url", "")
+            except (OSError, ValueError):
+                pass
+
+        if not desktop_url:
+            return None
+
+        desktop_url = desktop_url.rstrip("/")
+        if not desktop_url.endswith("/v1"):
+            desktop_url = f"{desktop_url}/v1"
+
+        token = os.environ.get("AITHER_NODE_TOKEN", "")
+        if not token:
+            try:
+                saved = load_saved_config()
+                token = saved.get("node_token", "")
+            except (OSError, ValueError):
+                pass
+
+        try:
+            p = OpenAIProvider(
+                base_url=desktop_url,
+                api_key=token or "not-needed",
+                default_model=self._model or "",
+            )
+            if await p.health_check():
+                try:
+                    models = await p.list_models()
+                    if models and not self._model:
+                        p.default_model = models[0]
+                except Exception:
+                    pass
+                logger.info("Connected to desktop MicroScheduler at %s (model: %s)", desktop_url, p.default_model)
+                return p
+        except Exception:
+            pass
+        return None
+
+    async def _check_remote_health(self) -> bool:
+        """Check if the remote desktop provider is healthy (30s cache)."""
+        import time
+        now = time.time()
+        if now - self._remote_health_checked < 30.0:
+            return self._remote_healthy
+        self._remote_health_checked = now
+        if self._remote_provider is None:
+            self._remote_healthy = False
+            return False
+        try:
+            self._remote_healthy = await self._remote_provider.health_check()
+        except Exception:
+            self._remote_healthy = False
+        return self._remote_healthy
+
     async def _auto_detect(self) -> LLMProvider:
-        """Try backends in priority order: vLLM → Ollama → gateway → cloud APIs → demo.
+        """Try backends in priority order: vLLM → desktop → Ollama → gateway → cloud APIs → demo.
 
         LOCAL GPU FIRST. vLLM containers are the primary backend — they use the GPU
-        efficiently with batching and paged attention. Ollama is the fallback for
-        AMD/Apple/no-Docker. Gateway is cloud fallback when no local GPU.
+        efficiently with batching and paged attention. Desktop MicroScheduler is tried
+        before Ollama for dual-mode setups. Ollama is the fallback for AMD/Apple/no-Docker.
+        Gateway is cloud fallback when no local GPU.
         """
         import os
 
@@ -232,6 +318,22 @@ class LLMRouter:
         vllm = await self._try_vllm()
         if vllm:
             return vllm
+
+        # 1.5. Desktop MicroScheduler — remote inference from connected desktop
+        desktop = await self._try_desktop()
+        if desktop:
+            self._remote_provider = desktop
+            self._remote_provider_name = "desktop"
+            self._remote_healthy = True
+            self._provider_name = "desktop"
+            # Also try local Ollama for dual-mode (low-effort local, high-effort remote)
+            ollama = await self._try_ollama()
+            if ollama:
+                self._local_provider = ollama
+                self._provider_name = "dual"
+                logger.info("Dual-mode: local Ollama (effort 1-3) + desktop MicroScheduler (effort 4+)")
+                return ollama  # Default to local; chat() handles routing
+            return desktop
 
         # 2. Ollama — fallback local backend (AMD, Apple Silicon, no Docker)
         ollama = await self._try_ollama()
@@ -445,10 +547,36 @@ class LLMRouter:
         repetition_penalty: float | None = None,
         **kwargs,
     ) -> LLMResponse:
-        """Route a chat request to the active provider."""
+        """Route a chat request to the active provider.
+
+        In dual-mode (local + desktop), routes based on effort:
+        - effort 1-3: local provider (fast, small models)
+        - effort 4+: remote desktop provider (large models, GPU)
+        Falls back to local if remote is unreachable.
+        """
         provider = await self.get_provider()
         if model is None and effort is not None:
             model = self.model_for_effort(effort)
+
+        # Dual-mode routing: high effort → remote desktop, low effort → local
+        if (
+            effort is not None
+            and effort > 3
+            and self._remote_provider is not None
+            and await self._check_remote_health()
+        ):
+            try:
+                resp = await self._remote_provider.chat(
+                    messages, model=model, tool_choice=tool_choice,
+                    top_p=top_p, repetition_penalty=repetition_penalty, **kwargs,
+                )
+                if effort is not None:
+                    resp.effort_level = effort
+                return resp
+            except Exception as e:
+                logger.warning("Remote desktop inference failed, falling back to local: %s", e)
+                self._remote_healthy = False
+
         resp = await provider.chat(
             messages, model=model, tool_choice=tool_choice,
             top_p=top_p, repetition_penalty=repetition_penalty, **kwargs,

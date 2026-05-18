@@ -76,8 +76,17 @@ def create_app(
             await a.llm.get_provider()
         except Exception:
             pass
+
+        # ── Elysium auto-reconnect + mesh hosting ──
+        await _reconnect_elysium()
+        await _start_mesh_hosting()
+
         yield
         # ── Shutdown cleanup ──
+        _elysium_relay = _state.get("elysium_relay")
+        if _elysium_relay:
+            await _elysium_relay.stop_heartbeat()
+            await _elysium_relay.disconnect_relay_hub()
         bridge = _state.get("aither_bridge")
         if bridge:
             await bridge.stop()
@@ -816,6 +825,98 @@ def create_app(
         if is_fleet:
             caps.append("fleet")
         return caps
+
+    # ─── Elysium reconnect + mesh hosting ───
+
+    async def _reconnect_elysium():
+        """Re-join desktop mesh on startup if previously connected via `adk connect --elysium`."""
+        from adk.config import load_saved_config  # noqa: always available
+        try:
+            saved = load_saved_config()
+            elysium_url = saved.get("elysium_url", "")
+            if not elysium_url:
+                return
+
+            node_token = saved.get("node_token", "")
+            mesh_url = saved.get("mesh_url", "")
+
+            # Set env vars for LLM router dual-mode
+            core_llm = saved.get("core_llm_url", "")
+            if core_llm:
+                os.environ.setdefault("AITHER_CORE_LLM_URL", core_llm)
+            if node_token:
+                os.environ.setdefault("AITHER_NODE_TOKEN", node_token)
+
+            # Re-join mesh
+            if mesh_url:
+                import httpx
+                try:
+                    async with httpx.AsyncClient(timeout=10.0) as client:
+                        await client.post(
+                            f"{mesh_url}/heartbeat",
+                            json={"node_id": saved.get("node_id", ""), "status": "online"},
+                            headers={
+                                "Authorization": f"Bearer {node_token}" if node_token else "",
+                                "Content-Type": "application/json",
+                            },
+                        )
+                    logger.info("Reconnected to desktop mesh at %s", mesh_url)
+                except (httpx.HTTPError, OSError) as e:
+                    logger.debug("Desktop mesh reconnect failed (non-fatal): %s", e)
+
+        except (OSError, ValueError) as e:
+            logger.debug("Elysium reconnect skipped: %s", e)
+
+    async def _start_mesh_hosting():
+        """Start mesh hosting if --mesh flag or config mesh_enabled is set."""
+        from adk.config import load_saved_config  # noqa: always available
+        mesh_enabled = os.getenv("AITHER_MESH_ENABLED", "").lower() in ("true", "1", "yes")
+        if not mesh_enabled:
+            try:
+                saved = load_saved_config()
+                mesh_enabled = saved.get("mesh_enabled", False)
+            except (OSError, ValueError):
+                pass
+
+        if not mesh_enabled:
+            return
+
+        try:
+            from adk.relay import AitherNetRelay  # noqa: lazy import
+
+            saved = load_saved_config()
+            base_host = saved.get("elysium_base_host", "")
+            node_token = saved.get("node_token", "")
+
+            # Create relay pointed at desktop (not cloud gateway)
+            relay_kwargs = {
+                "node_name": os.getenv("AITHER_NODE_NAME", ""),
+                "capabilities": _detect_node_capabilities(),
+                "port": port,
+            }
+            if base_host:
+                relay_kwargs["gateway_url"] = f"{base_host}:8001"
+            if node_token:
+                relay_kwargs["api_key"] = node_token
+
+            relay = AitherNetRelay(**relay_kwargs)
+            result = await relay.register()
+
+            if result.get("ok") is not False:
+                # Wire MCP server for inbound tool calls
+                mcp = _state.get("mcp_server")
+                if mcp:
+                    relay.set_local_mcp_server(mcp)
+
+                await relay.start_heartbeat(interval=60)
+                await relay.connect_relay_hub()
+                _state["elysium_relay"] = relay
+                logger.info(
+                    "Mesh hosting active: node=%s, capabilities=%s",
+                    relay.node_id[:12], relay.capabilities,
+                )
+        except (ImportError, OSError, ConnectionError, ValueError) as e:
+            logger.debug("Mesh hosting startup failed (non-fatal): %s", e)
 
     # ─── Chat relay startup + endpoints ───
 

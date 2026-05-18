@@ -3,7 +3,7 @@
 # Repo: https://github.com/microsoft/winget-pkgs
 
 PackageIdentifier: Aitherium.ADK
-PackageVersion: 0.9.0
+PackageVersion: 1.0.0
 PackageName: AitherADK
 Publisher: Aitherium
 License: Proprietary
@@ -31,7 +31,7 @@ PackageUrl: https://github.com/Aitherium/aither
 Installers:
   - Architecture: x64
     InstallerType: exe
-    InstallerUrl: https://aitherium.com/download/aither-adk-0.9.0-win64.exe
+    InstallerUrl: https://aitherium.com/download/aither-adk-1.0.0-win64.exe
     InstallerSha256: PLACEHOLDER_SHA256
     InstallerSwitches:
       Silent: /S

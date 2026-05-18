@@ -210,6 +210,10 @@ def cmd_connect(args):
     import asyncio
     import json as _json
 
+    # ── Elysium desktop connect shortcut ──
+    if getattr(args, "elysium", None):
+        return _connect_elysium(args)
+
     async def _connect():
         from adk.elysium import Elysium
 
@@ -1970,6 +1974,160 @@ def cmd_index(args):
     return 0
 
 
+def _connect_elysium(args):
+    """Connect to a desktop AitherOS instance via --elysium flag."""
+    import asyncio
+
+    async def _run():
+        from adk.elysium_connect import connect_to_desktop
+
+        url = args.elysium
+        token = getattr(args, "token", None)
+
+        print()
+        print("  AitherOS Desktop Connect (Elysium)")
+        print("  ===================================")
+        print()
+        print(f"  Desktop: {url}")
+
+        result = await connect_to_desktop(url, token=token)
+
+        if not result.get("ok"):
+            print(f"  [!!] Connection failed: {result.get('error', 'unknown')}")
+            return 1
+
+        print(f"  [OK] Genesis reachable")
+
+        if result.get("token"):
+            print(f"  [OK] Node token: {result['token'][:16]}...")
+
+        if result.get("mesh_joined"):
+            print(f"  [OK] Mesh joined (node: {result.get('node_id', 'unknown')[:16]})")
+        else:
+            print(f"  [--] Mesh join: skipped or failed")
+
+        if result.get("wireguard"):
+            print(f"  [OK] WireGuard tunnel active")
+        else:
+            print(f"  [--] WireGuard: not configured (direct LAN is fine)")
+
+        print(f"  [OK] Remote inference: {result.get('core_llm_url', 'N/A')}")
+        print(f"  [OK] Config saved to {result.get('config_saved', '~/.aither/config.json')}")
+
+        print()
+        print("  Next steps:")
+        print("    adk run              # Start agent server")
+        print("    adk run --mesh       # Start with mesh hosting (share your tools)")
+        print("    adk status           # Check backend status")
+        print()
+
+        return 0
+
+    return asyncio.run(_run())
+
+
+def cmd_admin(args):
+    """Administration commands."""
+    import asyncio
+
+    admin_cmd = getattr(args, "admin_command", None)
+
+    if admin_cmd == "create-token":
+        return _admin_create_token(args)
+    else:
+        print("  Usage: adk admin create-token --name <name> --url <genesis-url>")
+        return 1
+
+
+def _admin_create_token(args):
+    """Create a node token on the desktop for mesh enrollment."""
+    import asyncio
+    import platform as plat
+
+    async def _run():
+        import httpx
+
+        url = args.url.rstrip("/")
+        name = args.name or plat.node()
+
+        print()
+        print("  AitherOS Admin — Create Node Token")
+        print("  ===================================")
+        print()
+        print(f"  Genesis: {url}")
+        print(f"  Node name: {name}")
+
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.post(
+                    f"{url}/admin/nodes/create",
+                    json={
+                        "node_name": name,
+                        "capabilities": ["mcp", "inference"],
+                    },
+                )
+                if resp.status_code in (200, 201):
+                    data = resp.json()
+                    token = data.get("token") or data.get("node_token", "")
+                    node_id = data.get("node_id", "")
+
+                    print()
+                    print(f"  [OK] Token created!")
+                    print(f"  Node ID: {node_id}")
+                    print(f"  Token:   {token}")
+                    print()
+                    print("  Use on the laptop:")
+                    print(f"    adk connect --elysium {url} --token {token}")
+                    print()
+                    print("  Or set environment variables:")
+                    print(f"    export AITHER_CORE_URL={url}")
+                    print(f"    export AITHER_NODE_TOKEN={token}")
+                    print()
+
+                    # Save to local config
+                    save_saved_config({
+                        "admin_last_token": token,
+                        "admin_last_node_id": node_id,
+                    })
+
+                    return 0
+                else:
+                    print(f"  [!!] Failed: HTTP {resp.status_code}")
+                    print(f"       {resp.text[:200]}")
+                    return 1
+        except Exception as e:
+            print(f"  [!!] Error: {e}")
+            return 1
+
+    return asyncio.run(_run())
+
+
+def cmd_disconnect(args):
+    """Disconnect from desktop AitherOS mesh."""
+    import asyncio
+
+    async def _run():
+        from adk.elysium_connect import disconnect_from_desktop
+
+        print()
+        print("  Disconnecting from desktop mesh...")
+
+        result = await disconnect_from_desktop()
+
+        if result.get("mesh_left"):
+            print("  [OK] Left mesh")
+        if result.get("wireguard_down"):
+            print("  [OK] WireGuard tunnel torn down")
+        if result.get("config_cleared"):
+            print("  [OK] Elysium config cleared")
+
+        print("  Done.")
+        print()
+        return 0
+
+    return asyncio.run(_run())
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="adk",
@@ -1995,6 +2153,8 @@ def main():
     run_p.add_argument("-m", "--model", help="Model name")
     run_p.add_argument("-f", "--fleet", help="Fleet YAML config")
     run_p.add_argument("-a", "--agents", help="Comma-separated agent identities")
+    run_p.add_argument("--mesh", action="store_true",
+                       help="Enable mesh hosting (advertise tools/inference to connected desktop)")
 
     # aither register
     register_p = sub.add_parser("register", help="Create a new Aitherium account")
@@ -2002,8 +2162,11 @@ def main():
     register_p.add_argument("--password", help="Account password (prompted if omitted)")
 
     # aither connect
-    connect_p = sub.add_parser("connect", help="Connect to AitherOS — detect LLMs, set up gateway")
+    connect_p = sub.add_parser("connect", help="Connect to AitherOS — detect LLMs, set up gateway, or join desktop mesh")
     connect_p.add_argument("--api-key", help="AITHER_API_KEY for cloud inference")
+    connect_p.add_argument("--elysium", metavar="URL",
+                           help="Connect to desktop AitherOS (e.g. http://192.168.1.10:8001)")
+    connect_p.add_argument("--token", help="Node token for desktop mesh authentication")
     connect_p.add_argument("--save", action="store_true", default=True,
                            help="Save config to ~/.aither/config.json (default: true)")
     connect_p.add_argument("--no-save", action="store_false", dest="save",
@@ -2152,6 +2315,22 @@ def main():
     publish_p.add_argument("--dry-run", action="store_true",
                            help="Validate without publishing")
 
+    # adk admin — administration commands
+    admin_p = sub.add_parser("admin", help="Administration commands")
+    admin_sub = admin_p.add_subparsers(dest="admin_command")
+    admin_token_p = admin_sub.add_parser("create-token",
+                                          help="Create a node token on the desktop for mesh enrollment")
+    admin_token_p.add_argument("--name", default="", help="Node name (default: hostname)")
+    admin_token_p.add_argument("--url", default="http://localhost:8001",
+                               help="Genesis URL (default: http://localhost:8001)")
+
+    # adk disconnect — leave desktop mesh
+    sub.add_parser("disconnect", help="Disconnect from desktop AitherOS mesh")
+
+    # adk platform — internal platform toolkit commands (merged from aither-platform)
+    platform_p = sub.add_parser("platform", help="Internal platform toolkit (merged from aither-platform)")
+    platform_p.add_argument("platform_args", nargs=argparse.REMAINDER, help="Platform subcommand args")
+
     args = parser.parse_args()
 
     if args.command == "start":
@@ -2188,6 +2367,20 @@ def main():
         sys.exit(cmd_test(args))
     elif args.command == "status":
         sys.exit(cmd_status(args))
+    elif args.command == "admin":
+        sys.exit(cmd_admin(args))
+    elif args.command == "disconnect":
+        sys.exit(cmd_disconnect(args))
+    elif args.command == "platform":
+        # Delegate to the internal platform CLI (merged from aither_adk.cli)
+        try:
+            from adk.platform.cli import main as platform_main
+            # Replace sys.argv so the platform CLI parses its own args
+            sys.argv = ["adk-platform"] + (args.platform_args or [])
+            platform_main()
+        except ImportError:
+            print("Platform toolkit not available. Install with: pip install aither-adk[platform]")
+            sys.exit(1)
     elif args.command is None:
         # No command — default to start
         args.path = "."

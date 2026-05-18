@@ -38,6 +38,7 @@ Make the SDK something people can actually pick up and use without reading sourc
 | Tutorial: "Your First Agent in 5 Minutes" | New — hello world to custom tools | P0 |
 | Tutorial: "Multi-Agent Fleet" | New — based on examples/multi_agent.py | P0 |
 | Tutorial: "Connect to Your Own vLLM" | Expand from setup-vllm.py | P1 |
+| Roboflow local demo bundle | Curated docs + example sync to public repo | Done |
 | GETTING_STARTED.md | Replace COMING_SOON.md placeholder | P0 |
 | CHANGELOG.md with semver entries | New — retroactive from git log | P0 |
 | llms.txt / llms-full.txt | Already done, keep current | Done |
