@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 from typing import AsyncIterator
 
 import httpx
+
+logger = logging.getLogger("adk.llm.openai")
+
+_MAX_RETRIES = 3
 
 from .base import (
     LLMProvider,
@@ -73,8 +79,9 @@ class OpenAIProvider(LLMProvider):
 
         start = _timer()
         async with self._client() as client:
-            resp = await client.post(f"{self.base_url}/chat/completions", json=payload)
-            resp.raise_for_status()
+            resp = await self._post_with_retry(
+                client, f"{self.base_url}/chat/completions", payload
+            )
             data = resp.json()
 
         latency = _timer() - start
@@ -97,8 +104,18 @@ class OpenAIProvider(LLMProvider):
                 arguments=args,
             ))
 
+        content = msg.get("content", "") or ""
+
+        # Hermes XML fallback: if model emitted <tool_call> tags in content
+        # but no structured tool_calls, parse them from text
+        if not tool_calls and content and "<tool_call>" in content:
+            from .base import extract_tool_calls_from_text
+            fallback_calls, content = extract_tool_calls_from_text(content)
+            if fallback_calls:
+                tool_calls = fallback_calls
+
         return LLMResponse(
-            content=msg.get("content", "") or "",
+            content=content,
             model=data.get("model", model),
             tokens_used=usage.get("total_tokens", 0),
             prompt_tokens=usage.get("prompt_tokens", 0),
@@ -159,11 +176,40 @@ class OpenAIProvider(LLMProvider):
                         model=data.get("model", model),
                     )
 
+    async def _post_with_retry(
+        self, client: httpx.AsyncClient, url: str, payload: dict
+    ) -> httpx.Response:
+        """POST with retry on 429 (rate limit). Reads Retry-After header."""
+        for attempt in range(1, _MAX_RETRIES + 1):
+            resp = await client.post(url, json=payload)
+            if resp.status_code != 429:
+                resp.raise_for_status()
+                return resp
+            # 429 — read retry-after and wait
+            retry_after = resp.headers.get("retry-after", "")
+            try:
+                wait = int(retry_after) if retry_after else 5
+            except (ValueError, TypeError):
+                wait = 5
+            wait = min(wait, 120)  # cap at 2 minutes
+            logger.warning(
+                "Rate limited (429). Waiting %ds before retry (%d/%d)...",
+                wait, attempt, _MAX_RETRIES,
+            )
+            await asyncio.sleep(wait)
+        # Final attempt — let it raise if still 429
+        resp = await client.post(url, json=payload)
+        resp.raise_for_status()
+        return resp
+
     async def list_models(self) -> list[str]:
         async with self._client() as client:
-            resp = await client.get(f"{self.base_url}/models")
-            resp.raise_for_status()
-            data = resp.json()
+            try:
+                resp = await client.get(f"{self.base_url}/models")
+                resp.raise_for_status()
+                data = resp.json()
+            except (httpx.HTTPStatusError, json.JSONDecodeError):
+                return []
         return [m["id"] for m in data.get("data", [])]
 
     async def health_check(self) -> bool:

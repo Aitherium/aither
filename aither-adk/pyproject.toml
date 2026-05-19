@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "aither-adk"
-version = "1.0.0"
-description = "Build AI agent fleets. Any backend, local or cloud. Effort-based routing, 48 identities, knowledge graph memory."
+version = "1.1.6"
+description = "Build AI agent fleets. Any backend, local or cloud. Effort-based routing, 17 bundled identities, knowledge graph memory."
 readme = "README.md"
 license = {file = "LICENSE"}
 requires-python = ">=3.10"
@@ -41,8 +41,14 @@ embedding = [
     "sentence-transformers>=2.3.0",
     "torch>=2.0.0",
 ]
+telegram = ["python-telegram-bot>=21.0"]
+discord = ["discord.py>=2.3"]
+slack = ["slack-bolt>=1.18"]
+channels = [
+    "aither-adk[telegram,discord,slack]",
+]
 all = [
-    "aither-adk[graphs,embedding]",
+    "aither-adk[graphs,embedding,channels]",
     "anthropic>=0.18.0",
     "openai>=1.0.0",
     "aithersdk>=0.1.0",

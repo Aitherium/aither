@@ -73,6 +73,84 @@ _INTERNAL_TAG_RE = re.compile(
 )
 
 
+import json as _json
+
+_HERMES_TOOL_RE = re.compile(
+    r"<tool_call>\s*(\{.*?\})\s*</tool_call>",
+    re.DOTALL,
+)
+
+
+_BARE_TOOL_JSON_RE = re.compile(
+    r'\{\s*"name"\s*:\s*"(\w+)"\s*,\s*"(?:arguments|parameters)"\s*:\s*(\{.*?\})\s*\}',
+    re.DOTALL,
+)
+
+
+def _parse_tool_json(raw_json: str, idx: int) -> ToolCall | None:
+    """Parse a single JSON blob into a ToolCall, or None on failure."""
+    try:
+        data = _json.loads(raw_json)
+        name = data.get("name", "")
+        args = data.get("arguments", data.get("parameters", {}))
+        if isinstance(args, str):
+            try:
+                args = _json.loads(args)
+            except (ValueError, _json.JSONDecodeError):
+                args = {}
+        if name:
+            return ToolCall(
+                id=f"call_{name}_{idx}",
+                name=name,
+                arguments=args if isinstance(args, dict) else {},
+            )
+    except (_json.JSONDecodeError, ValueError):
+        pass
+    return None
+
+
+def extract_tool_calls_from_text(
+    content: str,
+    finish_reason_hint: str = "",
+) -> tuple[list[ToolCall], str]:
+    """Extract tool calls from model output text.
+
+    Checks for Hermes-format ``<tool_call>`` XML tags first, then falls back
+    to bare JSON ``{"name": "...", "arguments": {...}}`` patterns when
+    *finish_reason_hint* signals tool use (to avoid false positives).
+
+    Returns (tool_calls, cleaned_content). If nothing found, returns ([], content).
+    """
+    # ── Primary: Hermes XML tags ──
+    matches = _HERMES_TOOL_RE.findall(content)
+    if matches:
+        tool_calls: list[ToolCall] = []
+        for raw_json in matches:
+            tc = _parse_tool_json(raw_json, len(tool_calls))
+            if tc:
+                tool_calls.append(tc)
+        if tool_calls:
+            cleaned = _HERMES_TOOL_RE.sub("", content).strip()
+            cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+            return tool_calls, cleaned
+
+    # ── Secondary: bare JSON (only when finish_reason hints tool use) ──
+    if finish_reason_hint in ("tool_calls", "tool_use"):
+        bare_matches = _BARE_TOOL_JSON_RE.finditer(content)
+        tool_calls_bare: list[ToolCall] = []
+        for m in bare_matches:
+            full_match = m.group(0)
+            tc = _parse_tool_json(full_match, len(tool_calls_bare))
+            if tc:
+                tool_calls_bare.append(tc)
+        if tool_calls_bare:
+            cleaned = _BARE_TOOL_JSON_RE.sub("", content).strip()
+            cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+            return tool_calls_bare, cleaned
+
+    return [], content
+
+
 def strip_internal_tags(text: str) -> str:
     """Strip leaked <tool_call> XML and internal prompt markers from LLM output."""
     if not text:

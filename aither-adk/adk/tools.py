@@ -106,6 +106,8 @@ def tool(fn: Callable | None = None, *, name: str | None = None, description: st
     def decorator(f: Callable) -> Callable:
         td = _global_registry.register(f, name=name, description=description)
         f._tool_def = td
+        f.name = td.name
+        f.description = td.description
         return f
 
     if fn is not None:

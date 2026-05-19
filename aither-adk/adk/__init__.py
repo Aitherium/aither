@@ -1,6 +1,6 @@
 """Aither ADK — Build AI agent fleets with any LLM backend."""
 
-__version__ = "1.0.0"
+__version__ = "1.1.6"
 
 from adk.agent import AitherAgent
 from adk.tools import tool, ToolRegistry
@@ -39,6 +39,7 @@ __all__ = [
     "AutoNeuronFire",
     "DegenerationDetector",
     "strip_internal_tags",
+    "extract_tool_calls_from_text",
     "CATEGORY_TOOLS",
     # Elysium cloud
     "Elysium",
@@ -108,6 +109,19 @@ __all__ = [
     "PathEscape",
     "UnsafeArgv",
     "RunResult",
+    # Channels
+    "ChannelAdapter",
+    "TelegramAdapter",
+    "DiscordAdapter",
+    "SlackAdapter",
+    "WebhookAdapter",
+    # Cron
+    "CronScheduler",
+    "CronJob",
+    # Skills
+    "Skill",
+    "SkillStore",
+    "SkillExtractor",
     # Vector memory
     "VectorMemory",
     "VectorHit",
@@ -207,6 +221,9 @@ def __getattr__(name):
     if name == "strip_internal_tags":
         from adk.llm.base import strip_internal_tags
         return strip_internal_tags
+    if name == "extract_tool_calls_from_text":
+        from adk.llm.base import extract_tool_calls_from_text
+        return extract_tool_calls_from_text
     if name == "CATEGORY_TOOLS":
         from adk.neurons import CATEGORY_TOOLS
         return CATEGORY_TOOLS
@@ -374,6 +391,40 @@ def __getattr__(name):
         from adk.fs_sandbox import RunResult
         return RunResult
     # ── Vector memory ──────────────────────────────────────────────────────
+    # ── Channels ───────────────────────────────────────────────────────────
+    if name == "ChannelAdapter":
+        from adk.channels import ChannelAdapter
+        return ChannelAdapter
+    if name == "TelegramAdapter":
+        from adk.channels import TelegramAdapter
+        return TelegramAdapter
+    if name == "DiscordAdapter":
+        from adk.channels import DiscordAdapter
+        return DiscordAdapter
+    if name == "SlackAdapter":
+        from adk.channels import SlackAdapter
+        return SlackAdapter
+    if name == "WebhookAdapter":
+        from adk.channels import WebhookAdapter
+        return WebhookAdapter
+    # ── Cron ──────────────────────────────────────────────────────────────
+    if name == "CronScheduler":
+        from adk.cron import CronScheduler
+        return CronScheduler
+    if name == "CronJob":
+        from adk.cron import CronJob
+        return CronJob
+    # ── Skills ────────────────────────────────────────────────────────────
+    if name == "Skill":
+        from adk.skills import Skill
+        return Skill
+    if name == "SkillStore":
+        from adk.skills import SkillStore
+        return SkillStore
+    if name == "SkillExtractor":
+        from adk.skills import SkillExtractor
+        return SkillExtractor
+    # ── Vector memory ─────────────────────────────────────────────────────
     if name == "VectorMemory":
         from adk.vector_memory import VectorMemory
         return VectorMemory

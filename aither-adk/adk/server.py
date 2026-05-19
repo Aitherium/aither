@@ -941,23 +941,25 @@ def create_app(
                 relay_obj.on("chat", chat.handle_federated_message)
                 relay_obj.on("mail", lambda data: _handle_mesh_mail(data))
 
-            # Start raw IRC protocol server (non-fatal)
-            try:
-                irc_port = int(os.getenv("AITHER_IRC_PORT", "6667"))
-                await chat.start_irc_server(port=irc_port)
-                logger.info("IRC server listening on port %d", irc_port)
-            except Exception as irc_exc:
-                logger.debug("IRC server startup failed (non-fatal): %s", irc_exc)
+            # Start raw IRC protocol server (opt-in via AITHER_IRC_PORT)
+            irc_port_env = os.getenv("AITHER_IRC_PORT", "")
+            if irc_port_env:
+                try:
+                    irc_port = int(irc_port_env)
+                    await chat.start_irc_server(port=irc_port)
+                    logger.info("IRC server listening on port %d", irc_port)
+                except Exception as irc_exc:
+                    logger.debug("IRC server startup failed (non-fatal): %s", irc_exc)
 
-            # Start Aither ↔ IRC bridge (AT Protocol social feed in IRC)
-            try:
-                from adk.aither_bridge import init_aither_bridge
-                bridge = await init_aither_bridge(chat)
-                if bridge:
-                    _state["aither_bridge"] = bridge
-                    logger.info("Aither ↔ IRC bridge active")
-            except Exception as bridge_exc:
-                logger.debug("Aither bridge startup failed (non-fatal): %s", bridge_exc)
+                # Start Aither bridge only when IRC is enabled
+                try:
+                    from adk.aither_bridge import init_aither_bridge
+                    bridge = await init_aither_bridge(chat)
+                    if bridge:
+                        _state["aither_bridge"] = bridge
+                        logger.info("Aither bridge active")
+                except Exception as bridge_exc:
+                    logger.debug("Aither bridge startup failed (non-fatal): %s", bridge_exc)
 
             logger.info("Chat relay initialized (channels=%d)", len(chat._channels))
         except Exception as exc:
@@ -1579,11 +1581,12 @@ def main():
     else:
         print(f"Starting AitherADK server — identity: {args.identity}, port: {port}")
 
-    irc_port = int(os.getenv("AITHER_IRC_PORT", "6667"))
     print(f"  Chat:   POST http://localhost:{port}/chat")
     print(f"  OpenAI: POST http://localhost:{port}/v1/chat/completions")
     print(f"  WS:     WS   ws://localhost:{port}/ws/chat")
-    print(f"  IRC:    TCP  localhost:{irc_port} (mIRC, WeeChat, HexChat, irssi)")
+    irc_port_env = os.getenv("AITHER_IRC_PORT", "")
+    if irc_port_env:
+        print(f"  IRC:    TCP  localhost:{irc_port_env} (mIRC, WeeChat, HexChat, irssi)")
     print(f"  MCP:    POST http://localhost:{port}/mcp (JSON-RPC 2.0)")
     print(f"  A2A:    POST http://localhost:{port}/a2a (Google A2A v0.3.0)")
     print(f"  Card:   GET  http://localhost:{port}/.well-known/agent.json")

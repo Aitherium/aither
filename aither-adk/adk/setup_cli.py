@@ -183,7 +183,7 @@ class VLLMWorker:
 TIERS: dict[str, dict] = {
     "nano": {
         "name": "Nano",
-        "desc": "Qwen3-8B via vLLM — for 8-12GB GPUs",
+        "desc": "Qwen3-8B via vLLM -- for 8-12GB GPUs",
         "min_vram_gb": 6,
         "workers": [
             VLLMWorker("orchestrator", "Qwen/Qwen3-8B", "aither-orchestrator",
@@ -191,12 +191,12 @@ TIERS: dict[str, dict] = {
                        ["--quantization bitsandbytes", "--load-format bitsandbytes",
                         "--enable-auto-tool-choice", "--tool-call-parser hermes",
                         "--enable-prefix-caching"],
-                       "Qwen3-8B — capable chat + tool calling", 8.0, 5.5),
+                       "Qwen3-8B -- capable chat + tool calling", 8.0, 5.5),
         ],
     },
     "lite": {
         "name": "Lite",
-        "desc": "Nemotron Orchestrator — for 12-16GB GPUs",
+        "desc": "Nemotron Orchestrator -- for 12-16GB GPUs",
         "min_vram_gb": 10,
         "workers": [
             VLLMWorker("orchestrator", "nvidia/Nemotron-Orchestrator-8B", "aither-orchestrator",
@@ -204,12 +204,12 @@ TIERS: dict[str, dict] = {
                        ["--quantization bitsandbytes", "--load-format bitsandbytes",
                         "--enable-auto-tool-choice", "--tool-call-parser hermes",
                         "--enable-prefix-caching"],
-                       "Nemotron-Orchestrator-8B — outperforms GPT-4o on tool use", 16.0, 6.5),
+                       "Nemotron-Orchestrator-8B -- outperforms GPT-4o on tool use", 16.0, 6.5),
         ],
     },
     "standard": {
         "name": "Standard",
-        "desc": "Orchestrator + Reasoning — for 20-24GB GPUs. True parallel agents.",
+        "desc": "Orchestrator + Reasoning -- for 20-24GB GPUs. True parallel agents.",
         "min_vram_gb": 18,
         "workers": [
             VLLMWorker("orchestrator", "nvidia/Nemotron-Orchestrator-8B", "aither-orchestrator",
@@ -217,19 +217,19 @@ TIERS: dict[str, dict] = {
                        ["--quantization bitsandbytes", "--load-format bitsandbytes",
                         "--enable-auto-tool-choice", "--tool-call-parser hermes",
                         "--enable-prefix-caching", "--enable-sleep-mode"],
-                       "Nemotron-Orchestrator-8B — handles 80% of agent requests", 16.0, 6.5),
+                       "Nemotron-Orchestrator-8B -- handles 80% of agent requests", 16.0, 6.5),
             VLLMWorker("reasoning", "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B", "deepseek-r1:14b",
                        8201, 0.55, 16384,
                        ["--quantization bitsandbytes", "--load-format bitsandbytes",
                         "--enable-auto-tool-choice", "--tool-call-parser hermes",
                         "--reasoning-parser deepseek_r1",
                         "--enable-prefix-caching", "--enable-sleep-mode"],
-                       "DeepSeek-R1 14B — deep thinking for complex tasks", 28.0, 12.0),
+                       "DeepSeek-R1 14B -- deep thinking for complex tasks", 28.0, 12.0),
         ],
     },
     "full": {
         "name": "Full",
-        "desc": "Orchestrator + Reasoning + Embeddings — 24GB+ GPUs. Full fleet support.",
+        "desc": "Orchestrator + Reasoning + Embeddings -- 24GB+ GPUs. Full fleet support.",
         "min_vram_gb": 20,
         "workers": [
             VLLMWorker("orchestrator", "nvidia/Nemotron-Orchestrator-8B", "aither-orchestrator",
@@ -248,7 +248,7 @@ TIERS: dict[str, dict] = {
             VLLMWorker("embeddings", "nomic-ai/nomic-embed-text-v1.5", "nomic-embed-text",
                        8209, 0.05, 2048,
                        ["--dtype float16", "--max-num-seqs 64"],
-                       "Nomic Embed v1.5 — vector search", 0.5, 0.5),
+                       "Nomic Embed v1.5 -- vector search", 0.5, 0.5),
         ],
     },
 }
@@ -279,51 +279,52 @@ def generate_compose(tier_id: str, hf_token: str = "") -> str:
         env_block = "      NVIDIA_VISIBLE_DEVICES: all\n      VLLM_NO_USAGE_STATS: '1'"
         if hf_token:
             env_block += f"\n      HF_TOKEN: \"{hf_token}\"\n      HUGGING_FACE_HUB_TOKEN: \"{hf_token}\""
-        svc = textwrap.dedent(f"""\
-  adk-vllm-{w.name}:
-    image: vllm/vllm-openai:latest
-    container_name: adk-vllm-{w.name}
-    shm_size: '4gb'
-    environment:
-{env_block}
-    command: >
-      --model {w.model}
-      --host 0.0.0.0 --port 8000
-      --gpu-memory-utilization {w.gpu_mem}
-      --max-model-len {w.ctx_len}
-      --enforce-eager --dtype auto
-      --max-num-seqs 8
-      --trust-remote-code
-      --served-model-name {w.served_name}
-      {extra}
-    ports:
-      - "{w.port}:8000"
-    volumes:
-      - adk-hf-cache:/root/.cache/huggingface
-    healthcheck:
-      interval: 30s
-      timeout: 10s
-      start_period: 900s
-      retries: 5
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-    restart: unless-stopped
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]""")
+        svc = (
+            f"  adk-vllm-{w.name}:\n"
+            f"    image: vllm/vllm-openai:latest\n"
+            f"    container_name: adk-vllm-{w.name}\n"
+            f"    shm_size: '4gb'\n"
+            f"    environment:\n"
+            f"{env_block}\n"
+            f"    command: >\n"
+            f"      --model {w.model}\n"
+            f"      --host 0.0.0.0 --port 8000\n"
+            f"      --gpu-memory-utilization {w.gpu_mem}\n"
+            f"      --max-model-len {w.ctx_len}\n"
+            f"      --enforce-eager --dtype auto\n"
+            f"      --max-num-seqs 8\n"
+            f"      --trust-remote-code\n"
+            f"      --served-model-name {w.served_name}\n"
+            f"      {extra}\n"
+            f"    ports:\n"
+            f"      - \"{w.port}:8000\"\n"
+            f"    volumes:\n"
+            f"      - adk-hf-cache:/root/.cache/huggingface\n"
+            f"    healthcheck:\n"
+            f"      interval: 30s\n"
+            f"      timeout: 10s\n"
+            f"      start_period: 900s\n"
+            f"      retries: 5\n"
+            f"      test: [\"CMD\", \"curl\", \"-f\", \"http://localhost:8000/health\"]\n"
+            f"    restart: unless-stopped\n"
+            f"    deploy:\n"
+            f"      resources:\n"
+            f"        reservations:\n"
+            f"          devices:\n"
+            f"            - driver: nvidia\n"
+            f"              count: 1\n"
+            f"              capabilities: [gpu]"
+        )
         services.append(svc)
 
     total_dl = sum(w.download_gb for w in workers)
     return textwrap.dedent(f"""\
-# AitherOS vLLM Inference Stack — Generated by `aither setup`
-# Tier: {tier_id} ({tier['name']}) — {tier['desc']}
+# AitherOS vLLM Inference Stack -- Generated by `aither setup`
+# Tier: {tier_id} ({tier['name']}) -- {tier['desc']}
 #
 # Why vLLM over Ollama?
-#   vLLM uses continuous batching — multiple agents share the GPU simultaneously.
-#   Ollama serializes requests — agents wait in line. For parallel agent fleets,
+#   vLLM uses continuous batching -- multiple agents share the GPU simultaneously.
+#   Ollama serializes requests -- agents wait in line. For parallel agent fleets,
 #   vLLM is 3-10x faster under concurrent load.
 #
 # Usage:
@@ -611,6 +612,100 @@ def _save_config(backend: str, tier_id: Optional[str], gpu: GPUInfo):
 # Interactive Prompt
 # ---------------------------------------------------------------------------
 
+
+# ---------------------------------------------------------------------------
+# Existing Infrastructure Detection
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ExistingInfra:
+    vllm_ports: list  # [(port, [model_ids])]
+    ollama_running: bool
+    ollama_models: list  # [str]
+    genesis_running: bool
+    aither_node_running: bool
+
+
+def _scan_existing_infra() -> ExistingInfra:
+    """Scan localhost for running inference and AitherOS services."""
+    import urllib.request
+    import urllib.error
+
+    result = ExistingInfra([], False, [], False, False)
+
+    # vLLM: scan known ports
+    for port in [8200, 8201, 8202, 8203, 8209, 8000]:
+        try:
+            req = urllib.request.Request(f"http://localhost:{port}/v1/models")
+            with urllib.request.urlopen(req, timeout=2) as resp:
+                data = json.loads(resp.read())
+                models = [m["id"] for m in data.get("data", [])]
+                if models:
+                    result.vllm_ports.append((port, models))
+        except Exception:
+            pass
+
+    # Ollama
+    try:
+        req = urllib.request.Request("http://localhost:11434/api/tags")
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            data = json.loads(resp.read())
+            result.ollama_models = [m["name"] for m in data.get("models", [])]
+            result.ollama_running = True
+    except Exception:
+        pass
+
+    # Genesis (AitherOS orchestrator)
+    try:
+        req = urllib.request.Request("http://localhost:8001/health")
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            result.genesis_running = resp.status == 200
+    except Exception:
+        pass
+
+    # AitherNode (MCP server)
+    try:
+        req = urllib.request.Request("http://localhost:8080/health")
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            result.aither_node_running = resp.status == 200
+    except Exception:
+        pass
+
+    return result
+
+
+def _save_existing_config(infra: ExistingInfra):
+    """Save connection to existing infrastructure."""
+    config = {}
+    config_path = Path.home() / ".aither" / "config.json"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    if config_path.exists():
+        try:
+            config = json.loads(config_path.read_text())
+        except Exception:
+            pass
+
+    if infra.vllm_ports:
+        port, models = infra.vllm_ports[0]
+        config["default_backend"] = "openai"
+        config["inference_url"] = f"http://localhost:{port}/v1"
+        config["setup_backend"] = "vllm"
+        info(f"Config saved: backend=vllm, url=http://localhost:{port}/v1")
+    elif infra.ollama_running:
+        config["default_backend"] = "ollama"
+        config["inference_url"] = "http://localhost:11434/v1"
+        config["setup_backend"] = "ollama"
+        info("Config saved: backend=ollama")
+
+    if infra.genesis_running:
+        config["genesis_url"] = "http://localhost:8001"
+    if infra.aither_node_running:
+        config["node_url"] = "http://localhost:8080"
+
+    config_path.write_text(json.dumps(config, indent=2))
+    info(f"Saved to {config_path}")
+
+
 def ask(prompt: str, default: str = "", choices: list[str] = None) -> str:
     if choices:
         full = f"  {bold('?')} {prompt} [{'/'.join(choices)}]"
@@ -721,6 +816,52 @@ def cmd_setup(args) -> int:
                 warn("llmfit: install failed (model selection will use static profiles)")
         except Exception:
             warn("llmfit: install failed (model selection will use static profiles)")
+
+    # ── Step 2b: Check existing infrastructure ────────────────
+    force = getattr(args, "force", False)
+    if not force:
+        step(2, total_steps, "Scanning for existing inference")
+        infra = _scan_existing_infra()
+
+        has_existing = bool(infra.vllm_ports or infra.ollama_running)
+
+        if has_existing:
+            if infra.vllm_ports:
+                for port, models in infra.vllm_ports:
+                    info(f"vLLM running on :{port} — {', '.join(models)}")
+            if infra.ollama_running:
+                info(f"Ollama running — {len(infra.ollama_models)} model(s)")
+            if infra.genesis_running:
+                info("AitherOS Genesis running on :8001")
+            if infra.aither_node_running:
+                info("AitherNode MCP server on :8080")
+
+            print()
+
+            if non_interactive:
+                info("Existing inference detected — connecting instead of deploying")
+                _save_existing_config(infra)
+                print()
+                print(f"  {green(bold('Connected!'))}")
+                print(f"  {dim('Run')} {cyan('adk run')} {dim('to start your agent.')}")
+                print()
+                return 0
+            else:
+                choice = ask(
+                    "Existing inference found. Connect to it or deploy new?",
+                    default="connect",
+                    choices=["connect", "new", "force"],
+                )
+                if choice == "connect":
+                    _save_existing_config(infra)
+                    print()
+                    print(f"  {green(bold('Connected!'))}")
+                    print(f"  {dim('Run')} {cyan('adk run')} {dim('to start your agent.')}")
+                    print()
+                    return 0
+                elif choice == "force":
+                    warn("Force mode — will attempt to start additional containers")
+                # else "new" — fall through to normal setup
 
     # Decide path
     can_vllm = docker_ok and gpu.vendor == "nvidia" and vram_gb >= 6
@@ -844,11 +985,11 @@ def cmd_setup(args) -> int:
         print(f"    Model: {w.model} ({w.served_name})")
     print()
     print(f"  {bold('Run your agent:')}")
-    print(f"    {cyan('aither run')}")
+    print(f"    {cyan('adk run')}")
     print(f"    {dim('(auto-detects vLLM on port 8200)')}")
     print()
     print(f"  {bold('Run parallel agents:')}")
-    print(f"    {cyan('aither run --agents lyra,atlas,demiurge')}")
+    print(f"    {cyan('adk run --agents lyra,atlas,demiurge')}")
     print(f"    {dim('All agents share the GPU via continuous batching.')}")
     print()
 

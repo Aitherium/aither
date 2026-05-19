@@ -287,7 +287,7 @@ class TestCmdRegister:
 
         with patch("httpx.AsyncClient") as MockClient:
             client = AsyncMock()
-            client.post = AsyncMock(side_effect=Exception("connection refused"))
+            client.post = AsyncMock(side_effect=ConnectionError("connection refused"))
             client.__aenter__ = AsyncMock(return_value=client)
             client.__aexit__ = AsyncMock(return_value=False)
             MockClient.return_value = client

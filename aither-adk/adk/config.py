@@ -71,6 +71,28 @@ def save_saved_config(data: dict[str, Any], config_path: Path | None = None) -> 
     return path
 
 
+def _sanitize_ollama_host(raw: str) -> str:
+    """Convert Ollama's bind address (``0.0.0.0:11434``) to a connectable URL.
+
+    Ollama sets ``OLLAMA_HOST`` to its *listen* address which often contains
+    ``0.0.0.0`` — a valid bind address but not a valid connection target on
+    Windows/macOS.  Rewrite to ``localhost`` so HTTP clients can connect.
+    """
+    if not raw:
+        return "http://localhost:11434"
+    # Strip protocol if present
+    if raw.startswith("http://") or raw.startswith("https://"):
+        host_part = raw.split("://", 1)[1]
+        scheme = raw.split("://", 1)[0]
+    else:
+        host_part = raw
+        scheme = "http"
+    # Replace 0.0.0.0 with localhost
+    if host_part.startswith("0.0.0.0"):
+        host_part = "localhost" + host_part[7:]
+    return f"{scheme}://{host_part}"
+
+
 @dataclass
 class Config:
     """ADK configuration, populated from environment variables with sensible defaults.
@@ -88,8 +110,8 @@ class Config:
     small_model: str = field(default_factory=lambda: os.getenv("AITHER_SMALL_MODEL", ""))
     large_model: str = field(default_factory=lambda: os.getenv("AITHER_LARGE_MODEL", ""))
 
-    # Ollama
-    ollama_host: str = field(default_factory=lambda: os.getenv("OLLAMA_HOST", "http://localhost:11434"))
+    # Ollama — sanitize OLLAMA_HOST which Ollama sets to a bind address (0.0.0.0:11434)
+    ollama_host: str = field(default_factory=lambda: _sanitize_ollama_host(os.getenv("OLLAMA_HOST", "")))
 
     # OpenAI-compatible
     openai_base_url: str = field(default_factory=lambda: os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"))
@@ -150,10 +172,13 @@ class Config:
         default_factory=lambda: os.getenv("AITHER_LLMFIT_URL", "")
     )
 
-    # JSON structured logging (default on)
+    # JSON structured logging (default off for standalone ADK; set AITHER_JSON_LOGGING=true for prod)
     json_logging: bool = field(
-        default_factory=lambda: os.getenv("AITHER_JSON_LOGGING", "true").lower() not in ("false", "0", "no")
+        default_factory=lambda: os.getenv("AITHER_JSON_LOGGING", "false").lower() in ("true", "1", "yes")
     )
+
+    # Agent identity (from project config.yaml or env)
+    identity: str = field(default_factory=lambda: os.getenv("AITHER_IDENTITY", ""))
 
     # Hardware profile (auto-detected or set via AITHER_PROFILE)
     profile: str = field(default_factory=lambda: os.getenv("AITHER_PROFILE", ""))
@@ -193,6 +218,9 @@ class Config:
             config.tenant_id = saved["tenant_id"]
         if not config.aither_api_key and saved.get("api_key"):
             config.aither_api_key = saved["api_key"]
+
+        # Load project-level config.yaml (from CWD, created by `adk init`)
+        config._apply_project_config()
 
         return config
 
@@ -261,6 +289,45 @@ class Config:
 
         logger.info("Applied profile '%s': model=%s, small=%s, large=%s, max_context=%d",
                      profile_name, self.model, self.small_model, self.large_model, self.max_context)
+
+    def _apply_project_config(self) -> None:
+        """Load project-level config.yaml (created by ``adk init``) from CWD.
+
+        Only fills in fields that are still at their defaults (env wins).
+        """
+        project_config = Path("config.yaml")
+        if not project_config.exists():
+            return
+        try:
+            import yaml
+        except ImportError:
+            return
+        try:
+            data = yaml.safe_load(project_config.read_text(encoding="utf-8")) or {}
+        except (OSError, ValueError):
+            return
+
+        # Map config.yaml keys to Config fields
+        if not self.identity and data.get("identity"):
+            self.identity = data["identity"]
+        if self.llm_backend == "auto" and data.get("llm_backend"):
+            self.llm_backend = data["llm_backend"]
+        # Also accept "backend:" as alias in config.yaml
+        if self.llm_backend == "auto" and data.get("backend"):
+            self.llm_backend = data["backend"]
+        if not self.model and data.get("model"):
+            self.model = data["model"]
+        if self.server_port == 8080 and data.get("port"):
+            self.server_port = int(data["port"])
+
+    @property
+    def backend(self) -> str:
+        """Alias for ``llm_backend`` -- matches config.yaml key ``backend:``."""
+        return self.llm_backend
+
+    @backend.setter
+    def backend(self, value: str) -> None:
+        self.llm_backend = value
 
     def get_api_key(self) -> str:
         """Return the best available API key for the configured backend."""

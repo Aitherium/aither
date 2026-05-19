@@ -268,10 +268,12 @@ class GraphMemory:
         self._db_path = str(db_path)
         self._agent = agent_name
         self._embed_model = embed_model
-        self._ollama_url = (
-            ollama_url
-            or os.getenv("OLLAMA_HOST", _OLLAMA_URL)
-        ).rstrip("/")
+        _raw = ollama_url or os.getenv("OLLAMA_HOST", _OLLAMA_URL)
+        if "0.0.0.0" in _raw:
+            _raw = _raw.replace("0.0.0.0", "localhost")
+        if not _raw.startswith("http"):
+            _raw = "http://" + _raw
+        self._ollama_url = _raw.rstrip("/")
         self._ollama_available: bool | None = None  # Lazy detect
         self._init_db()
 
@@ -593,6 +595,10 @@ class GraphMemory:
         """
         count = 0
         all_text = " ".join(m.get("content", "") for m in messages)
+        # Strip <think>/<thinking> reasoning blocks before storing
+        all_text = re.sub(r'<think(?:ing)?>[\s\S]*?</think(?:ing)?>', '', all_text, flags=re.IGNORECASE)
+        all_text = re.sub(r'<think(?:ing)?>[^<]*$', '', all_text, flags=re.IGNORECASE)
+        all_text = all_text.strip()
 
         # Extract and store entities
         entities = extract_entities(all_text)

@@ -94,7 +94,16 @@ class Elysium:
         inference_url: str = "",
         timeout: float = 30.0,
     ):
-        self.api_key = api_key or os.getenv("AITHER_API_KEY", "")
+        # Resolve API key: explicit param > AITHER_API_KEY env > saved config
+        resolved_key = api_key or os.getenv("AITHER_API_KEY", "")
+        if not resolved_key:
+            try:
+                from adk.config import load_saved_config  # noqa: E402
+                saved = load_saved_config()
+                resolved_key = saved.get("api_key", "")
+            except (ImportError, OSError, ValueError):
+                pass
+        self.api_key = resolved_key
         self.gateway_url = (gateway_url or os.getenv("AITHER_GATEWAY_URL", _GATEWAY_URL)).rstrip("/")
         self.inference_url = (inference_url or os.getenv("AITHER_INFERENCE_URL", _INFERENCE_URL)).rstrip("/")
         self._timeout = timeout
@@ -291,7 +300,26 @@ class Elysium:
 
     @property
     def status(self) -> ElysiumStatus:
-        """Current connection status."""
+        """Current connection status (sync property, not callable).
+
+        Use ``elysium.status`` (no parens), not ``elysium.status()``.
+        For an async version that refreshes, use ``await elysium.get_status()``.
+        """
+        return self._status
+
+    async def get_status(self) -> ElysiumStatus:
+        """Refresh and return connection status (async method).
+
+        Unlike the ``status`` property, this re-checks the connection
+        and updates balance/model info.
+        """
+        checks = await self.preflight()
+        if checks.get("checks", {}).get("inference_reachable", {}).get("ok"):
+            self._status.connected = True
+        balance = checks.get("checks", {}).get("balance", {})
+        if balance.get("ok"):
+            self._status.token_balance = balance.get("balance", 0)
+            self._status.plan = balance.get("plan", "")
         return self._status
 
     # ─── Agent Integration ────────────────────────────────────────────

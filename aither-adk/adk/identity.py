@@ -181,6 +181,101 @@ class Identity:
         return yaml.dump({"skills": manifests}, default_flow_style=False)
 
 
+def load_soul_md(path: Path) -> dict:
+    """Read an OpenClaw-format SOUL.md and convert to ADK identity config.
+
+    Sections recognised (case-insensitive):
+        # Personality  -> system_prompt
+        # Instructions -> rules (joined into system_prompt)
+        # Knowledge    -> injected as context block
+        # Name         -> name
+        # Role / Description -> description
+
+    Returns a dict suitable for ``Identity(**result)``.
+    """
+    text = path.read_text(encoding="utf-8")
+    sections: dict[str, str] = {}
+    current: str | None = None
+    buf: list[str] = []
+
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("# "):
+            if current is not None:
+                sections[current] = "\n".join(buf).strip()
+            current = stripped[2:].strip().lower()
+            buf = []
+        else:
+            buf.append(line)
+    if current is not None:
+        sections[current] = "\n".join(buf).strip()
+
+    # Build identity dict
+    result: dict[str, Any] = {}
+    result["name"] = sections.get("name", path.stem)
+
+    desc = sections.get("role", sections.get("description", ""))
+    if desc:
+        result["description"] = desc
+
+    # System prompt = personality + instructions
+    prompt_parts: list[str] = []
+    if "personality" in sections:
+        prompt_parts.append(sections["personality"])
+    if "instructions" in sections:
+        prompt_parts.append(sections["instructions"])
+    if prompt_parts:
+        result["system_prompt"] = "\n\n".join(prompt_parts)
+
+    if "knowledge" in sections:
+        result["knowledge"] = sections["knowledge"]
+
+    # Extract skills from instructions if present
+    skills: list[str] = []
+    if "skills" in sections:
+        for line in sections["skills"].splitlines():
+            line = line.strip().lstrip("-*").strip()
+            if line:
+                skills.append(line)
+        result["skills"] = skills
+
+    return result
+
+
+def export_soul_md(identity: Identity) -> str:
+    """Export an ADK Identity as OpenClaw-compatible SOUL.md format."""
+    parts: list[str] = []
+    parts.append(f"# Name\n{identity.name}")
+
+    if identity.description:
+        parts.append(f"# Description\n{identity.description}")
+
+    if identity.role and identity.role != "assistant":
+        parts.append(f"# Role\n{identity.role}")
+
+    # Personality from spirit fields
+    personality_lines: list[str] = []
+    if identity.core_trait:
+        personality_lines.append(f"Core trait: {identity.core_trait}")
+    if identity.drive:
+        personality_lines.append(f"Drive: {identity.drive}")
+    if identity.temperament:
+        personality_lines.append(f"Temperament: {identity.temperament}")
+    if personality_lines:
+        parts.append("# Personality\n" + "\n".join(personality_lines))
+
+    # Instructions from system prompt
+    if identity.system_prompt:
+        parts.append(f"# Instructions\n{identity.system_prompt}")
+
+    # Skills
+    if identity.skills:
+        skill_lines = [f"- {s}" for s in identity.skills]
+        parts.append("# Skills\n" + "\n".join(skill_lines))
+
+    return "\n\n".join(parts) + "\n"
+
+
 def load_identity(name: str, search_paths: list[Path] | None = None) -> Identity:
     """Load an identity by name from YAML files.
 

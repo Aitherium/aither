@@ -86,16 +86,21 @@ class MCPServer:
         # Auth: require_auth=None means auto-detect from env
         # If AITHER_SERVER_API_KEY or AITHER_MCP_KEY is set, auth is enforced
         import os
+        import secrets as _secrets
         self._mcp_key = os.getenv("AITHER_MCP_KEY", "") or os.getenv("AITHER_SERVER_API_KEY", "")
         if require_auth is None:
-            self._require_auth = bool(self._mcp_key)
+            if self._mcp_key:
+                self._require_auth = True
+            else:
+                # Auto-generate a session key so MCP is never wide-open
+                self._mcp_key = f"adk_mcp_{_secrets.token_hex(16)}"
+                self._require_auth = True
+                logger.info(
+                    "Auto-generated MCP session key (pass via Authorization header): %s",
+                    self._mcp_key,
+                )
         else:
             self._require_auth = require_auth
-        if not self._require_auth:
-            logger.warning(
-                "MCP server has NO authentication. Set AITHER_MCP_KEY or "
-                "AITHER_SERVER_API_KEY to protect tool endpoints."
-            )
 
     @property
     def registry(self) -> ToolRegistry:

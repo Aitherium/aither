@@ -27,7 +27,7 @@ _MAX_TOOL_LOOPS = 10
 
 # Essential tools that must always be available when agent has tools
 _ESSENTIAL_TOOL_NAMES = frozenset({
-    "read_file", "write_file", "replace_text", "search_files", "list_directory",
+    "file_read", "file_write", "file_edit", "file_search", "file_list",
 })
 
 # Steering message injected when LLM returns text-only on turn 1 with tools available
@@ -237,6 +237,11 @@ class AitherAgent:
             )
         except Exception as exc:
             logger.debug("Elysium fallback failed: %s", exc)
+
+    @property
+    def identity(self) -> Identity:
+        """The agent's loaded identity (read-only)."""
+        return self._identity
 
     @property
     def system_prompt(self) -> str:
@@ -503,6 +508,50 @@ class AitherAgent:
                     ))
 
             if not resp.tool_calls:
+                # ── finish_reason mismatch recovery ──
+                # Model signalled tool use but backend didn't produce structured
+                # tool_calls (common with vLLM + local models via Genesis).
+                # Try extracting from content, then nudge if that fails.
+                if (resp.finish_reason in ("tool_calls", "tool_use")
+                        and resp.content and tools_schema):
+                    from adk.llm.base import extract_tool_calls_from_text
+                    _recovered, _cleaned = extract_tool_calls_from_text(
+                        resp.content, finish_reason_hint=resp.finish_reason,
+                    )
+                    if _recovered:
+                        logger.debug(
+                            "[REACT] Recovered %d tool calls from content text",
+                            len(_recovered),
+                        )
+                        resp = LLMResponse(
+                            content=_cleaned,
+                            model=resp.model,
+                            tokens_used=resp.tokens_used,
+                            prompt_tokens=resp.prompt_tokens,
+                            completion_tokens=resp.completion_tokens,
+                            latency_ms=resp.latency_ms,
+                            tool_calls=_recovered,
+                            finish_reason=resp.finish_reason,
+                            effort_level=resp.effort_level,
+                            cache_status=resp.cache_status,
+                        )
+                        # Fall through to tool execution below
+                    elif not _steered_once:
+                        # Model described tools in prose — nudge to use proper format
+                        _steered_once = True
+                        logger.debug(
+                            "[REACT] finish_reason=%s but no structured calls — nudging",
+                            resp.finish_reason,
+                        )
+                        messages.append(Message(role="assistant", content=resp.content or ""))
+                        messages.append(Message(role="system", content=(
+                            "You indicated you want to call a tool but didn't produce "
+                            "a structured tool call. You MUST call tools using the "
+                            "provided function calling format. Do not describe the "
+                            "call — actually invoke it. Try again."
+                        )))
+                        continue
+
                 # Turn-1 tool-call steering: if LLM didn't use tools on first
                 # turn and tools are available AND the user explicitly requested
                 # an action (not just chatting), inject steering and retry once.

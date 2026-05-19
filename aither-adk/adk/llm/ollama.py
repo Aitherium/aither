@@ -82,8 +82,18 @@ class OllamaProvider(LLMProvider):
                 arguments=fn.get("arguments", {}),
             ))
 
+        content = msg.get("content", "")
+
+        # Hermes XML fallback: if model emitted <tool_call> tags in content
+        # but no structured tool_calls, parse them from text
+        if not tool_calls and content and "<tool_call>" in content:
+            from .base import extract_tool_calls_from_text
+            fallback_calls, content = extract_tool_calls_from_text(content)
+            if fallback_calls:
+                tool_calls = fallback_calls
+
         return LLMResponse(
-            content=msg.get("content", ""),
+            content=content,
             model=data.get("model", model),
             tokens_used=data.get("eval_count", 0) + data.get("prompt_eval_count", 0),
             prompt_tokens=data.get("prompt_eval_count", 0),

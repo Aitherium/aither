@@ -14,6 +14,7 @@ logger = logging.getLogger("adk.gateway")
 # Re-export from aithersdk if available, otherwise use local fallback
 try:
     from aithersdk.gateway import GatewayClient  # noqa: F401
+    Gateway = GatewayClient  # Alias for convenience
     logger.debug("Using GatewayClient from aithersdk")
 except ImportError:
     import httpx
@@ -192,3 +193,5 @@ except ImportError:
                     return resp.status_code == 200
             except Exception:
                 return False
+
+    Gateway = GatewayClient  # Alias for convenience

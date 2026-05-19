@@ -16,6 +16,17 @@ from pathlib import Path
 
 from adk.config import load_saved_config, save_saved_config
 
+
+def _fix_ollama_host(raw: str) -> str:
+    """Rewrite Ollama's bind address (0.0.0.0) to connectable localhost."""
+    if not raw:
+        return "http://localhost:11434"
+    if "0.0.0.0" in raw:
+        raw = raw.replace("0.0.0.0", "localhost")
+    if not raw.startswith("http"):
+        raw = "http://" + raw
+    return raw
+
 _AGENT_TEMPLATE = '''\
 """My AitherADK agent."""
 
@@ -48,7 +59,7 @@ identity: {name}
 port: 8080
 
 # LLM backend: auto, ollama, openai, anthropic, gateway
-backend: auto
+llm_backend: auto
 
 # Uncomment to set a specific model
 # model: nemotron-orchestrator-8b
@@ -108,8 +119,10 @@ def cmd_init(args):
     print()
     print(f"Next steps:")
     print(f"  cd {target}")
-    print(f"  aither run           # Start the server")
+    print(f"  adk run              # Start the server")
     print(f"  python agent.py      # Run directly")
+    print()
+    print(f"Using an AI agent? Run `adk agent-prompt` for a copy-paste setup guide.")
 
     # OpenClaw detection — prompt integration if detected
     openclaw_dir = Path.home() / ".openclaw"
@@ -120,7 +133,7 @@ def cmd_init(args):
             try:
                 import json
                 oc_config = json.loads(oc_config_path.read_text(encoding="utf-8"))
-            except Exception:
+            except (OSError, ValueError):
                 pass
 
         aither_integrated = any(
@@ -186,7 +199,7 @@ def cmd_register(args):
         ely = Elysium()
         try:
             result = await ely.register(email, password)
-        except Exception as exc:
+        except (ConnectionError, OSError, RuntimeError, ValueError) as exc:
             print(f"  Error: {exc}")
             return 1
 
@@ -203,6 +216,246 @@ def cmd_register(args):
         return 0
 
     return asyncio.run(_register())
+
+
+# ---------------------------------------------------------------------------
+# adk login / whoami / logout — device flow auth (RFC 8628)
+# ---------------------------------------------------------------------------
+
+_DEFAULT_IDENTITY_URL = "https://portal.aitherium.com"
+
+
+def _device_flow_login(identity_url: str, client_name: str = "adk") -> dict:
+    """Run RFC 8628 device code flow. Returns token response dict or raises."""
+    import json as _json
+    import time
+    import urllib.request
+    import urllib.error
+    import webbrowser
+
+    # Step 1: Request device code
+    req_data = _json.dumps({"client_name": client_name, "scopes": "full"}).encode()
+    req = urllib.request.Request(
+        f"{identity_url}/auth/device/code",
+        data=req_data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = _json.loads(resp.read())
+    except (urllib.error.URLError, OSError) as exc:
+        raise RuntimeError(f"Cannot reach {identity_url}: {exc}") from exc
+
+    user_code = data["user_code"]
+    device_code = data["device_code"]
+    verification_uri = data.get("verification_uri_complete") or data.get("verification_uri", "")
+    interval = max(2, int(data.get("interval", 5)))
+    expires_in = int(data.get("expires_in", 900))
+
+    # Step 2: Show code + open browser
+    print()
+    print(f"  Your code: {user_code}")
+    print()
+    print(f"  Opening browser to: {verification_uri}")
+    print(f"  (If it doesn't open, visit the URL manually and enter the code)")
+    print()
+
+    try:
+        webbrowser.open(verification_uri)
+    except OSError:
+        pass  # Browser open is best-effort
+
+    print(f"  Waiting for approval", end="", flush=True)
+
+    # Step 3: Poll for token
+    deadline = time.time() + expires_in
+    while time.time() < deadline:
+        time.sleep(interval)
+        poll_data = _json.dumps({"device_code": device_code}).encode()
+        poll_req = urllib.request.Request(
+            f"{identity_url}/auth/device/token",
+            data=poll_data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(poll_req, timeout=10) as resp:
+                result = _json.loads(resp.read())
+        except urllib.error.HTTPError as exc:
+            if exc.code == 400:
+                try:
+                    err_body = _json.loads(exc.read())
+                    detail = err_body.get("detail", "")
+                except (ValueError, OSError):
+                    detail = ""
+                if detail == "expired_token":
+                    print()
+                    raise RuntimeError("Device code expired. Run `adk login` again.")
+                if detail == "invalid_device_code":
+                    print()
+                    raise RuntimeError("Invalid device code. Run `adk login` again.")
+            print(".", end="", flush=True)
+            continue
+        except (urllib.error.URLError, OSError):
+            print(".", end="", flush=True)
+            continue
+
+        status = result.get("status", "")
+        if status == "authorization_pending":
+            print(".", end="", flush=True)
+            continue
+        if result.get("access_token"):
+            print(" approved!")
+            return result
+        # Unknown status — keep polling
+        print(".", end="", flush=True)
+
+    print()
+    raise RuntimeError("Timed out waiting for approval. Run `adk login` again.")
+
+
+def cmd_login(args) -> int:
+    """Authenticate with Aitherium — device flow, email/password, or API key."""
+    import json as _json
+
+    identity_url = (args.portal_url or os.getenv("AITHER_PORTAL_URL", _DEFAULT_IDENTITY_URL)).rstrip("/")
+
+    # Path 1: Direct API key
+    api_key = getattr(args, "api_key", None)
+    if api_key:
+        save_saved_config({"api_key": api_key})
+        print(f"  API key saved to ~/.aither/config.json")
+        return 0
+
+    # Path 2: Email/password
+    email = getattr(args, "email", None)
+    if email:
+        import asyncio
+        import getpass
+        password = getattr(args, "password", None) or getpass.getpass("  Password: ")
+        if not password:
+            print("  Error: password required.")
+            return 1
+
+        async def _login():
+            from adk.elysium import Elysium
+            ely = Elysium(gateway_url=identity_url)
+            try:
+                result = await ely.login(email, password)
+            except (ConnectionError, OSError, RuntimeError) as exc:
+                print(f"  Error: {exc}")
+                return 1
+            token = result.get("token", "")
+            if token:
+                save_saved_config({"api_key": token, "email": email})
+                print(f"  Logged in as {email}")
+                print(f"  Token saved to ~/.aither/config.json")
+                return 0
+            print(f"  Login failed: {result}")
+            return 1
+
+        return asyncio.run(_login())
+
+    # Path 3: Device flow (default — opens browser)
+    print()
+    print("  AitherOS Login")
+    print("  ==============")
+    try:
+        result = _device_flow_login(identity_url)
+    except RuntimeError as exc:
+        print(f"  Error: {exc}")
+        return 1
+
+    token = result.get("access_token", "")
+    user = result.get("user", {})
+    if not token:
+        print("  Error: no token in response.")
+        return 1
+
+    # Save token
+    config_update = {"api_key": token}
+    if isinstance(user, dict):
+        if user.get("tenant_id"):
+            config_update["tenant_id"] = user["tenant_id"]
+        if user.get("username"):
+            config_update["username"] = user["username"]
+    save_saved_config(config_update)
+
+    username = user.get("username", "") if isinstance(user, dict) else ""
+    print()
+    print(f"  Logged in{' as ' + username if username else ''}!")
+    print(f"  Token saved to ~/.aither/config.json")
+    print()
+    return 0
+
+
+def cmd_whoami(args) -> int:
+    """Show current auth status."""
+    saved = load_saved_config()
+    api_key = saved.get("api_key", "")
+    username = saved.get("username", "")
+    email = saved.get("email", "")
+    tenant_id = saved.get("tenant_id", "")
+    backend = saved.get("setup_backend", saved.get("default_backend", ""))
+    inference_url = saved.get("inference_url", "")
+
+    if not api_key and not backend:
+        print("  Not logged in. Run: adk login")
+        return 1
+
+    print()
+    print("  AitherOS Identity")
+    print("  =================")
+    if username:
+        print(f"  User:      {username}")
+    if email:
+        print(f"  Email:     {email}")
+    if api_key:
+        # Mask the key
+        if len(api_key) > 16:
+            print(f"  API key:   {api_key[:12]}...{api_key[-4:]}")
+        else:
+            print(f"  API key:   (set)")
+    if tenant_id:
+        print(f"  Tenant:    {tenant_id}")
+    if backend:
+        print(f"  Backend:   {backend}")
+    if inference_url:
+        print(f"  Inference: {inference_url}")
+    print()
+    return 0
+
+
+def cmd_logout(args) -> int:
+    """Clear saved auth tokens."""
+    import json as _json
+    config_path = Path.home() / ".aither" / "config.json"
+    if config_path.exists():
+        try:
+            config = _json.loads(config_path.read_text())
+        except (OSError, ValueError):
+            config = {}
+        for key in ("api_key", "username", "email", "tenant_id"):
+            config.pop(key, None)
+        config_path.write_text(_json.dumps(config, indent=2))
+        print("  Logged out. Auth tokens cleared from ~/.aither/config.json")
+    else:
+        print("  No config found — already logged out.")
+
+    # Also clear auth.json active profile if it exists
+    auth_path = Path.home() / ".aither" / "auth.json"
+    if auth_path.exists():
+        try:
+            import json as _json
+            auth = _json.loads(auth_path.read_text())
+            if isinstance(auth, dict):
+                auth["active_profile"] = ""
+                auth_path.write_text(_json.dumps(auth, indent=2))
+                print("  Cleared active profile in ~/.aither/auth.json")
+        except Exception:
+            pass
+    return 0
 
 
 def cmd_connect(args):
@@ -1511,8 +1764,8 @@ def cmd_status(args):
         import httpx
         checks = {
             "Genesis": os.environ.get("AITHER_URL", "http://localhost:8001"),
-            "vLLM": os.environ.get("AITHER_VLLM_URL", os.environ.get("VLLM_URL", "http://localhost:8120")),
-            "Ollama": os.environ.get("OLLAMA_HOST", "http://localhost:11434"),
+            "vLLM": os.environ.get("AITHER_VLLM_URL", os.environ.get("VLLM_URL", "http://localhost:8200")),
+            "Ollama": _fix_ollama_host(os.environ.get("OLLAMA_HOST", "")),
             "AitherNode": "http://localhost:8090",
             "Gateway": os.environ.get("AITHER_GATEWAY_URL", "https://gateway.aitherium.com"),
         }
@@ -1528,6 +1781,17 @@ def cmd_status(args):
                 status = "DOWN"
             icon = "+" if status == "UP" else "-"
             print(f"  [{icon}] {name:12s} {url:45s} {status}")
+
+        # Scan additional vLLM ports
+        for extra_port in [8201, 8202, 8203, 8209]:
+            try:
+                async with httpx.AsyncClient(timeout=2.0) as c:
+                    r = await c.get(f"http://localhost:{extra_port}/health")
+                    if r.status_code == 200:
+                        url = f"http://localhost:{extra_port}"
+                        print(f"  [+] {'vLLM':12s} {url:45s} UP")
+            except Exception:
+                pass
 
         # API key check
         api_key = os.environ.get("AITHER_API_KEY", "")
@@ -1836,7 +2100,7 @@ def _detect_llm_backend():
     # 2. Check for vLLM
     try:
         import httpx
-        for port in (8200, 8120, 8116):
+        for port in (8200, 8201, 8202, 8203, 8209, 8000):
             try:
                 resp = httpx.get(f"http://localhost:{port}/v1/models", timeout=1.0)
                 if resp.status_code == 200:
@@ -2128,6 +2392,141 @@ def cmd_disconnect(args):
     return asyncio.run(_run())
 
 
+def _cmd_cron(args) -> int:
+    """Handle `adk cron` subcommands."""
+    sub = getattr(args, "cron_command", None)
+    try:
+        from adk.cron import CronScheduler
+    except ImportError:
+        print("Cron module not available.")
+        return 1
+
+    sched = CronScheduler()
+
+    if sub == "list" or sub is None:
+        jobs = sched.list_jobs()
+        if not jobs:
+            print("No cron jobs configured.")
+            return 0
+        print(f"{'Name':<30} {'Expression':<20} {'Enabled'}")
+        print("-" * 60)
+        for j in jobs:
+            print(f"{j.name:<30} {j.expression:<20} {'yes' if j.enabled else 'no'}")
+        return 0
+
+    if sub == "add":
+        expr = args.expression
+        name = args.task_name
+        # Register a placeholder -- actual task binding happens programmatically
+        sched.add(expr, task=None, name=name)
+        print(f"Added cron job '{name}' with schedule: {expr}")
+        print("Note: bind a task function programmatically via CronScheduler.add()")
+        return 0
+
+    if sub == "remove":
+        if sched.remove(args.name):
+            print(f"Removed cron job '{args.name}'")
+        else:
+            print(f"Job '{args.name}' not found")
+        return 0
+
+    print("Usage: adk cron [list|add|remove]")
+    return 1
+
+
+def _cmd_skills(args) -> int:
+    """Handle `adk skills` subcommands."""
+    import json as _json
+
+    sub = getattr(args, "skills_command", None)
+    try:
+        from adk.skills import SkillStore
+    except ImportError:
+        print("Skills module not available.")
+        return 1
+
+    store = SkillStore()
+
+    if sub == "list" or sub is None:
+        skills = store.list_all()
+        if not skills:
+            print("No skills learned yet.")
+            return 0
+        print(f"{'Name':<30} {'Uses':<8} {'Tags'}")
+        print("-" * 60)
+        for s in skills:
+            tags = ", ".join(s.tags[:3]) if s.tags else ""
+            print(f"{s.name:<30} {s.success_count:<8} {tags}")
+        return 0
+
+    if sub == "search":
+        results = store.search(args.query)
+        if not results:
+            print(f"No skills matching '{args.query}'")
+            return 0
+        for s in results:
+            print(f"  {s.name}: {s.description}")
+        return 0
+
+    if sub == "export":
+        data = store.export_agentskills()
+        print(_json.dumps(data, indent=2))
+        return 0
+
+    print("Usage: adk skills [list|search|export]")
+    return 1
+
+
+def _cmd_soul(args) -> int:
+    """Handle `adk soul` subcommands."""
+    sub = getattr(args, "soul_command", None)
+
+    if sub == "import":
+        from pathlib import Path as _P
+        from adk.identity import load_soul_md, Identity
+
+        path = _P(args.path)
+        if not path.exists():
+            print(f"File not found: {path}")
+            return 1
+
+        config = load_soul_md(path)
+        identity = Identity(**{k: v for k, v in config.items() if k != "knowledge"})
+        print(f"Imported identity: {identity.name}")
+        if identity.description:
+            print(f"  Description: {identity.description}")
+        if identity.skills:
+            print(f"  Skills: {', '.join(identity.skills)}")
+        if config.get("knowledge"):
+            print(f"  Knowledge: {len(config['knowledge'])} chars")
+
+        # Save as YAML
+        import yaml
+        out_path = _P("identities") / f"{identity.name}.yaml"
+        out_path.parent.mkdir(exist_ok=True)
+        data = {
+            "name": identity.name,
+            "role": identity.role,
+            "description": identity.description,
+            "skills": identity.skills,
+        }
+        if identity.system_prompt:
+            data["system_prompt"] = identity.system_prompt
+        out_path.write_text(yaml.dump(data, default_flow_style=False), encoding="utf-8")
+        print(f"  Saved to: {out_path}")
+        return 0
+
+    if sub == "export":
+        from adk.identity import load_identity, export_soul_md
+
+        identity = load_identity(args.name)
+        print(export_soul_md(identity))
+        return 0
+
+    print("Usage: adk soul [import|export]")
+    return 1
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="adk",
@@ -2161,6 +2560,24 @@ def main():
     register_p.add_argument("--email", help="Account email (prompted if omitted)")
     register_p.add_argument("--password", help="Account password (prompted if omitted)")
 
+    # adk login
+    login_p = sub.add_parser("login", help="Authenticate with Aitherium (browser device flow)")
+    login_p.add_argument("--email", help="Use email/password instead of browser flow")
+    login_p.add_argument("--password", help="Password (prompted if --email given without it)")
+    login_p.add_argument("--api-key", help="Save an API key directly (no login flow)")
+    login_p.add_argument("--portal-url", default="",
+                         help="Portal/Identity URL (default: portal.aitherium.com)")
+
+    # adk whoami
+    sub.add_parser("whoami", help="Show current auth status and config")
+
+    # adk logout
+    sub.add_parser("logout", help="Clear saved auth tokens")
+
+    # adk agent-prompt
+    ap_p = sub.add_parser("agent-prompt", help="Print the setup prompt for AI coding agents")
+    ap_p.add_argument("--raw", action="store_true", help="Print raw prompt without footer")
+
     # aither connect
     connect_p = sub.add_parser("connect", help="Connect to AitherOS — detect LLMs, set up gateway, or join desktop mesh")
     connect_p.add_argument("--api-key", help="AITHER_API_KEY for cloud inference")
@@ -2173,7 +2590,7 @@ def main():
                            help="Don't save config")
 
     # aither setup
-    setup_p = sub.add_parser("setup", help="Set up local inference (vLLM/Ollama) + optional AitherOS stack")
+    setup_p = sub.add_parser("setup", help="Interactive GPU setup wizard (vLLM/Ollama) + optional AitherOS stack")
     setup_p.add_argument("--tier", choices=["nano", "lite", "standard", "full", "ollama"],
                          help="Force a specific tier (default: auto-detect from GPU)")
     setup_p.add_argument("--stack", choices=["minimal", "core", "full", "headless", "gpu", "agents"],
@@ -2187,6 +2604,8 @@ def main():
     setup_p.add_argument("--api-key", help="AITHER_API_KEY for cloud + stack deployment")
     setup_p.add_argument("--output", default="docker-compose.vllm.yml",
                          help="Output compose file path (default: docker-compose.vllm.yml)")
+    setup_p.add_argument("--force", action="store_true",
+                         help="Start new containers even if inference is already running")
 
     # aither aeon
     aeon_p = sub.add_parser("aeon", help="Multi-agent group chat")
@@ -2205,7 +2624,7 @@ def main():
     d_ollama.add_argument("--dry-run", action="store_true", help="Show what would happen")
 
     # aither deploy vllm
-    d_vllm = deploy_sub.add_parser("vllm", help="Deploy vLLM inference containers (NVIDIA GPU)")
+    d_vllm = deploy_sub.add_parser("vllm", help="Deploy vLLM containers directly (use 'adk setup' for guided wizard)")
     d_vllm.add_argument("--tier", choices=["nano", "lite", "standard", "full"],
                         help="Force a specific tier (default: auto-detect)")
     d_vllm.add_argument("--hf-token", default="", help="HuggingFace token for gated models")
@@ -2327,6 +2746,44 @@ def main():
     # adk disconnect — leave desktop mesh
     sub.add_parser("disconnect", help="Disconnect from desktop AitherOS mesh")
 
+    # adk doctor — system health checks
+    sub.add_parser("doctor", help="Check system health (Python, GPU, LLM backends, API keys)")
+
+    # adk gateway — multi-channel agent gateway
+    gateway_p = sub.add_parser("gateway", help="Run agent across messaging platforms")
+    gateway_p.add_argument("-a", "--agent", default="assistant", help="Agent identity (default: assistant)")
+    gateway_p.add_argument("--telegram", action="store_true", help="Enable Telegram (TELEGRAM_BOT_TOKEN)")
+    gateway_p.add_argument("--discord", action="store_true", help="Enable Discord (DISCORD_BOT_TOKEN)")
+    gateway_p.add_argument("--slack", action="store_true", help="Enable Slack (SLACK_BOT_TOKEN + SLACK_APP_TOKEN)")
+    gateway_p.add_argument("--webhook", action="store_true", help="Enable webhook endpoint")
+    gateway_p.add_argument("--webhook-port", type=int, default=9000, help="Webhook port (default: 9000)")
+
+    # adk cron — cron scheduler
+    cron_p = sub.add_parser("cron", help="Manage scheduled tasks")
+    cron_sub = cron_p.add_subparsers(dest="cron_command")
+    cron_sub.add_parser("list", help="List scheduled jobs")
+    cron_add_p = cron_sub.add_parser("add", help="Add a cron job")
+    cron_add_p.add_argument("expression", help="Cron expression (e.g. '0 9 * * *')")
+    cron_add_p.add_argument("task_name", help="Task name / description")
+    cron_rm_p = cron_sub.add_parser("remove", help="Remove a cron job")
+    cron_rm_p.add_argument("name", help="Job name to remove")
+
+    # adk skills — skill management
+    skills_p = sub.add_parser("skills", help="Manage learned skills")
+    skills_sub = skills_p.add_subparsers(dest="skills_command")
+    skills_sub.add_parser("list", help="List all learned skills")
+    skills_search_p = skills_sub.add_parser("search", help="Search skills")
+    skills_search_p.add_argument("query", help="Search query")
+    skills_sub.add_parser("export", help="Export skills in agentskills.io format")
+
+    # adk soul — SOUL.md import/export
+    soul_p = sub.add_parser("soul", help="Import/export SOUL.md identity files")
+    soul_sub = soul_p.add_subparsers(dest="soul_command")
+    soul_import_p = soul_sub.add_parser("import", help="Import a SOUL.md file")
+    soul_import_p.add_argument("path", help="Path to SOUL.md file")
+    soul_export_p = soul_sub.add_parser("export", help="Export identity as SOUL.md")
+    soul_export_p.add_argument("name", help="Identity name to export")
+
     # adk platform — internal platform toolkit commands (merged from aither-platform)
     platform_p = sub.add_parser("platform", help="Internal platform toolkit (merged from aither-platform)")
     platform_p.add_argument("platform_args", nargs=argparse.REMAINDER, help="Platform subcommand args")
@@ -2341,6 +2798,15 @@ def main():
         cmd_run(args)
     elif args.command == "register":
         sys.exit(cmd_register(args))
+    elif args.command == "login":
+        sys.exit(cmd_login(args))
+    elif args.command == "whoami":
+        sys.exit(cmd_whoami(args))
+    elif args.command == "logout":
+        sys.exit(cmd_logout(args))
+    elif args.command == "agent-prompt":
+        from adk.agent_prompt import cmd_agent_prompt
+        sys.exit(cmd_agent_prompt(args))
     elif args.command == "connect":
         sys.exit(cmd_connect(args))
     elif args.command == "setup":
@@ -2371,6 +2837,18 @@ def main():
         sys.exit(cmd_admin(args))
     elif args.command == "disconnect":
         sys.exit(cmd_disconnect(args))
+    elif args.command == "doctor":
+        from adk.doctor import cmd_doctor
+        sys.exit(cmd_doctor(args))
+    elif args.command == "gateway":
+        from adk.gateway_process import cmd_gateway
+        sys.exit(cmd_gateway(args))
+    elif args.command == "cron":
+        sys.exit(_cmd_cron(args))
+    elif args.command == "skills":
+        sys.exit(_cmd_skills(args))
+    elif args.command == "soul":
+        sys.exit(_cmd_soul(args))
     elif args.command == "platform":
         # Delegate to the internal platform CLI (merged from aither_adk.cli)
         try:

@@ -28,7 +28,10 @@ logger = logging.getLogger("adk.faculties.embeddings")
 _EMBEDDING_DIM = 768  # Default dimension (nomic-embed-text)
 _FEATURE_HASH_DIM = 768  # Feature hash output dimension
 _MODEL_NAME = os.getenv("AITHER_EMBEDDING_MODEL", "nomic-ai/nomic-embed-text-v1.5")
-_OLLAMA_URL = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+_OLLAMA_URL_RAW = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+_OLLAMA_URL = _OLLAMA_URL_RAW.replace("0.0.0.0", "localhost") if "0.0.0.0" in _OLLAMA_URL_RAW else _OLLAMA_URL_RAW
+if not _OLLAMA_URL.startswith("http"):
+    _OLLAMA_URL = "http://" + _OLLAMA_URL
 _ELYSIUM_URL = os.getenv("AITHER_ELYSIUM_URL", "https://gateway.aitherium.com")
 
 

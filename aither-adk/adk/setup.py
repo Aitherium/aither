@@ -189,6 +189,17 @@ async def _detect_ram() -> float:
     """Detect system RAM in GB."""
     system = platform.system()
     if system == "Windows":
+        # PowerShell (works on all modern Windows, wmic is deprecated/removed)
+        rc, out, _ = await _run([
+            "powershell", "-NoProfile", "-Command",
+            "(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory",
+        ])
+        if rc == 0 and out.strip():
+            try:
+                return int(out.strip()) / (1024 ** 3)
+            except ValueError:
+                pass
+        # Fallback: wmic (older Windows)
         rc, out, _ = await _run(["wmic", "computersystem", "get", "TotalPhysicalMemory", "/value"])
         if rc == 0:
             m = re.search(r"TotalPhysicalMemory=(\d+)", out)
@@ -635,9 +646,10 @@ class AgentSetup:
                 if rc == 0:
                     logger.info("llmfit installed via cargo")
                     return True
-            logger.warning(
-                "Could not auto-install llmfit on Windows. "
-                "Install manually: scoop install llmfit, cargo install llmfit, "
+            logger.debug(
+                "llmfit not available on Windows (optional). "
+                "For hardware-aware model selection, install via: "
+                "scoop install llmfit, cargo install llmfit, "
                 "or download from https://github.com/AlexsJones/llmfit/releases"
             )
             return False
