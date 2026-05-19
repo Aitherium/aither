@@ -81,8 +81,12 @@ def create_app(
         await _reconnect_elysium()
         await _start_mesh_hosting()
 
+        # ── Fleet endpoint registration ──
+        await _register_fleet_endpoint()
+
         yield
         # ── Shutdown cleanup ──
+        await _deregister_fleet_endpoint()
         _elysium_relay = _state.get("elysium_relay")
         if _elysium_relay:
             await _elysium_relay.stop_heartbeat()
@@ -372,6 +376,11 @@ def create_app(
             "latency_ms": result.latency_ms,
             "error": result.error,
         }
+
+    @app.post("/v1/forge/dispatch")
+    async def v1_forge_dispatch(request: Request):
+        """Accept forge dispatch from sovereign AitherOS nodes (canonical path)."""
+        return await forge_dispatch(request)
 
     # ─── Genesis-compatible chat ───
 
@@ -753,6 +762,65 @@ def create_app(
                 logger.info("Flushed %d queued Pulse pain signals", flushed)
         except Exception:
             pass
+
+    async def _register_fleet_endpoint():
+        """Register invoke_url with portal fleet so sovereign can dispatch to us."""
+        from adk.config import load_saved_config
+        saved = load_saved_config()
+        api_key = saved.get("api_key", "") or config.aither_api_key
+        if not api_key:
+            logger.debug("Fleet endpoint registration skipped (no API key)")
+            return
+        invoke_url = os.getenv("AITHER_INVOKE_URL", f"http://localhost:{config.server_port}")
+        tenant_id = saved.get("tenant_id", "") or os.getenv("AITHER_TENANT_ID", "")
+        agent_name = _state.get("identity", identity)
+        try:
+            portal_url = os.getenv("AITHER_PORTAL_URL", "https://portal.aitherium.com")
+            import httpx
+            async with httpx.AsyncClient(timeout=15) as client:
+                await client.post(
+                    f"{portal_url}/v1/agents/upsert",
+                    json={
+                        "name": agent_name,
+                        "scope": {"visibility": "workspace", "tenant_id": tenant_id},
+                        "invoke_url": invoke_url,
+                        "status": "online",
+                    },
+                    headers={"Authorization": f"Bearer {api_key}"},
+                )
+            _state["fleet_registered"] = True
+            logger.info("Registered fleet endpoint: %s -> %s", agent_name, invoke_url)
+        except Exception as exc:
+            _state["fleet_registered"] = False
+            logger.warning("Fleet endpoint registration failed (non-fatal): %s", exc)
+
+    async def _deregister_fleet_endpoint():
+        """Mark agent as offline in portal fleet on shutdown."""
+        if not _state.get("fleet_registered"):
+            return
+        from adk.config import load_saved_config
+        saved = load_saved_config()
+        api_key = saved.get("api_key", "") or config.aither_api_key
+        if not api_key:
+            return
+        agent_name = _state.get("identity", identity)
+        tenant_id = saved.get("tenant_id", "") or os.getenv("AITHER_TENANT_ID", "")
+        try:
+            portal_url = os.getenv("AITHER_PORTAL_URL", "https://portal.aitherium.com")
+            import httpx
+            async with httpx.AsyncClient(timeout=10) as client:
+                await client.post(
+                    f"{portal_url}/v1/agents/upsert",
+                    json={
+                        "name": agent_name,
+                        "scope": {"visibility": "workspace", "tenant_id": tenant_id},
+                        "status": "offline",
+                    },
+                    headers={"Authorization": f"Bearer {api_key}"},
+                )
+            logger.info("Deregistered fleet endpoint: %s", agent_name)
+        except Exception as exc:
+            logger.debug("Fleet endpoint deregistration failed (non-fatal): %s", exc)
 
     async def _register_with_gateway():
         if not config.gateway_url or not config.aither_api_key:
@@ -1539,6 +1607,7 @@ def main():
     parser.add_argument("--model", "-m", help="Model name override")
     parser.add_argument("--fleet", "-f", default=None, help="Fleet YAML config file for multi-agent mode")
     parser.add_argument("--agents", "-a", default=None, help="Comma-separated agent identities for fleet mode (e.g. aither,lyra,demiurge)")
+    parser.add_argument("--invoke-url", default=None, help="Publicly reachable URL for fleet dispatch (e.g. http://192.168.1.50:8900)")
     args = parser.parse_args()
 
     config = Config.from_env()
@@ -1549,6 +1618,9 @@ def main():
 
     port = args.port or config.server_port
     host = args.host or config.server_host
+
+    if args.invoke_url:
+        os.environ["AITHER_INVOKE_URL"] = args.invoke_url
 
     # Determine mode
     fleet_path = args.fleet

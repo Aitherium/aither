@@ -2784,6 +2784,12 @@ def main():
     soul_export_p = soul_sub.add_parser("export", help="Export identity as SOUL.md")
     soul_export_p.add_argument("name", help="Identity name to export")
 
+    # adk shell — download/launch AitherShell interactive terminal
+    shell_p = sub.add_parser("shell", help="Launch AitherShell interactive terminal")
+    shell_p.add_argument("--install", action="store_true", help="Download/update the AitherShell binary")
+    shell_p.add_argument("--genesis", help="Genesis URL (default: http://127.0.0.1:8001)")
+    shell_p.add_argument("shell_args", nargs=argparse.REMAINDER, help="Arguments to pass to AitherShell")
+
     # adk platform — internal platform toolkit commands (merged from aither-platform)
     platform_p = sub.add_parser("platform", help="Internal platform toolkit (merged from aither-platform)")
     platform_p.add_argument("platform_args", nargs=argparse.REMAINDER, help="Platform subcommand args")
@@ -2849,6 +2855,9 @@ def main():
         sys.exit(_cmd_skills(args))
     elif args.command == "soul":
         sys.exit(_cmd_soul(args))
+    elif args.command == "shell":
+        from adk.shell_launcher import cmd_shell
+        sys.exit(cmd_shell(args))
     elif args.command == "platform":
         # Delegate to the internal platform CLI (merged from aither_adk.cli)
         try:
