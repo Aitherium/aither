@@ -2968,14 +2968,57 @@ def _cmd_soul(args) -> int:
 # ---------------------------------------------------------------------------
 
 def _get_genesis_url() -> str:
-    """Resolve the Genesis URL from config or environment."""
+    """Resolve the training API URL — Genesis, ADK server, or Aitherium cloud.
+
+    Priority:
+    1. AITHER_GENESIS_URL env var (explicit Genesis)
+    2. elysium_url from saved config (remote connected desktop)
+    3. Local Genesis on :8001 (if reachable)
+    4. Local ADK server on configured port (if reachable)
+    5. Aitherium cloud gateway (if API key available)
+    6. Fallback to localhost:8001 (user gets a clear error)
+    """
+    import urllib.request
+    import urllib.error
+
     cfg = load_saved_config()
+
+    # Explicit env var
+    explicit = os.environ.get("AITHER_GENESIS_URL", "")
+    if explicit:
+        return explicit.rstrip("/")
+
     # Remote connected instance
     elysium = cfg.get("elysium_url") or cfg.get("aither_gateway_url", "")
     if elysium:
         return elysium.rstrip("/")
-    # Local
-    return os.environ.get("AITHER_GENESIS_URL", "http://localhost:8001")
+
+    # Probe local Genesis
+    try:
+        req = urllib.request.Request("http://localhost:8001/health")
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            if resp.status == 200:
+                return "http://localhost:8001"
+    except (urllib.error.URLError, ConnectionError, OSError):
+        pass
+
+    # Probe local ADK server
+    server_port = cfg.get("server_port", 8080)
+    try:
+        req = urllib.request.Request(f"http://localhost:{server_port}/health")
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            if resp.status == 200:
+                return f"http://localhost:{server_port}"
+    except (urllib.error.URLError, ConnectionError, OSError):
+        pass
+
+    # Cloud gateway (for users without local Genesis)
+    api_key = cfg.get("api_key") or os.environ.get("AITHER_API_KEY", "")
+    if api_key:
+        return "https://gateway.aitherium.com"
+
+    # Fallback — will produce a clear error when the call fails
+    return "http://localhost:8001"
 
 
 def _train_headers() -> dict:
@@ -3175,13 +3218,95 @@ def _cmd_train(args) -> int:
         return 1
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        prog="adk",
-        description="AitherADK — Build AI agent fleets with any LLM backend",
-    )
-    sub = parser.add_subparsers(dest="command")
+# ---------------------------------------------------------------------------
+# Slash-command manifest — auto-generates from argparse for AitherShell
+# ---------------------------------------------------------------------------
 
+def build_command_manifest() -> list[dict]:
+    """Return a structured manifest of all CLI commands for AitherShell slash-command auto-discovery.
+
+    AitherShell queries GET /slash-commands on the ADK server, gets this manifest,
+    and registers each command as a /name slash command with tab-completion.
+
+    Returns list of: {name, help, args: [{name, flags, required, type, default, help, choices}], subcommands: [...]}
+    """
+    # Build a temporary parser just for introspection (never calls parse_args)
+    p = argparse.ArgumentParser(prog="adk")
+    sub = p.add_subparsers(dest="command")
+
+    # Import and call the registration block — we'll inline a lightweight
+    # version that just registers the parser structure, not the dispatch.
+    # This avoids import-time side effects.
+    _register_commands(sub)
+
+    commands = []
+    for action in p._subparsers._actions:
+        if not isinstance(action, argparse._SubParsersAction):
+            continue
+        for name, subparser in action.choices.items():
+            cmd = {"name": name, "help": "", "args": [], "subcommands": []}
+            for ca in action._choices_actions:
+                if ca.dest == name:
+                    cmd["help"] = ca.help or ""
+                    break
+            for act in subparser._actions:
+                if isinstance(act, argparse._HelpAction):
+                    continue
+                if isinstance(act, argparse._SubParsersAction):
+                    for sn, sp in act.choices.items():
+                        sc = {"name": sn, "help": "", "args": []}
+                        for sca in act._choices_actions:
+                            if sca.dest == sn:
+                                sc["help"] = sca.help or ""
+                                break
+                        for sa in sp._actions:
+                            if isinstance(sa, (argparse._HelpAction, argparse._SubParsersAction)):
+                                continue
+                            ai = _extract_arg(sa)
+                            sc["args"].append(ai)
+                        cmd["subcommands"].append(sc)
+                    continue
+                cmd["args"].append(_extract_arg(act))
+            commands.append(cmd)
+    return commands
+
+
+def _extract_arg(act) -> dict:
+    """Extract argument info from an argparse action."""
+    ai = {
+        "name": act.dest,
+        "flags": act.option_strings or [],
+        "required": getattr(act, "required", not bool(act.option_strings)),
+        "type": act.type.__name__ if act.type else "str",
+        "default": act.default if act.default != argparse.SUPPRESS else None,
+        "help": act.help or "",
+    }
+    if act.choices:
+        ai["choices"] = list(act.choices)
+    return ai
+
+
+_cached_parser: argparse.ArgumentParser | None = None
+
+
+def get_parser() -> argparse.ArgumentParser:
+    """Return the full CLI parser (cached). Used by manifest builder and main()."""
+    global _cached_parser
+    if _cached_parser is None:
+        # Trigger main() to build it on first call — or build fresh
+        _cached_parser = argparse.ArgumentParser(
+            prog="adk",
+            description="AitherADK — Build AI agent fleets with any LLM backend",
+        )
+        # We'll populate it in main() and cache it
+    return _cached_parser
+
+
+def _register_commands(sub):
+    """Register all CLI subcommands on the given subparsers group.
+
+    Shared between main() (for execution) and build_command_manifest() (for introspection).
+    """
     # adk start — the main entry point for everyone
     start_p = sub.add_parser("start", help="Start chatting with your codebase (zero config)")
     start_p.add_argument("path", nargs="?", default=".", help="Project directory (default: current)")
@@ -3568,6 +3693,17 @@ def main():
     train_register_gpu_p.add_argument("--port", type=int, default=22, help="SSH port (default: 22)")
     train_register_gpu_p.add_argument("--gpu-model", help="GPU model name (auto-detected if omitted)")
     train_register_gpu_p.add_argument("--vram", type=int, help="GPU VRAM in GB (auto-detected if omitted)")
+
+
+def main():
+    global _cached_parser
+    parser = argparse.ArgumentParser(
+        prog="adk",
+        description="AitherADK — Build AI agent fleets with any LLM backend",
+    )
+    sub = parser.add_subparsers(dest="command")
+    _register_commands(sub)
+    _cached_parser = parser
 
     args = parser.parse_args()
 

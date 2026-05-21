@@ -1482,6 +1482,70 @@ def create_app(
             "total_messages": len(session.history),
         }
 
+    # ─── Slash-command manifest for AitherShell auto-discovery ───
+
+    @app.get("/slash-commands")
+    async def slash_commands():
+        """Return structured manifest of all ADK CLI commands.
+
+        AitherShell queries this on startup and auto-registers each command
+        as a /name slash command with tab-completion for arguments.
+        """
+        from adk.cli import build_command_manifest
+        manifest = build_command_manifest()
+        return {
+            "commands": manifest,
+            "version": __version__,
+            "total": len(manifest),
+        }
+
+    @app.post("/cli/execute")
+    async def cli_execute(request: Request):
+        """Execute an ADK CLI command from AitherShell.
+
+        Body: {"command": "train", "args": ["status"]}
+        or:   {"command": "backend", "args": ["list"]}
+
+        Returns the command's stdout/stderr as text.
+        This lets AitherShell run any CLI command without shelling out.
+        """
+        import asyncio
+        import subprocess
+
+        body = await request.json()
+        command = body.get("command", "")
+        args = body.get("args", [])
+
+        if not command:
+            return JSONResponse({"error": "command is required"}, status_code=400)
+
+        # Security: only allow known ADK commands, not arbitrary shell execution
+        from adk.cli import build_command_manifest
+        valid_commands = {c["name"] for c in build_command_manifest()}
+        if command not in valid_commands:
+            return JSONResponse(
+                {"error": f"Unknown command: {command}", "valid": sorted(valid_commands)},
+                status_code=400,
+            )
+
+        cmd = ["python", "-m", "adk.cli", command] + [str(a) for a in args]
+        try:
+            result = await asyncio.to_thread(
+                subprocess.run, cmd,
+                capture_output=True, text=True, timeout=60,
+            )
+            return {
+                "command": command,
+                "args": args,
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+                "returncode": result.returncode,
+            }
+        except subprocess.TimeoutExpired:
+            return JSONResponse({"error": "Command timed out (60s)"}, status_code=504)
+        except FileNotFoundError:
+            return JSONResponse({"error": "Python not found"}, status_code=500)
+
     return app
 
 
