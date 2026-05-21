@@ -2,11 +2,11 @@
 
 **3 lines. Any backend. Local or cloud.**
 
-Build multi-agent systems with effort-based model routing, 48 built-in identities, and zero lock-in. Works with your GPU, Ollama, or Aitherium cloud inference — same code, same agents.
+Build multi-agent systems with effort-based model routing, runtime backend switching, hybrid reasoning, and zero lock-in. Works with your GPU, Ollama, or Aitherium cloud inference — same code, same agents.
 
 ```bash
 pip install aither-adk
-export AITHER_API_KEY=aither_sk_live_...   # optional — enables cloud inference + 100 MCP tools
+adk quickstart                                    # auto-detect GPU, set up LLM, ready to go
 aither init my-agent && cd my-agent && python agent.py
 ```
 
@@ -26,6 +26,8 @@ Try it now at [chat.aitherium.com](https://chat.aitherium.com) — free, unlimit
 | Consumer toy | **SDK + API** — build on it |
 | No agent coordination | **Fleet mode** — agents collaborate in real-time |
 | No GPU management | **VRAM-aware scheduling** — runs what fits |
+| Locked to one provider | **Runtime backend switching** — swap LLM mid-session |
+| Cloud-only reasoning | **Hybrid reasoning** — local orchestration + cloud deep thinking |
 
 ```bash
 # Single agent
@@ -36,6 +38,28 @@ aither-serve --agents aither,lyra,demiurge,hydra,athena
 
 # OpenAI-compatible API — drop-in replacement
 curl http://localhost:8080/v1/chat/completions -d '{"model":"aither","messages":[{"role":"user","content":"hello"}]}'
+```
+
+## Setup
+
+One command gets you running. `adk quickstart` detects your GPU, pulls the right models, configures backends, and launches AitherShell.
+
+```bash
+# Recommended — does everything
+adk quickstart
+
+# Just GPU + models (no auth or shell)
+adk setup nemotron
+
+# Hybrid mode — local orchestration, cloud reasoning
+adk setup --reasoning-api anthropic
+
+# Low VRAM — TQ4 4-bit quantization fits 6GB GPUs
+adk setup --tier nano
+
+# Explicit tier selection
+adk setup --tier standard-tq4    # both models TQ4, 12-16GB
+adk setup --tier full            # orchestrator + reasoning + embeddings, 24GB+
 ```
 
 ## Quick Start
@@ -87,6 +111,28 @@ aither-serve --agents aither,lyra,demiurge,hydra --port 8080
 
 # Fleet from YAML config
 aither-serve --fleet fleet.yaml --port 8080
+```
+
+## Backend Switching
+
+Switch LLM backends at runtime — no restart, no reconfiguration. Mix local and cloud providers.
+
+```python
+from adk import AitherAgent
+
+agent = AitherAgent("research-bot")
+
+# Switch the primary backend on the fly
+agent.switch_backend("anthropic", api_key="sk-ant-...")
+
+# Route reasoning tasks (effort 7+) to a different provider
+agent.set_reasoning_backend("deepseek")  # effort 7+ goes to DeepSeek
+
+# Or manage backends from the CLI
+# adk backend list              — show all detected backends
+# adk backend set anthropic     — switch primary
+# adk backend set-reasoning deepseek  — split reasoning to a different provider
+# adk backend test              — verify current backend works
 ```
 
 ## Scale Up: Connect to Elysium
@@ -257,9 +303,10 @@ Aither automatically selects the right model based on task complexity:
 
 `auto_setup()` detects your GPU and configures the optimal backend:
 
-1. **NVIDIA + Docker** → Starts vLLM containers (paged attention, continuous batching, tensor parallelism)
-2. **AMD / Apple Silicon / No Docker** → Falls back to Ollama
-3. **No GPU** → Uses cloud APIs (gateway.aitherium.com or OpenAI/Anthropic direct)
+1. **NVIDIA + Docker** — Starts vLLM containers (paged attention, continuous batching, tensor parallelism)
+2. **NVIDIA DGX Spark** — Auto-detected on the LAN, registered as a remote inference node
+3. **AMD / Apple Silicon / No Docker** — Falls back to Ollama
+4. **No GPU** — Uses cloud APIs (gateway.aitherium.com or OpenAI/Anthropic direct)
 
 ```python
 from adk.setup import auto_setup
@@ -274,7 +321,7 @@ Agent              — Agent with identity, tools, memory, LLM
   Forge            — Dispatch agents by type or auto-route
   Fleet            — Multi-agent fleet from YAML or CLI
   Conversations    — JSON file persistence for conversations
-  LLM Router       — Multi-backend auto-detecting router
+  LLM Router       — Multi-backend auto-detecting router with runtime switching
   Memory           — SQLite KV store + conversation history
   Graph Memory     — Knowledge graph with embeddings + hybrid search
   Neuron Pool      — Auto-firing context neurons (web, memory, graph)
@@ -285,6 +332,7 @@ Agent              — Agent with identity, tools, memory, LLM
   Service Bridge   — Auto-discovery of Aither services
   Tool Registry    — @tool decorator, OpenAI function calling format
   Identity         — 48 YAML-based agent personas
+  Schema Migrator  — Automatic DB schema migrations across versions
 ```
 
 ## Add Tools
@@ -476,17 +524,89 @@ curl http://localhost:8080/health
 
 Skip-auth paths: `/health`, `/docs`, `/openapi.json`, `/metrics`, `/demo`, `/redoc`
 
-## CLI Scaffolding
+## AitherShell
+
+Interactive terminal for working with agents. Launch it from the CLI or use the `aithershell` alias.
 
 ```bash
-# Create a new agent project
-aither init my-agent
+adk shell              # Launch AitherShell
+aithershell            # Same thing — global alias
 
-# Generated files:
-# my-agent/
-#   agent.py      — Agent definition with AitherAgent
-#   config.yaml   — Agent configuration
-#   tools.py      — Custom tool definitions
+# Inside AitherShell, CLI commands map to slash commands:
+#   /status     — backend and service status
+#   /backend    — switch LLM providers
+#   /tools      — list available tools
+#   /backup     — snapshot agent data
+#   /ingest     — feed files into the knowledge graph
+```
+
+AitherShell downloads a platform-specific binary on first use and caches it in `~/.aither/bin/`.
+
+## CLI Commands
+
+```bash
+# Getting started
+adk quickstart                 # One-command setup: GPU + auth + shell
+adk init my-agent              # Scaffold a new agent project
+adk start                      # Start chatting with your codebase (zero config)
+adk run                        # Start the agent server
+adk doctor                     # Check system health (Python, GPU, LLM, API keys)
+
+# Setup & backends
+adk setup                      # Interactive GPU setup wizard (vLLM/Ollama)
+adk setup --tier nano          # Force a specific tier
+adk backend list               # Show detected and configured backends
+adk backend set anthropic      # Set default backend
+adk backend set-reasoning deepseek  # Set reasoning backend (effort 7+)
+adk backend test               # Test current backend
+
+# Tools & data
+adk tools                      # List available tools (local + MCP)
+adk ingest ./docs/             # Ingest files into the knowledge graph
+adk backup                     # Backup all agent data (memory, graphs, config)
+adk index ./src/               # Index a codebase for code search (CodeGraph)
+
+# Deployment
+adk deploy ollama              # Install Ollama + pull models
+adk deploy vllm                # Deploy vLLM containers
+adk deploy node                # AitherNode MCP server + Genesis
+adk deploy core                # Core services (Node, Pulse, Watch, Genesis, Veil)
+adk deploy full                # Full AitherOS stack (~31 containers)
+adk deploy agent               # Deploy an agent to AitherOS gateway
+
+# Cloud & auth
+adk connect                    # Connect to AitherOS / Elysium
+adk register                   # Create a new Aitherium account
+adk login                      # Authenticate (browser device flow)
+adk whoami                     # Show current auth status
+adk status                     # Show backend and service status
+adk disconnect                 # Disconnect from desktop mesh
+
+# Training
+adk train status               # Check training readiness and active runs
+adk train launch               # Launch a training run
+adk train logs <run-id>        # Stream training logs
+adk train cancel <run-id>      # Cancel an active run
+adk train runs                 # List recent training runs
+adk train register-gpu         # Register a GPU for training
+
+# Agent management
+adk aeon                       # Multi-agent group chat
+adk onboard                    # Interactive onboarding wizard
+adk integrate openclaw         # Connect external tools
+adk publish                    # Publish agent to Elysium marketplace
+adk test                       # Run agent tests
+adk shell                      # Launch AitherShell interactive terminal
+
+# Platform
+adk listen audiobook           # Audiobook companion (characters, stats)
+adk listen meeting             # Meeting transcription (action items)
+adk listen note                # Voice note dictation
+adk mcp serve                  # Start stdio MCP server (for Claude Code)
+adk gateway                    # Run agent across messaging platforms
+adk cron list|add|remove       # Manage scheduled tasks
+adk skills list|search|export  # Manage learned skills
+adk soul import|export         # Import/export SOUL.md identity files
 ```
 
 ## Agent Identities
@@ -543,17 +663,20 @@ All entry points connect to the same backend. Your agents, tools, and data work 
 
 ## Hardware Profiles
 
-Aither auto-detects your hardware and selects the right models:
+Aither auto-detects your hardware and selects the right models. TQ4 (TurboQuant 4-bit) enables running on GPUs as small as 6GB.
 
-| Profile | GPU VRAM | Default Model | Reasoning Model | Coding Model |
-|---------|----------|---------------|-----------------|--------------|
+| Profile | GPU VRAM | Orchestrator Model | Reasoning Model | Extras |
+|---------|----------|-------------------|-----------------|--------|
+| `nano` | 6-8 GB | Nemotron-8B TQ4 (4-bit) | -- | TQ4 quantization fits 6GB |
+| `lite` | 10-16 GB | Nemotron-8B (8-bit) | -- | Single model, full quality |
+| `standard-tq4` | 12-16 GB | Nemotron-8B TQ4 | DeepSeek-R1 14B TQ4 | Both models, 4-bit |
+| `standard` | 20-24 GB | Nemotron-8B (8-bit) | DeepSeek-R1 14B (8-bit) | Both models, full quality |
+| `full` | 24+ GB | Nemotron-8B (8-bit) | DeepSeek-R1 14B (8-bit) | + Nomic embeddings |
+| `hybrid` | 10-16 GB + cloud API | Nemotron-8B (8-bit) | Cloud (Anthropic/OpenAI) | Local orchestration, cloud reasoning |
+| `hybrid-tq4` | 6-8 GB + cloud API | Nemotron-8B TQ4 | Cloud (Anthropic/OpenAI) | TQ4 local + cloud reasoning |
+| `apple_silicon` | M1/M2/M3/M4 | Ollama nemotron-8b | Ollama deepseek-r1:8b | -- |
+| `amd` | ROCm | Ollama nemotron-8b | Ollama deepseek-r1:8b | -- |
 | `cpu_only` | None | Cloud (gateway) | Cloud | Cloud |
-| `minimal` | 8-12 GB | `llama3.2:3b` | -- | -- |
-| `nvidia_mid` | 8-12 GB | `nemotron-orchestrator-8b` | `deepseek-r1:8b` | -- |
-| `nvidia_high` | 16-24 GB | `nemotron-orchestrator-8b` | `deepseek-r1:14b` | `qwen2.5-coder:14b` |
-| `nvidia_ultra` | 32+ GB | `nemotron-orchestrator-8b` | `deepseek-r1:32b` | `qwen2.5-coder:32b` |
-| `apple_silicon` | M1/M2/M3/M4 | `nemotron-orchestrator-8b` | `deepseek-r1:8b` | -- |
-| `amd` | ROCm | `nemotron-orchestrator-8b` | `deepseek-r1:8b` | -- |
 
 ## Connect to Elysium
 

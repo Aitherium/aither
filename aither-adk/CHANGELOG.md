@@ -2,6 +2,77 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [1.2.1] - 2026-05-21
+
+### Added
+- `adk train` command group — 6 subcommands: status, launch, logs, cancel, runs, register-gpu
+- `/slash-commands` endpoint — ADK server auto-exposes all 35 CLI commands as structured JSON manifest for AitherShell
+- `/cli/execute` endpoint — AitherShell can run any CLI command through the server
+- `build_command_manifest()` — introspects full argparse tree (commands, args, choices, subcommands)
+- `_register_commands()` extracted from main() for shared parser construction
+
+### Changed
+- `_get_genesis_url()` now probes: Genesis → ADK server → Aitherium cloud gateway (works without Genesis)
+
+## [1.2.0] - 2026-05-21
+
+### Added
+- **Runtime backend switching** — `agent.switch_backend("deepseek")` and `agent.llm.switch_backend()` change provider without recreating agent
+- **Hybrid reasoning** — `agent.set_reasoning_backend("anthropic")` routes effort 7+ to cloud API while keeping local orchestrator
+- **First-class DeepSeek provider** — `deepseek` in effort model table with `deepseek-chat` and `deepseek-reasoner`
+- **TQ4 quantization tiers** — `nano` (6GB, TurboQuant 4-bit), `standard-tq4` (12GB, both models TQ4), `hybrid-tq4` (6GB + cloud reasoning)
+- **`adk backend` CLI** — `list`, `set`, `set-reasoning`, `test` subcommands
+- **`adk quickstart`** — unified first-run wizard (setup + auth + shell)
+- **`adk tools`** — list local + MCP tools with tier markers
+- **`adk backup`** — tarball export of `~/.aither/`
+- **`adk ingest`** — feed docs/files into knowledge graph
+- **`adk setup nemotron`** shortcut — alias for `--tier lite`
+- **`--reasoning-api`** flag in setup — `anthropic`, `openai`, `deepseek`, `gateway`
+- **`--dgx-spark URL`** flag — remote vLLM endpoint configuration
+- **DGX Spark auto-detection** — scans `spark.local`, `192.168.0.33`, `AITHER_DGX_URL` env
+- **Post-setup smoke test** — sends real inference request after container startup
+- **Schema migration system** — version table + migration runner in `memory.py` and `graph_memory.py`
+- **Configurable vLLM port scan** — `AITHER_VLLM_PORTS` env var for custom ports
+- **`aithershell` entry point** — alias for `adk` in pyproject.toml
+- Shell auto-downloads binary on first `adk shell` (no `--install` needed)
+- Shell pre-flight check warns if no backend detected
+- Shell passes full config via env vars (API key, tenant, inference URL)
+- DGX/Remote and Cloud API checks added to `adk doctor`
+- Config fields: `reasoning_backend`, `reasoning_api_key`, `deepseek_api_key`, `dgx_url`, `vllm_extra_ports`
+
+### Fixed
+- `test_aeon_chat_basic` timeout — mock scope was exiting before request
+- `adk doctor` check_disk timeout — cap rglob at 5000 files
+
+## [1.1.7] - 2026-05-19
+
+### Added
+- Remote agent pipeline — `adk onboard` → fleet dispatch → remote inference
+- Agent-to-agent federation with mesh relay
+- `adk connect` for desktop mesh enrollment
+
+## [1.1.6] - 2026-05-19
+
+### Fixed
+- Tool call execution recovery across all backends
+- Hermes tool call fallback parsing for vLLM
+
+## [1.1.5] - 2026-05-19
+
+### Fixed
+- Tool call execution + Hermes fallback parsing improvements
+
+## [1.1.0] - 2026-05-18
+
+### Added
+- Multi-channel gateway (Telegram, Discord, Slack, webhook)
+- Aeon group chat with 7 presets
+- Skills auto-extraction from multi-step sessions
+- MCP stdio server for Claude Code integration
+- `adk gateway`, `adk cron`, `adk skills`, `adk soul` commands
+- SOUL.md import/export for portable agent identity
+- Elysium cloud device-flow authentication
+
 ## [1.0.0] - 2026-05-18
 
 ### Breaking

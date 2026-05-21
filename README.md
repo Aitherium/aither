@@ -6,7 +6,7 @@
 
 **Build AI agent fleets. 3 lines, any backend, local or cloud.**
 
-Effort-based model routing, 48 identities, knowledge graph memory, fleet orchestration.
+Runtime backend switching, hybrid reasoning, TQ4 quantization, 48 identities, knowledge graph memory, fleet orchestration.
 
 [![PyPI](https://img.shields.io/pypi/v/aither-adk?style=flat-square&color=blue)](https://pypi.org/project/aither-adk/)
 [![Status](https://img.shields.io/badge/status-beta-blueviolet?style=flat-square)](https://aitherium.com)
@@ -45,7 +45,39 @@ async def main():
 asyncio.run(main())
 ```
 
-Works with **Ollama, OpenAI, Anthropic, vLLM, LM Studio**, or any OpenAI-compatible API.
+Works with **Ollama, OpenAI, Anthropic, DeepSeek, vLLM, LM Studio, Groq, Together**, or any OpenAI-compatible API.
+
+### Quickstart
+
+```bash
+pip install aither-adk
+adk quickstart          # GPU detection + setup + auth in one command
+```
+
+Or go step by step:
+
+```bash
+adk setup nemotron              # Deploy Nemotron-8B (one command)
+adk setup --tier nano           # 6GB GPU? TQ4 4-bit quantization
+adk setup --reasoning-api anthropic  # Hybrid: local + cloud reasoning
+adk doctor                      # Check everything works
+adk start                       # Chat with your codebase
+```
+
+### Runtime Backend Switching
+
+```python
+agent = AitherAgent("research-bot")
+response = await agent.chat("Analyze this codebase")  # Uses auto-detected backend
+
+# Switch backends at runtime — no restart needed
+agent.switch_backend("anthropic", api_key="sk-ant-...")
+agent.switch_backend("deepseek")
+agent.switch_backend("vllm", base_url="http://dgx-spark:8000/v1")
+
+# Hybrid: local Nemotron for chat, cloud for reasoning
+agent.set_reasoning_backend("anthropic")  # Only effort 7+ goes to cloud
+```
 
 ### Run as a Server
 
@@ -152,17 +184,23 @@ The full AitherOS system runs 43 agents including domain specialists, seven dead
 
 ## Features
 
-- **Multi-backend LLM** — Ollama, OpenAI, Anthropic, vLLM, LM Studio, Aitherium cloud
-- **Effort-based routing** — Effort 1-2 uses small models, 3-6 orchestrator, 7-10 reasoning models
+- **Multi-backend LLM** — Ollama, OpenAI, Anthropic, DeepSeek, vLLM, Groq, Together, LM Studio, Aitherium cloud
+- **Runtime backend switching** — `agent.switch_backend("deepseek")` at any time, no restart
+- **Hybrid reasoning** — Local model for chat, cloud API for hard tasks (effort 7+)
+- **TQ4 quantization** — TurboQuant 4-bit fits Nemotron-8B on 6GB GPUs
+- **Effort-based routing** — Effort 1-3 small models, 4-6 orchestrator, 7-10 reasoning
 - **`@tool` decorator** — Function calling with any model
-- **Graph memory** — CodeGraph (AST indexing) + MemoryGraph (persistent recall)
-- **Vector memory** — Embedding-based semantic search
+- **Graph memory** — CodeGraph (AST indexing) + MemoryGraph (persistent recall) with schema migrations
+- **Vector memory** — Embedding-based semantic search (4-backend fallback chain)
 - **Fleet orchestration** — Multi-agent coordination with delegation
 - **Swarm coding** — 11 agents in 4-phase pipeline (architect, swarm, review, judge)
 - **Group chat** — Multi-agent sessions with 7 presets
 - **MCP bridge** — 100+ tools via `mcp.aitherium.com`
+- **Slash-command bridge** — ADK server auto-exposes all 35 CLI commands to AitherShell
+- **Training pipeline** — `adk train launch/status/logs` for model fine-tuning
 - **OpenAI-compatible server** — Drop-in replacement
-- **SQLite persistence** — Conversations, KV store, knowledge graphs
+- **SQLite persistence** — Conversations, KV store, knowledge graphs with versioned schema
+- **DGX Spark detection** — Auto-discovers remote vLLM endpoints on LAN
 - **Cross-platform pairing** — Link users across Telegram, Discord, Slack, WhatsApp
 - **Voice** — STT/TTS/emotion via AitherVoice
 - **Privacy-first** — Opt-in telemetry, data stays local
@@ -172,15 +210,19 @@ The full AitherOS system runs 43 agents including domain specialists, seven dead
 
 ## Hardware Profiles
 
-| Profile | GPU VRAM | RAM | Models |
-|---------|----------|-----|--------|
-| **CPU Only** | None | 8 GB | Cloud API fallback |
-| **Minimal** | 8-12 GB | 16 GB | llama3.2:3b, nomic-embed |
-| **Standard** | 24 GB | 32 GB | llama3.1:8b, deepseek-r1:8b |
-| **Workstation** | 48 GB+ | 64 GB | llama3.1:70b, deepseek-r1:14b |
-| **Server** | 80 GB+ | 128 GB+ | Multi-model vLLM deployment |
+| Tier | GPU VRAM | Quantization | Models |
+|------|----------|-------------|--------|
+| **Cloud Only** | None | N/A | `AITHER_API_KEY` for cloud inference |
+| **Nano** | 6-8 GB | TQ4 (4-bit) | Nemotron-8B TQ4 via vLLM |
+| **Lite** | 10-16 GB | BNB (8-bit) | Nemotron-8B via vLLM |
+| **Standard-TQ4** | 12-16 GB | TQ4 (4-bit) | Nemotron-8B + DeepSeek-R1-14B, both TQ4 |
+| **Standard** | 20-24 GB | BNB (8-bit) | Nemotron-8B + DeepSeek-R1-14B |
+| **Full** | 24 GB+ | BNB (8-bit) | Standard + Nomic embeddings |
+| **Hybrid** | Any + API key | Mixed | Local Nemotron + cloud API for reasoning |
 
-**No GPU? No problem.** Set `AITHER_API_KEY` and your agents use [Aitherium cloud](https://aitherium.com) for inference. Have a GPU? They auto-detect vLLM/Ollama. Both? They route intelligently.
+**No GPU? No problem.** Set `AITHER_API_KEY` and your agents use [Aitherium cloud](https://aitherium.com) for inference. Have a GPU? They auto-detect vLLM/Ollama. Both? They route intelligently by effort level.
+
+**`adk setup` auto-detects your hardware** and recommends the right tier. TQ4 quantization runs Nemotron on a 6GB RTX 3060.
 
 ---
 
@@ -195,8 +237,24 @@ pip install aither-adk[graphs]      # numpy for 10x cosine similarity
 pip install aither-adk[embedding]   # sentence-transformers for local GPU embeddings
 pip install aither-adk[all]         # everything
 
-# npm (CLI wrapper)
-npm install -g aither-adk
+# AitherShell interactive terminal (downloads automatically)
+adk shell
+```
+
+### CLI Commands
+
+```
+adk quickstart          One-command setup wizard
+adk start               Chat with your codebase (zero config)
+adk setup nemotron      Deploy Nemotron-8B on your GPU
+adk backend list        Show detected LLM backends
+adk backend set deepseek   Switch to DeepSeek API
+adk train status        Check training readiness
+adk train launch        Launch a fine-tuning run
+adk tools               List available tools (local + cloud)
+adk doctor              System health check
+adk shell               AitherShell interactive terminal
+adk backup              Export all agent data
 ```
 
 ---
