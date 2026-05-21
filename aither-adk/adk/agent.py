@@ -9,6 +9,7 @@ import os
 import re
 import time
 import uuid
+from collections import deque
 from dataclasses import dataclass, field
 
 from adk.config import Config
@@ -157,6 +158,12 @@ class AitherAgent:
         # Session
         self._session_id = str(uuid.uuid4())[:8]
 
+        # Introspection ring buffer — records every tool call this agent made.
+        # Powers the `self_*` tools so an agent can answer "what did I just do?"
+        # honestly instead of hallucinating. Capped to bound memory; oldest evicted.
+        self._introspection: deque[dict] = deque(maxlen=200)
+        self._files_touched: dict[str, dict] = {}  # path -> {first, last, ops}
+
         # Phonehome
         self._phonehome = phonehome or self.config.phonehome_enabled
 
@@ -237,6 +244,36 @@ class AitherAgent:
             )
         except Exception as exc:
             logger.debug("Elysium fallback failed: %s", exc)
+
+    def switch_backend(
+        self,
+        provider: str,
+        base_url: str | None = None,
+        api_key: str | None = None,
+        model: str | None = None,
+    ) -> None:
+        """Switch the LLM backend at runtime.
+
+        Usage:
+            agent.switch_backend("anthropic", api_key="sk-ant-...")
+            agent.switch_backend("deepseek")
+            agent.switch_backend("vllm", base_url="http://dgx-spark:8000/v1")
+        """
+        self.llm.switch_backend(provider, base_url=base_url, api_key=api_key, model=model)
+
+    def set_reasoning_backend(
+        self,
+        provider: str,
+        base_url: str | None = None,
+        api_key: str | None = None,
+        model: str | None = None,
+    ) -> None:
+        """Set a separate backend for reasoning tasks (effort 7+).
+
+        Usage:
+            agent.set_reasoning_backend("anthropic", api_key="sk-ant-...")
+        """
+        self.llm.set_reasoning_backend(provider, base_url=base_url, api_key=api_key, model=model)
 
     @property
     def identity(self) -> Identity:
@@ -679,6 +716,27 @@ class AitherAgent:
                 result = await self._tools.execute(tc.name, tc.arguments)
                 _tool_ms = (time.perf_counter() - _tool_start) * 1000
                 get_metrics().record_tool_call(tool=tc.name, latency_ms=_tool_ms)
+                # B.3 introspection — record what we did so self_* tools can read it.
+                try:
+                    _rec = {
+                        "ts": time.time(),
+                        "session_id": sid,
+                        "tool": tc.name,
+                        "arguments": tc.arguments,
+                        "latency_ms": round(_tool_ms, 2),
+                        "error": isinstance(result, str) and result.startswith('{"error"'),
+                    }
+                    self._introspection.append(_rec)
+                    if tc.name in ("file_read", "file_write", "file_edit"):
+                        _p = tc.arguments.get("path") if isinstance(tc.arguments, dict) else None
+                        if _p:
+                            _ft = self._files_touched.setdefault(
+                                _p, {"first_ts": _rec["ts"], "ops": []}
+                            )
+                            _ft["last_ts"] = _rec["ts"]
+                            _ft["ops"].append(tc.name)
+                except Exception:  # noqa: BLE001 — introspection must never break the loop
+                    pass
                 # Detect artifacts in tool output
                 try:
                     from adk.artifacts import detect_artifact, get_registry

@@ -55,6 +55,11 @@ _EFFORT_MODELS = {
         "medium": "claude-sonnet-4-6",
         "large": "claude-opus-4-6",
     },
+    "deepseek": {
+        "small": "deepseek-chat",
+        "medium": "deepseek-chat",
+        "large": "deepseek-reasoner",
+    },
     "picolm": {
         "small": "picolm",
         "medium": "picolm",
@@ -114,6 +119,10 @@ class LLMRouter:
         self._remote_provider_name: str = ""
         self._remote_healthy: bool = True
         self._remote_health_checked: float = 0.0
+        # Hybrid reasoning backend (set via set_reasoning_backend or config)
+        self._reasoning_provider: LLMProvider | None = None
+        self._reasoning_provider_name: str = ""
+        self._reasoning_model: str | None = None
 
         if provider:
             self._provider = self._create_provider(provider, base_url, api_key)
@@ -121,6 +130,22 @@ class LLMRouter:
         else:
             self._deferred_base_url = base_url
             self._deferred_api_key = api_key
+
+    # Well-known OpenAI-compatible base URLs for named providers
+    _COMPAT_URLS: dict[str, str] = {
+        "openai": "https://api.openai.com/v1",
+        "deepseek": "https://api.deepseek.com/v1",
+        "groq": "https://api.groq.com/openai/v1",
+        "together": "https://api.together.xyz/v1",
+    }
+
+    # Default models per named provider
+    _COMPAT_MODELS: dict[str, str] = {
+        "openai": "gpt-4o-mini",
+        "deepseek": "deepseek-chat",
+        "groq": "llama-3.3-70b-versatile",
+        "together": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+    }
 
     def _create_provider(
         self, name: str, base_url: str | None = None, api_key: str | None = None
@@ -139,12 +164,14 @@ class LLMRouter:
                 host=base_url or "http://localhost:11434",
                 default_model=self._model or "gemma4:4b",
             )
-        elif name in ("openai", "vllm", "lmstudio", "llamacpp", "groq", "together"):
+        elif name in ("openai", "vllm", "lmstudio", "llamacpp", "groq", "together", "deepseek"):
             from .openai_compat import OpenAIProvider
+            default_url = self._COMPAT_URLS.get(name, "https://api.openai.com/v1")
+            default_model = self._COMPAT_MODELS.get(name, "gpt-4o-mini")
             return OpenAIProvider(
-                base_url=base_url or "https://api.openai.com/v1",
+                base_url=base_url or default_url,
                 api_key=api_key or "",
-                default_model=self._model or "gpt-4o-mini",
+                default_model=self._model or default_model,
             )
         elif name == "anthropic":
             from .anthropic import AnthropicProvider
@@ -159,7 +186,11 @@ class LLMRouter:
                 model=self._model or "",
             )
         else:
-            raise ValueError(f"Unknown provider: {name}. Use 'gateway', 'ollama', 'openai', 'anthropic', or 'picolm'.")
+            raise ValueError(
+                f"Unknown provider: {name}. "
+                "Use 'gateway', 'ollama', 'openai', 'anthropic', 'deepseek', "
+                "'groq', 'together', 'vllm', 'lmstudio', 'llamacpp', or 'picolm'."
+            )
 
     async def _try_ollama(self) -> LLMProvider | None:
         """Try Ollama on localhost. Returns provider or None."""
@@ -207,7 +238,16 @@ class LLMRouter:
             except Exception:
                 pass
 
-        for port in (8120, 8200, 8201, 8202, 8203, 8000):
+        # Build port list: standard ports + user-configured extras
+        ports = [8120, 8200, 8201, 8202, 8203, 8000]
+        extra_ports = (self._config.vllm_extra_ports if self._config else "") or os.environ.get("AITHER_VLLM_PORTS", "")
+        if extra_ports:
+            for p_str in extra_ports.split(","):
+                p_str = p_str.strip()
+                if p_str.isdigit() and int(p_str) not in ports:
+                    ports.insert(0, int(p_str))  # User ports checked first
+
+        for port in ports:
             try:
                 url = f"http://localhost:{port}/v1"
                 p = OpenAIProvider(
@@ -228,6 +268,28 @@ class LLMRouter:
                     return p
             except Exception:
                 continue
+
+        # Check DGX Spark / remote vLLM endpoint
+        dgx_url = (self._config.dgx_url if self._config else "") or os.environ.get("AITHER_DGX_URL", "")
+        if dgx_url:
+            try:
+                dgx_base = dgx_url.rstrip("/")
+                if not dgx_base.endswith("/v1"):
+                    dgx_base = f"{dgx_base}/v1"
+                p = OpenAIProvider(base_url=dgx_base, api_key="not-needed", default_model=self._model or "")
+                if await p.health_check():
+                    try:
+                        models = await p.list_models()
+                        if models and not self._model:
+                            p.default_model = models[0]
+                    except Exception:
+                        pass
+                    self._provider_name = "vllm"
+                    logger.info("vLLM from DGX/remote at %s (model: %s)", dgx_base, p.default_model)
+                    return p
+            except Exception:
+                pass
+
         return None
 
     async def _try_desktop(self) -> LLMProvider | None:
@@ -298,6 +360,49 @@ class LLMRouter:
         except Exception:
             self._remote_healthy = False
         return self._remote_healthy
+
+    def _setup_reasoning_backend(self) -> None:
+        """Configure a separate provider for reasoning (effort 7+) if config specifies one.
+
+        Hybrid mode: local Nemotron for effort 1-6, cloud API for effort 7-10.
+        """
+        cfg = self._config
+        if not cfg:
+            return
+        backend = cfg.reasoning_backend
+        if not backend:
+            return
+
+        # Resolve API key for the reasoning backend
+        api_key = cfg.reasoning_api_key
+        if not api_key:
+            if backend == "anthropic":
+                api_key = cfg.anthropic_api_key
+            elif backend == "openai":
+                api_key = cfg.openai_api_key
+            elif backend == "deepseek":
+                api_key = cfg.deepseek_api_key
+            elif backend == "gateway":
+                api_key = cfg.aither_api_key
+
+        if not api_key and backend not in ("vllm", "ollama"):
+            logger.debug("Reasoning backend '%s' configured but no API key available", backend)
+            return
+
+        try:
+            self._reasoning_provider = self._create_provider(
+                backend,
+                base_url=cfg.reasoning_base_url or None,
+                api_key=api_key,
+            )
+            self._reasoning_provider_name = backend
+            self._reasoning_model = cfg.reasoning_model or None
+            logger.info(
+                "Hybrid reasoning: %s (model=%s) for effort 7+",
+                backend, self._reasoning_model or "default",
+            )
+        except Exception as e:
+            logger.warning("Failed to set up reasoning backend '%s': %s", backend, e)
 
     async def _auto_detect(self) -> LLMProvider:
         """Try backends in priority order: vLLM → desktop → Ollama → gateway → cloud APIs → demo.
@@ -387,6 +492,12 @@ class LLMRouter:
                 base_url=os.getenv("OPENAI_BASE_URL"),
                 api_key=os.getenv("OPENAI_API_KEY"),
             )
+        if os.getenv("DEEPSEEK_API_KEY"):
+            self._provider_name = "deepseek"
+            return self._create_provider("deepseek", api_key=os.getenv("DEEPSEEK_API_KEY"))
+        if self._config and self._config.deepseek_api_key:
+            self._provider_name = "deepseek"
+            return self._create_provider("deepseek", api_key=self._config.deepseek_api_key)
 
         # 5. PicoLM — edge inference (pure C, zero dependencies)
         picolm_binary = os.getenv("PICOLM_BINARY", "")
@@ -415,15 +526,69 @@ class LLMRouter:
     async def get_provider(self) -> LLMProvider:
         """Return the active provider, auto-detecting if needed."""
         if self._provider is None:
-            if hasattr(self, "_deferred_base_url"):
-                self._provider = await self._auto_detect()
-            else:
-                self._provider = await self._auto_detect()
+            self._provider = await self._auto_detect()
+            # Set up hybrid reasoning backend after primary detection
+            if self._reasoning_provider is None:
+                self._setup_reasoning_backend()
         return self._provider
 
     @property
     def provider_name(self) -> str:
         return self._provider_name
+
+    def switch_backend(
+        self,
+        provider: str,
+        base_url: str | None = None,
+        api_key: str | None = None,
+        model: str | None = None,
+    ) -> None:
+        """Switch the LLM backend at runtime without recreating the agent.
+
+        Usage:
+            agent.llm.switch_backend("anthropic", api_key="sk-ant-...")
+            agent.llm.switch_backend("deepseek")
+            agent.llm.switch_backend("vllm", base_url="http://dgx-spark:8000/v1")
+        """
+        if model:
+            self._model = model
+        self._provider = self._create_provider(provider, base_url, api_key)
+        self._provider_name = provider
+        logger.info("Switched backend to %s (model=%s)", provider, model or "default")
+
+    def set_reasoning_backend(
+        self,
+        provider: str,
+        base_url: str | None = None,
+        api_key: str | None = None,
+        model: str | None = None,
+    ) -> None:
+        """Set a separate backend for high-effort (7+) reasoning tasks.
+
+        Usage:
+            agent.llm.set_reasoning_backend("anthropic", api_key="sk-ant-...")
+            agent.llm.set_reasoning_backend("deepseek")
+        """
+        self._reasoning_provider = self._create_provider(provider, base_url, api_key)
+        self._reasoning_provider_name = provider
+        self._reasoning_model = model
+        logger.info("Set reasoning backend to %s (model=%s)", provider, model or "default")
+
+    def get_backends(self) -> dict:
+        """Return info about all configured backends."""
+        info = {
+            "primary": self._provider_name or "not initialized",
+            "model": self._model or "auto",
+        }
+        if self._local_provider is not None:
+            info["local"] = "ollama"
+        if self._remote_provider is not None:
+            info["remote"] = self._remote_provider_name
+        if hasattr(self, "_reasoning_provider") and self._reasoning_provider is not None:
+            info["reasoning"] = self._reasoning_provider_name
+            if self._reasoning_model:
+                info["reasoning_model"] = self._reasoning_model
+        return info
 
     def model_for_effort(self, effort: int) -> str:
         """Select model based on effort level (1-10).
@@ -558,6 +723,24 @@ class LLMRouter:
         if model is None and effort is not None:
             model = self.model_for_effort(effort)
 
+        # Hybrid reasoning: effort 7+ → dedicated reasoning provider (cloud API)
+        reasoning_prov = getattr(self, "_reasoning_provider", None)
+        if (
+            effort is not None
+            and effort >= 7
+            and reasoning_prov is not None
+        ):
+            reasoning_model = getattr(self, "_reasoning_model", None) or model
+            try:
+                resp = await reasoning_prov.chat(
+                    messages, model=reasoning_model, tool_choice=tool_choice,
+                    top_p=top_p, repetition_penalty=repetition_penalty, **kwargs,
+                )
+                resp.effort_level = effort
+                return resp
+            except Exception as e:
+                logger.warning("Reasoning backend failed, falling back to primary: %s", e)
+
         # Dual-mode routing: high effort → remote desktop, low effort → local
         if (
             effort is not None
@@ -570,8 +753,7 @@ class LLMRouter:
                     messages, model=model, tool_choice=tool_choice,
                     top_p=top_p, repetition_penalty=repetition_penalty, **kwargs,
                 )
-                if effort is not None:
-                    resp.effort_level = effort
+                resp.effort_level = effort
                 return resp
             except Exception as e:
                 logger.warning("Remote desktop inference failed, falling back to local: %s", e)

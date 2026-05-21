@@ -478,6 +478,26 @@ def create_app(
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
+    @app.post("/chat/stream")
+    async def stream_chat_genesis_compat(request: Request):
+        """Genesis-compatible SSE stream — alias for /stream.
+
+        AitherShell sends POST /chat/stream with {message, persona, ...}.
+        Maps the Genesis body shape to the ADK handler so `adk shell`
+        and any AitherShell pointing at an ADK server works out of the box.
+        """
+        body = await request.json()
+        message = body.get("message", body.get("content", ""))
+        session_id = body.get("session_id") or f"adk-{uuid.uuid4().hex[:8]}"
+        agent_name = body.get("agent") or body.get("persona")
+        reasoning = body.get("reasoning", False)
+
+        return StreamingResponse(
+            _aitheros_stream(get_agent, message, session_id, agent_name, reasoning),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
     # ─── Artifact endpoints ───
 
     @app.get("/artifacts/{artifact_id}")

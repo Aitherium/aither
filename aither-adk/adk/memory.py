@@ -41,6 +41,9 @@ class Memory:
         self._agent = agent_name
         self._init_db()
 
+    # Schema version — increment when tables change, add migration in _migrate()
+    _SCHEMA_VERSION = 2
+
     def _init_db(self):
         with self._connect() as conn:
             conn.executescript("""
@@ -59,9 +62,39 @@ class Memory:
                     timestamp REAL,
                     metadata TEXT
                 );
+                CREATE TABLE IF NOT EXISTS schema_version (
+                    version INTEGER NOT NULL
+                );
                 CREATE INDEX IF NOT EXISTS idx_conv_session ON conversations(session_id);
                 CREATE INDEX IF NOT EXISTS idx_kv_category ON kv_store(category);
             """)
+            self._migrate(conn)
+
+    def _migrate(self, conn: sqlite3.Connection):
+        """Run schema migrations. Each version bump adds an elif branch."""
+        row = conn.execute("SELECT version FROM schema_version LIMIT 1").fetchone()
+        current = row[0] if row else 0
+
+        if current >= self._SCHEMA_VERSION:
+            return
+
+        if current < 1:
+            # v1: initial schema (tables created above)
+            pass
+
+        if current < 2:
+            # v2: add agent_name column to conversations for multi-agent filtering
+            try:
+                conn.execute("ALTER TABLE conversations ADD COLUMN agent_name TEXT DEFAULT ''")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
+
+        # Update version
+        conn.execute("DELETE FROM schema_version")
+        conn.execute("INSERT INTO schema_version (version) VALUES (?)", (self._SCHEMA_VERSION,))
+        conn.commit()
+        if current > 0:
+            logger.info("Memory DB migrated %d → %d", current, self._SCHEMA_VERSION)
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._db_path)

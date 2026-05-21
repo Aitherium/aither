@@ -120,6 +120,22 @@ class Config:
     # Anthropic
     anthropic_api_key: str = field(default_factory=lambda: os.getenv("ANTHROPIC_API_KEY", ""))
 
+    # DeepSeek
+    deepseek_api_key: str = field(default_factory=lambda: os.getenv("DEEPSEEK_API_KEY", ""))
+
+    # Reasoning backend — separate API for effort 7+ tasks (hybrid mode)
+    # Values: "", "anthropic", "openai", "deepseek", "gateway"
+    reasoning_backend: str = field(default_factory=lambda: os.getenv("AITHER_REASONING_BACKEND", ""))
+    reasoning_api_key: str = field(default_factory=lambda: os.getenv("AITHER_REASONING_API_KEY", ""))
+    reasoning_base_url: str = field(default_factory=lambda: os.getenv("AITHER_REASONING_BASE_URL", ""))
+    reasoning_model: str = field(default_factory=lambda: os.getenv("AITHER_REASONING_MODEL", ""))
+
+    # Extra vLLM ports to scan (comma-separated)
+    vllm_extra_ports: str = field(default_factory=lambda: os.getenv("AITHER_VLLM_PORTS", ""))
+
+    # DGX Spark / remote vLLM endpoint
+    dgx_url: str = field(default_factory=lambda: os.getenv("AITHER_DGX_URL", ""))
+
     # General API key (for gateway or fallback)
     aither_api_key: str = field(default_factory=lambda: os.getenv("AITHER_API_KEY", ""))
 
@@ -218,6 +234,18 @@ class Config:
             config.tenant_id = saved["tenant_id"]
         if not config.aither_api_key and saved.get("api_key"):
             config.aither_api_key = saved["api_key"]
+        if not config.reasoning_backend and saved.get("reasoning_backend"):
+            config.reasoning_backend = saved["reasoning_backend"]
+        if not config.reasoning_api_key and saved.get("reasoning_api_key"):
+            config.reasoning_api_key = saved["reasoning_api_key"]
+        if not config.reasoning_base_url and saved.get("reasoning_url"):
+            config.reasoning_base_url = saved["reasoning_url"]
+        if not config.reasoning_model and saved.get("reasoning_model"):
+            config.reasoning_model = saved["reasoning_model"]
+        if not config.deepseek_api_key and saved.get("deepseek_api_key"):
+            config.deepseek_api_key = saved["deepseek_api_key"]
+        if not config.dgx_url and saved.get("dgx_url"):
+            config.dgx_url = saved["dgx_url"]
 
         # Load project-level config.yaml (from CWD, created by `adk init`)
         config._apply_project_config()

@@ -939,6 +939,123 @@ def _register_memory_graph_tools(agent: "AitherAgent", memory_graph) -> int:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Self-introspection tools (B.3 from .AITHEROS/31-AGENT-LONGRUN-AUDIT.md)
+#
+# The Reddit pain point: "I asked the agent what it had done and it lied."
+# Solution: first-class tools that let an agent read its own audit trail
+# instead of hallucinating one. Data lives in `agent._introspection` (a
+# bounded deque) and `agent._files_touched`, populated by the dispatch loop
+# in adk/agent.py. Tools are closures over `agent` so each agent only sees
+# its own history.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def register_self_tools(agent: AitherAgent) -> int:
+    """Register `self_*` introspection tools that let an agent inspect what it did.
+
+    Tools registered:
+      - self_recent_tool_calls(n)   : last N tool calls (tool, args, latency, error)
+      - self_files_touched()        : files the agent has read/written/edited this session
+      - self_session_summary()      : counts + budget + memory + identity overview
+      - self_memory_search(query)   : search the agent's own memory tier only
+    """
+
+    def self_recent_tool_calls(n: int = 10) -> str:
+        """Return the last N tool calls this agent made in the current process.
+
+        Use this to honestly answer the user's question "what did you just do?"
+        instead of guessing from chat context.
+
+        n: how many recent calls to return (default 10, max 200).
+        """
+        try:
+            buf = list(getattr(agent, "_introspection", ()))
+            if not buf:
+                return json.dumps({"calls": [], "count": 0,
+                                    "note": "no tool calls recorded yet"})
+            n = max(1, min(int(n or 10), 200))
+            return json.dumps({"calls": buf[-n:], "count": len(buf[-n:]),
+                                "total_recorded": len(buf)}, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
+    def self_files_touched() -> str:
+        """Return every file path this agent has read/written/edited this session.
+
+        Output: {path: {first_ts, last_ts, ops: [read|write|edit, ...]}}.
+        Use this before claiming you modified a file \u2014 if it isn't here you didn't.
+        """
+        try:
+            touched = dict(getattr(agent, "_files_touched", {}))
+            return json.dumps({"files": touched, "count": len(touched)}, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
+    def self_session_summary() -> str:
+        """Return a structured summary of this agent's current session.
+
+        Includes: identity, session id, total tool calls by name, distinct files
+        touched, per-agent meter (tokens/cost so far), memory entry count.
+        """
+        try:
+            buf = list(getattr(agent, "_introspection", ()))
+            by_tool: dict[str, int] = {}
+            errs = 0
+            for rec in buf:
+                by_tool[rec.get("tool", "?")] = by_tool.get(rec.get("tool", "?"), 0) + 1
+                if rec.get("error"):
+                    errs += 1
+            meter_snap: dict = {}
+            try:
+                meter_snap = agent.meter.snapshot() if hasattr(agent.meter, "snapshot") else {}
+            except Exception:
+                pass
+            return json.dumps({
+                "agent": agent.name,
+                "session_id": getattr(agent, "_session_id", None),
+                "tool_calls_total": len(buf),
+                "tool_calls_by_name": by_tool,
+                "tool_errors": errs,
+                "files_touched": len(getattr(agent, "_files_touched", {})),
+                "meter": meter_snap,
+            }, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
+    def self_memory_search(query: str, k: int = 5) -> str:
+        """Search this agent's OWN memory tier (not the global graph) for past context.
+
+        query: free-text search
+        k: max results (default 5, max 25)
+        """
+        try:
+            mem = getattr(agent, "memory", None)
+            if mem is None:
+                return json.dumps({"results": [], "note": "no memory backend"})
+            k = max(1, min(int(k or 5), 25))
+            # memory.search may be sync or async; coerce
+            res = mem.search(query, k=k) if hasattr(mem, "search") else []
+            if asyncio.iscoroutine(res):
+                # We're inside a sync tool; surface the coroutine name and ask caller to use recall.
+                return json.dumps({"results": [],
+                                    "note": "memory.search is async; use the 'recall' tool"})
+            return json.dumps({"results": list(res) if res else [], "count": len(res or [])},
+                                default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
+    agent._tools.register(self_recent_tool_calls, name="self_recent_tool_calls",
+        description="Return the last N tool calls this agent made (honest audit, no hallucination).")
+    agent._tools.register(self_files_touched, name="self_files_touched",
+        description="Return every file path this agent has read/written/edited this session.")
+    agent._tools.register(self_session_summary, name="self_session_summary",
+        description="Return a structured summary of this session: tool counts, files, meter, identity.")
+    agent._tools.register(self_memory_search, name="self_memory_search",
+        description="Search this agent's own memory tier for past context.")
+    logger.info("Registered 4 self-introspection tools on agent %s", agent.name)
+    return 4
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Registration
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -954,21 +1071,26 @@ TOOL_CATEGORIES = {
     "code": [code_search, code_symbols],
     "repowise": [repowise_search],
     "swarm": [swarm_code],
+    # "self" is registered via register_self_tools(agent) (closures over agent state),
+    # not a flat function list — see register_builtin_tools below.
+    "self": [],
 }
 
 # Default categories for common identity profiles
+# Every identity gets "self" by default — self-introspection is universally safe and
+# directly addresses Reddit pain ("I asked the agent what it did and it lied").
 IDENTITY_DEFAULTS = {
-    "demiurge": ["file_io", "shell", "python", "web", "git", "code", "repowise", "swarm"],
-    "atlas": ["file_io", "web", "secrets", "code"],
-    "aither": ["file_io", "shell", "python", "web", "secrets", "creative", "git", "code", "repowise", "swarm"],
-    "lyra": ["file_io", "web"],
-    "hydra": ["file_io", "shell", "python", "git", "code", "repowise"],
-    "prometheus": ["file_io", "shell", "secrets", "git"],
-    "apollo": ["file_io", "shell", "python", "code", "repowise"],
-    "athena": ["file_io", "web", "secrets", "code"],
-    "scribe": ["file_io", "web", "code", "repowise"],
-    "iris": ["file_io", "web", "creative"],
-    "muse": ["file_io", "web", "creative"],
+    "demiurge": ["file_io", "shell", "python", "web", "git", "code", "repowise", "swarm", "self"],
+    "atlas": ["file_io", "web", "secrets", "code", "self"],
+    "aither": ["file_io", "shell", "python", "web", "secrets", "creative", "git", "code", "repowise", "swarm", "self"],
+    "lyra": ["file_io", "web", "self"],
+    "hydra": ["file_io", "shell", "python", "git", "code", "repowise", "self"],
+    "prometheus": ["file_io", "shell", "secrets", "git", "self"],
+    "apollo": ["file_io", "shell", "python", "code", "repowise", "self"],
+    "athena": ["file_io", "web", "secrets", "code", "self"],
+    "scribe": ["file_io", "web", "code", "repowise", "self"],
+    "iris": ["file_io", "web", "creative", "self"],
+    "muse": ["file_io", "web", "creative", "self"],
 }
 
 
@@ -996,6 +1118,10 @@ def register_builtin_tools(
 
     count = 0
     for cat in categories:
+        if cat == "self":
+            # Closure-based registration — each agent gets its own bound copies.
+            count += register_self_tools(agent)
+            continue
         fns = TOOL_CATEGORIES.get(cat, [])
         for fn in fns:
             agent._tools.register(fn)

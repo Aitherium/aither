@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "aither-adk"
-version = "1.1.7"
-description = "Build AI agent fleets. Any backend, local or cloud. Effort-based routing, 17 bundled identities, knowledge graph memory."
+version = "1.2.0"
+description = "Build AI agent fleets. Any backend, local or cloud. Runtime backend switching, hybrid reasoning, effort-based routing, 17 bundled identities, knowledge graph memory."
 readme = "README.md"
 license = {file = "LICENSE"}
 requires-python = ">=3.10"
@@ -81,6 +81,7 @@ Documentation = "https://github.com/Aitherium/aither#readme"
 [project.scripts]
 # `aither` command owned by aithershell package
 adk = "adk.cli:main"
+aithershell = "adk.cli:main"
 adk-serve = "adk.server:main"
 adk-bug = "adk.bugreport:main"
 

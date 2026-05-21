@@ -531,7 +531,7 @@ class TestServerEndpoints:
         assert resp.status_code == 400
 
     def test_aeon_chat_basic(self, client):
-        with patch("adk.conversations.get_conversation_store", side_effect=ImportError):
+        with _patch_agent_chat(), patch("adk.conversations.get_conversation_store", side_effect=ImportError):
             resp = client.post("/aeon/chat", json={
                 "message": "Hello group",
                 "preset": "minimal",
@@ -543,7 +543,7 @@ class TestServerEndpoints:
         assert "participants" in data
 
     def test_aeon_session_reuse(self, client):
-        with patch("adk.conversations.get_conversation_store", side_effect=ImportError):
+        with _patch_agent_chat(), patch("adk.conversations.get_conversation_store", side_effect=ImportError):
             # First chat — creates session
             resp1 = client.post("/aeon/chat", json={
                 "message": "First",

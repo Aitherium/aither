@@ -80,6 +80,15 @@ def check_vllm() -> tuple[bool, list[str]]:
     import urllib.error
 
     ports = [8000, 8200, 8201, 8202, 8203, 8209]
+
+    # Add user-configured ports
+    extra = os.environ.get("AITHER_VLLM_PORTS", "")
+    if extra:
+        for p_str in extra.split(","):
+            p_str = p_str.strip()
+            if p_str.isdigit() and int(p_str) not in ports:
+                ports.append(int(p_str))
+
     found = []
     for port in ports:
         try:
@@ -95,6 +104,74 @@ def check_vllm() -> tuple[bool, list[str]]:
     if not found:
         _fail("vLLM: no instances found on ports 8000, 8200-8203, 8209")
     return bool(found), found
+
+
+def check_dgx() -> tuple[bool, list[str]]:
+    """Check DGX Spark / remote vLLM endpoints."""
+    import urllib.request
+    import urllib.error
+
+    dgx_url = os.environ.get("AITHER_DGX_URL", "")
+    found = []
+
+    # Check explicit URL
+    if dgx_url:
+        base = dgx_url.rstrip("/")
+        if not base.endswith("/v1"):
+            base = f"{base}/v1"
+        try:
+            req = urllib.request.Request(f"{base}/models")
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                data = json.loads(resp.read())
+                models = [m["id"] for m in data.get("data", [])]
+                found.extend(models)
+                _ok(f"DGX/Remote: {dgx_url} — {', '.join(models) or 'ready'}")
+                return True, found
+        except Exception:
+            _warn(f"DGX/Remote: {dgx_url} — unreachable")
+            return False, []
+
+    # Auto-scan common DGX Spark addresses
+    for host in ("spark.local", "192.168.0.33"):
+        for port in (8000, 8120, 8200):
+            try:
+                req = urllib.request.Request(f"http://{host}:{port}/v1/models")
+                with urllib.request.urlopen(req, timeout=2) as resp:
+                    data = json.loads(resp.read())
+                    models = [m["id"] for m in data.get("data", [])]
+                    if models:
+                        found.extend(models)
+                        _ok(f"DGX Spark: {host}:{port} — {', '.join(models)}")
+                        return True, found
+            except Exception:
+                pass
+
+    # Not configured, not found — that's fine
+    return False, []
+
+
+def check_cloud_keys() -> bool:
+    """Check for cloud API keys (Anthropic, OpenAI, DeepSeek)."""
+    keys_found = []
+    for name, env in [("Anthropic", "ANTHROPIC_API_KEY"), ("OpenAI", "OPENAI_API_KEY"),
+                      ("DeepSeek", "DEEPSEEK_API_KEY")]:
+        if os.environ.get(env):
+            keys_found.append(name)
+
+    # Also check saved config
+    try:
+        config_path = Path.home() / ".aither" / "config.json"
+        if config_path.exists():
+            saved = json.loads(config_path.read_text())
+            if saved.get("reasoning_backend"):
+                keys_found.append(f"reasoning:{saved['reasoning_backend']}")
+    except Exception:
+        pass
+
+    if keys_found:
+        _ok(f"Cloud APIs: {', '.join(keys_found)}")
+        return True
+    return False
 
 
 def check_docker() -> bool:
@@ -178,7 +255,16 @@ def check_disk() -> bool:
     aither_size = 0
     if aither_dir.exists():
         try:
-            aither_size = sum(f.stat().st_size for f in aither_dir.rglob("*") if f.is_file())
+            count = 0
+            for f in aither_dir.rglob("*"):
+                if f.is_file():
+                    try:
+                        aither_size += f.stat().st_size
+                    except OSError:
+                        pass
+                count += 1
+                if count > 5000:
+                    break  # Enough for an estimate
         except Exception:
             pass
 
@@ -249,7 +335,9 @@ def cmd_doctor(_args=None) -> int:
         ("Docker", check_docker),
         ("Ollama", lambda: check_ollama()[0]),
         ("vLLM", lambda: check_vllm()[0]),
+        ("DGX/Remote", lambda: check_dgx()[0]),
         ("API Key", check_api_key),
+        ("Cloud APIs", check_cloud_keys),
         ("Disk", check_disk),
     ]:
         checks += 1

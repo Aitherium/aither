@@ -1756,6 +1756,315 @@ def cmd_test(args):
     return result.returncode
 
 
+def cmd_backend(args):
+    """Manage LLM backends — list, set, test."""
+    import asyncio
+
+    sub = getattr(args, "backend_command", None)
+
+    if sub == "list":
+        async def _list():
+            from adk.llm import LLMRouter
+            from adk.config import Config
+            cfg = Config.from_env()
+            router = LLMRouter(config=cfg)
+            try:
+                await router.get_provider()
+            except ConnectionError:
+                pass
+            info = router.get_backends()
+            print("LLM Backends")
+            print("=" * 40)
+            for k, v in info.items():
+                print(f"  {k:20s} {v}")
+            # Show available providers
+            print()
+            print("Available:")
+            for name in ("ollama", "vllm", "openai", "anthropic", "deepseek",
+                         "groq", "together", "gateway", "lmstudio", "picolm"):
+                print(f"  - {name}")
+        asyncio.run(_list())
+        return 0
+
+    elif sub == "set":
+        provider = getattr(args, "provider", None)
+        if not provider:
+            print("Usage: adk backend set <provider> [--api-key KEY] [--base-url URL] [--model MODEL]")
+            return 1
+        data = {"default_backend": provider}
+        api_key = getattr(args, "api_key", None)
+        base_url = getattr(args, "base_url", None)
+        model = getattr(args, "model", None)
+        if api_key:
+            if provider == "anthropic":
+                data["anthropic_api_key"] = api_key
+            elif provider == "deepseek":
+                data["deepseek_api_key"] = api_key
+            else:
+                data["api_key"] = api_key
+        if base_url:
+            data["inference_url"] = base_url
+        if model:
+            data["default_model"] = model
+        save_saved_config(data)
+        print(f"Backend set to: {provider}")
+        if base_url:
+            print(f"  URL: {base_url}")
+        if model:
+            print(f"  Model: {model}")
+        return 0
+
+    elif sub == "set-reasoning":
+        provider = getattr(args, "provider", None)
+        if not provider:
+            print("Usage: adk backend set-reasoning <provider> [--api-key KEY]")
+            return 1
+        data = {"reasoning_backend": provider}
+        api_key = getattr(args, "api_key", None)
+        model = getattr(args, "model", None)
+        if api_key:
+            data["reasoning_api_key"] = api_key
+        if model:
+            data["reasoning_model"] = model
+        save_saved_config(data)
+        print(f"Reasoning backend set to: {provider}")
+        return 0
+
+    elif sub == "test":
+        async def _test():
+            from adk.llm import LLMRouter
+            from adk.config import Config
+            cfg = Config.from_env()
+            router = LLMRouter(config=cfg)
+            try:
+                provider = await router.get_provider()
+                print(f"Provider: {router.provider_name}")
+                resp = await router.chat(
+                    [{"role": "user", "content": "Say 'hello' in one word."}],
+                    effort=3,
+                )
+                print(f"Model: {resp.model}")
+                print(f"Response: {resp.content[:100]}")
+                print(f"Tokens: {resp.tokens_used}")
+                print("Status: OK")
+            except Exception as e:
+                print(f"FAILED: {e}")
+                return 1
+            return 0
+        return asyncio.run(_test())
+
+    print("Usage: adk backend [list|set|set-reasoning|test]")
+    return 1
+
+
+def cmd_tools(args):
+    """List available tools (local + MCP)."""
+    import asyncio
+
+    async def _tools():
+        from adk.tools import ToolRegistry
+        from adk.builtin_tools import get_builtin_registry
+
+        # Local built-in tools
+        reg = get_builtin_registry()
+        local_tools = reg.list_tools()
+
+        print("Local Tools")
+        print("=" * 50)
+        for t in sorted(local_tools, key=lambda x: x.name):
+            desc = (t.description or "")[:60]
+            print(f"  {t.name:30s} {desc}")
+        print(f"\n  Total: {len(local_tools)} local tools")
+
+        # MCP tools (if connected)
+        api_key = os.environ.get("AITHER_API_KEY", "")
+        if not api_key:
+            saved = load_saved_config()
+            api_key = saved.get("api_key", "")
+
+        if api_key:
+            try:
+                from adk.mcp import MCPBridge
+                bridge = MCPBridge(api_key=api_key)
+                mcp_tools = await bridge.list_tools()
+                print(f"\nMCP Tools (cloud)")
+                print("=" * 50)
+                for t in sorted(mcp_tools, key=lambda x: x.get("name", ""))[:20]:
+                    name = t.get("name", "?")
+                    desc = t.get("description", "")[:50]
+                    tier = t.get("tier", "")
+                    marker = f" [{tier}]" if tier else ""
+                    print(f"  {name:30s} {desc}{marker}")
+                print(f"\n  Total: {len(mcp_tools)} MCP tools")
+                if getattr(args, "upgrade", False):
+                    print(f"\n  Upgrade at: https://portal.aitherium.com/pricing")
+            except Exception as e:
+                print(f"\n  MCP: not available ({e})")
+        else:
+            print("\n  MCP: no API key (run 'adk login' for cloud tools)")
+
+    asyncio.run(_tools())
+    return 0
+
+
+def cmd_backup(args):
+    """Backup all ~/.aither/ data."""
+    import tarfile
+    import time as _time
+
+    data_dir = Path.home() / ".aither"
+    if not data_dir.exists():
+        print("Nothing to backup — ~/.aither/ does not exist")
+        return 1
+
+    ts = _time.strftime("%Y%m%d-%H%M%S")
+    output = getattr(args, "output", None) or f"aither-backup-{ts}.tar.gz"
+    output_path = Path(output)
+
+    # Count files
+    files = list(data_dir.rglob("*"))
+    file_count = sum(1 for f in files if f.is_file())
+
+    print(f"Backing up {file_count} files from ~/.aither/")
+
+    with tarfile.open(str(output_path), "w:gz") as tar:
+        tar.add(str(data_dir), arcname=".aither")
+
+    size_mb = output_path.stat().st_size / (1024 * 1024)
+    print(f"Saved: {output_path} ({size_mb:.1f}MB)")
+    return 0
+
+
+def cmd_ingest(args):
+    """Ingest files into the agent's knowledge graph."""
+    import asyncio
+
+    target = Path(args.path or ".")
+    agent_name = getattr(args, "agent", "default")
+
+    async def _ingest():
+        from adk.graph_memory import GraphMemory
+
+        graph = GraphMemory(agent_name=agent_name)
+
+        # Find files to ingest
+        patterns = ["*.md", "*.txt", "*.py", "*.yaml", "*.yml", "*.json"]
+        files = []
+        for pat in patterns:
+            if target.is_file():
+                files = [target]
+                break
+            files.extend(target.glob(pat))
+            for subdir in ("docs", "doc", "documentation"):
+                sub = target / subdir
+                if sub.is_dir():
+                    files.extend(sub.rglob(pat))
+
+        # Deduplicate
+        files = list(dict.fromkeys(files))[:200]
+
+        if not files:
+            print(f"No files found to ingest in {target}")
+            return 1
+
+        print(f"Ingesting {len(files)} files into graph for agent '{agent_name}'...")
+
+        ingested = 0
+        for f in files:
+            try:
+                content = f.read_text(encoding="utf-8", errors="replace")[:10000]
+                if len(content.strip()) < 20:
+                    continue
+                await graph.ingest_conversation(
+                    session_id=f"ingest:{f.name}",
+                    messages=[{"role": "system", "content": f"File: {f}\n\n{content}"}],
+                )
+                ingested += 1
+                if ingested % 10 == 0:
+                    print(f"  {ingested}/{len(files)}...")
+            except Exception:
+                pass
+
+        print(f"Ingested {ingested} files into knowledge graph.")
+        stats = await graph.get_stats()
+        print(f"Graph: {stats.get('node_count', '?')} nodes, {stats.get('edge_count', '?')} edges")
+        return 0
+
+    return asyncio.run(_ingest())
+
+
+def cmd_quickstart(args):
+    """Unified first-run wizard — setup + auth + shell in one command."""
+
+    print()
+    print("  AitherADK Quickstart")
+    print("  ====================")
+    print()
+
+    # Step 1: Check if already set up
+    saved = load_saved_config()
+    if saved.get("setup_backend"):
+        print(f"  Already configured: {saved.get('setup_backend')} backend")
+        print(f"  Run 'adk doctor' to check health, or 'adk start' to begin.")
+        print()
+        return 0
+
+    # Step 2: Run setup wizard
+    print("  Step 1: GPU + Inference Setup")
+    print("  " + "-" * 38)
+    from adk.setup_cli import cmd_setup
+
+    class SetupArgs:
+        shortcut = None
+        tier = None
+        reasoning_api = None
+        reasoning_model = ""
+        dgx_spark = None
+        stack = None
+        dry_run = False
+        non_interactive = False
+        hf_token = ""
+        api_key = getattr(args, "api_key", "") or ""
+        output = "docker-compose.vllm.yml"
+        force = False
+
+    setup_result = cmd_setup(SetupArgs())
+    if setup_result != 0:
+        print("  Setup had issues — but you may still be able to use ADK.")
+        print()
+
+    # Step 3: Auth (optional)
+    print()
+    print("  Step 2: Aitherium Account (optional)")
+    print("  " + "-" * 38)
+
+    try:
+        answer = input("  Connect to Aitherium for cloud tools? [y/N]: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        answer = "n"
+
+    if answer in ("y", "yes"):
+        class LoginArgs:
+            email = None
+            password = None
+            api_key = None
+            portal_url = ""
+        cmd_login(LoginArgs())
+
+    # Step 4: Shell
+    print()
+    print("  Step 3: Ready!")
+    print("  " + "-" * 38)
+    print()
+    print("  Your agent system is configured. Next steps:")
+    print("    adk start            Start chatting with your codebase")
+    print("    adk shell            Launch AitherShell interactive terminal")
+    print("    adk run              Start the agent server")
+    print("    adk doctor           Check system health")
+    print()
+    return 0
+
+
 def cmd_status(args):
     """Show backend and service status."""
     import asyncio
@@ -2477,6 +2786,133 @@ def _cmd_skills(args) -> int:
     return 1
 
 
+def _cmd_listen(args) -> int:
+    """Handle `adk listen` subcommands — real-time audio intelligence."""
+    sub = getattr(args, "listen_command", None)
+
+    genesis_url = os.environ.get("AITHER_GENESIS_URL",
+                                  os.environ.get("AITHER_URL", "http://localhost:8001"))
+
+    if sub in ("audiobook", "meeting", "note"):
+        try:
+            import httpx
+        except ImportError:
+            print("httpx required: pip install httpx")
+            return 1
+
+        if sub == "audiobook":
+            body = {
+                "mode": "audiobook",
+                "book_title": getattr(args, "title", ""),
+                "author": getattr(args, "author", ""),
+                "genre": getattr(args, "genre", "litrpg"),
+                "capture_backend": getattr(args, "backend", "wasapi"),
+                "audio_source": getattr(args, "audio_file", None),
+                "workspace_id": getattr(args, "workspace", None),
+            }
+        elif sub == "meeting":
+            mt = getattr(args, "meeting_type", "meeting")
+            body = {
+                "mode": "lecture" if mt == "lecture" else "meeting",
+                "meeting_title": getattr(args, "title", ""),
+                "meeting_type": mt,
+                "participants": getattr(args, "participants", []),
+                "capture_backend": getattr(args, "backend", "wasapi"),
+                "workspace_id": getattr(args, "workspace", None),
+            }
+        else:  # note
+            body = {
+                "mode": "voice_note",
+                "meeting_title": getattr(args, "title", "Voice Note"),
+                "capture_backend": getattr(args, "backend", "wasapi"),
+                "workspace_id": getattr(args, "workspace", None),
+            }
+
+        with httpx.Client(base_url=genesis_url, timeout=30) as c:
+            resp = c.post("/audiobook/start", json=body)
+            if resp.status_code != 200:
+                print(f"Error: {resp.text}")
+                return 1
+            data = resp.json()
+
+        sid = data.get("session_id", "")
+        mode_label = {"audiobook": "Audiobook companion",
+                      "meeting": "Meeting transcription",
+                      "note": "Voice note"}[sub]
+        print(f"{mode_label} started: {sid[:12]}")
+        print(f"  Stop:   adk listen stop {sid[:12]}")
+        print(f"  Export: adk listen export {sid[:12]}")
+        return 0
+
+    elif sub == "sessions":
+        import httpx
+        with httpx.Client(base_url=genesis_url, timeout=10) as c:
+            resp = c.get("/audiobook/sessions")
+            if resp.status_code != 200:
+                print(f"Error: {resp.text}")
+                return 1
+            sessions = resp.json().get("sessions", [])
+
+        if not sessions:
+            print("No active sessions.")
+        for s in sessions:
+            sid = s.get("session_id", "")[:12]
+            title = s.get("book_title", "Untitled")
+            chunks = s.get("chunks_processed", 0)
+            print(f"  {sid}  {title:<30}  {chunks} chunks")
+        return 0
+
+    elif sub == "stop":
+        import httpx
+        session_id = args.session_id
+        # Partial ID matching
+        if len(session_id) < 36:
+            with httpx.Client(base_url=genesis_url, timeout=10) as c:
+                resp = c.get("/audiobook/sessions")
+                if resp.status_code == 200:
+                    sessions = resp.json().get("sessions", [])
+                    matches = [s for s in sessions
+                               if s["session_id"].startswith(session_id)]
+                    if len(matches) == 1:
+                        session_id = matches[0]["session_id"]
+                    elif len(matches) > 1:
+                        print(f"Ambiguous ID '{session_id}' — {len(matches)} matches.")
+                        return 1
+
+        with httpx.Client(base_url=genesis_url, timeout=15) as c:
+            resp = c.post(f"/audiobook/{session_id}/stop")
+            if resp.status_code != 200:
+                print(f"Error: {resp.text}")
+                return 1
+        print(f"Session stopped: {session_id[:12]}")
+        return 0
+
+    elif sub == "export":
+        import httpx
+        session_id = args.session_id
+        fmt = getattr(args, "fmt", "notes")
+        output = getattr(args, "output", None)
+
+        with httpx.Client(base_url=genesis_url, timeout=15) as c:
+            resp = c.get(f"/audiobook/{session_id}/export/{fmt}")
+            if resp.status_code != 200:
+                print(f"Error: {resp.text}")
+                return 1
+            data = resp.json()
+
+        content = data.get("content") or data.get("transcript", "")
+        if output:
+            with open(output, "w", encoding="utf-8") as f:
+                f.write(content)
+            print(f"Exported to {output}")
+        else:
+            print(content)
+        return 0
+
+    print("Usage: adk listen [audiobook|meeting|note|sessions|stop|export]")
+    return 1
+
+
 def _cmd_soul(args) -> int:
     """Handle `adk soul` subcommands."""
     sub = getattr(args, "soul_command", None)
@@ -2525,6 +2961,218 @@ def _cmd_soul(args) -> int:
 
     print("Usage: adk soul [import|export]")
     return 1
+
+
+# ---------------------------------------------------------------------------
+# adk train — training pipeline management
+# ---------------------------------------------------------------------------
+
+def _get_genesis_url() -> str:
+    """Resolve the Genesis URL from config or environment."""
+    cfg = load_saved_config()
+    # Remote connected instance
+    elysium = cfg.get("elysium_url") or cfg.get("aither_gateway_url", "")
+    if elysium:
+        return elysium.rstrip("/")
+    # Local
+    return os.environ.get("AITHER_GENESIS_URL", "http://localhost:8001")
+
+
+def _train_headers() -> dict:
+    """Build auth headers for Genesis training API calls."""
+    cfg = load_saved_config()
+    api_key = cfg.get("api_key") or os.environ.get("AITHER_API_KEY", "")
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    tenant_id = cfg.get("tenant_id") or os.environ.get("AITHER_TENANT_ID", "")
+    if tenant_id:
+        headers["X-Tenant-ID"] = tenant_id
+    return headers
+
+
+def _cmd_train(args) -> int:
+    import json as _json
+    import urllib.request
+    import urllib.error
+
+    genesis = _get_genesis_url()
+    headers = _train_headers()
+    sub = getattr(args, "train_command", None)
+
+    def _api(method: str, path: str, body: dict | None = None) -> dict:
+        data = _json.dumps(body).encode() if body else None
+        req = urllib.request.Request(
+            f"{genesis}{path}",
+            data=data,
+            headers=headers,
+            method=method,
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                return _json.loads(resp.read())
+        except urllib.error.HTTPError as exc:
+            try:
+                err = _json.loads(exc.read())
+                detail = err.get("detail", str(exc))
+            except Exception:
+                detail = str(exc)
+            print(f"  Error ({exc.code}): {detail}")
+            return {"error": detail}
+        except (urllib.error.URLError, OSError) as exc:
+            print(f"  Cannot reach Genesis at {genesis}: {exc}")
+            return {"error": str(exc)}
+
+    if sub == "status":
+        print(f"  Connecting to {genesis}...")
+        dashboard = _api("GET", "/training/dashboard")
+        if "error" in dashboard:
+            return 1
+        readiness = _api("GET", "/training/pipeline/readiness")
+
+        print()
+        print(f"  Training Dashboard")
+        print(f"  {'='*40}")
+        print(f"  Total Runs:     {dashboard.get('total_runs', 0)}")
+        print(f"  Active Runs:    {dashboard.get('active_runs', 0)}")
+        print(f"  Successful:     {dashboard.get('successful_runs', 0)}")
+        print(f"  Failed:         {dashboard.get('failed_runs', 0)}")
+        print(f"  Total Cost:     ${dashboard.get('total_cost_usd', 0):.2f}")
+        print(f"  GPU Hours:      {dashboard.get('total_gpu_hours', 0):.1f}")
+        print()
+        ready = readiness.get("ready", False)
+        count = readiness.get("count", 0)
+        threshold = readiness.get("threshold", 50)
+        status_icon = "READY" if ready else "NOT READY"
+        print(f"  Corpus: {status_icon} ({count}/{threshold} examples)")
+        return 0
+
+    elif sub == "launch":
+        body = {
+            "model_preset": args.preset,
+            "target_gpu": args.gpu,
+            "epochs": args.epochs,
+            "lora_r": args.lora_r,
+            "max_gpu_price": args.max_price,
+            "auto_benchmark": not args.no_benchmark,
+            "auto_deploy": args.auto_deploy,
+        }
+        if args.dataset:
+            body["dataset_url"] = args.dataset
+
+        print(f"  Launching training: {args.preset} on {args.gpu}...")
+        result = _api("POST", "/training/orchestrate", body)
+        if "error" in result:
+            return 1
+        run_id = result.get("run_id", "???")
+        print(f"  Training run started: {run_id}")
+        print(f"  Monitor: adk train logs {run_id[:12]}")
+        return 0
+
+    elif sub == "logs":
+        run_id = args.run_id
+        result = _api("GET", f"/training/runs/{run_id}/logs?lines={args.lines}")
+        if "error" in result:
+            return 1
+        logs = result.get("logs", result.get("stdout", ""))
+        if logs:
+            print(logs)
+        else:
+            print("  No logs available yet.")
+        return 0
+
+    elif sub == "cancel":
+        run_id = args.run_id
+        result = _api("POST", f"/training/runs/{run_id}/cancel")
+        if "error" in result:
+            return 1
+        print(f"  Training run {run_id} cancelled.")
+        return 0
+
+    elif sub == "runs":
+        result = _api("GET", "/training/runs")
+        if "error" in result:
+            return 1
+        runs = result.get("runs", result) if isinstance(result, dict) else result
+        if not isinstance(runs, list):
+            runs = []
+        if not runs:
+            print("  No training runs found.")
+            return 0
+
+        status_filter = getattr(args, "status", None)
+        if status_filter:
+            runs = [r for r in runs if r.get("status") == status_filter]
+
+        print()
+        print(f"  {'RUN ID':<20} {'STATUS':<15} {'MODEL':<25} {'GPU':<15} {'COST':>8}")
+        print(f"  {'-'*20} {'-'*15} {'-'*25} {'-'*15} {'-'*8}")
+        for run in runs[:20]:
+            rid = (run.get("run_id", "")[:18] or "???")
+            status = run.get("status", "?")
+            model = (run.get("model_preset", "?")[:23] or "?")
+            gpu = (run.get("gpu_name", "") or run.get("target_gpu", "?"))[:13]
+            cost = run.get("cost_usd", 0)
+            print(f"  {rid:<20} {status:<15} {model:<25} {gpu:<15} ${cost:>7.2f}")
+        return 0
+
+    elif sub == "register-gpu":
+        host = args.host
+        port = args.port
+        gpu_model = getattr(args, "gpu_model", None) or ""
+        vram = getattr(args, "vram", None) or 0
+
+        # Auto-detect GPU if not specified
+        if not gpu_model or not vram:
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    props = torch.cuda.get_device_properties(0)
+                    if not gpu_model:
+                        gpu_model = props.name
+                    if not vram:
+                        vram = props.total_mem // (1024 ** 3)
+                    print(f"  Detected: {gpu_model} ({vram}GB)")
+                else:
+                    print("  Warning: No CUDA GPU detected locally.")
+            except ImportError:
+                print("  Warning: PyTorch not installed, cannot auto-detect GPU.")
+
+        body = {
+            "name": f"adk-{host}-gpu",
+            "host": host,
+            "port": port,
+            "capabilities": ["training", "inference"],
+            "gpu_model": gpu_model,
+            "gpu_vram_gb": vram,
+            "node_type": "gpu_node",
+            "location": "workstation",
+        }
+        result = _api("POST", "/compute/nodes/register", body)
+        if "error" in result:
+            # Try gateway mesh as fallback
+            result = _api("POST", "/gateway/nodes/register", body)
+            if "error" in result:
+                print("  Failed to register GPU node.")
+                return 1
+
+        node_id = result.get("node_id", result.get("id", ""))
+        print(f"  GPU registered: {gpu_model} ({vram}GB) at {host}:{port}")
+        if node_id:
+            print(f"  Node ID: {node_id}")
+        print(f"  This GPU is now available for training via 'adk train launch --gpu customer'")
+        return 0
+
+    else:
+        print("Usage: adk train [status|launch|logs|cancel|runs|register-gpu]")
+        print()
+        print("  status         Check training readiness and dashboard stats")
+        print("  launch         Launch a new training run")
+        print("  logs <run_id>  Stream training logs")
+        print("  cancel <id>    Cancel an active run")
+        print("  runs           List recent training runs")
+        print("  register-gpu   Register your local GPU for remote training")
+        return 1
 
 
 def main():
@@ -2591,8 +3239,16 @@ def main():
 
     # aither setup
     setup_p = sub.add_parser("setup", help="Interactive GPU setup wizard (vLLM/Ollama) + optional AitherOS stack")
-    setup_p.add_argument("--tier", choices=["nano", "lite", "standard", "full", "ollama"],
+    setup_p.add_argument("shortcut", nargs="?", default=None,
+                         help="Quick setup: 'nemotron' (alias for --tier lite)")
+    setup_p.add_argument("--tier", choices=["nano", "lite", "standard", "standard-tq4", "full", "hybrid", "hybrid-tq4", "ollama"],
                          help="Force a specific tier (default: auto-detect from GPU)")
+    setup_p.add_argument("--reasoning-api", choices=["anthropic", "openai", "deepseek", "gateway"],
+                         help="Cloud API for reasoning (effort 7+) — hybrid mode")
+    setup_p.add_argument("--reasoning-model", default="",
+                         help="Specific model for reasoning backend")
+    setup_p.add_argument("--dgx-spark", metavar="URL",
+                         help="DGX Spark / remote vLLM URL (e.g. http://192.168.0.33:8000)")
     setup_p.add_argument("--stack", choices=["minimal", "core", "full", "headless", "gpu", "agents"],
                          help="Also deploy AitherOS services via AitherZero")
     setup_p.add_argument("--dry-run", action="store_true",
@@ -2746,6 +3402,38 @@ def main():
     # adk disconnect — leave desktop mesh
     sub.add_parser("disconnect", help="Disconnect from desktop AitherOS mesh")
 
+    # adk backend — manage LLM backends
+    backend_p = sub.add_parser("backend", help="Manage LLM backends (list, set, test)")
+    backend_sub = backend_p.add_subparsers(dest="backend_command")
+    backend_sub.add_parser("list", help="Show detected and configured backends")
+    backend_set_p = backend_sub.add_parser("set", help="Set default backend")
+    backend_set_p.add_argument("provider", help="Provider: ollama, vllm, openai, anthropic, deepseek, groq, together, gateway")
+    backend_set_p.add_argument("--api-key", help="API key for the provider")
+    backend_set_p.add_argument("--base-url", help="Custom base URL")
+    backend_set_p.add_argument("--model", help="Default model")
+    backend_reason_p = backend_sub.add_parser("set-reasoning", help="Set reasoning-only backend (effort 7+)")
+    backend_reason_p.add_argument("provider", help="Provider for reasoning tasks")
+    backend_reason_p.add_argument("--api-key", help="API key")
+    backend_reason_p.add_argument("--model", help="Reasoning model")
+    backend_sub.add_parser("test", help="Test current backend with a simple prompt")
+
+    # adk tools — list available tools
+    tools_p = sub.add_parser("tools", help="List available tools (local + MCP)")
+    tools_p.add_argument("--upgrade", action="store_true", help="Show what pro/enterprise unlocks")
+
+    # adk quickstart — unified first-run wizard
+    quickstart_p = sub.add_parser("quickstart", help="One-command setup: GPU + auth + shell")
+    quickstart_p.add_argument("--api-key", help="AITHER_API_KEY")
+
+    # adk backup — export all ~/.aither/ data
+    backup_p = sub.add_parser("backup", help="Backup all agent data (memory, graphs, config)")
+    backup_p.add_argument("-o", "--output", help="Output file path (default: aither-backup-<timestamp>.tar.gz)")
+
+    # adk ingest — manually ingest files into knowledge graph
+    ingest_p = sub.add_parser("ingest", help="Ingest files into the agent's knowledge graph")
+    ingest_p.add_argument("path", nargs="?", default=".", help="File or directory to ingest")
+    ingest_p.add_argument("--agent", default="default", help="Agent name for the graph")
+
     # adk doctor — system health checks
     sub.add_parser("doctor", help="Check system health (Python, GPU, LLM backends, API keys)")
 
@@ -2784,15 +3472,102 @@ def main():
     soul_export_p = soul_sub.add_parser("export", help="Export identity as SOUL.md")
     soul_export_p.add_argument("name", help="Identity name to export")
 
+    # adk mcp — MCP server (stdio for Claude Code, or config helper)
+    mcp_p = sub.add_parser("mcp", help="MCP server for Claude Code / OpenClaw integration")
+    mcp_sub = mcp_p.add_subparsers(dest="mcp_command")
+    mcp_serve_p = mcp_sub.add_parser("serve", help="Start stdio MCP server (for Claude Code)")
+    mcp_serve_p.add_argument("-d", "--directory", default=".", help="Agent project directory")
+    mcp_serve_p.add_argument("-p", "--port", type=int,
+                             help="Print HTTP config for a running server instead of stdio")
+    mcp_config_p = mcp_sub.add_parser("config", help="Print MCP client configuration")
+    mcp_config_p.add_argument("-p", "--port", type=int, default=8080,
+                              help="ADK server port (default: 8080)")
+    mcp_config_p.add_argument("-m", "--mode", choices=["stdio", "http"], default="stdio",
+                              help="Transport mode (default: stdio)")
+
     # adk shell — download/launch AitherShell interactive terminal
     shell_p = sub.add_parser("shell", help="Launch AitherShell interactive terminal")
     shell_p.add_argument("--install", action="store_true", help="Download/update the AitherShell binary")
-    shell_p.add_argument("--genesis", help="Genesis URL (default: http://127.0.0.1:8001)")
+    shell_p.add_argument("--api-url", dest="api_url", help="Backend URL (Genesis or ADK server)")
+    shell_p.add_argument("--genesis", help="Legacy alias for --api-url")
     shell_p.add_argument("shell_args", nargs=argparse.REMAINDER, help="Arguments to pass to AitherShell")
 
     # adk platform — internal platform toolkit commands (merged from aither-platform)
     platform_p = sub.add_parser("platform", help="Internal platform toolkit (merged from aither-platform)")
     platform_p.add_argument("platform_args", nargs=argparse.REMAINDER, help="Platform subcommand args")
+
+    # adk listen — real-time audio intelligence (audiobook, meeting, voice notes)
+    listen_p = sub.add_parser("listen", help="Real-time audio intelligence — audiobook, meeting, voice notes")
+    listen_sub = listen_p.add_subparsers(dest="listen_command")
+
+    listen_audiobook_p = listen_sub.add_parser("audiobook", help="Audiobook companion — track characters, stats, spells")
+    listen_audiobook_p.add_argument("title", nargs="?", default="", help="Book title")
+    listen_audiobook_p.add_argument("--author", default="", help="Author name")
+    listen_audiobook_p.add_argument("--genre", default="litrpg", choices=["litrpg", "fantasy", "scifi", "general"])
+    listen_audiobook_p.add_argument("--backend", default="wasapi", choices=["wasapi", "pulse", "sounddevice", "file"])
+    listen_audiobook_p.add_argument("--file", dest="audio_file", help="Audio file path (for file backend)")
+    listen_audiobook_p.add_argument("--workspace", help="Auto-save to workspace ID")
+
+    listen_meeting_p = listen_sub.add_parser("meeting", help="Meeting transcription — action items, decisions, key points")
+    listen_meeting_p.add_argument("title", nargs="?", default="", help="Meeting title")
+    listen_meeting_p.add_argument("--type", dest="meeting_type", default="meeting",
+                                  choices=["meeting", "lecture", "interview", "brainstorm"])
+    listen_meeting_p.add_argument("--participants", "-p", nargs="*", default=[], help="Participant names")
+    listen_meeting_p.add_argument("--backend", default="wasapi", choices=["wasapi", "pulse", "sounddevice"])
+    listen_meeting_p.add_argument("--workspace", help="Auto-save to workspace ID")
+
+    listen_note_p = listen_sub.add_parser("note", help="Voice note — quick dictation with key point extraction")
+    listen_note_p.add_argument("title", nargs="?", default="Voice Note", help="Note title")
+    listen_note_p.add_argument("--backend", default="wasapi", choices=["wasapi", "pulse", "sounddevice"])
+    listen_note_p.add_argument("--workspace", help="Auto-save to workspace ID")
+
+    listen_sessions_p = listen_sub.add_parser("sessions", help="List active listening sessions")
+    listen_stop_p = listen_sub.add_parser("stop", help="Stop a listening session")
+    listen_stop_p.add_argument("session_id", help="Session ID (partial match supported)")
+
+    listen_export_p = listen_sub.add_parser("export", help="Export session as markdown notes or transcript")
+    listen_export_p.add_argument("session_id", help="Session ID")
+    listen_export_p.add_argument("--format", dest="fmt", default="notes", choices=["notes", "transcript"])
+    listen_export_p.add_argument("--output", "-o", help="Write to file instead of stdout")
+
+    # adk train — training pipeline management
+    train_p = sub.add_parser("train", help="Manage model training (launch, monitor, cancel)")
+    train_sub = train_p.add_subparsers(dest="train_command")
+
+    train_status_p = train_sub.add_parser("status", help="Check training readiness and active runs")
+
+    train_launch_p = train_sub.add_parser("launch", help="Launch a training run")
+    train_launch_p.add_argument("--preset", "-p", default="nemotron-orchestrator-8b",
+                                help="Model preset (default: nemotron-orchestrator-8b)")
+    train_launch_p.add_argument("--gpu", "-g", default="auto",
+                                choices=["auto", "local", "dgx", "vast.ai", "customer"],
+                                help="GPU target (default: auto)")
+    train_launch_p.add_argument("--epochs", type=int, default=2, help="Training epochs (default: 2)")
+    train_launch_p.add_argument("--lora-r", type=int, default=32, help="LoRA rank (default: 32)")
+    train_launch_p.add_argument("--max-price", type=float, default=0.50,
+                                help="Max GPU price $/hr for cloud (default: 0.50)")
+    train_launch_p.add_argument("--dataset", help="HuggingFace dataset URL or local path")
+    train_launch_p.add_argument("--no-benchmark", action="store_true",
+                                help="Skip auto-benchmarking after training")
+    train_launch_p.add_argument("--auto-deploy", action="store_true",
+                                help="Auto-deploy if benchmark passes")
+
+    train_logs_p = train_sub.add_parser("logs", help="Stream training logs for a run")
+    train_logs_p.add_argument("run_id", help="Training run ID (partial match supported)")
+    train_logs_p.add_argument("--lines", type=int, default=100, help="Number of log lines")
+
+    train_cancel_p = train_sub.add_parser("cancel", help="Cancel an active training run")
+    train_cancel_p.add_argument("run_id", help="Training run ID to cancel")
+
+    train_runs_p = train_sub.add_parser("runs", help="List recent training runs")
+    train_runs_p.add_argument("--status", help="Filter by status (e.g. training, completed, failed)")
+
+    train_register_gpu_p = train_sub.add_parser("register-gpu",
+                                                help="Register your local GPU for training")
+    train_register_gpu_p.add_argument("--host", default="localhost", help="SSH host (default: localhost)")
+    train_register_gpu_p.add_argument("--port", type=int, default=22, help="SSH port (default: 22)")
+    train_register_gpu_p.add_argument("--gpu-model", help="GPU model name (auto-detected if omitted)")
+    train_register_gpu_p.add_argument("--vram", type=int, help="GPU VRAM in GB (auto-detected if omitted)")
 
     args = parser.parse_args()
 
@@ -2841,6 +3616,16 @@ def main():
         sys.exit(cmd_status(args))
     elif args.command == "admin":
         sys.exit(cmd_admin(args))
+    elif args.command == "backend":
+        sys.exit(cmd_backend(args))
+    elif args.command == "tools":
+        sys.exit(cmd_tools(args))
+    elif args.command == "quickstart":
+        sys.exit(cmd_quickstart(args))
+    elif args.command == "backup":
+        sys.exit(cmd_backup(args))
+    elif args.command == "ingest":
+        sys.exit(cmd_ingest(args))
     elif args.command == "disconnect":
         sys.exit(cmd_disconnect(args))
     elif args.command == "doctor":
@@ -2855,6 +3640,20 @@ def main():
         sys.exit(_cmd_skills(args))
     elif args.command == "soul":
         sys.exit(_cmd_soul(args))
+    elif args.command == "mcp":
+        mcp_cmd = getattr(args, "mcp_command", None)
+        if mcp_cmd == "serve":
+            from adk.mcp_stdio import cmd_mcp_serve
+            sys.exit(cmd_mcp_serve(args))
+        elif mcp_cmd == "config":
+            from adk.mcp_stdio import cmd_mcp_config
+            sys.exit(cmd_mcp_config(args))
+        else:
+            print("Usage: adk mcp [serve|config]")
+            print()
+            print("  serve   Start stdio MCP server (pipe into Claude Code)")
+            print("  config  Print MCP client configuration JSON")
+            sys.exit(1)
     elif args.command == "shell":
         from adk.shell_launcher import cmd_shell
         sys.exit(cmd_shell(args))
@@ -2868,6 +3667,10 @@ def main():
         except ImportError:
             print("Platform toolkit not available. Install with: pip install aither-adk[platform]")
             sys.exit(1)
+    elif args.command == "listen":
+        sys.exit(_cmd_listen(args))
+    elif args.command == "train":
+        sys.exit(_cmd_train(args))
     elif args.command is None:
         # No command — default to start
         args.path = "."

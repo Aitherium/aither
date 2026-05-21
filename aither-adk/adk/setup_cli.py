@@ -180,28 +180,48 @@ class VLLMWorker:
     vram_gb: float = 0.0
 
 
+# Quick aliases that map to a tier
+TIER_ALIASES: dict[str, str] = {
+    "nemotron": "lite",
+}
+
+# Quantization strategies — vLLM supports bitsandbytes (8-bit) and TQ4 (4-bit turboquant)
+_QUANT_BNB = ["--quantization bitsandbytes", "--load-format bitsandbytes"]
+_QUANT_TQ4 = [
+    "--quantization turboquant",
+    "--attention-backend TRITON_ATTN",  # FlashInfer crashes with TQ4 in vLLM 0.15+
+]
+
+# Default: 8-bit (bitsandbytes) for >10GB GPUs, 4-bit (TQ4) for <=10GB
+def _quant_args(vram_gb: float, force_tq4: bool = False) -> list[str]:
+    """Select quantization args based on available VRAM."""
+    if force_tq4 or vram_gb < 10:
+        return list(_QUANT_TQ4)
+    return list(_QUANT_BNB)
+
+
 TIERS: dict[str, dict] = {
     "nano": {
-        "name": "Nano",
-        "desc": "Qwen3-8B via vLLM -- for 8-12GB GPUs",
-        "min_vram_gb": 6,
+        "name": "Nano (TQ4)",
+        "desc": "Nemotron-8B TQ4-quantized -- for 6-8GB GPUs",
+        "min_vram_gb": 5,
         "workers": [
-            VLLMWorker("orchestrator", "Qwen/Qwen3-8B", "aither-orchestrator",
-                       8200, 0.80, 16384,
-                       ["--quantization bitsandbytes", "--load-format bitsandbytes",
+            VLLMWorker("orchestrator", "nvidia/Nemotron-Orchestrator-8B", "aither-orchestrator",
+                       8200, 0.85, 16384,
+                       _QUANT_TQ4 + [
                         "--enable-auto-tool-choice", "--tool-call-parser hermes",
                         "--enable-prefix-caching"],
-                       "Qwen3-8B -- capable chat + tool calling", 8.0, 5.5),
+                       "Nemotron-8B TQ4 -- 4-bit quantized, fits 6GB GPUs", 16.0, 3.5),
         ],
     },
     "lite": {
         "name": "Lite",
-        "desc": "Nemotron Orchestrator -- for 12-16GB GPUs",
+        "desc": "Nemotron Orchestrator -- for 10-16GB GPUs",
         "min_vram_gb": 10,
         "workers": [
             VLLMWorker("orchestrator", "nvidia/Nemotron-Orchestrator-8B", "aither-orchestrator",
                        8200, 0.80, 32768,
-                       ["--quantization bitsandbytes", "--load-format bitsandbytes",
+                       _QUANT_BNB + [
                         "--enable-auto-tool-choice", "--tool-call-parser hermes",
                         "--enable-prefix-caching"],
                        "Nemotron-Orchestrator-8B -- outperforms GPT-4o on tool use", 16.0, 6.5),
@@ -214,17 +234,37 @@ TIERS: dict[str, dict] = {
         "workers": [
             VLLMWorker("orchestrator", "nvidia/Nemotron-Orchestrator-8B", "aither-orchestrator",
                        8200, 0.35, 32768,
-                       ["--quantization bitsandbytes", "--load-format bitsandbytes",
+                       _QUANT_BNB + [
                         "--enable-auto-tool-choice", "--tool-call-parser hermes",
                         "--enable-prefix-caching", "--enable-sleep-mode"],
                        "Nemotron-Orchestrator-8B -- handles 80% of agent requests", 16.0, 6.5),
             VLLMWorker("reasoning", "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B", "deepseek-r1:14b",
                        8201, 0.55, 16384,
-                       ["--quantization bitsandbytes", "--load-format bitsandbytes",
+                       _QUANT_BNB + [
                         "--enable-auto-tool-choice", "--tool-call-parser hermes",
                         "--reasoning-parser deepseek_r1",
                         "--enable-prefix-caching", "--enable-sleep-mode"],
                        "DeepSeek-R1 14B -- deep thinking for complex tasks", 28.0, 12.0),
+        ],
+    },
+    "standard-tq4": {
+        "name": "Standard (TQ4)",
+        "desc": "Orchestrator + Reasoning both TQ4 -- for 12-16GB GPUs",
+        "min_vram_gb": 10,
+        "workers": [
+            VLLMWorker("orchestrator", "nvidia/Nemotron-Orchestrator-8B", "aither-orchestrator",
+                       8200, 0.40, 16384,
+                       _QUANT_TQ4 + [
+                        "--enable-auto-tool-choice", "--tool-call-parser hermes",
+                        "--enable-prefix-caching", "--enable-sleep-mode"],
+                       "Nemotron-8B TQ4 -- 4-bit orchestration", 16.0, 3.5),
+            VLLMWorker("reasoning", "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B", "deepseek-r1:14b",
+                       8201, 0.55, 16384,
+                       _QUANT_TQ4 + [
+                        "--enable-auto-tool-choice", "--tool-call-parser hermes",
+                        "--reasoning-parser deepseek_r1",
+                        "--enable-prefix-caching", "--enable-sleep-mode"],
+                       "DeepSeek-R1 14B TQ4 -- 4-bit reasoning", 28.0, 6.5),
         ],
     },
     "full": {
@@ -234,13 +274,13 @@ TIERS: dict[str, dict] = {
         "workers": [
             VLLMWorker("orchestrator", "nvidia/Nemotron-Orchestrator-8B", "aither-orchestrator",
                        8200, 0.35, 32768,
-                       ["--quantization bitsandbytes", "--load-format bitsandbytes",
+                       _QUANT_BNB + [
                         "--enable-auto-tool-choice", "--tool-call-parser hermes",
                         "--enable-prefix-caching", "--enable-sleep-mode"],
                        "Nemotron-Orchestrator-8B", 16.0, 6.5),
             VLLMWorker("reasoning", "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B", "deepseek-r1:14b",
                        8201, 0.55, 16384,
-                       ["--quantization bitsandbytes", "--load-format bitsandbytes",
+                       _QUANT_BNB + [
                         "--enable-auto-tool-choice", "--tool-call-parser hermes",
                         "--reasoning-parser deepseek_r1",
                         "--enable-prefix-caching", "--enable-sleep-mode"],
@@ -250,6 +290,34 @@ TIERS: dict[str, dict] = {
                        ["--dtype float16", "--max-num-seqs 64"],
                        "Nomic Embed v1.5 -- vector search", 0.5, 0.5),
         ],
+    },
+    "hybrid": {
+        "name": "Hybrid",
+        "desc": "Nemotron locally + cloud API for reasoning -- for 10-16GB GPUs",
+        "min_vram_gb": 10,
+        "workers": [
+            VLLMWorker("orchestrator", "nvidia/Nemotron-Orchestrator-8B", "aither-orchestrator",
+                       8200, 0.80, 32768,
+                       _QUANT_BNB + [
+                        "--enable-auto-tool-choice", "--tool-call-parser hermes",
+                        "--enable-prefix-caching"],
+                       "Nemotron-Orchestrator-8B -- local orchestration, cloud reasoning", 16.0, 6.5),
+        ],
+        "reasoning": "cloud",
+    },
+    "hybrid-tq4": {
+        "name": "Hybrid (TQ4)",
+        "desc": "Nemotron TQ4 locally + cloud reasoning -- for 6-8GB GPUs",
+        "min_vram_gb": 5,
+        "workers": [
+            VLLMWorker("orchestrator", "nvidia/Nemotron-Orchestrator-8B", "aither-orchestrator",
+                       8200, 0.85, 16384,
+                       _QUANT_TQ4 + [
+                        "--enable-auto-tool-choice", "--tool-call-parser hermes",
+                        "--enable-prefix-caching"],
+                       "Nemotron-8B TQ4 -- 4-bit local + cloud reasoning", 16.0, 3.5),
+        ],
+        "reasoning": "cloud",
     },
 }
 
@@ -261,8 +329,9 @@ def recommend_tier(gpu: GPUInfo) -> str:
     vram = (gpu.total_vram_mb or gpu.vram_mb) / 1024 * 0.85
     if vram >= 24: return "full"
     if vram >= 18: return "standard"
+    if vram >= 12: return "standard-tq4"  # Both models fit in TQ4 at 12GB
     if vram >= 10: return "lite"
-    if vram >= 6: return "nano"
+    if vram >= 5: return "nano"           # Nemotron TQ4 fits in 5GB
     return "ollama"
 
 
@@ -576,7 +645,15 @@ def deploy_stack(profile: str, dry_run: bool = False, api_key: str = "") -> int:
 # Config Persistence
 # ---------------------------------------------------------------------------
 
-def _save_config(backend: str, tier_id: Optional[str], gpu: GPUInfo):
+def _save_config(
+    backend: str,
+    tier_id: Optional[str],
+    gpu: GPUInfo,
+    reasoning_api: str = "",
+    reasoning_api_key: str = "",
+    reasoning_model: str = "",
+    dgx_url: str = "",
+):
     """Save setup results to ~/.aither/config.json."""
     config_path = Path.home() / ".aither" / "config.json"
     config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -604,6 +681,16 @@ def _save_config(backend: str, tier_id: Optional[str], gpu: GPUInfo):
     elif backend == "ollama":
         config["inference_url"] = "http://localhost:11434/v1"
 
+    # Hybrid reasoning backend (cloud API for effort 7+)
+    if reasoning_api:
+        config["reasoning_backend"] = reasoning_api
+    if reasoning_api_key:
+        config["reasoning_api_key"] = reasoning_api_key
+    if reasoning_model:
+        config["reasoning_model"] = reasoning_model
+    if dgx_url:
+        config["dgx_url"] = dgx_url
+
     config_path.write_text(json.dumps(config, indent=2))
     info(f"Config saved: {config_path}")
 
@@ -624,6 +711,9 @@ class ExistingInfra:
     ollama_models: list  # [str]
     genesis_running: bool
     aither_node_running: bool
+    dgx_url: str = ""           # DGX Spark / remote vLLM
+    dgx_models: list = field(default_factory=list)
+    cloud_keys: list = field(default_factory=list)  # ["anthropic", "openai", "deepseek"]
 
 
 def _scan_existing_infra() -> ExistingInfra:
@@ -644,6 +734,38 @@ def _scan_existing_infra() -> ExistingInfra:
                     result.vllm_ports.append((port, models))
         except Exception:
             pass
+
+    # DGX Spark / remote vLLM
+    dgx_url = os.environ.get("AITHER_DGX_URL", "")
+    if not dgx_url:
+        # Try common DGX Spark addresses
+        for host in ("spark.local", "192.168.0.33"):
+            for port in (8000, 8120, 8200):
+                try:
+                    req = urllib.request.Request(f"http://{host}:{port}/v1/models")
+                    with urllib.request.urlopen(req, timeout=2) as resp:
+                        data = json.loads(resp.read())
+                        models = [m["id"] for m in data.get("data", [])]
+                        if models:
+                            dgx_url = f"http://{host}:{port}"
+                            result.dgx_models = models
+                            break
+                except Exception:
+                    pass
+            if dgx_url:
+                break
+    else:
+        try:
+            base = dgx_url.rstrip("/")
+            if not base.endswith("/v1"):
+                base = f"{base}/v1"
+            req = urllib.request.Request(f"{base}/models")
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                data = json.loads(resp.read())
+                result.dgx_models = [m["id"] for m in data.get("data", [])]
+        except Exception:
+            pass
+    result.dgx_url = dgx_url
 
     # Ollama
     try:
@@ -670,6 +792,12 @@ def _scan_existing_infra() -> ExistingInfra:
             result.aither_node_running = resp.status == 200
     except Exception:
         pass
+
+    # Check for cloud API keys
+    for name, env in [("anthropic", "ANTHROPIC_API_KEY"), ("openai", "OPENAI_API_KEY"),
+                      ("deepseek", "DEEPSEEK_API_KEY"), ("aitherium", "AITHER_API_KEY")]:
+        if os.environ.get(env):
+            result.cloud_keys.append(name)
 
     return result
 
@@ -734,11 +862,63 @@ def ask(prompt: str, default: str = "", choices: list[str] = None) -> str:
 # Main: aither setup
 # ---------------------------------------------------------------------------
 
+def _smoke_test(port: int) -> bool:
+    """Send a simple chat completion to verify inference works end-to-end."""
+    import urllib.request
+    import urllib.error
+
+    try:
+        payload = json.dumps({
+            "model": "",  # let vLLM use default
+            "messages": [{"role": "user", "content": "Say hello in exactly 3 words."}],
+            "max_tokens": 20,
+        }).encode()
+        req = urllib.request.Request(
+            f"http://localhost:{port}/v1/chat/completions",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read())
+            content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+            if content.strip():
+                info(f"Smoke test: {green('PASS')} — \"{content.strip()[:60]}\"")
+                return True
+    except Exception as e:
+        warn(f"Smoke test: {red('FAIL')} — {e}")
+    return False
+
+
 def cmd_setup(args) -> int:
     """Main entry point for `aither setup`."""
     dry_run: bool = args.dry_run
     compose_path = Path(args.output)
     non_interactive: bool = args.non_interactive
+
+    # Handle shortcut aliases: `adk setup nemotron` → `--tier lite`
+    shortcut = getattr(args, "shortcut", None)
+    if shortcut:
+        from adk.setup_cli import TIER_ALIASES
+        resolved = TIER_ALIASES.get(shortcut.lower())
+        if resolved:
+            if not args.tier:
+                args.tier = resolved
+        elif shortcut.lower() in TIERS:
+            if not args.tier:
+                args.tier = shortcut.lower()
+        else:
+            err(f"Unknown shortcut: {shortcut}")
+            print(f"    Valid: {', '.join(list(TIER_ALIASES.keys()) + list(TIERS.keys()))}")
+            return 1
+
+    # Handle --dgx-spark
+    dgx_url = getattr(args, "dgx_spark", None) or ""
+
+    # Handle --reasoning-api → forces hybrid tier if no tier set
+    reasoning_api = getattr(args, "reasoning_api", None) or ""
+    reasoning_model = getattr(args, "reasoning_model", None) or ""
+    if reasoning_api and not args.tier:
+        args.tier = "hybrid"
 
     print()
     print(bold("  ============================================================"))
@@ -831,10 +1011,16 @@ def cmd_setup(args) -> int:
                     info(f"vLLM running on :{port} — {', '.join(models)}")
             if infra.ollama_running:
                 info(f"Ollama running — {len(infra.ollama_models)} model(s)")
+            if infra.dgx_url:
+                info(f"DGX Spark at {infra.dgx_url} — {', '.join(infra.dgx_models) or 'reachable'}")
+                if not dgx_url:
+                    dgx_url = infra.dgx_url
             if infra.genesis_running:
                 info("AitherOS Genesis running on :8001")
             if infra.aither_node_running:
                 info("AitherNode MCP server on :8080")
+            if infra.cloud_keys:
+                info(f"Cloud API keys: {', '.join(infra.cloud_keys)}")
 
             print()
 
@@ -968,7 +1154,48 @@ def cmd_setup(args) -> int:
             else:
                 warn(f"{w.name}: still loading (docker logs adk-vllm-{w.name})")
 
-    _save_config("vllm", tier_id, gpu)
+    # ── Reasoning API collection (hybrid tier or --reasoning-api) ──
+    reasoning_api_key = ""
+    if reasoning_api:
+        _REASONING_URLS = {
+            "anthropic": ("ANTHROPIC_API_KEY", "https://api.anthropic.com"),
+            "openai": ("OPENAI_API_KEY", "https://api.openai.com"),
+            "deepseek": ("DEEPSEEK_API_KEY", "https://api.deepseek.com"),
+            "gateway": ("AITHER_API_KEY", "https://mcp.aitherium.com"),
+        }
+        env_key, _ = _REASONING_URLS.get(reasoning_api, ("", ""))
+        reasoning_api_key = os.environ.get(env_key, "") if env_key else ""
+        if not reasoning_api_key and not non_interactive:
+            import getpass
+            reasoning_api_key = getpass.getpass(f"  API key for {reasoning_api} reasoning: ").strip()
+        if reasoning_api_key:
+            info(f"Reasoning: {reasoning_api} ({reasoning_model or 'default model'})")
+        else:
+            warn(f"No API key for {reasoning_api} — reasoning will fall back to local model")
+            reasoning_api = ""
+    elif tier_id == "hybrid" and not non_interactive:
+        # Hybrid tier selected but no --reasoning-api — ask
+        print()
+        info("Hybrid mode needs a cloud API for reasoning (effort 7+ tasks).")
+        reasoning_api = ask("Reasoning API", default="anthropic",
+                           choices=["anthropic", "openai", "deepseek", "gateway", "skip"])
+        if reasoning_api != "skip":
+            import getpass
+            reasoning_api_key = getpass.getpass(f"  API key for {reasoning_api}: ").strip()
+            if not reasoning_api_key:
+                warn("No key provided — reasoning will use local model only")
+                reasoning_api = ""
+        else:
+            reasoning_api = ""
+
+    _save_config("vllm", tier_id, gpu,
+                 reasoning_api=reasoning_api, reasoning_api_key=reasoning_api_key,
+                 reasoning_model=reasoning_model, dgx_url=dgx_url)
+
+    # ── Post-setup smoke test ─────────────────────────────────────
+    if not dry_run:
+        orch = tier["workers"][0]
+        _smoke_test(orch.port)
 
     # ── Optional: Deploy AitherOS stack ───────────────────────────
     if args.stack:

@@ -277,6 +277,8 @@ class GraphMemory:
         self._ollama_available: bool | None = None  # Lazy detect
         self._init_db()
 
+    _SCHEMA_VERSION = 2
+
     def _init_db(self):
         with self._connect() as conn:
             conn.executescript("""
@@ -312,6 +314,9 @@ class GraphMemory:
                     PRIMARY KEY (keyword, node_id),
                     FOREIGN KEY (node_id) REFERENCES nodes(id)
                 );
+                CREATE TABLE IF NOT EXISTS schema_version (
+                    version INTEGER NOT NULL
+                );
                 CREATE INDEX IF NOT EXISTS idx_nodes_type ON nodes(node_type);
                 CREATE INDEX IF NOT EXISTS idx_nodes_agent ON nodes(source_agent);
                 CREATE INDEX IF NOT EXISTS idx_nodes_session ON nodes(source_session);
@@ -320,6 +325,27 @@ class GraphMemory:
                 CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_id);
                 CREATE INDEX IF NOT EXISTS idx_keywords ON keywords(keyword);
             """)
+            self._migrate(conn)
+
+    def _migrate(self, conn: sqlite3.Connection):
+        """Run schema migrations for the graph database."""
+        row = conn.execute("SELECT version FROM schema_version LIMIT 1").fetchone()
+        current = row[0] if row else 0
+        if current >= self._SCHEMA_VERSION:
+            return
+        if current < 1:
+            pass  # v1: initial schema
+        if current < 2:
+            # v2: add edge weight decay timestamp
+            try:
+                conn.execute("ALTER TABLE edges ADD COLUMN last_accessed REAL DEFAULT 0.0")
+            except sqlite3.OperationalError:
+                pass
+        conn.execute("DELETE FROM schema_version")
+        conn.execute("INSERT INTO schema_version (version) VALUES (?)", (self._SCHEMA_VERSION,))
+        conn.commit()
+        if current > 0:
+            logger.info("Graph DB migrated %d → %d", current, self._SCHEMA_VERSION)
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._db_path)
