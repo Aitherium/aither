@@ -1,6 +1,6 @@
 """Aither ADK — Build AI agent fleets with any LLM backend."""
 
-__version__ = "1.2.1"
+__version__ = "1.3.0"
 
 from adk.agent import AitherAgent
 from adk.tools import tool, ToolRegistry
@@ -129,6 +129,10 @@ __all__ = [
     "InMemoryVectorStore",
     "VectorStore",
     "Embedder",
+    # Client (absorbed from aithersdk)
+    "AitherClient",
+    "AitherResponse",
+    "GatewayClient",
 ]
 
 
@@ -443,4 +447,14 @@ def __getattr__(name):
     if name == "Embedder":
         from adk.vector_memory import Embedder
         return Embedder
+    # ── Client (absorbed from aithersdk) ──────────────────────────────────
+    if name == "AitherClient":
+        from adk.client import AitherClient
+        return AitherClient
+    if name == "AitherResponse":
+        from adk.client import AitherResponse
+        return AitherResponse
+    if name == "GatewayClient":
+        from adk.client import GatewayClient
+        return GatewayClient
     raise AttributeError(f"module 'adk' has no attribute {name!r}")
