@@ -1,6 +1,5 @@
 """Tests for Elysium onramp — cloud inference connection."""
 
-import os
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 
@@ -100,25 +99,9 @@ class TestElysiumAuth:
 
 class TestElysiumConnection:
     @pytest.mark.asyncio
-    async def test_connect_requires_api_key(self, monkeypatch):
-        monkeypatch.delenv("AITHER_API_KEY", raising=False)
-        with patch("adk.elysium.Elysium.__init__", wraps=Elysium.__init__) as _:
-            pass
-        # Ensure no env var or saved config provides a key
-        monkeypatch.setattr(
-            "adk.elysium.os.getenv",
-            lambda k, default="": default if k == "AITHER_API_KEY" else os.getenv(k, default),
-        )
+    async def test_connect_requires_api_key(self):
         with pytest.raises(ConnectionError, match="No API key"):
-            e = Elysium.__new__(Elysium)
-            e.api_key = ""
-            e.gateway_url = "https://gateway.aitherium.com"
-            e.inference_url = "https://gateway.aitherium.com/v1"
-            e._timeout = 30.0
-            e._status = ElysiumStatus()
-            e._router = None
-            e._jwt_token = ""
-            await e._verify_connection()
+            await Elysium.connect(api_key="")
 
     @pytest.mark.asyncio
     async def test_connect_success(self):

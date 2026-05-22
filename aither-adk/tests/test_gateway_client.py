@@ -29,6 +29,8 @@ def _mock_client(response_data=None, status_code=200, side_effect=None):
             response=mock_resp,
         )
 
+    # Use MagicMock as the container to avoid AsyncMock child-creation
+    # warnings, then attach only the needed async methods explicitly.
     client = MagicMock()
     if side_effect:
         client.post = AsyncMock(side_effect=side_effect)
@@ -82,7 +84,7 @@ class TestAuth:
         gw = GatewayClient(gateway_url="https://gw.test")
         client, resp = _mock_client({"api_key": "new-key", "user_id": "u123"})
 
-        with patch("httpx.AsyncClient", return_value=client):
+        with patch.object(gw, "_client", return_value=client):
             result = await gw.register("user@test.com", "password123")
             assert result["api_key"] == "new-key"
             client.post.assert_called_once()
@@ -94,7 +96,7 @@ class TestAuth:
         gw = GatewayClient(gateway_url="https://gw.test")
         client, resp = _mock_client({"verified": True})
 
-        with patch("httpx.AsyncClient", return_value=client):
+        with patch.object(gw, "_client", return_value=client):
             result = await gw.verify_email("tok-abc")
             assert result["verified"] is True
             call_json = client.post.call_args[1]["json"]
@@ -105,7 +107,7 @@ class TestAuth:
         gw = GatewayClient(gateway_url="https://gw.test")
         client, resp = _mock_client({"ok": True, "token": "jwt-token-123"})
 
-        with patch("httpx.AsyncClient", return_value=client):
+        with patch.object(gw, "_client", return_value=client):
             result = await gw.login("user@test.com", "pass")
             assert result["token"] == "jwt-token-123"
             assert gw.api_key == "jwt-token-123"
@@ -115,7 +117,7 @@ class TestAuth:
         gw = GatewayClient(gateway_url="https://gw.test", api_key="old-key")
         client, resp = _mock_client({"ok": False})
 
-        with patch("httpx.AsyncClient", return_value=client):
+        with patch.object(gw, "_client", return_value=client):
             await gw.login("user@test.com", "bad-pass")
             assert gw.api_key == "old-key"
 
@@ -130,7 +132,7 @@ class TestAgentRegistry:
         gw = GatewayClient(gateway_url="https://gw.test", api_key="key")
         client, resp = _mock_client({"agent_id": "a1", "status": "registered"})
 
-        with patch("httpx.AsyncClient", return_value=client):
+        with patch.object(gw, "_client", return_value=client):
             result = await gw.register_agent(
                 "atlas",
                 capabilities=["search", "analysis"],
@@ -148,7 +150,7 @@ class TestAgentRegistry:
         agents_data = {"agents": [{"name": "atlas"}, {"name": "demiurge"}]}
         client, resp = _mock_client(agents_data)
 
-        with patch("httpx.AsyncClient", return_value=client):
+        with patch.object(gw, "_client", return_value=client):
             result = await gw.discover_agents()
             assert len(result) == 2
 
@@ -158,7 +160,7 @@ class TestAgentRegistry:
         agents_data = {"agents": [{"name": "atlas", "capabilities": ["search"]}]}
         client, resp = _mock_client(agents_data)
 
-        with patch("httpx.AsyncClient", return_value=client):
+        with patch.object(gw, "_client", return_value=client):
             result = await gw.discover_agents(capability="search", limit=5)
             assert len(result) == 1
             call_params = client.get.call_args[1]["params"]
@@ -170,7 +172,7 @@ class TestAgentRegistry:
         gw = GatewayClient(gateway_url="https://gw.test", api_key="key")
         client, resp = _mock_client({"agents": [{"name": "my-agent"}]})
 
-        with patch("httpx.AsyncClient", return_value=client):
+        with patch.object(gw, "_client", return_value=client):
             result = await gw.my_agents()
             assert len(result) == 1
             assert result[0]["name"] == "my-agent"
@@ -183,12 +185,12 @@ class TestAgentRegistry:
         mock_resp.json.return_value = {"agents": []}
         mock_resp.raise_for_status = MagicMock()
 
-        client = MagicMock()
+        client = AsyncMock()
         client.get = AsyncMock(return_value=mock_resp)
         client.__aenter__ = AsyncMock(return_value=client)
         client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("httpx.AsyncClient", return_value=client):
+        with patch.object(gw, "_client", return_value=client):
             result = await gw.my_agents()
             assert result == []
 
@@ -197,7 +199,7 @@ class TestAgentRegistry:
         gw = GatewayClient(gateway_url="https://gw.test", api_key="key")
         client, resp = _mock_client({"deleted": True})
 
-        with patch("httpx.AsyncClient", return_value=client):
+        with patch.object(gw, "_client", return_value=client):
             result = await gw.unregister_agent("agent-123")
             assert result["deleted"] is True
             call_url = client.delete.call_args[0][0]
@@ -214,7 +216,7 @@ class TestErrorHandling:
         gw = GatewayClient(gateway_url="https://gw.test")
         client, _ = _mock_client(side_effect=httpx.ConnectError("Connection refused"))
 
-        with patch("httpx.AsyncClient", return_value=client):
+        with patch.object(gw, "_client", return_value=client):
             with pytest.raises(httpx.ConnectError):
                 await gw.register("u@test.com", "pass")
 
@@ -223,7 +225,7 @@ class TestErrorHandling:
         gw = GatewayClient(gateway_url="https://gw.test", api_key="bad-key")
         client, _ = _mock_client(status_code=401)
 
-        with patch("httpx.AsyncClient", return_value=client):
+        with patch.object(gw, "_client", return_value=client):
             with pytest.raises(httpx.HTTPStatusError):
                 await gw.register_agent("atlas")
 
@@ -232,7 +234,7 @@ class TestErrorHandling:
         gw = GatewayClient(gateway_url="https://gw.test")
         client, _ = _mock_client(status_code=500)
 
-        with patch("httpx.AsyncClient", return_value=client):
+        with patch.object(gw, "_client", return_value=client):
             with pytest.raises(httpx.HTTPStatusError):
                 await gw.discover_agents()
 
@@ -250,7 +252,7 @@ class TestInference:
             "model": "llama3.2",
         })
 
-        with patch("httpx.AsyncClient", return_value=client):
+        with patch.object(gw, "_client", return_value=client):
             result = await gw.inference(
                 messages=[{"role": "user", "content": "Hi"}],
                 model="llama3.2",
@@ -264,12 +266,13 @@ class TestInference:
         gw = GatewayClient()
         client, resp = _mock_client({"choices": []})
 
-        with patch("httpx.AsyncClient", return_value=client):
+        with patch.object(gw, "_client", return_value=client):
             await gw.inference(
                 messages=[{"role": "user", "content": "test"}],
+                inference_url="https://custom-llm.example.com/v1/chat/completions",
             )
             call_url = client.post.call_args[0][0]
-            assert "/v1/chat/completions" in call_url
+            assert "custom-llm.example.com" in call_url
 
 
 # ---------------------------------------------------------------------------
@@ -283,24 +286,24 @@ class TestHealth:
         mock_resp = MagicMock()
         mock_resp.status_code = 200
 
-        client = MagicMock()
+        client = AsyncMock()
         client.get = AsyncMock(return_value=mock_resp)
         client.__aenter__ = AsyncMock(return_value=client)
         client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("httpx.AsyncClient", return_value=client):
+        with patch.object(gw, "_client", return_value=client):
             result = await gw.health()
             assert result is True
 
     @pytest.mark.asyncio
     async def test_health_returns_false_on_error(self):
         gw = GatewayClient(gateway_url="https://gw.test")
-        client = MagicMock()
+        client = AsyncMock()
         client.get = AsyncMock(side_effect=Exception("Connection refused"))
         client.__aenter__ = AsyncMock(return_value=client)
         client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("httpx.AsyncClient", return_value=client):
+        with patch.object(gw, "_client", return_value=client):
             result = await gw.health()
             assert result is False
 
@@ -310,11 +313,11 @@ class TestHealth:
         mock_resp = MagicMock()
         mock_resp.status_code = 500
 
-        client = MagicMock()
+        client = AsyncMock()
         client.get = AsyncMock(return_value=mock_resp)
         client.__aenter__ = AsyncMock(return_value=client)
         client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("httpx.AsyncClient", return_value=client):
+        with patch.object(gw, "_client", return_value=client):
             result = await gw.health()
             assert result is False

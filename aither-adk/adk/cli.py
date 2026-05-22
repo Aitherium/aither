@@ -148,6 +148,251 @@ def cmd_init(args):
     return 0
 
 
+def cmd_create_app(args):
+    """Scaffold a full portal-kit workspace app using WorkspaceRuntime template."""
+    import subprocess as _sp
+
+    slug = args.subdomain or re.sub(r"[^a-z0-9-]", "-", args.name.lower().strip()).strip("-")[:30]
+    output = args.output or f"./{slug}"
+
+    # Locate scaffold.py — check several known paths
+    scaffold_candidates = [
+        # When installed inside a dev workspace with aitheros monorepo
+        Path("/workspace/aitheros/AitherOS/apps/WorkspaceRuntime/scaffold.py"),
+        # Relative to repo root on local dev
+        Path(__file__).resolve().parents[2] / "AitherOS" / "apps" / "WorkspaceRuntime" / "scaffold.py",
+        # Sibling directory (standalone workspace)
+        Path.cwd() / "WorkspaceRuntime" / "scaffold.py",
+    ]
+
+    scaffold_path = None
+    for candidate in scaffold_candidates:
+        if candidate.exists():
+            scaffold_path = candidate
+            break
+
+    if not scaffold_path:
+        # Fallback: download scaffold.py from GitHub
+        print("WorkspaceRuntime scaffold not found locally — downloading...")
+        import urllib.request
+        import tempfile
+        dl_url = "https://raw.githubusercontent.com/Aitherium/AitherOS/develop/AitherOS/apps/WorkspaceRuntime/scaffold.py"
+        try:
+            tmp = Path(tempfile.mkdtemp()) / "scaffold.py"
+            urllib.request.urlretrieve(dl_url, str(tmp))
+            scaffold_path = tmp
+            print(f"  Downloaded to {tmp}")
+        except Exception as e:
+            print(f"Error: Could not download scaffold: {e}")
+            print()
+            print("Expected locations:")
+            for c in scaffold_candidates:
+                print(f"  {c}")
+            print()
+            print("If you're in a dev workspace, make sure 'aitheros' is in your repos.")
+            return 1
+
+    # Build scaffold.py arguments
+    cmd = [
+        sys.executable, str(scaffold_path),
+        "--name", args.name,
+        "--output", output,
+        "--subdomain", slug,
+        "--llm-provider", args.llm_provider,
+    ]
+    if args.company:
+        cmd += ["--company", args.company]
+    if args.industry:
+        cmd += ["--industry", args.industry]
+    if args.description:
+        cmd += ["--description", args.description]
+    if args.color:
+        cmd += ["--color", args.color]
+    if args.force:
+        cmd.append("--force")
+
+    print(f"Scaffolding '{args.name}' -> {output}")
+    print()
+    result = _sp.run(cmd)
+    if result.returncode == 0:
+        print()
+        print("Next: connect to AitherOS backend for inference:")
+        print(f"  cd {output}")
+        print(f"  docker compose -f docker-compose.yml -f docker-compose.aitheros.yml up -d")
+        print()
+        print("Or standalone (local LLM):")
+        print(f"  cd {output}")
+        print(f"  docker compose up -d")
+    return result.returncode
+
+
+def cmd_workspace(args):
+    """Manage dev workspaces on AitherOS tunnel."""
+    import json as _json
+    import urllib.request
+    import urllib.error
+
+    ws_cmd = getattr(args, "ws_command", None)
+    if not ws_cmd:
+        print("Usage: adk workspace [create|bundle|list|submit|scopes]")
+        return 1
+
+    # Load auth token
+    cfg = load_saved_config()
+    token = cfg.get("api_key") or cfg.get("access_token") or os.environ.get("AITHER_API_KEY", "")
+    if not token and ws_cmd != "scopes":
+        print("Error: Not authenticated. Run: adk login")
+        return 1
+
+    tunnel_url = getattr(args, "tunnel_url", "https://tunnel.aitherium.com")
+
+    def _api(method, path, body=None):
+        """Make authenticated request to tunnel API."""
+        url = f"{tunnel_url}{path}"
+        data = _json.dumps(body).encode() if body else None
+        req = urllib.request.Request(url, data=data, method=method, headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        })
+        import ssl
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        try:
+            with urllib.request.urlopen(req, context=ctx, timeout=30) as resp:
+                return _json.loads(resp.read()), resp.status
+        except urllib.error.HTTPError as e:
+            try:
+                err_body = _json.loads(e.read())
+            except (ValueError, OSError):
+                err_body = {"detail": str(e)}
+            return err_body, e.code
+
+    if ws_cmd == "scopes":
+        scopes = {
+            "fullstack": "Full monorepo + AitherZero (admin/developer)",
+            "frontend": "AitherVeil + packages",
+            "backend": "lib + services + config + tests",
+            "gargbot": ".RESEARCH/.GARGBOT + portal-kit",
+            "chelle": ".RESEARCH/.CHELLE + portal-kit",
+            "veil": "AitherVeil + all packages",
+            "portal": "AitherVeil + portal-kit + desktop-core",
+            "node": "AitherNode (standalone + monorepo)",
+            "connect": "AitherConnect",
+            "shell": "AitherShell (standalone + monorepo)",
+            "adk": "aither-adk (this package)",
+            "desktop": "AitherDesktop + Veil + packages",
+            "creative": "Canvas-Studio + creative services",
+            "gpu": "VRAM-Sentinel + GPU services",
+            "portal-kit-dev": "portal-kit + GargBot + Chelle (indie devs)",
+        }
+        print("Available workspace scopes:")
+        print()
+        for name, desc in scopes.items():
+            print(f"  {name:20s} {desc}")
+        print()
+        print("Usage: adk workspace create --scope gargbot")
+        return 0
+
+    if ws_cmd == "create":
+        scope = getattr(args, "scope", "fullstack")
+        print(f"Creating cloud workspace (scope: {scope})...")
+        data, status = _api("POST", "/tunnel/developer/workspace", {
+            "scope_template": scope,
+        })
+        if status >= 400:
+            print(f"Error ({status}): {data.get('detail', data.get('error', 'Unknown'))}")
+            return 1
+        print(f"  Container: {data.get('container_name', 'unknown')}")
+        print(f"  Terminal:  {data.get('terminal_url', 'N/A')}")
+        print(f"  VS Code:   {data.get('code_server_url', 'N/A')}")
+        print(f"  Branch:    {data.get('branch', 'develop')}")
+        print(f"  Scope:     {data.get('scope_template', scope)}")
+        print()
+        print("Connect via SSH:")
+        print(f"  ssh dev@tunnel.aitherium.com -p {data.get('ssh_port', '22')}")
+        print()
+        print("Or open the terminal in browser:")
+        print(f"  {data.get('terminal_url', tunnel_url)}")
+        return 0
+
+    if ws_cmd == "bundle":
+        scope = getattr(args, "scope", "fullstack")
+        output = getattr(args, "output", "aitheros-devws.zip")
+        print(f"Downloading workspace bundle (scope: {scope})...")
+        url = f"{tunnel_url}/tunnel/developer/workspace/bundle?scope={scope}"
+        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+        import ssl
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        try:
+            with urllib.request.urlopen(req, context=ctx, timeout=60) as resp:
+                with open(output, "wb") as f:
+                    f.write(resp.read())
+            print(f"  Saved: {output}")
+            print()
+            print("Next steps:")
+            print(f"  unzip {output}")
+            print(f"  cd aitheros-devws-*/")
+            print(f"  docker compose up -d")
+            return 0
+        except urllib.error.HTTPError as e:
+            print(f"Error ({e.code}): {e.reason}")
+            return 1
+
+    if ws_cmd == "list":
+        data, status = _api("GET", "/tunnel/developer/workspaces")
+        if status >= 400:
+            print(f"Error ({status}): {data.get('detail', 'Unknown')}")
+            return 1
+        workspaces = data.get("workspaces", [])
+        if not workspaces:
+            print("No active workspaces.")
+            return 0
+        print(f"Active workspaces ({len(workspaces)}):")
+        for ws in workspaces:
+            name = ws.get("container_name", ws.get("name", "?"))
+            scope = ws.get("scope_template", "?")
+            status_str = ws.get("status", "?")
+            print(f"  {name:40s} scope={scope:15s} status={status_str}")
+        return 0
+
+    if ws_cmd == "submit":
+        message = getattr(args, "message", "")
+        workspace = getattr(args, "workspace", "")
+        if not workspace:
+            # Auto-detect: check if we're inside a dev workspace container
+            workspace = os.environ.get("DEV_SESSION_ID", "")
+            if not workspace:
+                # Try container hostname
+                import socket
+                hostname = socket.gethostname()
+                if hostname.startswith("aitheros-devws-"):
+                    workspace = hostname
+        if not workspace:
+            print("Error: --workspace required (or run from inside a dev workspace)")
+            return 1
+        print(f"Submitting changes from {workspace}...")
+        data, status = _api("POST", "/tunnel/developer/workspace/submit-changes", {
+            "workspace": workspace,
+            "message": message,
+        })
+        if status >= 400:
+            print(f"Error ({status}): {data.get('detail', data.get('error', 'Unknown'))}")
+            return 1
+        print(f"  Status: {data.get('status', '?')}")
+        if data.get("pr_url"):
+            print(f"  PR: {data['pr_url']}")
+        for step in data.get("steps", []):
+            icon = "+" if step["status"] == "success" else "x" if step["status"] == "failed" else "."
+            print(f"  [{icon}] {step['name']}: {step.get('detail', '')}")
+        return 0
+
+    print(f"Unknown workspace command: {ws_cmd}")
+    return 1
+
+
 def cmd_run(args):
     """Start the agent server."""
     from adk.server import main as server_main
@@ -3395,6 +3640,24 @@ def _register_commands(sub):
     aeon_p.add_argument("-r", "--rounds", type=int, default=1, help="Discussion rounds per message (default: 1)")
     aeon_p.add_argument("--no-synthesize", action="store_true", help="Skip orchestrator synthesis")
 
+    # adk create-app — scaffold a full portal-kit workspace app
+    ca_p = sub.add_parser("create-app",
+                          help="Scaffold a portal-kit workspace app (like GargBot, Chelle)")
+    ca_p.add_argument("name", help="App name (e.g. 'ACME Assistant')")
+    ca_p.add_argument("-o", "--output", help="Output directory (default: ./<slug>)")
+    ca_p.add_argument("--company", default="", help="Company name")
+    ca_p.add_argument("--industry", default="general", help="Industry vertical")
+    ca_p.add_argument("--description", default="", help="What this app does")
+    ca_p.add_argument("--subdomain", default="", help="URL slug (auto-derived from name)")
+    ca_p.add_argument("--color", default="#6366f1", help="Primary brand color")
+    ca_p.add_argument("--template", default="default",
+                      choices=["default", "gargbot", "chelle", "wildroot"],
+                      help="Base template (default: default)")
+    ca_p.add_argument("--llm-provider", dest="llm_provider", default="aitheros",
+                      choices=["aitheros", "ollama", "portal", "deepseek", "openai", "anthropic", "gemini"],
+                      help="LLM provider (default: aitheros)")
+    ca_p.add_argument("--force", action="store_true", help="Overwrite existing directory")
+
     # aither deploy — component deployment OR agent deployment
     deploy_p = sub.add_parser("deploy", help="Deploy AitherOS components or agents")
     deploy_sub = deploy_p.add_subparsers(dest="component")
@@ -3463,6 +3726,36 @@ def _register_commands(sub):
                           default="gateway", help="Deploy target (default: gateway)")
     d_agent.add_argument("--strategy", choices=["rolling", "blue-green", "canary", "recreate"],
                           default="rolling", help="Deployment strategy (for container targets)")
+
+    # adk workspace — manage dev workspaces on AitherOS tunnel
+    ws_p = sub.add_parser("workspace", help="Manage dev workspaces on AitherOS tunnel")
+    ws_sub = ws_p.add_subparsers(dest="ws_command")
+
+    ws_create = ws_sub.add_parser("create", help="Create a cloud dev workspace")
+    ws_create.add_argument("--scope", default="fullstack",
+                           help="Scope template: fullstack, gargbot, chelle, veil, portal, frontend, backend, etc.")
+    ws_create.add_argument("--tunnel-url", default="https://tunnel.aitherium.com",
+                           help="Tunnel URL (default: tunnel.aitherium.com)")
+
+    ws_bundle = ws_sub.add_parser("bundle", help="Download a dev workspace bundle (docker-compose + WireGuard)")
+    ws_bundle.add_argument("--scope", default="fullstack",
+                           help="Scope template")
+    ws_bundle.add_argument("-o", "--output", default="aitheros-devws.zip",
+                           help="Output zip file path")
+    ws_bundle.add_argument("--tunnel-url", default="https://tunnel.aitherium.com",
+                           help="Tunnel URL")
+
+    ws_list = ws_sub.add_parser("list", help="List your active workspaces")
+    ws_list.add_argument("--tunnel-url", default="https://tunnel.aitherium.com",
+                         help="Tunnel URL")
+
+    ws_submit = ws_sub.add_parser("submit", help="Submit changes from workspace (commit + PR)")
+    ws_submit.add_argument("message", help="Commit message")
+    ws_submit.add_argument("--workspace", help="Workspace container name (auto-detected if in one)")
+    ws_submit.add_argument("--tunnel-url", default="https://tunnel.aitherium.com",
+                           help="Tunnel URL")
+
+    ws_sub.add_parser("scopes", help="List available scope templates")
 
     # aither onboard — interactive onboarding wizard
     onboard_p = sub.add_parser("onboard", help="Interactive onboarding — detect, configure, integrate")
@@ -3731,6 +4024,8 @@ def main():
         sys.exit(cmd_setup(args))
     elif args.command == "aeon":
         sys.exit(cmd_aeon(args))
+    elif args.command == "create-app":
+        sys.exit(cmd_create_app(args))
     elif args.command == "deploy":
         component = getattr(args, "component", None)
         if component == "agent":
@@ -3738,6 +4033,8 @@ def main():
         else:
             from adk.deploy import cmd_deploy_component
             sys.exit(cmd_deploy_component(args))
+    elif args.command == "workspace":
+        sys.exit(cmd_workspace(args))
     elif args.command == "onboard":
         sys.exit(cmd_onboard(args))
     elif args.command == "integrate":

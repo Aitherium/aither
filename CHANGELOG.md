@@ -2,6 +2,27 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [1.4.0] - 2026-05-22
+
+### Added
+- **Sovereign template now ships with `agent_core` 5-tier memory** — generated
+  backends include the canonical `agent_core/` package (working → episodic →
+  semantic → procedural → identity) plus `agent_memory.py` helper, vendored
+  from `portal-kit-backend`.
+- `aiosqlite>=0.20.0` added to sovereign template `requirements.txt` for
+  local agent_core SQLite storage.
+- Document tombstoning: `evict_cached_conversations_referencing` is wired
+  through document-delete handlers in consumer apps so memories citing
+  deleted documents are blocked from recall.
+- New tests: 13 smoke tests for `portal-kit-backend/agent_core` covering
+  promotion thresholds, decay rates, store roundtrip, tombstone recall
+  blocking, circuit breaker state machine, and chat-turn recording.
+
+### Changed
+- `scripts/vendor_agent_core.py` now syncs canonical `agent_core` to 4
+  targets: WorkspaceRuntime, ADK sovereign template, and the GargBot +
+  Chelle consumer mirrors (previously only 2).
+
 ## [1.2.1] - 2026-05-21
 
 ### Added
