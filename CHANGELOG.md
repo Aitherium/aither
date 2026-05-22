@@ -2,6 +2,22 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [1.4.1] - 2026-05-22
+
+### Fixed
+- **macOS executable builds** — dropped `--target-arch universal2` from
+  `packaging/build_executable.py`. PyPI wheels for `pydantic_core` and other
+  native deps are arch-specific, not fat binaries, so universal2 always failed
+  with `IncompatibleBinaryArchError`. Now builds for the runner's native arch
+  (`aither-macos-arm64`).
+- **Release workflow strategy** — added `fail-fast: false` so a single
+  executable build failure no longer cancels the other OS jobs.
+- **PyPI publish** — added `skip-existing: true` so re-runs of the same
+  version don't fail when the artifact already exists.
+- **GitHub Release job** — now runs whenever `pypi` succeeds even if some
+  executable matrix entries fail, so the release page is always created with
+  whatever binaries did build successfully.
+
 ## [1.4.0] - 2026-05-22
 
 ### Added

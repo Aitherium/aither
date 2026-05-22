@@ -77,8 +77,9 @@ def build(onedir: bool = False):
     # Platform-specific
     if platform.system() == "Windows":
         args.extend(["--icon", "NONE"])  # TODO: add icon
-    elif platform.system() == "Darwin":
-        args.extend(["--target-arch", "universal2"])
+    # NOTE: Do NOT pass --target-arch universal2 on Darwin. PyPI wheels for
+    # pydantic_core, etc. are arch-specific (not fat binaries), so universal2
+    # builds fail with IncompatibleBinaryArchError. Build for native arch only.
 
     # Console app (not windowed)
     args.append("--console")
