@@ -2,6 +2,32 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [1.5.0] - 2026-05-23
+
+### Added
+- **`--sovereign` flag for `adk deploy node`** — registers the node with the
+  Aitherium hub via federation after deployment. Saves federation credentials
+  to `~/.aither/.env.federation`. Accepts `--hub` (custom hub URL) and
+  `--tenant` (tenant slug) options. Non-fatal: node runs standalone if
+  registration fails.
+- **Federation → fleet cross-post** (Genesis) — sovereign nodes that register
+  or heartbeat via `/federation/register` and `/federation/heartbeat` now
+  automatically appear in the fleet dashboard (`/fleet/deployments`) with
+  `node_type: "sovereign"` and live status/metrics.
+- **"Deploy Sovereign Node" section on Connect page** (AitherVeil) — Section 8
+  with ADK deploy commands, fleet dashboard links, and provision page links.
+- **`deploy-node` action in tunnel proxy** (AitherVeil) — Connect page and
+  external callers can now request bootstrap scripts via
+  `POST /api/tunnel/devworkspace?action=deploy-node`.
+
+### Fixed
+- **Fleet provision page** — API URL corrected from `/api/fleet/provision` to
+  `/api/bridge/genesis/fleet/provision` (matches bridge proxy pattern).
+- **Fleet detail page** — API URL corrected from `/api/fleet/deployments/` to
+  `/api/bridge/genesis/fleet/deployments/` (same fix).
+- **Dockerfile** — entry point corrected from `aither-serve` to `adk-serve`
+  (matches `pyproject.toml` script registration). Version label updated.
+
 ## [1.4.1] - 2026-05-22
 
 ### Fixed

@@ -102,6 +102,33 @@ async def delete_document(
     for f in settings.upload_dir.glob(f"{doc_id}.*"):
         f.unlink(missing_ok=True)
 
-    await db.delete(doc)
+    # Citation-aware cache eviction (agent_core) — only flush conversations
+    # whose memories cite this document. Falls back to tenant flush on error.
+    from .chat import _cache, _memory_scope
+    from ..agent_memory import get_memory_client
+    from ..agent_core import (
+        evict_cached_conversations_referencing,
+        tombstone_document,
+    )
+    try:
+        # Memory store uses the scoped key; cache uses raw tenant_id.
+        await evict_cached_conversations_referencing(
+            tenant_id=_memory_scope(user),
+            document_id=doc_id,
+            memory_client=get_memory_client(),
+            cache=None,  # handle cache separately with raw tenant key
+        )
+        for _k in [k for k in _cache if k[0] == user.tenant_id]:
+            del _cache[_k]
+    except Exception as _ev_exc:  # noqa: BLE001
+        _log.warning("citation-aware evict failed (%s); flushing tenant", _ev_exc)
+        for _k in [k for k in _cache if k[0] == user.tenant_id]:
+            del _cache[_k]
+
+    # Tombstone if the document model supports it; otherwise hard-delete.
+    if tombstone_document(doc):
+        db.add(doc)
+    else:
+        await db.delete(doc)
     await db.commit()
     return {"status": "deleted", "doc_id": doc_id}

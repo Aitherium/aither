@@ -609,6 +609,9 @@ def deploy_node(
     dashboard: bool = False,
     mesh: bool = False,
     api_key_arg: Optional[str] = None,
+    sovereign: bool = False,
+    hub_url: str = "https://portal.aitherium.com",
+    tenant: Optional[str] = None,
 ) -> int:
     """Deploy AitherNode (MCP server) + Genesis orchestrator via Docker Compose.
 
@@ -645,7 +648,7 @@ def deploy_node(
     if dry_run:
         print(f"  {yellow('DRY RUN -- no changes will be made')}\n")
 
-    total_steps = 4
+    total_steps = 5 if sovereign else 4
 
     # -- Step 1: Prerequisites ------------------------------------------------
     step(1, total_steps, "Checking prerequisites")
@@ -739,6 +742,41 @@ def deploy_node(
                 warn(f"{name} (:{port}): not responding yet -- may still be starting")
                 all_healthy = False
 
+    # -- Step 5 (optional): Federation registration ----------------------------
+    if sovereign:
+        step(total_steps, total_steps, "Registering with federation hub")
+        tenant_slug = tenant or os.environ.get("AITHER_TENANT") or "default"
+        reg_url = f"{hub_url.rstrip('/')}/federation/register"
+
+        if dry_run:
+            info(f"Would POST to {reg_url}")
+            info(f"  tenant_slug: {tenant_slug}")
+        else:
+            try:
+                import json as _json
+                payload = _json.dumps({"tenant_slug": tenant_slug}).encode()
+                req = Request(reg_url, data=payload, method="POST",
+                              headers={"Content-Type": "application/json"})
+                with urlopen(req, timeout=15) as resp:
+                    result = _json.loads(resp.read())
+                fed_node_id = result.get("node_id", "")
+                fed_api_key = result.get("api_key", "")
+                info(f"Registered as node {cyan(fed_node_id)}")
+
+                # Persist federation credentials
+                fed_env = AITHER_DIR / ".env.federation"
+                fed_env.write_text(
+                    f"AITHER_FED_NODE_ID={fed_node_id}\n"
+                    f"AITHER_FED_API_KEY={fed_api_key}\n"
+                    f"AITHER_FED_HUB={hub_url}\n"
+                    f"AITHER_FED_TENANT={tenant_slug}\n",
+                    encoding="utf-8",
+                )
+                info(f"Federation credentials saved to {dim(str(fed_env))}")
+            except Exception as e:
+                warn(f"Federation registration failed: {e}")
+                warn("Node is running but not connected to hub -- register later with 'adk connect'")
+
     # -- Summary --------------------------------------------------------------
     print()
     print(bold("  " + "-" * 60))
@@ -747,6 +785,8 @@ def deploy_node(
     info(f"Genesis:    {cyan('http://localhost:8001')}")
     if dashboard:
         info(f"Dashboard:  {cyan('http://localhost:3000')}")
+    if sovereign and not dry_run:
+        info(f"Federation: {cyan(hub_url)} (tenant: {tenant or 'default'})")
     print()
     info(f"Manage:")
     info(f"  Logs:  {cyan(f'docker compose -f {compose_file} logs -f')}")
@@ -1370,6 +1410,256 @@ def deploy_stop(component: str) -> int:
 
 
 # ===========================================================================
+# Tenant agent deployment — download + configure + start + register
+# ===========================================================================
+
+def cmd_deploy_tenant_agent(args) -> int:
+    """Download a tenant agent app from portal, configure it, and start it.
+
+    This is the customer-facing deploy flow:
+        adk deploy agent gargbot --tenant garg-consulting
+        adk deploy agent gargbot --tenant garg-consulting --inference cloud
+        adk deploy agent gargbot --from https://portal.aitherium.com/api/...
+
+    Steps:
+        1. Authenticate (verify tenant credentials from ~/.aither/config.json)
+        2. Download agent package from portal
+        3. Configure (.env, inference mode, Ed25519 keypair)
+        4. Start (docker compose or adk run)
+        5. Register with portal fleet
+    """
+    import tempfile
+    from urllib.request import Request, urlopen
+    from urllib.error import HTTPError
+
+    agent_slug = args.name
+    tenant_slug = getattr(args, "tenant", None) or ""
+    from_url = getattr(args, "from_url", None) or ""
+    inference_mode = getattr(args, "inference", None) or ""
+
+    if not agent_slug:
+        err("Agent name is required: adk deploy agent <name> --tenant <slug>")
+        return 1
+
+    total_steps = 5
+    # ── Step 1: Authenticate ──────────────────────────────────────────────
+    step(1, total_steps, "Authenticating")
+
+    from adk.config import load_saved_config, save_saved_config
+    saved = load_saved_config()
+    api_key = getattr(args, "api_key", None) or saved.get("api_key", "") or os.environ.get("AITHER_API_KEY", "")
+    if not tenant_slug:
+        tenant_slug = saved.get("tenant_id", "") or saved.get("tenant_slug", "")
+
+    if not api_key:
+        err("No API key found. Run 'adk login' first or pass --api-key.")
+        return 1
+    if not tenant_slug:
+        err("No tenant slug. Run 'adk login' or pass --tenant <slug>.")
+        return 1
+
+    info(f"Tenant: {bold(tenant_slug)}")
+    info(f"Agent:  {bold(agent_slug)}")
+
+    # ── Step 2: Download agent package ────────────────────────────────────
+    step(2, total_steps, "Downloading agent package")
+
+    if from_url:
+        download_url = from_url
+    else:
+        portal_url = saved.get("portal_url", "") or os.environ.get(
+            "AITHER_PORTAL_URL", "https://portal.aitherium.com"
+        )
+        # Use Genesis bridge — portal proxies to Genesis /apps/catalog/{slug}/download
+        download_url = f"{portal_url}/api/bridge/genesis/apps/catalog/{agent_slug}/download"
+
+    deploy_dir = Path.home() / ".aither" / "agents" / agent_slug
+    deploy_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        req = Request(download_url)
+        req.add_header("Authorization", f"Bearer {api_key}")
+        req.add_header("X-Tenant-ID", tenant_slug)
+        resp = urlopen(req, timeout=60)
+        zip_data = resp.read()
+        info(f"Downloaded {len(zip_data) / 1024:.1f} KB")
+    except HTTPError as e:
+        if e.code == 404:
+            err(f"Agent '{agent_slug}' not found in the catalog for tenant '{tenant_slug}'.")
+        elif e.code == 403:
+            err("Access denied. Check your API key and plan tier.")
+        else:
+            err(f"Download failed: HTTP {e.code}")
+        return 1
+    except Exception as e:
+        err(f"Download failed: {e}")
+        return 1
+
+    # Extract zip
+    try:
+        import zipfile as _zf
+        from io import BytesIO
+        with _zf.ZipFile(BytesIO(zip_data)) as zf:
+            zf.extractall(deploy_dir)
+        info(f"Extracted to {deploy_dir}")
+    except Exception as e:
+        err(f"Failed to extract package: {e}")
+        return 1
+
+    # ── Step 3: Configure ─────────────────────────────────────────────────
+    step(3, total_steps, "Configuring")
+
+    # Generate instance ID
+    from adk.agent_registry import get_or_create_instance_id
+    instance_id = get_or_create_instance_id(deploy_dir, agent_slug)
+    info(f"Instance ID: {dim(instance_id)}")
+
+    # Write .env from template
+    env_template = deploy_dir / ".env.template"
+    env_file = deploy_dir / ".env"
+    if env_template.exists() and not env_file.exists():
+        env_content = env_template.read_text(encoding="utf-8")
+        env_content = env_content.replace("AITHER_API_KEY=", f"AITHER_API_KEY={api_key}")
+        env_content = env_content.replace("AITHER_TENANT_ID=", f"AITHER_TENANT_ID={tenant_slug}")
+        if inference_mode:
+            env_content = env_content.replace("AITHER_CLOUD_MODE=", f"AITHER_CLOUD_MODE={inference_mode}")
+        env_content += f"\nAITHER_INSTANCE_ID={instance_id}\n"
+        env_file.write_text(env_content, encoding="utf-8")
+        info("Generated .env")
+    elif env_file.exists():
+        info(".env already exists, skipping")
+
+    # GPU detection + inference mode selection
+    if not inference_mode:
+        gpu = detect_gpu()
+        if gpu.vendor == "nvidia" and gpu.vram_mb >= 4096:
+            inference_mode = "local"
+            info(f"GPU detected: {green(gpu.name)} ({gpu.vram_mb}MB) — using local inference")
+        elif gpu.vendor in ("nvidia", "amd", "apple"):
+            inference_mode = "hybrid"
+            info(f"GPU detected: {yellow(gpu.name)} — using hybrid inference")
+        else:
+            inference_mode = "cloud"
+            info("No GPU detected — using cloud inference (BYOK)")
+
+    # Generate Ed25519 keypair for federation identity
+    try:
+        from adk.federation_lite import generate_keypair
+        key_dir = deploy_dir / ".aither" / "keys"
+        generate_keypair(key_dir, agent_slug)
+        info("Generated Ed25519 federation keypair")
+    except Exception as e:
+        warn(f"Keypair generation skipped: {e}")
+
+    # ── Step 4: Start ─────────────────────────────────────────────────────
+    step(4, total_steps, "Starting agent")
+
+    compose_file = deploy_dir / "docker-compose.yml"
+    use_docker = compose_file.exists() and shutil.which("docker")
+
+    if use_docker:
+        try:
+            result = subprocess.run(
+                ["docker", "compose", "-f", str(compose_file), "up", "-d"],
+                cwd=str(deploy_dir), capture_output=True, text=True, timeout=120,
+            )
+            if result.returncode == 0:
+                info(f"Agent started via Docker Compose")
+            else:
+                warn(f"Docker start returned {result.returncode}: {result.stderr[:200]}")
+                info("Falling back to native ADK mode...")
+                use_docker = False
+        except Exception as e:
+            warn(f"Docker failed: {e}")
+            use_docker = False
+
+    if not use_docker:
+        # Read port from bundle metadata
+        port = 8080
+        bundle_meta = deploy_dir / "bundle.json"
+        if bundle_meta.exists():
+            try:
+                meta = json.loads(bundle_meta.read_text(encoding="utf-8"))
+                port = meta.get("port", 8080)
+            except Exception:
+                pass
+        info(f"Starting native ADK server on port {port}...")
+        # Start in background
+        adk_cmd = [sys.executable, "-m", "adk.server",
+                    "--identity", agent_slug, "--port", str(port)]
+        env = os.environ.copy()
+        env["AITHER_API_KEY"] = api_key
+        env["AITHER_TENANT_ID"] = tenant_slug
+        env["AITHER_INSTANCE_ID"] = instance_id
+        if inference_mode:
+            env["AITHER_CLOUD_MODE"] = inference_mode
+        try:
+            proc = subprocess.Popen(
+                adk_cmd, cwd=str(deploy_dir), env=env,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            info(f"Agent started (PID {proc.pid})")
+        except Exception as e:
+            err(f"Failed to start agent: {e}")
+            return 1
+
+    # ── Step 5: Register with portal ──────────────────────────────────────
+    step(5, total_steps, "Registering with portal fleet")
+
+    from adk.agent_registry import register_local_agent
+    register_local_agent(
+        agent_slug,
+        port=8080,
+        instance_id=instance_id,
+        metadata={"tenant_id": tenant_slug, "inference_mode": inference_mode},
+    )
+
+    try:
+        portal_url = saved.get("portal_url", "") or os.environ.get(
+            "AITHER_PORTAL_URL", "https://portal.aitherium.com"
+        )
+        invoke_url = os.environ.get("AITHER_INVOKE_URL", f"http://localhost:8080")
+        import urllib.request
+        reg_data = json.dumps({
+            "name": agent_slug,
+            "scope": {"visibility": "workspace", "tenant_id": tenant_slug},
+            "invoke_url": invoke_url,
+            "instance_id": instance_id,
+            "inference_mode": inference_mode,
+            "status": "online",
+        }).encode()
+        reg_req = Request(
+            f"{portal_url}/v1/agents/upsert",
+            data=reg_data,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+        )
+        urlopen(reg_req, timeout=15)
+        info("Registered with portal fleet")
+    except Exception as e:
+        warn(f"Portal registration deferred: {e}")
+        info("Agent will register on next heartbeat")
+
+    # ── Done ──────────────────────────────────────────────────────────────
+    print()
+    info(f"{green('Agent deployed successfully!')}")
+    print()
+    print(f"  Agent:     {bold(agent_slug)}")
+    print(f"  Tenant:    {tenant_slug}")
+    print(f"  Instance:  {dim(instance_id)}")
+    print(f"  Inference: {inference_mode}")
+    print(f"  Location:  {deploy_dir}")
+    print()
+    print(f"  Check status:  {cyan('adk status')}")
+    print(f"  View logs:     {cyan(f'docker compose -f {compose_file} logs -f') if use_docker else cyan('adk run --identity ' + agent_slug)}")
+    print(f"  Fleet UI:      {cyan('https://portal.aitherium.com/portal/fleet')}")
+    print()
+    return 0
+
+
+# ===========================================================================
 # CLI entry point
 # ===========================================================================
 
@@ -1425,8 +1715,12 @@ def cmd_deploy_component(args) -> int:
         dashboard = getattr(args, "dashboard", False)
         mesh = getattr(args, "mesh", False)
         api_key = getattr(args, "api_key", None)
+        sovereign = getattr(args, "sovereign", False)
+        hub_url = getattr(args, "hub", "https://portal.aitherium.com")
+        tenant_arg = getattr(args, "tenant", None)
         return deploy_node(dry_run=dry_run, tag=tag, gpu=gpu,
-                           dashboard=dashboard, mesh=mesh, api_key_arg=api_key)
+                           dashboard=dashboard, mesh=mesh, api_key_arg=api_key,
+                           sovereign=sovereign, hub_url=hub_url, tenant=tenant_arg)
 
     elif component == "core":
         tag = getattr(args, "tag", "latest") or "latest"

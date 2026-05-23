@@ -9,6 +9,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import sys
@@ -53,7 +54,7 @@ if __name__ == "__main__":
 
 _CONFIG_TEMPLATE = """\
 # AitherADK agent configuration
-# See https://github.com/Aitherium/aither for docs
+# See https://github.com/Aitherium/aither-adk for docs
 
 identity: {name}
 port: 8080
@@ -1216,13 +1217,139 @@ def cmd_deploy(args):
     return asyncio.run(_deploy())
 
 
+def _onboard_agent(agent_name: str, tenant_slug: str, args) -> int:
+    """Register a running agent with the portal fleet.
+
+    Usage: adk onboard --agent gargbot --tenant garg-consulting
+
+    Steps:
+        1. Detect running agent on localhost (check /health)
+        2. Read agent identity from ~/.aither/agents.json
+        3. Register with portal via FederationLiteClient.upsert_agents()
+        4. Configure inference (if not already done)
+        5. Print fleet dashboard URL
+    """
+    import asyncio
+    import json as _json
+
+    async def _do_onboard():
+        from adk.config import load_saved_config
+        saved = load_saved_config()
+        api_key = getattr(args, 'api_key', None) or saved.get("api_key", "") or os.environ.get("AITHER_API_KEY", "")
+
+        if not tenant_slug:
+            ts = saved.get("tenant_id", "") or saved.get("tenant_slug", "")
+        else:
+            ts = tenant_slug
+
+        if not api_key:
+            print(f"  No API key. Run 'adk login' first.")
+            return 1
+
+        print()
+        print(f"  Onboarding agent: {agent_name}")
+        print(f"  Tenant: {ts or '(not set)'}")
+        print()
+
+        # 1. Check if agent is running
+        agent_url = f"http://localhost:8080"
+        from adk.agent_registry import get_local_agent
+        local_entry = get_local_agent(agent_name)
+        if local_entry:
+            agent_url = local_entry.get("url", agent_url)
+            print(f"  [OK] Found in local registry: {agent_url}")
+        else:
+            print(f"  [..] Not in local registry, checking localhost:8080...")
+
+        import httpx
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                resp = await client.get(f"{agent_url}/api/health")
+                if resp.status_code < 300:
+                    print(f"  [OK] Agent healthy at {agent_url}")
+                else:
+                    print(f"  [!!] Agent returned {resp.status_code}")
+        except Exception:
+            print(f"  [!!] Agent not reachable at {agent_url}")
+            print(f"       Start it first: adk run --identity {agent_name}")
+            return 1
+
+        # 2. Read instance ID
+        instance_id = ""
+        if local_entry:
+            instance_id = local_entry.get("instance_id", "")
+        if not instance_id:
+            home = Path.home()
+            iid_file = home / ".aither" / "agents" / agent_name / ".aither" / "instance_id"
+            if iid_file.exists():
+                instance_id = iid_file.read_text(encoding="utf-8").strip()
+
+        # 3. Register with portal
+        portal_url = saved.get("portal_url", "") or os.environ.get(
+            "AITHER_PORTAL_URL", "https://portal.aitherium.com"
+        )
+        invoke_url = os.environ.get("AITHER_INVOKE_URL", agent_url)
+
+        try:
+            from adk.federation_lite import FederationLiteClient
+            fed = FederationLiteClient(
+                hub_url=portal_url,
+                api_key=api_key,
+                node_id=instance_id or agent_name,
+            )
+            result = await fed.upsert_agents([{
+                "name": agent_name,
+                "invoke_url": invoke_url,
+                "status": "online",
+                "tenant_id": ts,
+                "instance_id": instance_id,
+            }])
+            if result.get("error"):
+                print(f"  [!!] Portal registration failed: {result}")
+            else:
+                print(f"  [OK] Registered with portal fleet")
+        except Exception as e:
+            # Fallback: direct HTTP
+            try:
+                async with httpx.AsyncClient(timeout=15) as client:
+                    await client.post(
+                        f"{portal_url}/v1/agents/upsert",
+                        json={
+                            "name": agent_name,
+                            "scope": {"visibility": "workspace", "tenant_id": ts},
+                            "invoke_url": invoke_url,
+                            "instance_id": instance_id,
+                            "status": "online",
+                        },
+                        headers={"Authorization": f"Bearer {api_key}"},
+                    )
+                print(f"  [OK] Registered with portal fleet (direct)")
+            except Exception as e2:
+                print(f"  [!!] Portal registration failed: {e2}")
+
+        # 4. Print fleet URL
+        print()
+        print(f"  Fleet dashboard: https://portal.aitherium.com/portal/fleet")
+        if instance_id:
+            print(f"  Instance ID:     {instance_id}")
+        print()
+        return 0
+
+    return asyncio.run(_do_onboard())
+
+
 def cmd_onboard(args):
     """Interactive onboarding — detect products, configure, integrate."""
     import asyncio
     import json as _json
 
+    agent_name = getattr(args, 'agent', None) or ''
     tenant_slug = getattr(args, 'tenant', None) or os.environ.get('AITHER_TENANT_SLUG', '')
     non_interactive = getattr(args, 'non_interactive', False) or os.environ.get('CI') == 'true'
+
+    # ── Agent fleet registration mode ─────────────────────────────────
+    if agent_name:
+        return _onboard_agent(agent_name, tenant_slug, args)
 
     async def _onboard():
         # Inline ProductDetector (no AitherOS lib dependency)
@@ -2102,6 +2229,601 @@ def cmd_backend(args):
     return 1
 
 
+# ── Phase 1: aither keys — API key management ─────────────────────────────
+
+_KNOWN_PROVIDERS = {
+    "openai": {"env": "OPENAI_API_KEY", "test_url": "https://api.openai.com/v1/models", "label": "OpenAI"},
+    "anthropic": {"env": "ANTHROPIC_API_KEY", "test_url": "https://api.anthropic.com/v1/messages", "label": "Anthropic"},
+    "deepseek": {"env": "DEEPSEEK_API_KEY", "test_url": "https://api.deepseek.com/v1/models", "label": "DeepSeek"},
+    "google": {"env": "GOOGLE_API_KEY", "test_url": "https://generativelanguage.googleapis.com/v1/models", "label": "Google AI"},
+    "openrouter": {"env": "OPENROUTER_API_KEY", "test_url": "https://openrouter.ai/api/v1/models", "label": "OpenRouter"},
+    "groq": {"env": "GROQ_API_KEY", "test_url": "https://api.groq.com/openai/v1/models", "label": "Groq"},
+    "together": {"env": "TOGETHER_API_KEY", "test_url": "https://api.together.xyz/v1/models", "label": "Together AI"},
+}
+
+
+def _keys_path() -> Path:
+    """Path to local provider key store."""
+    d = Path.home() / ".aither"
+    d.mkdir(parents=True, exist_ok=True)
+    return d / "provider_keys.json"
+
+
+def _load_provider_keys() -> dict:
+    p = _keys_path()
+    if p.exists():
+        try:
+            return json.loads(p.read_text())
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {}
+
+
+def _save_provider_keys(data: dict) -> None:
+    p = _keys_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(data, indent=2))
+    # Restrict permissions on Unix
+    if sys.platform != "win32":
+        os.chmod(p, 0o600)
+
+
+def _mask_key(key: str) -> str:
+    if len(key) <= 8:
+        return "***"
+    return key[:4] + "..." + key[-4:]
+
+
+def _test_provider_key(provider: str, key: str) -> tuple:
+    """Test a provider key with a minimal API call. Returns (success, message)."""
+    import urllib.request
+    import urllib.error
+
+    info = _KNOWN_PROVIDERS.get(provider)
+    if not info:
+        return False, f"Unknown provider: {provider}"
+
+    test_url = info["test_url"]
+    headers = {"Content-Type": "application/json"}
+
+    if provider == "anthropic":
+        headers["x-api-key"] = key
+        headers["anthropic-version"] = "2023-06-01"
+        # Anthropic needs a POST to /messages with minimal payload to validate
+        try:
+            payload = json.dumps({
+                "model": "claude-haiku-4-5-20251001",
+                "max_tokens": 1,
+                "messages": [{"role": "user", "content": "hi"}],
+            }).encode()
+            req = urllib.request.Request(
+                "https://api.anthropic.com/v1/messages",
+                data=payload, headers=headers, method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                return True, "Key valid"
+        except urllib.error.HTTPError as e:
+            if e.code == 401:
+                return False, "Invalid API key"
+            if e.code in (400, 429):
+                return True, "Key valid (rate limited or minimal request rejected)"
+            return False, f"HTTP {e.code}"
+        except Exception as e:
+            return False, str(e)
+    else:
+        headers["Authorization"] = f"Bearer {key}"
+        try:
+            req = urllib.request.Request(test_url, headers=headers)
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                return True, "Key valid"
+        except urllib.error.HTTPError as e:
+            if e.code == 401:
+                return False, "Invalid API key"
+            if e.code == 403:
+                return False, "Key forbidden (check permissions)"
+            if e.code == 429:
+                return True, "Key valid (rate limited)"
+            return False, f"HTTP {e.code}"
+        except Exception as e:
+            return False, str(e)
+
+
+def _push_key_to_vault(provider: str, key: str) -> bool:
+    """Push key to AitherOS via the BYOK endpoint (tenant-scoped) or Secrets vault.
+
+    Tries the proper tenant LLM keys endpoint first (scoped to tenant),
+    falls back to raw AitherSecrets (platform-level).
+    """
+    import urllib.request
+    import urllib.error
+
+    # Try 1: Genesis BYOK endpoint (properly scoped to tenant)
+    genesis_url = os.environ.get("AITHER_URL", "http://localhost:8001")
+    try:
+        payload = json.dumps({"api_key": key}).encode()
+        headers = {"Content-Type": "application/json"}
+        # Forward tenant context if available
+        saved = load_saved_config()
+        if saved.get("tenant_id"):
+            headers["X-Tenant-ID"] = saved["tenant_id"]
+        if saved.get("api_key"):
+            headers["Authorization"] = f"Bearer {saved['api_key']}"
+        req = urllib.request.Request(
+            f"{genesis_url}/tenants/me/llm-keys/{provider}",
+            data=payload, headers=headers, method="PUT",
+        )
+        with urllib.request.urlopen(req, timeout=5):
+            return True
+    except Exception:
+        pass
+
+    # Try 2: Direct AitherSecrets (platform-level fallback)
+    info = _KNOWN_PROVIDERS.get(provider, {})
+    env_name = info.get("env", f"{provider.upper()}_API_KEY")
+    try:
+        payload = json.dumps({
+            "name": env_name, "value": key, "secret_type": "api_key",
+        }).encode()
+        req = urllib.request.Request(
+            "http://localhost:8111/api/secrets",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=5):
+            return True
+    except Exception:
+        return False
+
+
+def cmd_keys(args):
+    """Manage cloud provider API keys."""
+    import json as _json
+
+    sub = getattr(args, "keys_command", None)
+
+    if sub == "set":
+        provider = getattr(args, "provider", "").lower()
+        key = getattr(args, "key", "")
+        if not provider or not key:
+            print("Usage: adk keys set <provider> <key>")
+            return 1
+        if provider not in _KNOWN_PROVIDERS:
+            print(f"Unknown provider: {provider}")
+            print(f"Known: {', '.join(sorted(_KNOWN_PROVIDERS))}")
+            return 1
+
+        keys = _load_provider_keys()
+        keys[provider] = key
+        _save_provider_keys(keys)
+
+        # Set env var for current session
+        env_name = _KNOWN_PROVIDERS[provider]["env"]
+        os.environ[env_name] = key
+        print(f"  Saved {_KNOWN_PROVIDERS[provider]['label']} key: {_mask_key(key)}")
+
+        # Try to push to vault
+        if _push_key_to_vault(provider, key):
+            print(f"  Synced to AitherSecrets vault")
+        return 0
+
+    elif sub == "list":
+        keys = _load_provider_keys()
+        print("\nCloud Provider API Keys")
+        print("=" * 55)
+        for pname, info in sorted(_KNOWN_PROVIDERS.items()):
+            key = keys.get(pname, "") or os.environ.get(info["env"], "")
+            if key:
+                status = f"{_mask_key(key)}"
+                print(f"  [+] {info['label']:15s} {status}")
+            else:
+                print(f"  [-] {info['label']:15s} not configured")
+        configured = sum(1 for p in _KNOWN_PROVIDERS if keys.get(p) or os.environ.get(_KNOWN_PROVIDERS[p]["env"]))
+        print(f"\n  {configured}/{len(_KNOWN_PROVIDERS)} providers configured")
+        return 0
+
+    elif sub == "test":
+        provider = getattr(args, "provider", None)
+        keys = _load_provider_keys()
+
+        providers_to_test = [provider] if provider else list(_KNOWN_PROVIDERS.keys())
+        print("\nTesting API Keys")
+        print("=" * 50)
+
+        for pname in providers_to_test:
+            if pname not in _KNOWN_PROVIDERS:
+                print(f"  [?] {pname}: unknown provider")
+                continue
+            info = _KNOWN_PROVIDERS[pname]
+            key = keys.get(pname, "") or os.environ.get(info["env"], "")
+            if not key:
+                print(f"  [-] {info['label']:15s} no key configured")
+                continue
+            ok, msg = _test_provider_key(pname, key)
+            icon = "+" if ok else "x"
+            print(f"  [{icon}] {info['label']:15s} {msg}")
+        return 0
+
+    elif sub == "remove":
+        provider = getattr(args, "provider", "").lower()
+        if not provider:
+            print("Usage: adk keys remove <provider>")
+            return 1
+        keys = _load_provider_keys()
+        if provider in keys:
+            del keys[provider]
+            _save_provider_keys(keys)
+            print(f"  Removed {provider} key")
+        else:
+            print(f"  No key stored for {provider}")
+        return 0
+
+    else:
+        # Interactive mode — prompt for each provider
+        print("\n  Cloud Provider API Key Setup")
+        print("  " + "=" * 40)
+        print("  Enter API keys for your cloud providers.")
+        print("  Press Enter to skip a provider.\n")
+
+        keys = _load_provider_keys()
+        changed = False
+
+        for pname, info in _KNOWN_PROVIDERS.items():
+            existing = keys.get(pname, "") or os.environ.get(info["env"], "")
+            if existing:
+                status = f"(configured: {_mask_key(existing)})"
+            else:
+                status = "(not set)"
+
+            try:
+                val = input(f"  {info['label']} API key {status}: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                break
+
+            if val:
+                keys[pname] = val
+                os.environ[info["env"]] = val
+                changed = True
+                ok, msg = _test_provider_key(pname, val)
+                icon = "+" if ok else "x"
+                print(f"    [{icon}] {msg}")
+                if _push_key_to_vault(pname, val):
+                    print(f"    Synced to vault")
+
+        if changed:
+            _save_provider_keys(keys)
+            print(f"\n  Keys saved to {_keys_path()}")
+
+        configured = sum(1 for p in _KNOWN_PROVIDERS if keys.get(p) or os.environ.get(_KNOWN_PROVIDERS[p]["env"]))
+        print(f"\n  {configured}/{len(_KNOWN_PROVIDERS)} providers ready")
+        return 0
+
+
+# ── Phase 3: aither routing — inference routing management ─────────────────
+
+def _routing_config_path() -> Path:
+    """Find inference_routing.yaml — local ~/.aither/ first, then AitherOS config."""
+    local = Path.home() / ".aither" / "inference_routing.yaml"
+    if local.exists():
+        return local
+    # Check AitherOS config
+    aitheros = Path(os.environ.get("AITHER_ROOT", "")) / "config" / "inference_routing.yaml"
+    if aitheros.exists():
+        return aitheros
+    # Check relative to this file (ADK might be inside repo)
+    for candidate in [
+        Path(__file__).resolve().parents[2] / "AitherOS" / "config" / "inference_routing.yaml",
+        Path.cwd() / "AitherOS" / "config" / "inference_routing.yaml",
+        Path.cwd() / "config" / "inference_routing.yaml",
+    ]:
+        if candidate.exists():
+            return candidate
+    return local  # default write location
+
+
+def _load_routing_config() -> dict:
+    import yaml
+    p = _routing_config_path()
+    if p.exists():
+        try:
+            with open(p) as f:
+                return yaml.safe_load(f) or {}
+        except Exception:
+            pass
+    return {"enabled": False, "intent_routing": {}, "presets": {}}
+
+
+def _save_routing_config(cfg: dict) -> None:
+    import yaml
+    p = _routing_config_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with open(p, "w") as f:
+        yaml.safe_dump(cfg, f, default_flow_style=False, sort_keys=False)
+
+
+# Map short intent aliases to config keys
+_INTENT_ALIASES = {
+    "code": "code_generation",
+    "coding": "code_generation",
+    "review": "code_review",
+    "reasoning": "deep_analysis",
+    "analysis": "deep_analysis",
+    "planning": "complex_planning",
+    "chat": "casual_chat",
+    "question": "simple_question",
+    "research": "research",
+    "search": "web_search",
+}
+
+# Map short provider aliases
+_PROVIDER_ALIASES = {
+    "claude": "anthropic",
+    "gpt": "openai",
+    "ds": "deepseek",
+    "local": "local",
+}
+
+
+def cmd_routing(args):
+    """Manage per-intent model routing."""
+    sub = getattr(args, "routing_command", None)
+
+    if sub == "preset":
+        preset_name = getattr(args, "preset_name", "")
+        if not preset_name:
+            print("Usage: adk routing preset <budget|balanced|quality>")
+            return 1
+
+        cfg = _load_routing_config()
+        presets = cfg.get("presets", {})
+        if preset_name not in presets:
+            print(f"Unknown preset: {preset_name}")
+            print(f"Available: {', '.join(presets.keys())}")
+            return 1
+
+        preset = presets[preset_name]
+        desc = preset.get("description", "")
+        print(f"\n  Applying preset: {preset_name}")
+        if desc:
+            print(f"  {desc}")
+
+        # Apply preset to intent routing
+        routing = cfg.get("intent_routing", {})
+        dp = preset.get("default_provider", "local")
+        df = preset.get("default_fallback", "")
+        rp = preset.get("reasoning_provider", "")
+        rm = preset.get("reasoning_model", "")
+
+        # Update quick intents to use default provider
+        for intent in ("casual_chat", "simple_question", "web_search"):
+            if intent not in routing:
+                routing[intent] = {}
+            routing[intent]["provider"] = dp
+            if df:
+                routing[intent]["fallback_provider"] = df
+
+        # Update reasoning intents
+        for intent in ("deep_analysis", "complex_planning"):
+            if rp:
+                if intent not in routing:
+                    routing[intent] = {}
+                routing[intent]["provider"] = rp
+                if rm:
+                    routing[intent]["model"] = rm
+
+        cfg["intent_routing"] = routing
+        cfg["enabled"] = True
+        _save_routing_config(cfg)
+
+        # Also save to ADK config for backend selection
+        save_data = {"routing_preset": preset_name}
+        if rp and rm:
+            save_data["reasoning_backend"] = rp
+            save_data["reasoning_model"] = rm
+        save_saved_config(save_data)
+
+        print(f"  Routing preset '{preset_name}' applied and enabled")
+        return 0
+
+    elif sub == "set":
+        intent_alias = getattr(args, "intent", "")
+        provider_alias = getattr(args, "provider", "")
+        model = getattr(args, "model", None)
+        if not intent_alias or not provider_alias:
+            print("Usage: adk routing set <intent> <provider> [--model MODEL]")
+            return 1
+
+        intent_key = _INTENT_ALIASES.get(intent_alias, intent_alias)
+        provider_key = _PROVIDER_ALIASES.get(provider_alias, provider_alias)
+
+        cfg = _load_routing_config()
+        routing = cfg.get("intent_routing", {})
+        if intent_key not in routing:
+            routing[intent_key] = {}
+        routing[intent_key]["provider"] = provider_key
+        if model:
+            routing[intent_key]["model"] = model
+
+        cfg["intent_routing"] = routing
+        cfg["enabled"] = True
+        _save_routing_config(cfg)
+        print(f"  {intent_key} -> {provider_key}" + (f" ({model})" if model else ""))
+        return 0
+
+    elif sub == "reset":
+        cfg = _load_routing_config()
+        cfg["enabled"] = False
+        _save_routing_config(cfg)
+        print("  Intent routing disabled — using effort-based defaults")
+        return 0
+
+    else:
+        # Show current routing
+        cfg = _load_routing_config()
+        enabled = cfg.get("enabled", False)
+        routing = cfg.get("intent_routing", {})
+
+        print(f"\nInference Routing {'(ACTIVE)' if enabled else '(disabled — effort-based)'}")
+        print("=" * 55)
+
+        if not routing:
+            print("  No intent overrides configured.")
+            print("  Use 'adk routing preset balanced' to get started.")
+        else:
+            for intent, config in sorted(routing.items()):
+                provider = config.get("provider", "?")
+                model = config.get("model", "")
+                fb = config.get("fallback_provider", "")
+                line = f"  {intent:25s} -> {provider}"
+                if model:
+                    line += f" ({model})"
+                if fb:
+                    line += f"  [fallback: {fb}]"
+                print(line)
+
+        presets = cfg.get("presets", {})
+        if presets:
+            print(f"\n  Presets: {', '.join(presets.keys())}")
+        print(f"\n  Config: {_routing_config_path()}")
+        return 0
+
+
+# ── Phase 4: aither costs — token economy visibility ──────────────────────
+
+def cmd_costs(args):
+    """Show cloud inference costs and savings."""
+    sub = getattr(args, "costs_command", None)
+
+    # Try Genesis API first
+    def _genesis_get(path: str) -> dict | None:
+        import urllib.request
+        import urllib.error
+        try:
+            url = os.environ.get("AITHER_URL", "http://localhost:8001")
+            req = urllib.request.Request(f"{url.rstrip('/')}{path}")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                return json.loads(resp.read())
+        except Exception:
+            return None
+
+    if sub == "budget":
+        amount = getattr(args, "amount", 0)
+        if amount <= 0:
+            print("Usage: adk costs budget <amount_usd>")
+            return 1
+        result = _genesis_get(f"/costs/budget?monthly_usd={amount}")
+        if result:
+            print(f"  Monthly budget set to ${amount:.2f}")
+        else:
+            # Save locally
+            budget_path = Path.home() / ".aither" / "cost_budget.json"
+            budget_path.parent.mkdir(parents=True, exist_ok=True)
+            budget_path.write_text(json.dumps({"monthly_budget_usd": amount}))
+            print(f"  Monthly budget set to ${amount:.2f} (local — Genesis not running)")
+        return 0
+
+    elif sub == "compare":
+        period = getattr(args, "period", "week")
+        result = _genesis_get(f"/costs/compare?period={period}")
+        if result:
+            print(f"\n  Cost Comparison ({result.get('period', period)})")
+            print("  " + "=" * 45)
+            print(f"  Actual spend:          ${result.get('actual_cost_usd', 0):.4f}")
+            print(f"  Est. raw API cost:     ${result.get('estimated_raw_api_cost_usd', 0):.4f}")
+            print(f"  Savings:               ${result.get('savings_usd', 0):.4f} ({result.get('savings_percent', 0):.1f}%)")
+            print(f"  Local requests:        {result.get('local_requests', 0)}")
+            print(f"  Cloud requests:        {result.get('cloud_requests', 0)}")
+        else:
+            # Read local cost log
+            _show_local_costs("compare", getattr(args, "period", "week"))
+        return 0
+
+    else:
+        # Default: summary
+        period = getattr(args, "period", "day")
+        result = _genesis_get(f"/costs/summary?period={period}")
+        if result:
+            print(f"\n  Cost Summary ({result.get('period', period)})")
+            print("  " + "=" * 45)
+            print(f"  Total spend:     ${result.get('total_cost_usd', 0):.4f}")
+            print(f"  Requests:        {result.get('total_requests', 0)} ({result.get('cloud_requests', 0)} cloud, {result.get('local_requests', 0)} local)")
+            print(f"  Tokens:          {result.get('total_tokens', 0):,}")
+
+            by_provider = result.get("by_provider", {})
+            if by_provider:
+                print(f"\n  By Provider:")
+                for prov, cost in by_provider.items():
+                    print(f"    {prov:15s} ${cost:.4f}")
+
+            budget = result.get("monthly_budget_usd", 0)
+            remaining = result.get("budget_remaining_usd")
+            if budget:
+                print(f"\n  Budget: ${budget:.2f}/mo  Remaining: ${remaining:.2f}")
+        else:
+            _show_local_costs("summary", period)
+        return 0
+
+
+def _show_local_costs(mode: str, period: str):
+    """Fallback: read local cost JSONL when Genesis is not running."""
+    from datetime import datetime, timedelta, timezone
+
+    days_map = {"day": 1, "week": 7, "month": 30}
+    days = days_map.get(period, 1)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+
+    # Search for cost log
+    candidates = [
+        Path.home() / ".aither" / "cloud_costs.jsonl",
+        Path.cwd() / "data" / "cloud_costs.jsonl",
+        Path.cwd() / "AitherOS" / "data" / "cloud_costs.jsonl",
+    ]
+    log_path = None
+    for c in candidates:
+        if c.exists():
+            log_path = c
+            break
+
+    if not log_path:
+        print(f"\n  No cost data found (Genesis not running, no local cost log)")
+        print(f"  Costs are tracked when cloud providers are used via AitherOS")
+        return
+
+    total = 0.0
+    count = 0
+    local_count = 0
+    try:
+        with open(log_path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                    ts = entry.get("timestamp", "")
+                    if ts:
+                        entry_time = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                        if entry_time < cutoff:
+                            continue
+                    cost = entry.get("cost_usd", 0) or 0
+                    total += cost
+                    if entry.get("provider") == "local":
+                        local_count += 1
+                    else:
+                        count += 1
+                except (json.JSONDecodeError, ValueError):
+                    continue
+    except OSError:
+        pass
+
+    print(f"\n  Cost Summary — {period} (local log)")
+    print("  " + "=" * 40)
+    print(f"  Total spend:  ${total:.4f}")
+    print(f"  Cloud reqs:   {count}")
+    print(f"  Local reqs:   {local_count}")
+
+
 def cmd_tools(args):
     """List available tools (local + MCP)."""
     import asyncio
@@ -2241,6 +2963,8 @@ def cmd_ingest(args):
 def cmd_quickstart(args):
     """Unified first-run wizard — setup + auth + shell in one command."""
 
+    cloud_mode = getattr(args, "cloud", False)
+
     print()
     print("  AitherADK Quickstart")
     print("  ====================")
@@ -2254,6 +2978,129 @@ def cmd_quickstart(args):
         print()
         return 0
 
+    if cloud_mode:
+        # ── Cloud-only quickstart ──────────────────────────────────────
+        print("  Cloud-Only Setup (no GPU required)")
+        print("  " + "-" * 38)
+        print()
+
+        # Step 1: API key setup
+        print("  Step 1: Connect Cloud Providers")
+        print("  " + "-" * 38)
+        print("  Enter API keys for at least one cloud provider.")
+        print("  Press Enter to skip.\n")
+
+        keys = _load_provider_keys()
+        configured_providers = []
+
+        for pname in ("openai", "anthropic", "deepseek"):
+            info = _KNOWN_PROVIDERS[pname]
+            existing = keys.get(pname, "") or os.environ.get(info["env"], "")
+            if existing:
+                print(f"  {info['label']}: already configured ({_mask_key(existing)})")
+                configured_providers.append(pname)
+                continue
+            try:
+                val = input(f"  {info['label']} API key: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                break
+            if val:
+                keys[pname] = val
+                os.environ[info["env"]] = val
+                ok, msg = _test_provider_key(pname, val)
+                icon = "+" if ok else "x"
+                print(f"    [{icon}] {msg}")
+                if ok:
+                    configured_providers.append(pname)
+                _push_key_to_vault(pname, val)
+
+        _save_provider_keys(keys)
+
+        if not configured_providers:
+            print("\n  No providers configured. At least one API key is required for cloud mode.")
+            print("  Run: adk keys set openai sk-...")
+            return 1
+
+        # Step 2: Auto-select routing preset
+        print()
+        print("  Step 2: Routing Configuration")
+        print("  " + "-" * 38)
+
+        if set(configured_providers) >= {"openai", "anthropic", "deepseek"}:
+            preset = "quality"
+        elif "anthropic" in configured_providers and "deepseek" in configured_providers:
+            preset = "balanced"
+        elif "deepseek" in configured_providers:
+            preset = "budget"
+        else:
+            preset = "balanced"
+
+        print(f"  Auto-selected preset: {preset}")
+        print(f"  (Change later with: adk routing preset <budget|balanced|quality>)")
+
+        # Apply preset
+        class RoutingArgs:
+            routing_command = "preset"
+            preset_name = preset
+        cmd_routing(RoutingArgs())
+
+        # Set cloud mode in ADK config
+        save_saved_config({
+            "setup_backend": "cloud",
+            "cloud_mode": "cloud_first",
+            "configured_providers": configured_providers,
+        })
+
+        # Step 3: Cost estimate
+        print()
+        print("  Step 3: Ready!")
+        print("  " + "-" * 38)
+        print()
+        print(f"  Configured providers: {', '.join(configured_providers)}")
+        print(f"  Routing preset: {preset}")
+        print()
+        print("  Estimated costs per 1,000 requests:")
+        print("    Budget preset:    ~$0.50 - $2.00")
+        print("    Balanced preset:  ~$2.00 - $8.00")
+        print("    Quality preset:   ~$5.00 - $20.00")
+        print()
+        print("  Set a budget:  adk costs budget 50")
+        print("  View costs:    adk costs")
+        print()
+        print("  Next steps:")
+        print("    adk start            Start chatting with your codebase")
+        print("    adk run              Start the agent server")
+        print("    adk doctor           Check system health")
+        print()
+
+        # Offer local orchestrator
+        try:
+            answer = input("  Set up a local orchestrator to reduce costs further? [y/N]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            answer = "n"
+        if answer in ("y", "yes"):
+            from adk.setup_cli import cmd_setup
+            class SetupArgs:
+                shortcut = None
+                tier = None
+                mode = "hybrid"
+                reasoning_api = None
+                reasoning_model = ""
+                dgx_spark = None
+                stack = None
+                dry_run = False
+                non_interactive = False
+                hf_token = ""
+                api_key = getattr(args, "api_key", "") or ""
+                output = "docker-compose.vllm.yml"
+                force = False
+            cmd_setup(SetupArgs())
+
+        return 0
+
+    # ── Standard quickstart (GPU-based) ────────────────────────────────
+
     # Step 2: Run setup wizard
     print("  Step 1: GPU + Inference Setup")
     print("  " + "-" * 38)
@@ -2262,6 +3109,7 @@ def cmd_quickstart(args):
     class SetupArgs:
         shortcut = None
         tier = None
+        mode = "auto"
         reasoning_api = None
         reasoning_model = ""
         dgx_spark = None
@@ -3610,9 +4458,20 @@ def _register_commands(sub):
     # aither setup
     setup_p = sub.add_parser("setup", help="Interactive GPU setup wizard (vLLM/Ollama) + optional AitherOS stack")
     setup_p.add_argument("shortcut", nargs="?", default=None,
-                         help="Quick setup: 'nemotron' (alias for --tier lite)")
-    setup_p.add_argument("--tier", choices=["nano", "lite", "standard", "standard-tq4", "full", "hybrid", "hybrid-tq4", "ollama"],
-                         help="Force a specific tier (default: auto-detect from GPU)")
+                         help="Quick setup: 'nemotron' (--tier lite), 'llamacpp' / 'local' / 'endpoint' (native local orchestrator, no Docker)")
+    setup_p.add_argument("--mode", choices=["auto", "cloud", "hybrid"],
+                         default="auto",
+                         help="Setup mode: auto (detect GPU), cloud (cloud-only, no GPU), hybrid (local + cloud reasoning)")
+    setup_p.add_argument("--tier", choices=["nano", "lite", "standard", "standard-tq4", "full", "hybrid", "hybrid-tq4", "ollama", "llamacpp"],
+                         help="Force a specific tier (default: auto-detect from GPU). 'llamacpp' = native local Nemotron-Orchestrator-8B for endpoints (Windows/macOS/Linux, no Docker)")
+    setup_p.add_argument("--backend", choices=["vllm", "ollama", "llamacpp"], default=None,
+                         help="Backend engine override (default inferred from --tier)")
+    setup_p.add_argument("--llamacpp-quant", default=None,
+                         help="llama.cpp GGUF quant (e.g. Q4_K_M, Q5_K_M, Q8_0). Default: auto-pick from VRAM/RAM")
+    setup_p.add_argument("--llamacpp-port", type=int, default=None,
+                         help="llama.cpp server port (default: 8200)")
+    setup_p.add_argument("--no-service", action="store_true",
+                         help="llama.cpp: skip installing system service (systemd/launchd/scheduled task)")
     setup_p.add_argument("--reasoning-api", choices=["anthropic", "openai", "deepseek", "gateway"],
                          help="Cloud API for reasoning (effort 7+) — hybrid mode")
     setup_p.add_argument("--reasoning-model", default="",
@@ -3682,6 +4541,11 @@ def _register_commands(sub):
     d_node.add_argument("--tag", default="latest", help="Docker image tag (default: latest)")
     d_node.add_argument("--api-key", help="AITHER_API_KEY (or set env var)")
     d_node.add_argument("--dry-run", action="store_true", help="Show what would happen")
+    d_node.add_argument("--sovereign", action="store_true",
+                         help="Register with Aitherium hub after deployment (federation)")
+    d_node.add_argument("--hub", default="https://portal.aitherium.com",
+                         help="Hub URL for federation (default: portal.aitherium.com)")
+    d_node.add_argument("--tenant", help="Tenant slug for federation registration")
 
     # aither deploy core
     d_core = deploy_sub.add_parser("core", help="Core services (Node, Pulse, Watch, Genesis, Veil)")
@@ -3713,9 +4577,9 @@ def _register_commands(sub):
     d_stop.add_argument("stop_target", nargs="?",
                         help="Component to stop: ollama, vllm, node, core, full, all")
 
-    # aither deploy agent (existing agent-to-gateway deployment)
-    d_agent = deploy_sub.add_parser("agent", help="Deploy an agent to AitherOS gateway")
-    d_agent.add_argument("name", nargs="?", help="Agent name (default: from config.yaml)")
+    # aither deploy agent — download + configure + start a tenant agent, OR upload to gateway
+    d_agent = deploy_sub.add_parser("agent", help="Deploy a tenant agent to this machine (or upload to gateway)")
+    d_agent.add_argument("name", nargs="?", help="Agent name/slug (e.g. gargbot)")
     d_agent.add_argument("-d", "--directory", help="Project directory (default: .)")
     d_agent.add_argument("--api-key", help="AITHER_API_KEY")
     d_agent.add_argument("--gateway", help="Gateway URL (default: gateway.aitherium.com)")
@@ -3726,6 +4590,10 @@ def _register_commands(sub):
                           default="gateway", help="Deploy target (default: gateway)")
     d_agent.add_argument("--strategy", choices=["rolling", "blue-green", "canary", "recreate"],
                           default="rolling", help="Deployment strategy (for container targets)")
+    d_agent.add_argument("--tenant", help="Tenant slug — triggers download+run mode (e.g. garg-consulting)")
+    d_agent.add_argument("--inference", choices=["local", "cloud", "hybrid"],
+                          help="Inference mode for this endpoint")
+    d_agent.add_argument("--from", dest="from_url", help="Direct download URL for the agent package")
 
     # adk workspace — manage dev workspaces on AitherOS tunnel
     ws_p = sub.add_parser("workspace", help="Manage dev workspaces on AitherOS tunnel")
@@ -3761,6 +4629,7 @@ def _register_commands(sub):
     onboard_p = sub.add_parser("onboard", help="Interactive onboarding — detect, configure, integrate")
     onboard_p.add_argument("--api-key", help="AITHER_API_KEY")
     onboard_p.add_argument("--tenant", help="Tenant slug to associate this node with")
+    onboard_p.add_argument("--agent", help="Register a running agent with the portal fleet")
     onboard_p.add_argument("--non-interactive", action="store_true", help="Skip prompts, use defaults")
 
     # aither integrate — connect external tools
@@ -3835,6 +4704,39 @@ def _register_commands(sub):
     backend_reason_p.add_argument("--model", help="Reasoning model")
     backend_sub.add_parser("test", help="Test current backend with a simple prompt")
 
+    # adk keys — manage cloud provider API keys
+    keys_p = sub.add_parser("keys", help="Manage cloud provider API keys (set, list, test, remove)")
+    keys_sub = keys_p.add_subparsers(dest="keys_command")
+    keys_set_p = keys_sub.add_parser("set", help="Set a provider API key")
+    keys_set_p.add_argument("provider", help="Provider: openai, anthropic, deepseek, google, openrouter, groq, together")
+    keys_set_p.add_argument("key", help="API key value")
+    keys_sub.add_parser("list", help="Show configured provider keys and status")
+    keys_test_p = keys_sub.add_parser("test", help="Test API keys (all or specific)")
+    keys_test_p.add_argument("provider", nargs="?", help="Specific provider to test (default: all)")
+    keys_rm_p = keys_sub.add_parser("remove", help="Remove a provider key")
+    keys_rm_p.add_argument("provider", help="Provider to remove")
+
+    # adk routing — per-intent model routing
+    routing_p = sub.add_parser("routing", help="Manage per-intent model routing (which model handles which task)")
+    routing_sub = routing_p.add_subparsers(dest="routing_command")
+    routing_preset_p = routing_sub.add_parser("preset", help="Apply a routing preset (budget, balanced, quality)")
+    routing_preset_p.add_argument("preset_name", help="Preset: budget, balanced, quality")
+    routing_set_p = routing_sub.add_parser("set", help="Set model for an intent type")
+    routing_set_p.add_argument("intent", help="Intent: code, reasoning, chat, research, review, planning, search")
+    routing_set_p.add_argument("provider", help="Provider: openai, anthropic, deepseek, local")
+    routing_set_p.add_argument("--model", help="Specific model name")
+    routing_sub.add_parser("reset", help="Reset to effort-based routing (disable intent overrides)")
+
+    # adk costs — token economy visibility
+    costs_p = sub.add_parser("costs", help="Show cloud inference costs, savings, and budget")
+    costs_sub = costs_p.add_subparsers(dest="costs_command")
+    costs_sub.add_parser("summary", help="Show cost summary (default)")
+    costs_compare_p = costs_sub.add_parser("compare", help="Compare AitherOS vs raw API costs")
+    costs_compare_p.add_argument("--period", default="week", choices=["day", "week", "month"])
+    costs_budget_p = costs_sub.add_parser("budget", help="Set monthly spending budget")
+    costs_budget_p.add_argument("amount", type=float, help="Monthly budget in USD (0=unlimited)")
+    costs_p.add_argument("--period", default="day", choices=["day", "week", "month"], help="Time period")
+
     # adk tools — list available tools
     tools_p = sub.add_parser("tools", help="List available tools (local + MCP)")
     tools_p.add_argument("--upgrade", action="store_true", help="Show what pro/enterprise unlocks")
@@ -3842,6 +4744,7 @@ def _register_commands(sub):
     # adk quickstart — unified first-run wizard
     quickstart_p = sub.add_parser("quickstart", help="One-command setup: GPU + auth + shell")
     quickstart_p.add_argument("--api-key", help="AITHER_API_KEY")
+    quickstart_p.add_argument("--cloud", action="store_true", help="Cloud-only setup (no GPU required)")
 
     # adk backup — export all ~/.aither/ data
     backup_p = sub.add_parser("backup", help="Backup all agent data (memory, graphs, config)")
@@ -4029,7 +4932,12 @@ def main():
     elif args.command == "deploy":
         component = getattr(args, "component", None)
         if component == "agent":
-            sys.exit(cmd_deploy(args))
+            # --tenant or --from triggers download+run mode (deploy TO this machine)
+            if getattr(args, "tenant", None) or getattr(args, "from_url", None):
+                from adk.deploy import cmd_deploy_tenant_agent
+                sys.exit(cmd_deploy_tenant_agent(args))
+            else:
+                sys.exit(cmd_deploy(args))
         else:
             from adk.deploy import cmd_deploy_component
             sys.exit(cmd_deploy_component(args))
@@ -4051,6 +4959,12 @@ def main():
         sys.exit(cmd_admin(args))
     elif args.command == "backend":
         sys.exit(cmd_backend(args))
+    elif args.command == "keys":
+        sys.exit(cmd_keys(args))
+    elif args.command == "routing":
+        sys.exit(cmd_routing(args))
+    elif args.command == "costs":
+        sys.exit(cmd_costs(args))
     elif args.command == "tools":
         sys.exit(cmd_tools(args))
     elif args.command == "quickstart":

@@ -1,6 +1,6 @@
 # AitherADK Agent Setup Prompt
 # Copy this entire block into Claude Code, Cursor, Copilot, or any AI coding agent.
-# Version: 1.1.2 | Updated: 2026-05-19
+# Version: 1.5.0 | Updated: 2026-05-23
 
 You are setting up the AitherADK agent development kit. Follow these steps exactly.
 Do NOT deviate from these instructions -- they encode solutions to real failure modes.
@@ -171,6 +171,32 @@ results = await agent.graph_query("What does the user prefer?")
 
 Graph memory is SQLite-backed, works offline, persisted at `~/.aither/graph/`.
 
+## Step 11: Deploy sovereign node (optional)
+
+Deploy a full AitherOS instance on your own hardware that federates with the hub.
+
+```bash
+# Full node with GPU, dashboard, and mesh + register with hub
+adk deploy node --gpu --dashboard --mesh --sovereign
+
+# Lighter: core services only + federation
+adk deploy core --sovereign
+
+# Specify tenant and hub URL
+adk deploy node --sovereign --tenant my-org --hub https://portal.aitherium.com
+
+# Dry run (show what would happen)
+adk deploy node --sovereign --dry-run
+```
+
+After deployment:
+- Node auto-registers with `portal.aitherium.com/federation/register`
+- Federation credentials saved to `~/.aither/.env.federation`
+- Node appears in your fleet dashboard at `/workspace/fleet`
+- Heartbeats keep the hub updated with status and metrics
+
+Check federation status: `adk connect`
+
 ---
 
 ## Common Mistakes (avoid these)
@@ -204,3 +230,5 @@ Graph memory is SQLite-backed, works offline, persisted at `~/.aither/graph/`.
 | Start API server          | `adk run --port 8080`                             |
 | Diagnose issues           | `adk doctor`                                      |
 | Connect to cloud          | `adk connect --api-key KEY`                       |
+| Deploy sovereign node     | `adk deploy node --sovereign`                     |
+| Register with hub         | `adk register`                                    |

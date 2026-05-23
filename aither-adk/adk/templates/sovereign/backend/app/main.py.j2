@@ -61,7 +61,21 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         log.debug("Local agent registration skipped: %s", e)
 
+    # Initialise local 5-tier agent memory (best-effort).
+    try:
+        from .agent_memory import init_memory
+        await init_memory()
+        log.info("agent_core memory initialised")
+    except Exception as e:
+        log.warning("agent_core memory init failed (non-fatal): %s", e)
+
     yield
+
+    try:
+        from .agent_memory import shutdown_memory
+        await shutdown_memory()
+    except Exception:
+        pass
 
     for task in _background_tasks:
         task.cancel()
@@ -154,6 +168,14 @@ async def get_embed_config():
 app.include_router(auth.router)
 app.include_router(chat.router)
 app.include_router(documents.router)
+
+# 5-tier agent_core memory admin (/api/memory/*)
+try:
+    from .agent_memory import get_memory_client, resolve_tenant_id
+    from .agent_core import build_memory_router
+    app.include_router(build_memory_router(get_memory_client, resolve_tenant_id))
+except Exception as _e:
+    log.debug("agent_core admin router not mounted: %s", _e)
 app.include_router(feedback.router)
 
 # Static frontend (catch-all, MUST be last)

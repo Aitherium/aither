@@ -166,7 +166,8 @@ def search(
     )
     return [
         {"text": r.payload["text"], "filename": r.payload["filename"],
-         "doc_type": r.payload["doc_type"], "score": r.score}
+         "doc_type": r.payload["doc_type"], "doc_id": r.payload.get("doc_id"),
+         "score": r.score}
         for r in results.points
     ]
 

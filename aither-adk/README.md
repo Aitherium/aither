@@ -7,12 +7,16 @@ Build multi-agent systems with effort-based model routing, runtime backend switc
 ```bash
 pip install aither-adk
 adk quickstart                                    # auto-detect GPU, set up LLM, ready to go
-aither init my-agent && cd my-agent && python agent.py
+adk init my-agent && cd my-agent && python agent.py
 ```
 
 **No GPU? No problem.** Set `AITHER_API_KEY` and your agents use [Aitherium cloud](https://aitherium.com) for inference. Have a GPU? They auto-detect vLLM/Ollama. Both? They route intelligently.
 
 Try it now at [chat.aitherium.com](https://chat.aitherium.com) — free, unlimited, no sign-up.
+
+### AI Agent Setup Guide
+
+Using Claude Code, Cursor, Copilot, or another AI coding agent? Copy the [Agent Setup Prompt](adk/AGENT_PROMPT.md) into your session — it covers install, auth, GPU setup, common mistakes, and all 10 steps from zero to fleet mode.
 
 ### Why Aither?
 
@@ -31,10 +35,10 @@ Try it now at [chat.aitherium.com](https://chat.aitherium.com) — free, unlimit
 
 ```bash
 # Single agent
-aither-serve --identity aither
+adk-serve --identity aither
 
 # Fleet of specialists
-aither-serve --agents aither,lyra,demiurge,hydra,athena
+adk-serve --agents aither,lyra,demiurge,hydra,athena
 
 # OpenAI-compatible API — drop-in replacement
 curl http://localhost:8080/v1/chat/completions -d '{"model":"aither","messages":[{"role":"user","content":"hello"}]}'
@@ -104,13 +108,13 @@ asyncio.run(main())
 
 ```bash
 # Single agent
-aither-serve --identity aither --port 8080
+adk-serve --identity aither --port 8080
 
 # Fleet mode — multiple agents
-aither-serve --agents aither,lyra,demiurge,hydra --port 8080
+adk-serve --agents aither,lyra,demiurge,hydra --port 8080
 
 # Fleet from YAML config
-aither-serve --fleet fleet.yaml --port 8080
+adk-serve --fleet fleet.yaml --port 8080
 ```
 
 ## Backend Switching
@@ -135,19 +139,72 @@ agent.set_reasoning_backend("deepseek")  # effort 7+ goes to DeepSeek
 # adk backend test              — verify current backend works
 ```
 
+## Authentication & Registration
+
+Auth is optional for local-only usage. Required for cloud inference, fleet sync, and sovereign deployment.
+
+### Sign Up (new account)
+
+```bash
+adk register
+```
+
+Opens your browser to `portal.aitherium.com/register`. After you create an account, the CLI saves your credentials to `~/.aither/config.json` automatically.
+
+### Log In (existing account)
+
+```bash
+# Recommended — opens browser, device code flow (RFC 8628)
+adk login
+
+# Email/password (for CI/automation)
+adk login --email you@company.com
+
+# Direct API key (from portal.aitherium.com → Settings → API Keys)
+adk login --api-key aither_sk_live_...
+```
+
+**Device flow**: `adk login` requests a short device code, opens `portal.aitherium.com/auth/device` in your browser, and polls until you approve. No password leaves your terminal.
+
+### Check Auth Status
+
+```bash
+adk whoami          # Shows current user, tenant, token status
+adk status          # Shows auth + backend + service status
+```
+
+### Where Credentials Live
+
+All credentials are stored in `~/.aither/config.json`. Never set `AITHER_API_KEY` as an environment variable — `adk login` handles it.
+
+```
+~/.aither/
+  config.json          # API key, tenant ID, username (written by adk login)
+  .env.federation      # Federation credentials (written by adk deploy --sovereign)
+```
+
+### Auth is Required For
+
+| Feature | Auth needed? |
+|---------|-------------|
+| Local agent with Ollama/vLLM | No |
+| Cloud inference (Elysium gateway) | Yes |
+| `adk deploy node` (pull private images) | Yes |
+| `adk deploy --sovereign` (federation) | Yes |
+| Agent marketplace (publish/install) | Yes |
+| MCP cloud tools | Yes |
+| Fleet sync across machines | Yes |
+
 ## Scale Up: Connect to Elysium
 
 Start local. When you need more power, connect your agents to the Aitherium cloud — same agents, same code, massively accelerated.
 
 ```bash
-# Set your API key (free tier available)
-export AITHER_API_KEY=aither_sk_live_...
-
 # Check what's available
-aither connect
+adk connect
 ```
 
-That's it. Your agents now automatically use Elysium cloud inference when no local GPU is available. They also get access to:
+Your agents automatically use Elysium cloud inference when no local GPU is available. They also get access to:
 
 - **100+ MCP tools** — code search, knowledge graph, memory, training pipelines
 - **AitherMesh** — share compute across nodes, overflow to cloud GPUs
@@ -206,7 +263,7 @@ The key differentiator: any agent can call any other agent. When you create a fl
 ### From the CLI
 
 ```bash
-aither-serve --agents aither,lyra,demiurge,hydra,athena
+adk-serve --agents aither,lyra,demiurge,hydra,athena
 ```
 
 ### From a YAML file
@@ -226,7 +283,7 @@ agents:
 ```
 
 ```bash
-aither-serve --fleet fleet.yaml
+adk-serve --fleet fleet.yaml
 ```
 
 ### Fleet API Endpoints
@@ -511,7 +568,7 @@ Protect your API with a bearer token:
 
 ```bash
 export AITHER_SERVER_API_KEY=my-secret-key
-aither-serve --identity aither
+adk-serve --identity aither
 ```
 
 ```bash
@@ -573,6 +630,7 @@ adk deploy node                # AitherNode MCP server + Genesis
 adk deploy core                # Core services (Node, Pulse, Watch, Genesis, Veil)
 adk deploy full                # Full AitherOS stack (~31 containers)
 adk deploy agent               # Deploy an agent to AitherOS gateway
+adk deploy node --sovereign    # Deploy + register with federation hub
 
 # Cloud & auth
 adk connect                    # Connect to AitherOS / Elysium
@@ -722,7 +780,7 @@ No local GPU? Use the Aither gateway for inference — same API, cloud-hosted mo
 
 ```bash
 export AITHER_API_KEY=your-key
-aither-serve --identity aither  # Uses gateway.aitherium.com for LLM
+adk-serve --identity aither  # Uses gateway.aitherium.com for LLM
 ```
 
 ## Environment Variables
