@@ -55,13 +55,6 @@ TEMPLATES = {
         quality_tags="masterpiece, best quality, highres",
         negative_prompt="bad anatomy, bad hands, worst quality, low quality, watermark, text"
     ),
-    "nude_selfie": PromptTemplate(
-        name="nude_selfie",
-        base_prompt="1girl, selfie, nude, naked, smartphone, pov, looking at viewer, beautiful face, detailed eyes, breasts, nipples",
-        style_tags="photorealistic, natural lighting, bedroom, intimate",
-        quality_tags="masterpiece, best quality, highres, absurdres, detailed skin",
-        negative_prompt="bad anatomy, bad hands, missing fingers, worst quality, low quality, watermark, censored"
-    ),
     "generic": PromptTemplate(
         name="generic",
         base_prompt="",
@@ -76,16 +69,10 @@ def detect_template(user_input: str) -> str:
     """Detect which template to use based on user input."""
     text = user_input.lower()
     
-    # Check for NSFW + selfie
-    nsfw_words = {"nude", "naked", "nsfw", "explicit", "sexy", "topless", "undressed"}
     selfie_words = {"selfie", "selfies", "self-portrait"}
-    
-    has_nsfw = any(w in text for w in nsfw_words)
     has_selfie = any(w in text for w in selfie_words)
-    
-    if has_nsfw and has_selfie:
-        return "nude_selfie"
-    elif has_selfie:
+
+    if has_selfie:
         return "selfie"
     elif "portrait" in text:
         return "portrait"
@@ -477,15 +464,6 @@ async def fast_generate_image(
     try:
         # Detect appropriate template
         template_name = detect_template(user_input)
-        
-        # Check if NSFW is allowed
-        allow_explicit = False
-        if safety_config and hasattr(safety_config, 'allow_explicit'):
-            allow_explicit = safety_config.allow_explicit
-        
-        # Downgrade NSFW template if not allowed
-        if template_name == "nude_selfie" and not allow_explicit:
-            template_name = "selfie"
         
         template = TEMPLATES.get(template_name, TEMPLATES["generic"])
         

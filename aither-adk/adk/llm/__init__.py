@@ -404,6 +404,38 @@ class LLMRouter:
         except Exception as e:
             logger.warning("Failed to set up reasoning backend '%s': %s", backend, e)
 
+    async def _try_cloud_apis(self) -> LLMProvider | None:
+        """Try cloud API keys from Config (populated by provider_keys.json).
+
+        Returns the first available cloud provider, preferring the order:
+        Anthropic → OpenAI → DeepSeek (matches the quality tier ordering).
+        """
+        import os
+        if self._config:
+            if self._config.anthropic_api_key:
+                self._provider_name = "anthropic"
+                return self._create_provider("anthropic", api_key=self._config.anthropic_api_key)
+            if self._config.openai_api_key:
+                self._provider_name = "openai"
+                return self._create_provider(
+                    "openai", base_url=self._config.openai_base_url,
+                    api_key=self._config.openai_api_key,
+                )
+            if self._config.deepseek_api_key:
+                self._provider_name = "deepseek"
+                return self._create_provider("deepseek", api_key=self._config.deepseek_api_key)
+
+        # Fallback: env vars
+        for name, env in [("anthropic", "ANTHROPIC_API_KEY"), ("openai", "OPENAI_API_KEY"), ("deepseek", "DEEPSEEK_API_KEY")]:
+            key = os.getenv(env, "")
+            if key:
+                self._provider_name = name
+                kw = {"api_key": key}
+                if name == "openai":
+                    kw["base_url"] = os.getenv("OPENAI_BASE_URL")
+                return self._create_provider(name, **kw)
+        return None
+
     async def _auto_detect(self) -> LLMProvider:
         """Try backends in priority order: vLLM → desktop → Ollama → gateway → cloud APIs → demo.
 
@@ -411,6 +443,9 @@ class LLMRouter:
         efficiently with batching and paged attention. Desktop MicroScheduler is tried
         before Ollama for dual-mode setups. Ollama is the fallback for AMD/Apple/no-Docker.
         Gateway is cloud fallback when no local GPU.
+
+        When cloud_mode is "cloud_first" or "cloud_only" (set by `adk setup --mode cloud`),
+        skip local probes and go straight to cloud API keys.
         """
         import os
 
@@ -418,6 +453,22 @@ class LLMRouter:
             (self._config.aither_api_key if self._config else "")
             or os.getenv("AITHER_API_KEY", "")
         )
+
+        # Cloud-first / cloud-only mode: skip local GPU probes
+        cloud_mode = getattr(self._config, "cloud_mode", "") if self._config else ""
+        if cloud_mode in ("cloud_only", "cloud_first"):
+            logger.info("Cloud mode '%s' — skipping local backend probes", cloud_mode)
+            provider = await self._try_cloud_apis()
+            if provider:
+                return provider
+            if cloud_mode == "cloud_only":
+                raise ConnectionError(
+                    "Cloud-only mode but no cloud API keys configured.\n\n"
+                    "  Set keys:   adk keys set openai sk-...\n"
+                    "  Or switch:  adk setup --mode auto\n"
+                )
+            # cloud_first: fall through to try local as fallback
+            logger.info("Cloud-first: no cloud providers available, trying local backends")
 
         # 1. vLLM containers — PRIMARY local backend (best GPU utilization)
         vllm = await self._try_vllm()
@@ -522,6 +573,30 @@ class LLMRouter:
             "AitherOS Alpha uses vLLM containers for GPU inference.\n"
             "Run auto_setup() to detect your GPU and start the right containers."
         )
+
+    def _log_cost(self, resp, provider_name: str = "") -> None:
+        """Append a cost entry to ~/.aither/cloud_costs.jsonl for local tracking."""
+        import json as _json
+        from datetime import datetime, timezone
+        try:
+            data_dir = self._config.data_dir if self._config else os.path.expanduser("~/.aither")
+            log_path = Path(data_dir) / "cloud_costs.jsonl"
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            # Determine if this is a local or cloud request
+            _prov = provider_name or self._provider_name
+            is_local = _prov in ("ollama", "vllm", "llamacpp", "picolm", "desktop")
+            entry = {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "provider": "local" if is_local else _prov,
+                "model": getattr(resp, "model", "") or "",
+                "input_tokens": getattr(resp, "input_tokens", 0) or 0,
+                "output_tokens": getattr(resp, "output_tokens", 0) or 0,
+                "cost_usd": 0.0 if is_local else getattr(resp, "cost_usd", 0.0) or 0.0,
+            }
+            with open(log_path, "a") as f:
+                f.write(_json.dumps(entry) + "\n")
+        except Exception:
+            pass  # Cost logging is best-effort, never crash
 
     async def get_provider(self) -> LLMProvider:
         """Return the active provider, auto-detecting if needed."""
@@ -737,6 +812,7 @@ class LLMRouter:
                     top_p=top_p, repetition_penalty=repetition_penalty, **kwargs,
                 )
                 resp.effort_level = effort
+                self._log_cost(resp, self._reasoning_provider_name)
                 return resp
             except Exception as e:
                 logger.warning("Reasoning backend failed, falling back to primary: %s", e)
@@ -754,6 +830,7 @@ class LLMRouter:
                     top_p=top_p, repetition_penalty=repetition_penalty, **kwargs,
                 )
                 resp.effort_level = effort
+                self._log_cost(resp, self._remote_provider_name)
                 return resp
             except Exception as e:
                 logger.warning("Remote desktop inference failed, falling back to local: %s", e)
@@ -765,6 +842,7 @@ class LLMRouter:
         )
         if effort is not None:
             resp.effort_level = effort
+        self._log_cost(resp, self._provider_name)
         return resp
 
     async def chat_stream(

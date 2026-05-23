@@ -135,7 +135,7 @@ class StoryboardEngine:
         """Generate image for a single panel."""
         # 1. Generate Prompt
         # We use the existing generate_sd_prompt but override the request with the panel description
-        prompt_data = generate_sd_prompt(panel.description, persona_name, "UNRESTRICTED")
+        prompt_data = generate_sd_prompt(panel.description, persona_name)
         prompt = prompt_data["prompt"]
         prompt_data["negative_prompt"]
 

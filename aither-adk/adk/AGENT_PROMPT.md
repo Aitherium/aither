@@ -65,10 +65,12 @@ If not logged in, choose one:
 ```bash
 adk login                        # Opens browser -- approve on portal (recommended)
 adk login --email you@example.com  # Email/password flow
-adk login --api-key aither_sk_... # Direct API key (from portal.aitherium.com)
+adk login --api-key aither_pat_... # Direct API key (from portal)
 ```
 
-Auth is optional for local-only usage. Required for cloud inference (Elysium).
+To generate a key manually: portal.aitherium.com → Settings → API Keys → "+ New Token".
+
+Auth is optional for local-only usage. Required for cloud inference, sovereign deploy, and fleet sync.
 
 ## Step 5: Create an agent project
 

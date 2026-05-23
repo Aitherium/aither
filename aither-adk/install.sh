@@ -183,6 +183,35 @@ if [[ "$FULL_STACK" == "true" ]]; then
     fi
 fi
 
+# -- Local orchestrator (Nemotron-8B via llama.cpp) --------------------------
+INSTALL_ORCHESTRATOR=$WITH_LOCAL_ORCHESTRATOR
+if [[ "$INSTALL_ORCHESTRATOR" != "true" ]] && [[ "$NONINTERACTIVE" != "true" ]]; then
+    echo ""
+    echo -e "${CYAN}Install local Nemotron-Orchestrator-8B (native, no Docker)?${RESET}"
+    echo "  Adds an OpenAI-compatible endpoint at http://127.0.0.1:${ORCHESTRATOR_PORT}/v1"
+    echo "  ~5GB download, runs as a user service (systemd/launchd)."
+    read -r -p "  Install? [y/N] " ORCH_RESP
+    if [[ "${ORCH_RESP,,}" == "y" ]]; then
+        INSTALL_ORCHESTRATOR=true
+    fi
+fi
+if [[ "$INSTALL_ORCHESTRATOR" == "true" ]]; then
+    echo ""
+    echo -e "${BOLD}Installing local orchestrator (Nemotron-8B via llama.cpp)...${RESET}"
+    ORCH_ARGS=(setup llamacpp --llamacpp-port "$ORCHESTRATOR_PORT")
+    if [[ -n "$ORCHESTRATOR_QUANT" ]]; then
+        ORCH_ARGS+=(--llamacpp-quant "$ORCHESTRATOR_QUANT")
+    fi
+    if [[ "$NONINTERACTIVE" == "true" ]]; then
+        ORCH_ARGS+=(--non-interactive)
+    fi
+    if aither "${ORCH_ARGS[@]}"; then
+        echo -e "${GREEN}[OK]${RESET} Local orchestrator: http://127.0.0.1:${ORCHESTRATOR_PORT}/v1"
+    else
+        echo -e "${YELLOW}[!!]${RESET} Local orchestrator install failed. Retry: aither setup llamacpp"
+    fi
+fi
+
 # ── Summary ───────────────────────────────────────────────────
 echo ""
 echo -e "${BOLD}${GREEN}Installation complete!${RESET}"

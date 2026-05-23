@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "aither-adk"
-version = "1.5.0"
+version = "1.6.0"
 description = "Build AI agent fleets. Any backend, local or cloud. Runtime backend switching, hybrid reasoning, effort-based routing, 17 bundled identities, knowledge graph memory."
 readme = "README.md"
 license = {file = "LICENSE"}

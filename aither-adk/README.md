@@ -173,6 +173,23 @@ adk whoami          # Shows current user, tenant, token status
 adk status          # Shows auth + backend + service status
 ```
 
+### Generate an API Key (manual)
+
+If you prefer not to use `adk login`, create a key manually:
+
+1. Go to [portal.aitherium.com](https://portal.aitherium.com) and sign up / log in
+2. Navigate to **Settings → API Keys** (`/portal/settings/api-keys`)
+3. Click **"+ New Token"** to create a Personal Access Token (select scopes, set expiry)
+4. Copy the key and pass it to the CLI:
+
+```bash
+adk login --api-key aither_pat_xxxxx
+```
+
+Two types of keys are available:
+- **Personal Access Tokens** — scoped (blog, chat, memory, files, agents, admin), for scripts and CI/CD
+- **Agent Keys** — clearance-based (Observer/Contributor/Operator/Admin), for agent-to-platform auth
+
 ### Where Credentials Live
 
 All credentials are stored in `~/.aither/config.json`. Never set `AITHER_API_KEY` as an environment variable — `adk login` handles it.

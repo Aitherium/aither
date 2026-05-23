@@ -74,18 +74,27 @@ def create_app(
         try:
             a = await get_agent()
             await a.llm.get_provider()
-        except Exception:
+        except (ImportError, RuntimeError, OSError):
             pass
 
         # ── Elysium auto-reconnect + mesh hosting ──
         await _reconnect_elysium()
         await _start_mesh_hosting()
 
-        # ── Fleet endpoint registration ──
+        # ── Fleet endpoint registration + continuous heartbeat ──
         await _register_fleet_endpoint()
+        _heartbeat_task = asyncio.create_task(_fleet_heartbeat_loop())
+        _state["heartbeat_task"] = _heartbeat_task
 
         yield
         # ── Shutdown cleanup ──
+        hb_task = _state.get("heartbeat_task")
+        if hb_task and not hb_task.done():
+            hb_task.cancel()
+            try:
+                await hb_task
+            except (asyncio.CancelledError, Exception):
+                pass
         await _deregister_fleet_endpoint()
         _elysium_relay = _state.get("elysium_relay")
         if _elysium_relay:
@@ -265,7 +274,7 @@ def create_app(
                 "message": "No LLM backend available. Set AITHER_API_KEY to use the gateway, or install Ollama locally.",
                 "demo": "https://demo.aitherium.com",
                 "gateway": "https://gateway.aitherium.com",
-                "docs": "https://github.com/Aitherium/aither/blob/main/docs/GETTING_STARTED.md",
+                "docs": "https://github.com/Aitherium/aither-adk/blob/main/docs/GETTING_STARTED.md",
             },
         )
 
@@ -578,7 +587,7 @@ def create_app(
         a = await get_agent()
         try:
             models = await a.llm.list_models()
-        except Exception:
+        except (RuntimeError, OSError, ConnectionError):
             models = []
 
         return {
@@ -607,7 +616,7 @@ def create_app(
             from adk.strata import get_strata_ingest
             strata = get_strata_ingest()
             await strata.ingest_chat(**kwargs)
-        except Exception:
+        except (ImportError, RuntimeError, OSError):
             pass  # Truly fire-and-forget
 
     # ─── MCP server (every node is also an MCP server) ───
@@ -653,7 +662,7 @@ def create_app(
                 relay_obj.set_local_mcp_server(mcp)
 
             logger.info("MCP server initialized (%d tools)", len(mcp.registry.list_tools()))
-        except Exception as exc:
+        except (ImportError, RuntimeError, OSError) as exc:
             logger.debug("MCP server init failed (non-fatal): %s", exc)
 
     # ─── A2A protocol server (Google A2A v0.3.0) ───
@@ -674,7 +683,7 @@ def create_app(
             a2a.mount(app)
             _state["a2a_server"] = a2a
             logger.info("A2A server initialized (protocol v0.3.0)")
-        except Exception as exc:
+        except (ImportError, RuntimeError, OSError) as exc:
             logger.debug("A2A server init failed (non-fatal): %s", exc)
 
     async def _connect_service_bridge():
@@ -712,7 +721,7 @@ def create_app(
 
             logger.info("ServiceBridge mode: %s (tools: %d)",
                         status.mode, status.tools_count)
-        except Exception as exc:
+        except (ImportError, RuntimeError, OSError) as exc:
             logger.debug("ServiceBridge startup failed (non-fatal): %s", exc)
 
     async def _flush_strata_queue():
@@ -723,7 +732,7 @@ def create_app(
             flushed = await strata.flush_queue()
             if flushed:
                 logger.info("Flushed %d queued Strata entries", flushed)
-        except Exception:
+        except (ImportError, RuntimeError, OSError):
             pass
 
     async def _chronicle_log_chat(**kwargs):
@@ -732,7 +741,7 @@ def create_app(
             from adk.chronicle import get_chronicle
             chronicle = get_chronicle()
             await chronicle.log_llm_call(**kwargs)
-        except Exception:
+        except (ImportError, RuntimeError, OSError):
             pass  # Truly fire-and-forget
 
     async def _flush_chronicle_queue():
@@ -743,7 +752,7 @@ def create_app(
             flushed = await chronicle.flush_queue()
             if flushed:
                 logger.info("Flushed %d queued Chronicle entries", flushed)
-        except Exception:
+        except (ImportError, RuntimeError, OSError):
             pass
 
     async def _start_watch_reporter():
@@ -763,13 +772,13 @@ def create_app(
                     elif _state["agent"]:
                         data["agents"] = [_state["agent"].name]
                         data["agent_count"] = 1
-                except Exception:
+                except (KeyError, AttributeError):
                     pass
                 return data
 
             reporter.register_collector(_collect_health)
             await reporter.start()
-        except Exception as exc:
+        except (ImportError, RuntimeError, OSError) as exc:
             logger.debug("Watch reporter startup failed (non-fatal): %s", exc)
 
     async def _flush_pulse_queue():
@@ -780,7 +789,7 @@ def create_app(
             flushed = await pulse.flush_queue()
             if flushed:
                 logger.info("Flushed %d queued Pulse pain signals", flushed)
-        except Exception:
+        except (ImportError, RuntimeError, OSError):
             pass
 
     async def _register_fleet_endpoint():
@@ -810,7 +819,7 @@ def create_app(
                 )
             _state["fleet_registered"] = True
             logger.info("Registered fleet endpoint: %s -> %s", agent_name, invoke_url)
-        except Exception as exc:
+        except (ImportError, RuntimeError, OSError, ConnectionError) as exc:
             _state["fleet_registered"] = False
             logger.warning("Fleet endpoint registration failed (non-fatal): %s", exc)
 
@@ -839,8 +848,116 @@ def create_app(
                     headers={"Authorization": f"Bearer {api_key}"},
                 )
             logger.info("Deregistered fleet endpoint: %s", agent_name)
-        except Exception as exc:
+        except (ImportError, RuntimeError, OSError, ConnectionError) as exc:
             logger.debug("Fleet endpoint deregistration failed (non-fatal): %s", exc)
+
+    async def _fleet_heartbeat_loop():
+        """Continuously heartbeat to portal every 60s using FederationLiteClient.
+
+        Reports: status, CPU/memory, active agents, inference backend, tokens processed.
+        On failure, queues locally and retries next cycle.
+        """
+        from adk.config import load_saved_config
+        saved = load_saved_config()
+        api_key = saved.get("api_key", "") or config.aither_api_key
+        if not api_key:
+            logger.debug("Fleet heartbeat loop skipped (no API key)")
+            return
+
+        tenant_id = saved.get("tenant_id", "") or os.environ.get("AITHER_TENANT_ID", "")
+        portal_url = os.environ.get("AITHER_PORTAL_URL", "https://portal.aitherium.com")
+        agent_name = _state.get("identity", identity)
+        instance_id = os.environ.get("AITHER_INSTANCE_ID", "")
+        invoke_url = os.environ.get("AITHER_INVOKE_URL", f"http://localhost:{config.server_port}")
+
+        try:
+            from adk.federation_lite import FederationLiteClient
+            fed_client = FederationLiteClient(
+                hub_url=portal_url,
+                api_key=api_key,
+                node_id=instance_id or agent_name,
+            )
+        except ImportError:
+            fed_client = None
+
+        consecutive_failures = 0
+
+        while True:
+            try:
+                await asyncio.sleep(60)
+            except asyncio.CancelledError:
+                break
+
+            try:
+                # Collect metrics
+                metrics_data = {}
+                try:
+                    m = get_metrics()
+                    metrics_data = {
+                        "tokens_processed": getattr(m, "tokens_processed", 0),
+                        "requests_total": getattr(m, "requests_total", 0),
+                        "uptime_seconds": getattr(m, "uptime_seconds", 0),
+                    }
+                except (RuntimeError, AttributeError):
+                    pass
+
+                # System resource metrics
+                try:
+                    import psutil
+                    metrics_data["cpu_percent"] = psutil.cpu_percent(interval=0)
+                    mem = psutil.virtual_memory()
+                    metrics_data["memory_percent"] = mem.percent
+                except ImportError:
+                    pass
+
+                # Inference backend info
+                metrics_data["inference_mode"] = config.cloud_mode or config.llm_backend
+                metrics_data["invoke_url"] = invoke_url
+
+                # Agent list
+                agents_list = [{
+                    "name": agent_name,
+                    "invoke_url": invoke_url,
+                    "status": "online",
+                    "tenant_id": tenant_id,
+                }]
+
+                if fed_client:
+                    result = await fed_client.heartbeat(
+                        status="online",
+                        metrics=metrics_data,
+                        agents=agents_list,
+                    )
+                    if result.get("error"):
+                        consecutive_failures += 1
+                        logger.debug("Fleet heartbeat failed (%d): %s", consecutive_failures, result)
+                    else:
+                        consecutive_failures = 0
+                        logger.debug("Fleet heartbeat OK")
+                else:
+                    # Fallback: direct HTTP heartbeat
+                    import httpx
+                    async with httpx.AsyncClient(timeout=15) as client:
+                        await client.post(
+                            f"{portal_url}/v1/agents/upsert",
+                            json={
+                                "name": agent_name,
+                                "scope": {"visibility": "workspace", "tenant_id": tenant_id},
+                                "invoke_url": invoke_url,
+                                "status": "online",
+                                "metrics": metrics_data,
+                            },
+                            headers={"Authorization": f"Bearer {api_key}"},
+                        )
+                    consecutive_failures = 0
+                    logger.debug("Fleet heartbeat OK (direct)")
+
+            except asyncio.CancelledError:
+                break
+            except (RuntimeError, OSError, ConnectionError) as exc:
+                consecutive_failures += 1
+                if consecutive_failures <= 3 or consecutive_failures % 10 == 0:
+                    logger.warning("Fleet heartbeat error (%d): %s", consecutive_failures, exc)
 
     async def _register_with_gateway():
         if not config.gateway_url or not config.aither_api_key:
@@ -861,7 +978,7 @@ def create_app(
             )
             _state["gateway_connected"] = True
             logger.info("Registered with gateway %s: %s", config.gateway_url, result)
-        except Exception as exc:
+        except (ImportError, RuntimeError, OSError, ConnectionError) as exc:
             _state["gateway_connected"] = False
             logger.warning("Gateway registration failed (non-fatal): %s", exc)
 
@@ -893,7 +1010,7 @@ def create_app(
                     "Joined AitherNet mesh as %s (node_id=%s, agents=%s)",
                     relay.node_name, relay.node_id[:12], agent_names,
                 )
-        except Exception as exc:
+        except (ImportError, RuntimeError, OSError, ConnectionError) as exc:
             logger.debug("AitherNet join failed (non-fatal): %s", exc)
 
     def _detect_node_capabilities() -> list[str]:
@@ -908,7 +1025,7 @@ def create_app(
             if result.returncode == 0 and result.stdout.strip():
                 caps.append("inference")
                 caps.append("gpu")
-        except Exception:
+        except (FileNotFoundError, OSError):
             pass
         if is_fleet:
             caps.append("fleet")
@@ -1036,7 +1153,7 @@ def create_app(
                     irc_port = int(irc_port_env)
                     await chat.start_irc_server(port=irc_port)
                     logger.info("IRC server listening on port %d", irc_port)
-                except Exception as irc_exc:
+                except (RuntimeError, OSError) as irc_exc:
                     logger.debug("IRC server startup failed (non-fatal): %s", irc_exc)
 
                 # Start Aither bridge only when IRC is enabled
@@ -1046,11 +1163,11 @@ def create_app(
                     if bridge:
                         _state["aither_bridge"] = bridge
                         logger.info("Aither bridge active")
-                except Exception as bridge_exc:
+                except (ImportError, RuntimeError, OSError) as bridge_exc:
                     logger.debug("Aither bridge startup failed (non-fatal): %s", bridge_exc)
 
             logger.info("Chat relay initialized (channels=%d)", len(chat._channels))
-        except Exception as exc:
+        except (ImportError, RuntimeError, OSError) as exc:
             logger.debug("Chat relay init failed (non-fatal): %s", exc)
 
     async def _init_mail_relay():
@@ -1075,11 +1192,11 @@ def create_app(
                 started = await mail.start_inbound_server(port=smtp_port)
                 if started:
                     logger.info("Inbound SMTP server started on port %d", smtp_port)
-            except Exception as smtp_exc:
+            except (RuntimeError, OSError) as smtp_exc:
                 logger.debug("Inbound SMTP server startup failed (non-fatal): %s", smtp_exc)
 
             logger.info("Mail relay initialized (configured=%s)", mail.is_configured)
-        except Exception as exc:
+        except (ImportError, RuntimeError, OSError) as exc:
             logger.debug("Mail relay init failed (non-fatal): %s", exc)
 
     def _handle_mesh_mail(data: dict):
@@ -1088,7 +1205,7 @@ def create_app(
             mail = _state.get("mail_relay")
             if mail:
                 mail.receive_mesh_mail(data)
-        except Exception as exc:
+        except (RuntimeError, OSError) as exc:
             logger.debug("Mesh mail handler error: %s", exc)
 
     # ── Chat WebSocket ──
@@ -1129,7 +1246,7 @@ def create_app(
             pass
         except asyncio.TimeoutError:
             pass
-        except Exception as exc:
+        except (RuntimeError, OSError, ConnectionError) as exc:
             logger.debug("WebSocket chat error: %s", exc)
         finally:
             chat.disconnect_ws(nick)
@@ -1622,7 +1739,7 @@ async def _aitheros_stream(get_agent_fn, message: str, session_id: str, agent_na
             latency_ms=duration_ms, tool_calls=[],
         ))
 
-    except Exception as exc:
+    except (RuntimeError, OSError, ConnectionError) as exc:
         logger.error("AitherOS stream error: %s", exc)
         yield f"event: error\ndata: {json.dumps({'type': 'error', 'error': str(exc)})}\n\n"
         duration_ms = int((time.time() - start) * 1000)
@@ -1658,7 +1775,7 @@ async def _stream_agent_response(agent, message: str, history: list[dict], model
                 ],
             }
             yield f"data: {json.dumps(data)}\n\n"
-    except Exception as exc:
+    except (RuntimeError, OSError, ConnectionError) as exc:
         logger.error("Streaming error: %s", exc)
         data = {
             "id": chat_id,

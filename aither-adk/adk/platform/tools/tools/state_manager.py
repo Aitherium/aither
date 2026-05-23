@@ -28,7 +28,7 @@ class StateManager:
             except Exception as exc:
                 logger.debug(f"Visual state load failed: {exc}")
         return {
-            "clothing": "clothed", # clothed, nude, lingerie, etc.
+            "clothing": "default", # outfit state
             "location": "high tech office",
             "pose": "standing",
             "camera": "front view",
@@ -48,13 +48,18 @@ class StateManager:
         """Updates the state based on keywords in the prompt."""
         prompt_lower = prompt.lower()
 
-        # Clothing State
-        if any(w in prompt_lower for w in ["nude", "naked", "remove clothes", "undress", "no clothes", "strip"]):
-            self.state["clothing"] = "nude"
-        elif any(w in prompt_lower for w in ["lingerie", "underwear"]):
-            self.state["clothing"] = "lingerie"
-        elif any(w in prompt_lower for w in ["dress", "suit", "outfit", "clothed", "wear", "clothes", "put on", "dressed", "cover up", "jeans", "shirt", "skirt"]):
-            self.state["clothing"] = "clothed"
+        # Outfit State
+        outfit_map = {
+            "armor": ["armor", "plate", "chainmail"],
+            "formal": ["suit", "formal", "tuxedo", "gown"],
+            "casual": ["casual", "jeans", "t-shirt", "hoodie"],
+            "uniform": ["uniform", "military"],
+            "default": ["clothed", "dressed", "clothes", "outfit", "wear"],
+        }
+        for outfit, keywords in outfit_map.items():
+            if any(w in prompt_lower for w in keywords):
+                self.state["clothing"] = outfit
+                break
 
         # Location State (Enhanced)
         if "office" in prompt_lower or "server room" in prompt_lower or "workspace" in prompt_lower:
@@ -172,15 +177,12 @@ class StateManager:
         if not any(w in prompt_lower for w in location_override_keywords):
             prompt += f", {self.state['location']}"
 
-        # Inject Clothing State (only if a person is implied and not overridden)
+        # Inject outfit state (only if a person is implied and not overridden)
         if has_person:
-            if self.state["clothing"] == "nude" and not any(w in prompt_lower for w in ["clothed", "wear", "dress", "suit", "outfit", "shirt", "pants"]):
-                if "nude" not in prompt_lower:
-                    prompt += ", nude, artistic"
-            elif self.state["clothing"] == "clothed" and not any(w in prompt_lower for w in ["nude", "naked", "undress", "lingerie", "bikini"]):
-                # If state is clothed but prompt doesn't specify what to wear, add generic clothing or specific items if known
-                if not any(w in prompt_lower for w in ["dress", "suit", "outfit", "clothes", "shirt", "skirt", "jeans", "wearing"]):
-                    prompt += ", wearing clothes, fully clothed, professional outfit"
+            outfit = self.state.get("clothing", "default")
+            outfit_keywords = ["dress", "suit", "outfit", "clothes", "shirt", "skirt", "jeans", "wearing", "armor", "uniform"]
+            if outfit != "default" and not any(w in prompt_lower for w in outfit_keywords):
+                prompt += f", {outfit}"
 
         # Inject Camera Angle (if not overridden)
         camera_keywords = ["pov", "from behind", "from above", "from below", "side view", "back view", "front view", "angle", "perspective"]

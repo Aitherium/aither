@@ -2930,8 +2930,6 @@ Format the report clearly with headings and bullet points if necessary.
                 table.add_row("Eyes", f"{anchor.identity.eye_color} {anchor.identity.eye_style}".strip())
                 table.add_row("Skin", anchor.identity.skin_tone)
                 table.add_row("Body", anchor.identity.body_type)
-                table.add_row("Bust", anchor.identity.bust_size)
-                table.add_row("Hips", anchor.identity.hip_width)
                 table.add_row("Marks", anchor.identity.distinguishing_marks)
                 table.add_row("Face", anchor.identity.facial_features)
 

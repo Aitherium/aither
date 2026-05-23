@@ -47,7 +47,7 @@ class RefinementEngine:
         safe_print(f"[cyan][ART] Starting generation with refinement loop (Max {max_iterations} iterations)...[/]")
 
         # 1. Initial Generation
-        prompt_data = generate_sd_prompt(user_request, persona_name, "UNRESTRICTED")
+        prompt_data = generate_sd_prompt(user_request, persona_name)
         current_prompt = prompt_data["prompt"]
         negative_prompt = prompt_data["negative_prompt"]
 
@@ -114,7 +114,7 @@ class RefinementEngine:
 
         # 2. Generate new prompt combining description + instruction
         # We can use the LLM prompt generator logic here manually or create a helper
-        new_prompt_data = generate_sd_prompt(f"Image of {description}. Change: {instruction}", "aither", "UNRESTRICTED")
+        new_prompt_data = generate_sd_prompt(f"Image of {description}. Change: {instruction}", "aither")
         new_prompt = new_prompt_data["prompt"]
 
         # 3. Img2Img

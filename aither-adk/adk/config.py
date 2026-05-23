@@ -156,6 +156,10 @@ class Config:
         default_factory=lambda: os.getenv("AITHER_PREFER_LOCAL", "").lower() in ("true", "1", "yes")
     )
 
+    # Cloud mode: "" (auto), "cloud_first", "cloud_only", "local_first", "local_only"
+    # Set by `adk setup --mode cloud` or `adk quickstart --cloud`
+    cloud_mode: str = field(default_factory=lambda: os.getenv("AITHER_CLOUD_MODE", ""))
+
     # Register agent with gateway on startup (opt-in)
     register_agent: bool = field(
         default_factory=lambda: os.getenv("AITHER_REGISTER_AGENT", "").lower() in ("true", "1", "yes")
@@ -247,6 +251,14 @@ class Config:
         if not config.dgx_url and saved.get("dgx_url"):
             config.dgx_url = saved["dgx_url"]
 
+        # Cloud mode from setup --mode cloud/hybrid
+        if saved.get("cloud_mode") and config.llm_backend == "auto":
+            config.cloud_mode = saved["cloud_mode"]
+
+        # Backfill from provider_keys.json (written by `adk keys set`)
+        # This is the bridge between `adk keys` CLI and the LLMRouter.
+        config._apply_provider_keys()
+
         # Load project-level config.yaml (from CWD, created by `adk init`)
         config._apply_project_config()
 
@@ -317,6 +329,33 @@ class Config:
 
         logger.info("Applied profile '%s': model=%s, small=%s, large=%s, max_context=%d",
                      profile_name, self.model, self.small_model, self.large_model, self.max_context)
+
+    def _apply_provider_keys(self) -> None:
+        """Load API keys from ``~/.aither/provider_keys.json`` (written by ``adk keys set``).
+
+        Only fills in fields that are still empty — env vars and saved config win.
+        Also exports to env vars so child processes (LLMRouter providers) can find them.
+        """
+        keys_path = Path(self.data_dir) / "provider_keys.json"
+        if not keys_path.exists():
+            return
+        try:
+            keys = json.loads(keys_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            return
+
+        _KEY_MAP = {
+            "openai": ("openai_api_key", "OPENAI_API_KEY"),
+            "anthropic": ("anthropic_api_key", "ANTHROPIC_API_KEY"),
+            "deepseek": ("deepseek_api_key", "DEEPSEEK_API_KEY"),
+        }
+        for provider, (field_name, env_name) in _KEY_MAP.items():
+            key = keys.get(provider, "")
+            if key and not getattr(self, field_name, ""):
+                setattr(self, field_name, key)
+                # Also export to env so provider constructors can find it
+                if not os.environ.get(env_name):
+                    os.environ[env_name] = key
 
     def _apply_project_config(self) -> None:
         """Load project-level config.yaml (created by ``adk init``) from CWD.

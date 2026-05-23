@@ -57,10 +57,10 @@ class SceneState:
     lighting: str = "soft ambient lighting"
 
     # Character states
-    clothing_state: Dict[str, str] = field(default_factory=dict)  # persona -> "nude", "clothed", etc.
+    clothing_state: Dict[str, str] = field(default_factory=dict)  # persona -> outfit state
 
     # Conversation hints
-    nsfw_level: int = 0  # 0-5, how NSFW the conversation is getting
+    content_level: int = 0  # 0-2, content classification
     visual_intent: float = 0.0  # 0-1, how likely user wants an image
 
     # Recent context
@@ -74,7 +74,7 @@ class SceneState:
             "location": self.location,
             "lighting": self.lighting,
             "clothing_state": self.clothing_state,
-            "nsfw_level": self.nsfw_level,
+            "content_level": self.content_level,
             "visual_intent": self.visual_intent,
         }
 
@@ -165,18 +165,11 @@ class SpeculativeGenerator:
         if mentions:
             self.scene.active_personas = list(set(self.scene.active_personas + mentions))
 
-        # Detect NSFW level
-        nsfw_keywords = {
-            1: ["sexy", "hot", "beautiful", "cute"],
-            2: ["nude", "naked", "undress", "strip", "topless"],
-            3: ["exposed", "revealing", "suggestive", "provocative"],
-            4: ["fuck", "sex", "penetrat", "anal", "oral"],
-            5: ["forced", "extreme", "violent"],
-        }
-
-        for level, keywords in nsfw_keywords.items():
-            if any(kw in text for kw in keywords):
-                self.scene.nsfw_level = max(self.scene.nsfw_level, level)
+        # Detect content level (for routing purposes only)
+        # Level 0 = general, 1 = creative, 2 = restricted (route to local)
+        restricted_keywords = ["restricted", "local only", "private"]
+        if any(kw in text for kw in restricted_keywords):
+            self.scene.content_level = max(self.scene.content_level, 2)
 
         # Detect visual intent (likelihood user wants an image)
         visual_signals = [
@@ -204,13 +197,15 @@ class SpeculativeGenerator:
                 self.scene.current_action = action
                 self.scene.current_pose = keyword
 
-        # Detect clothing changes
-        if "nude" in text or "naked" in text:
-            for persona in self.scene.active_personas:
-                self.scene.clothing_state[persona] = "nude"
-        elif "clothed" in text or "dress" in text:
-            for persona in self.scene.active_personas:
-                self.scene.clothing_state[persona] = "clothed"
+        # Detect outfit changes
+        outfit_keywords = {
+            "armor": "armor", "dress": "dress", "casual": "casual",
+            "formal": "formal", "uniform": "uniform",
+        }
+        for keyword, outfit in outfit_keywords.items():
+            if keyword in text:
+                for persona in self.scene.active_personas:
+                    self.scene.clothing_state[persona] = outfit
 
         self._save_state()
 
@@ -218,7 +213,7 @@ class SpeculativeGenerator:
         predictions = self._predict_next_images()
 
         return {
-            "nsfw_level": self.scene.nsfw_level,
+            "content_level": self.scene.content_level,
             "visual_intent": self.scene.visual_intent,
             "active_personas": self.scene.active_personas,
             "current_action": self.scene.current_action,
@@ -245,22 +240,13 @@ class SpeculativeGenerator:
                     "priority": 1.0,
                 })
 
-                # If NSFW, predict nude version
-                if self.scene.nsfw_level >= 2:
-                    predictions.append({
-                        "personas": [persona],
-                        "action": self.scene.current_action or "standing, looking at viewer",
-                        "clothing": "nude",
-                        "priority": 0.8,
-                    })
-
-                # If action-oriented, predict action shots
-                if self.scene.nsfw_level >= 3 and self.scene.current_pose:
+                # If action-oriented, predict action variation
+                if self.scene.current_pose:
                     predictions.append({
                         "personas": [persona],
                         "action": self.scene.current_action,
-                        "clothing": "nude",
-                        "priority": 0.9,
+                        "clothing": self.scene.clothing_state.get(persona, "default"),
+                        "priority": 0.8,
                     })
 
         return predictions
@@ -383,7 +369,7 @@ class SpeculativeGenerator:
             # Build the prompt
             # This is a simplified version - would use the full prompt builder in production
             persona_tags = ", ".join([f"({p}:1.2)" for p in personas])
-            clothing_tags = "(nude:1.3)" if clothing == "nude" else ""
+            clothing_tags = f"({clothing}:1.2)" if clothing and clothing != "default" else ""
 
             prompt = f"1girl, solo, {persona_tags}, {clothing_tags}, {action}, anime style, masterpiece, best quality"
 
@@ -449,7 +435,7 @@ class SpeculativeGenerator:
             "lying": "lying down, reclining",
             "riding": "dynamic pose, action",
             "kneeling": "kneeling, looking up",
-            "nude": "nude, artistic, standing",
+            "portrait": "portrait, upper body, looking at viewer",
         }
 
         for keyword, action in actions.items():

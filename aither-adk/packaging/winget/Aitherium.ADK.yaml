@@ -27,7 +27,7 @@ Tags:
   - development
   - python
   - machine-learning
-PackageUrl: https://github.com/Aitherium/aither
+PackageUrl: https://github.com/Aitherium/aither-adk
 Installers:
   - Architecture: x64
     InstallerType: exe

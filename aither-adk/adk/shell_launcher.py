@@ -14,7 +14,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-_REPO = "Aitherium/aither"
+_REPO = "Aitherium/aither-adk"
 _CACHE_DIR = Path.home() / ".aither" / "bin"
 
 _PLATFORM_BINARY = {

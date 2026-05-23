@@ -1554,6 +1554,16 @@ def cmd_deploy_tenant_agent(args) -> int:
     # ── Step 4: Start ─────────────────────────────────────────────────────
     step(4, total_steps, "Starting agent")
 
+    # Read port from bundle metadata (used by both Docker and native paths)
+    port = 8080
+    bundle_meta = deploy_dir / "bundle.json"
+    if bundle_meta.exists():
+        try:
+            meta = json.loads(bundle_meta.read_text(encoding="utf-8"))
+            port = meta.get("port", 8080)
+        except Exception:
+            pass
+
     compose_file = deploy_dir / "docker-compose.yml"
     use_docker = compose_file.exists() and shutil.which("docker")
 
@@ -1574,15 +1584,6 @@ def cmd_deploy_tenant_agent(args) -> int:
             use_docker = False
 
     if not use_docker:
-        # Read port from bundle metadata
-        port = 8080
-        bundle_meta = deploy_dir / "bundle.json"
-        if bundle_meta.exists():
-            try:
-                meta = json.loads(bundle_meta.read_text(encoding="utf-8"))
-                port = meta.get("port", 8080)
-            except Exception:
-                pass
         info(f"Starting native ADK server on port {port}...")
         # Start in background
         adk_cmd = [sys.executable, "-m", "adk.server",
@@ -1609,7 +1610,7 @@ def cmd_deploy_tenant_agent(args) -> int:
     from adk.agent_registry import register_local_agent
     register_local_agent(
         agent_slug,
-        port=8080,
+        port=port,
         instance_id=instance_id,
         metadata={"tenant_id": tenant_slug, "inference_mode": inference_mode},
     )
@@ -1618,7 +1619,7 @@ def cmd_deploy_tenant_agent(args) -> int:
         portal_url = saved.get("portal_url", "") or os.environ.get(
             "AITHER_PORTAL_URL", "https://portal.aitherium.com"
         )
-        invoke_url = os.environ.get("AITHER_INVOKE_URL", f"http://localhost:8080")
+        invoke_url = os.environ.get("AITHER_INVOKE_URL", f"http://localhost:{port}")
         import urllib.request
         reg_data = json.dumps({
             "name": agent_slug,

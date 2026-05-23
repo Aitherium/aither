@@ -56,31 +56,16 @@ class ContentClassifier:
     Conservative approach: if ANY trigger is detected, route to local.
     """
     
-    # Restricted content triggers - MUST use local
+    # Restricted content triggers - route to local for privacy/uncensored models
+    # Loaded from centralized AitherSafety when available, fallback list here
     RESTRICTED_TRIGGERS = [
-        # Sexual
-        "nude", "naked", "nsfw", "explicit", "sex", "fuck", "cock", "pussy",
-        "dick", "penis", "vagina", "anal", "oral", "blowjob", "cum", "semen",
-        "hentai", "porn", "erotic", "lewd", "ahegao", "orgasm", "masturbat",
-        "penetrat", "intercourse", "gangbang", "threesome", "bukkake",
-        "nipple", "areola", "clitoris", "testicle", "scrotum", "genitals",
-        "breast", "boob", "tit", "ass", "butt", "cunt", "slutt", "whore",
-        "bdsm", "bondage", "fetish", "kink", "domina", "submis", "sadis",
-        "rape", "forced", "noncon", "dubcon",
-        # Violence
-        "gore", "guro", "dismember", "decapitat", "eviscerat", "torture",
-        "blood", "wound", "murder", "kill", "death", "corpse", "dead body",
-        # Controlled substances (generation)
-        "drug", "cocaine", "heroin", "meth", "lsd",
+        "nsfw", "explicit", "uncensored", "restricted",
+        "gore", "violent", "graphic",
     ]
-    
-    # Suggestive content - prefer local but cloud can handle
+
+    # Content that prefers local but cloud can handle
     SUGGESTIVE_TRIGGERS = [
-        "bikini", "lingerie", "underwear", "cleavage", "seductive",
-        "sensual", "intimate", "passionate", "kiss", "embrace", "caress",
-        "provocative", "alluring", "tempting", "sultry", "voluptuous",
-        "revealing", "tight clothing", "form-fitting", "skin-tight",
-        "wet", "sweat", "glistening", "tanlines", "tan lines",
+        "creative", "unrestricted", "local",
     ]
     
     @classmethod

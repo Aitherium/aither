@@ -7,6 +7,9 @@
 param(
     [switch]$Full,
     [switch]$WithOpenClaw,
+    [switch]$WithLocalOrchestrator,
+    [string]$OrchestratorQuant,
+    [int]$OrchestratorPort = 8200,
     [switch]$NonInteractive,
     [switch]$Help
 )
@@ -21,9 +24,13 @@ if ($Help) {
     Write-Host "Usage: irm https://aitherium.com/install.ps1 | iex"
     Write-Host ""
     Write-Host "Options:"
-    Write-Host "  -Full             Install ADK + local AitherOS stack"
-    Write-Host "  -WithOpenClaw     Auto-integrate with OpenClaw if detected"
-    Write-Host "  -NonInteractive   No prompts (auto-accept defaults)"
+    Write-Host "  -Full                       Install ADK + local AitherOS stack"
+    Write-Host "  -WithOpenClaw               Auto-integrate with OpenClaw if detected"
+    Write-Host "  -WithLocalOrchestrator      Install Nemotron-Orchestrator-8B via llama.cpp"
+    Write-Host "                              (native local OpenAI endpoint on http://127.0.0.1:8200/v1)"
+    Write-Host "  -OrchestratorQuant <name>   GGUF quant override (Q3_K_M, Q4_K_M, Q5_K_M, Q6_K, Q8_0)"
+    Write-Host "  -OrchestratorPort  <n>      Port for the local orchestrator (default 8200)"
+    Write-Host "  -NonInteractive             No prompts (auto-accept defaults)"
     exit 0
 }
 
@@ -168,7 +175,30 @@ if ($Full) {
         Write-Host "[!!] Docker not found. Install from: https://docs.docker.com/get-docker/"
     }
 }
-
+# -- Local orchestrator (Nemotron-8B via llama.cpp) ---------------------------
+$installOrchestrator = $WithLocalOrchestrator
+if (-not $installOrchestrator -and -not $NonInteractive) {
+    Write-Host ""
+    Write-Host "Install local Nemotron-Orchestrator-8B (native, no Docker)?" -ForegroundColor Cyan
+    Write-Host "  Adds an OpenAI-compatible endpoint at http://127.0.0.1:$OrchestratorPort/v1"
+    Write-Host "  ~5GB download, runs as Scheduled Task. Recommended for endpoint hosts."
+    $resp = Read-Host "  Install? [y/N]"
+    if ($resp -and $resp.ToLower() -eq 'y') { $installOrchestrator = $true }
+}
+if ($installOrchestrator) {
+    Write-Host ""
+    Write-Host "Installing local orchestrator (Nemotron-8B via llama.cpp)..." -ForegroundColor White
+    $orchArgs = @('setup', 'llamacpp', '--llamacpp-port', $OrchestratorPort)
+    if ($OrchestratorQuant) { $orchArgs += @('--llamacpp-quant', $OrchestratorQuant) }
+    if ($NonInteractive)    { $orchArgs += '--non-interactive' }
+    try {
+        & aither @orchArgs
+        Write-Host "[OK] Local orchestrator: http://127.0.0.1:$OrchestratorPort/v1" -ForegroundColor Green
+    } catch {
+        Write-Host "[!!] Local orchestrator install failed: $_" -ForegroundColor Yellow
+        Write-Host "     Retry later: aither setup llamacpp"
+    }
+}
 # ── Summary ───────────────────────────────────────────────────
 Write-Host ""
 Write-Host "Installation complete!" -ForegroundColor Green

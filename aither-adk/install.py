@@ -945,6 +945,29 @@ def main() -> int:
         action="store_true",
         help="Skip Ollama model pulling",
     )
+    parser.add_argument(
+        "--with-local-orchestrator",
+        action="store_true",
+        help="Also install Nemotron-Orchestrator-8B locally via llama.cpp "
+             "(native OpenAI endpoint at http://127.0.0.1:8200/v1, no Docker)",
+    )
+    parser.add_argument(
+        "--orchestrator-quant",
+        type=str,
+        default=None,
+        help="GGUF quant for local orchestrator (Q3_K_M, Q4_K_M, Q5_K_M, Q6_K, Q8_0)",
+    )
+    parser.add_argument(
+        "--orchestrator-port",
+        type=int,
+        default=8200,
+        help="Port for local orchestrator server (default: 8200)",
+    )
+    parser.add_argument(
+        "--non-interactive",
+        action="store_true",
+        help="No prompts — auto-accept defaults",
+    )
     args = parser.parse_args()
 
     dry_run: bool = args.dry_run
@@ -1069,6 +1092,43 @@ def main() -> int:
     )
     print_system_summary(sys_info)
     print_profile_summary(profile)
+
+    # --- Optional: install local orchestrator (Nemotron-8B via llama.cpp) ---
+    install_orch = bool(getattr(args, "with_local_orchestrator", False))
+    if not install_orch and not getattr(args, "non_interactive", False):
+        try:
+            resp = input(
+                "\n  Install local Nemotron-Orchestrator-8B "
+                "(native, no Docker, ~5GB)? [y/N] "
+            ).strip().lower()
+            install_orch = resp == "y"
+        except (EOFError, KeyboardInterrupt):
+            install_orch = False
+
+    if install_orch:
+        print(f"\n  {bold('Installing local orchestrator (Nemotron-8B / llama.cpp)...')}")
+        try:
+            from adk import llamacpp_setup  # type: ignore
+        except ImportError:
+            warn("adk.llamacpp_setup not importable yet — run after restart: "
+                 "aither setup llamacpp")
+        else:
+            try:
+                result = llamacpp_setup.install(
+                    quant=getattr(args, "orchestrator_quant", None),
+                    port=getattr(args, "orchestrator_port", 8200),
+                    service=True,
+                    dry_run=dry_run,
+                )
+                if getattr(result, "success", False):
+                    print(f"  {green('[OK]')} Local orchestrator: "
+                          f"http://127.0.0.1:{getattr(args, 'orchestrator_port', 8200)}/v1")
+                else:
+                    warn("Local orchestrator install reported failure — "
+                         "retry: aither setup llamacpp")
+            except Exception as e:
+                warn(f"Local orchestrator install failed: {e}")
+                warn("Retry with: aither setup llamacpp")
 
     # --- Done ---
     print(f"\n  {green(bold('Ready!'))}")

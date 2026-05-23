@@ -183,6 +183,12 @@ class VLLMWorker:
 # Quick aliases that map to a tier
 TIER_ALIASES: dict[str, str] = {
     "nemotron": "lite",
+    # llama.cpp tier — local Nemotron-Orchestrator-8B for endpoints without
+    # Docker / NVIDIA / vLLM (Intel Arc, AMD, Apple Silicon, small dGPUs, CPU)
+    "llamacpp": "llamacpp",
+    "local": "llamacpp",
+    "endpoint": "llamacpp",
+    "nemotron-local": "llamacpp",
 }
 
 # Quantization strategies — vLLM supports bitsandbytes (8-bit) and TQ4 (4-bit turboquant)
@@ -323,8 +329,11 @@ TIERS: dict[str, dict] = {
 
 
 def recommend_tier(gpu: GPUInfo) -> str:
+    # Non-NVIDIA: prefer llama.cpp (Vulkan / Metal / CPU) over Ollama for
+    # endpoint installs — same OpenAI API, no Docker, runs as native service,
+    # ships the exact orchestrator model AitherOS expects.
     if gpu.vendor != "nvidia":
-        return "ollama"
+        return "llamacpp"
     # Use total VRAM for vLLM tier — workers spread across GPUs
     vram = (gpu.total_vram_mb or gpu.vram_mb) / 1024 * 0.85
     if vram >= 24: return "full"
@@ -332,7 +341,8 @@ def recommend_tier(gpu: GPUInfo) -> str:
     if vram >= 12: return "standard-tq4"  # Both models fit in TQ4 at 12GB
     if vram >= 10: return "lite"
     if vram >= 5: return "nano"           # Nemotron TQ4 fits in 5GB
-    return "ollama"
+    # Sub-5GB NVIDIA dGPU — llama.cpp Q4 still fits with partial CPU offload
+    return "llamacpp"
 
 
 # ---------------------------------------------------------------------------
@@ -889,6 +899,271 @@ def _smoke_test(port: int) -> bool:
     return False
 
 
+def _setup_cloud_only(args) -> int:
+    """Cloud-only setup — skip GPU, configure cloud providers."""
+    from adk.config import save_saved_config
+
+    print()
+    print(bold("  ============================================================"))
+    print(bold("    AitherOS Cloud Setup"))
+    print(dim("    No GPU required — use cloud AI providers for inference"))
+    print(bold("  ============================================================"))
+    print()
+
+    if args.dry_run:
+        print(f"  {yellow('DRY RUN — no changes will be made')}\n")
+
+    # Step 1: API keys
+    step(1, 4, "Cloud Provider API Keys")
+    print(f"  {dim('Enter API keys for your cloud providers. Press Enter to skip.')}")
+    print()
+
+    keys_path = Path.home() / ".aither" / "provider_keys.json"
+    keys = {}
+    if keys_path.exists():
+        try:
+            keys = json.loads(keys_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    providers_info = {
+        "openai": ("OPENAI_API_KEY", "OpenAI"),
+        "anthropic": ("ANTHROPIC_API_KEY", "Anthropic"),
+        "deepseek": ("DEEPSEEK_API_KEY", "DeepSeek"),
+    }
+    configured = []
+    for pname, (env_name, label) in providers_info.items():
+        existing = keys.get(pname, "") or os.environ.get(env_name, "")
+        if existing:
+            info(f"{label}: configured")
+            configured.append(pname)
+            continue
+        if args.non_interactive:
+            continue
+        try:
+            val = input(f"    {label} API key: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            break
+        if val:
+            keys[pname] = val
+            os.environ[env_name] = val
+            configured.append(pname)
+            info(f"{label}: saved")
+
+    if not args.dry_run:
+        keys_path.parent.mkdir(parents=True, exist_ok=True)
+        keys_path.write_text(json.dumps(keys, indent=2))
+        if sys.platform != "win32":
+            os.chmod(keys_path, 0o600)
+
+    if not configured:
+        err("No cloud providers configured — at least one is required for cloud mode")
+        print(f"    Run: {cyan('adk keys set openai sk-...')}")
+        return 1
+
+    # Step 2: Set mode
+    step(2, 4, "Setting cloud-first mode")
+    if not args.dry_run:
+        # Update cloud_providers.yaml if accessible
+        for candidate in [
+            Path(__file__).resolve().parents[2] / "AitherOS" / "config" / "cloud_providers.yaml",
+            Path.cwd() / "AitherOS" / "config" / "cloud_providers.yaml",
+            Path.cwd() / "config" / "cloud_providers.yaml",
+        ]:
+            if candidate.exists():
+                try:
+                    import yaml
+                    with open(candidate) as f:
+                        cfg = yaml.safe_load(f) or {}
+                    cfg["mode"] = "cloud_first"
+                    cfg["enable_cloud_fallback"] = True
+                    # Enable configured providers
+                    for pname in configured:
+                        if pname in cfg.get("providers", {}):
+                            cfg["providers"][pname]["enabled"] = True
+                    with open(candidate, "w") as f:
+                        yaml.safe_dump(cfg, f, default_flow_style=False, sort_keys=False)
+                    info(f"Set mode=cloud_first in {candidate.name}")
+                except Exception as e:
+                    warn(f"Could not update {candidate}: {e}")
+                break
+
+        save_saved_config({
+            "setup_backend": "cloud",
+            "cloud_mode": "cloud_first",
+            "configured_providers": configured,
+        })
+    info(f"Mode: {bold('cloud_first')}")
+    info(f"Providers: {', '.join(configured)}")
+
+    # Step 3: Auto-select routing preset
+    step(3, 4, "Configuring inference routing")
+    if set(configured) >= {"openai", "anthropic", "deepseek"}:
+        preset = "quality"
+    elif "anthropic" in configured and "deepseek" in configured:
+        preset = "balanced"
+    elif "deepseek" in configured:
+        preset = "budget"
+    else:
+        preset = "balanced"
+    info(f"Routing preset: {bold(preset)}")
+    info(f"Change with: {dim('adk routing preset <budget|balanced|quality>')}")
+
+    if not args.dry_run:
+        save_saved_config({"routing_preset": preset})
+
+    # Step 4: Summary
+    step(4, 4, "Cloud setup complete")
+    print()
+    print(f"  {green(bold('Ready!'))}")
+    print(f"  {dim('Cloud inference is configured. No GPU required.')}")
+    print()
+    print(f"  {bold('Next steps:')}")
+    print(f"    {cyan('adk start')}             Start chatting")
+    print(f"    {cyan('adk costs')}             View spending")
+    print(f"    {cyan('adk costs budget 50')}   Set monthly budget")
+    print(f"    {cyan('adk routing')}           View/change model routing")
+    print()
+    return 0
+
+
+def _setup_hybrid(args) -> int:
+    """Hybrid setup — local orchestrator + cloud reasoning."""
+    from adk.config import save_saved_config
+
+    print()
+    print(bold("  ============================================================"))
+    print(bold("    AitherOS Hybrid Setup"))
+    print(dim("    Local GPU for routine tasks + cloud for heavy reasoning"))
+    print(bold("  ============================================================"))
+    print()
+
+    if args.dry_run:
+        print(f"  {yellow('DRY RUN — no changes will be made')}\n")
+
+    # Step 1: Detect GPU and set up local inference
+    step(1, 4, "Local Inference Setup")
+    gpu = detect_gpu()
+    if gpu.vendor == "none":
+        warn("No GPU detected — local orchestrator will use CPU (slow but works)")
+        info(f"Consider {cyan('adk setup --mode cloud')} for cloud-only instead")
+    else:
+        vram_gb = gpu.vram_mb / 1024
+        info(f"GPU: {bold(gpu.name)} ({vram_gb:.0f}GB VRAM)")
+
+    # Try to set up local inference (redirect to standard setup for GPU part)
+    info("Setting up local inference for routine tasks (effort 1-6)...")
+    # Force hybrid tier
+    if not args.tier:
+        args.tier = "hybrid" if gpu.vendor == "nvidia" else "ollama"
+    info(f"Local tier: {bold(args.tier)}")
+
+    # Step 2: Cloud providers for reasoning
+    step(2, 4, "Cloud Provider API Keys (for reasoning)")
+    print(f"  {dim('Cloud handles effort 7+ (deep reasoning, complex analysis)')}")
+    print()
+
+    keys_path = Path.home() / ".aither" / "provider_keys.json"
+    keys = {}
+    if keys_path.exists():
+        try:
+            keys = json.loads(keys_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    configured = []
+    for pname, env_name, label in [
+        ("anthropic", "ANTHROPIC_API_KEY", "Anthropic (recommended for reasoning)"),
+        ("deepseek", "DEEPSEEK_API_KEY", "DeepSeek (budget reasoning)"),
+        ("openai", "OPENAI_API_KEY", "OpenAI"),
+    ]:
+        existing = keys.get(pname, "") or os.environ.get(env_name, "")
+        if existing:
+            info(f"{label}: configured")
+            configured.append(pname)
+            continue
+        if args.non_interactive:
+            continue
+        try:
+            val = input(f"    {label} key: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            break
+        if val:
+            keys[pname] = val
+            os.environ[env_name] = val
+            configured.append(pname)
+            info(f"Saved")
+
+    if not args.dry_run and keys:
+        keys_path.parent.mkdir(parents=True, exist_ok=True)
+        keys_path.write_text(json.dumps(keys, indent=2))
+        if sys.platform != "win32":
+            os.chmod(keys_path, 0o600)
+
+    # Step 3: Configure routing
+    step(3, 4, "Configuring hybrid routing")
+    info("Effort 1-6 -> local orchestrator ($0)")
+    if "anthropic" in configured:
+        info("Effort 7+  -> Anthropic Claude (reasoning)")
+    elif "deepseek" in configured:
+        info("Effort 7+  -> DeepSeek Reasoner")
+    elif configured:
+        info(f"Effort 7+  -> {configured[0]}")
+    else:
+        info("Effort 7+  -> local only (no cloud reasoning configured)")
+
+    if not args.dry_run:
+        # Set mode in cloud_providers.yaml
+        for candidate in [
+            Path(__file__).resolve().parents[2] / "AitherOS" / "config" / "cloud_providers.yaml",
+            Path.cwd() / "AitherOS" / "config" / "cloud_providers.yaml",
+            Path.cwd() / "config" / "cloud_providers.yaml",
+        ]:
+            if candidate.exists():
+                try:
+                    import yaml
+                    with open(candidate) as f:
+                        cfg = yaml.safe_load(f) or {}
+                    cfg["mode"] = "local_first"
+                    cfg["enable_cloud_fallback"] = True
+                    for pname in configured:
+                        if pname in cfg.get("providers", {}):
+                            cfg["providers"][pname]["enabled"] = True
+                    with open(candidate, "w") as f:
+                        yaml.safe_dump(cfg, f, default_flow_style=False, sort_keys=False)
+                    info(f"Updated {candidate.name}")
+                except Exception:
+                    pass
+                break
+
+        save_saved_config({
+            "setup_backend": "hybrid",
+            "cloud_mode": "local_first",
+            "configured_providers": configured,
+        })
+
+    # Step 4: Cost estimate
+    step(4, 4, "Hybrid setup complete")
+    print()
+    print(f"  {green(bold('Ready!'))}")
+    print(f"  {dim('Local handles ~80% of requests at $0. Cloud handles reasoning.')}")
+    print()
+    print(f"  {bold('Estimated savings vs cloud-only:')}")
+    print(f"    Routine tasks:  {green('$0')} (handled locally)")
+    print(f"    Reasoning:      Cloud API rates apply (~20% of requests)")
+    print()
+
+    # Now continue to standard setup for the GPU part
+    info("Continuing with local GPU setup...")
+    print()
+
+    # Reset mode so cmd_setup doesn't recurse
+    args.mode = "auto"
+    return cmd_setup(args)
+
+
 def cmd_setup(args) -> int:
     """Main entry point for `aither setup`."""
     dry_run: bool = args.dry_run
@@ -906,10 +1181,39 @@ def cmd_setup(args) -> int:
         elif shortcut.lower() in TIERS:
             if not args.tier:
                 args.tier = shortcut.lower()
+        elif shortcut.lower() == "llamacpp":
+            args.tier = "llamacpp"
         else:
             err(f"Unknown shortcut: {shortcut}")
-            print(f"    Valid: {', '.join(list(TIER_ALIASES.keys()) + list(TIERS.keys()))}")
+            print(f"    Valid: {', '.join(list(TIER_ALIASES.keys()) + list(TIERS.keys()) + ['llamacpp'])}")
             return 1
+
+    # llama.cpp endpoint tier — entirely separate flow (no Docker, no vLLM)
+    if args.tier == "llamacpp" or getattr(args, "backend", None) == "llamacpp":
+        try:
+            from adk import llamacpp_setup
+        except ImportError as e:
+            err(f"llamacpp_setup module not available: {e}")
+            return 1
+        result = llamacpp_setup.install(
+            quant=getattr(args, "llamacpp_quant", None) or None,
+            port=getattr(args, "llamacpp_port", None) or llamacpp_setup.DEFAULT_PORT,
+            service=not getattr(args, "no_service", False),
+            dry_run=dry_run,
+        )
+        if result.success and not dry_run:
+            llamacpp_setup.smoke_test(result.port)
+        if args.stack and result.success:
+            step(6, 6, f"Deploying AitherOS ({args.stack})")
+            deploy_stack(args.stack, dry_run, args.api_key or "")
+        return 0 if result.success else 1
+
+    # ── Cloud-only setup flow ─────────────────────────────────────────
+    setup_mode = getattr(args, "mode", "auto") or "auto"
+    if setup_mode == "cloud":
+        return _setup_cloud_only(args)
+    elif setup_mode == "hybrid":
+        return _setup_hybrid(args)
 
     # Handle --dgx-spark
     dgx_url = getattr(args, "dgx_spark", None) or ""

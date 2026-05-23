@@ -110,8 +110,8 @@ class AnchorAutomation:
         # Body
         body = vid.get("body", {})
         desc_parts.append(f"{body.get('type', '')} body")
-        if body.get("chest"):
-            desc_parts.append(f"{body.get('chest', {}).get('size', '')} breasts")
+        if body.get("build"):
+            desc_parts.append(f"{body.get('build', '')} build")
             
         # Skin
         desc_parts.append(f"{vid.get('skin', {}).get('tone', '')} skin")

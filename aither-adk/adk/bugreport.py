@@ -20,7 +20,7 @@ from adk import __version__
 logger = logging.getLogger("adk.bugreport")
 
 _GATEWAY_URL = "https://gateway.aitherium.com"
-_GITHUB_REPO = "Aitherium/aither"
+_GITHUB_REPO = "Aitherium/aither-adk"
 _REPORTS_DIR = Path.home() / ".aither" / "bug_reports.jsonl"
 
 
