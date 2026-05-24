@@ -1122,7 +1122,11 @@ def register_builtin_tools(
             # Closure-based registration — each agent gets its own bound copies.
             count += register_self_tools(agent)
             continue
-        fns = TOOL_CATEGORIES.get(cat, [])
+        fns = TOOL_CATEGORIES.get(cat)
+        if fns is None:
+            # Unknown category — try loading as a tool pack ID
+            count += register_tool_packs(agent, pack_ids=[cat])
+            continue
         for fn in fns:
             agent._tools.register(fn)
             count += 1
@@ -1131,3 +1135,59 @@ def register_builtin_tools(
         logger.info("Registered %d built-in tools (%s) on agent %s",
                      count, ", ".join(categories), agent.name)
     return count
+
+
+def register_tool_packs(
+    agent: AitherAgent,
+    pack_ids: list[str] | None = None,
+    packs_dir: str | None = None,
+) -> int:
+    """Discover and register ToolPack tools on an ADK agent.
+
+    Args:
+        agent: The AitherAgent to register tools on.
+        pack_ids: Specific pack IDs to load. If None, loads all discovered.
+        packs_dir: Additional directory to scan for packs.
+
+    Returns:
+        Number of tools registered.
+    """
+    try:
+        from pathlib import Path as _P
+
+        # Try AitherOS canonical path first
+        try:
+            from lib.core.ToolPackLoader import get_tool_pack_loader
+        except ImportError:
+            # Standalone ADK — look for a vendored copy
+            _adk_root = _P(__file__).resolve().parent
+            _loader_path = _adk_root / "tool_pack_loader.py"
+            if _loader_path.exists():
+                import importlib.util
+                spec = importlib.util.spec_from_file_location(
+                    "adk.tool_pack_loader", _loader_path,
+                )
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                get_tool_pack_loader = mod.get_tool_pack_loader
+            else:
+                logger.debug("ToolPackLoader not available")
+                return 0
+
+        extra = [_P(packs_dir)] if packs_dir else []
+        loader = get_tool_pack_loader(extra_dirs=extra)
+        loader.discover()
+        manifests = loader.load_packs(pack_ids) if pack_ids else list(loader._manifests.values())
+        count = 0
+        for manifest in manifests:
+            allowed, denial = loader.check_license(manifest)
+            if not allowed:
+                logger.info("Pack %s denied: %s", manifest.id, denial)
+                continue
+            count += loader.register_on_adk_agent(manifest, agent)
+        if count:
+            logger.info("Registered %d tool-pack tools on agent %s", count, agent.name)
+        return count
+    except Exception as exc:
+        logger.warning("Tool pack registration failed: %s", exc)
+        return 0

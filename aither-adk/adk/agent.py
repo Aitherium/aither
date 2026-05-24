@@ -219,6 +219,23 @@ class AitherAgent:
             except Exception:
                 pass
 
+        # Tool packs from config — non-fatal
+        # Check for packs in agent YAML config (tools.packs) or AITHER_TOOL_PACKS env
+        config_packs: list[str] = []
+        _raw = getattr(self.config, "raw", None)
+        if isinstance(_raw, dict):
+            config_packs = (_raw.get("tools") or {}).get("packs") or []
+        if not config_packs:
+            env_packs = os.environ.get("AITHER_TOOL_PACKS", "")
+            if env_packs:
+                config_packs = [p.strip() for p in env_packs.split(",") if p.strip()]
+        if config_packs:
+            try:
+                from adk.builtin_tools import register_tool_packs
+                register_tool_packs(self, pack_ids=config_packs)
+            except Exception:
+                pass
+
     def _try_elysium_fallback(self):
         """If no local LLM is available but AITHER_API_KEY is set, use Elysium."""
         api_key = os.environ.get("AITHER_API_KEY", "")
