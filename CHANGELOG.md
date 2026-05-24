@@ -2,6 +2,21 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [1.9.0] - 2026-05-24
+
+### Added
+- **Composable ToolPack system** — agents can load tool packs from
+  `.toolpack.yaml` directories. Drop a pack in `~/.aitheros/packs/` or
+  set `AITHER_PACKS_DIR`, and any agent discovers it automatically.
+- **`tools.packs` in agent.yaml** — list tool pack IDs to auto-load
+  (e.g. `packs: [crm-tools, calendar-pro]`).
+- **`register_tool_packs(agent, pack_ids, packs_dir)`** in `builtin_tools` —
+  programmatic pack loading for agents.
+- **`AITHER_TOOL_PACKS` env var** — comma-separated pack IDs loaded on
+  agent init (alternative to YAML config).
+- **Unknown builtin categories resolve as pack IDs** — `tools.builtin:
+  [file_io, crm-tools]` now works: `crm-tools` is looked up as a pack.
+
 ## [1.8.0] - 2026-05-24
 
 ### Removed

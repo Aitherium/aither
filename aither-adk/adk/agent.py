@@ -233,7 +233,7 @@ class AitherAgent:
             try:
                 from adk.builtin_tools import register_tool_packs
                 register_tool_packs(self, pack_ids=config_packs)
-            except Exception:
+            except ImportError:
                 pass
 
     def _try_elysium_fallback(self):

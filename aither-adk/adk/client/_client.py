@@ -108,9 +108,6 @@ class AitherClient:
                                 or "http://localhost:8785").rstrip("/")
         self._voice_url = (voice_url or os.environ.get("AITHER_VOICE_URL")
                            or "http://localhost:8083").rstrip("/")
-        self._data_plane_url = os.environ.get(
-            "AITHER_DATAPLANE_URL", "http://localhost:8170",
-        ).rstrip("/")
         self.session_id = session_id or str(uuid.uuid4())
         self.timeout = timeout
         self.api_key = api_key or os.environ.get("AITHER_API_KEY", "")
@@ -121,7 +118,6 @@ class AitherClient:
         self._context: Optional["ContextClient"] = None
         self._a2a: Optional["A2AClient"] = None
         self._strata: Optional["StrataClient"] = None
-        self._data_plane: Optional["DataPlaneClient"] = None
         self._expeditions: Optional["ExpeditionClient"] = None
         self._voice: Optional["VoiceClient"] = None
         self._conversations: Optional["ConversationClient"] = None
@@ -318,14 +314,6 @@ class AitherClient:
             from adk.client.services.strata import StrataClient
             self._strata = StrataClient(self._strata_url, self._get_client)
         return self._strata
-
-    @property
-    def data_plane(self) -> "DataPlaneClient":
-        """TenantDataPlane service client."""
-        if self._data_plane is None:
-            from adk.client.services.data_plane import DataPlaneClient
-            self._data_plane = DataPlaneClient(self._data_plane_url, self._get_client)
-        return self._data_plane
 
     @property
     def expeditions(self) -> "ExpeditionClient":
