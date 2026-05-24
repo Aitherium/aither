@@ -5,12 +5,11 @@ on:
     types: [published]
 
 permissions:
-  id-token: write
+  contents: read
 
 jobs:
   publish:
     runs-on: ubuntu-latest
-    environment: pypi
     defaults:
       run:
         working-directory: aither-adk
@@ -20,10 +19,11 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install build tools
-        run: pip install build
+        run: pip install build twine
       - name: Build package
         run: python -m build
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          packages-dir: aither-adk/dist/
+        run: twine upload dist/* --skip-existing
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
