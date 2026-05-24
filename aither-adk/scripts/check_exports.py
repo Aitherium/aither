@@ -116,6 +116,10 @@ def check_orphan_modules():
                 parts = node.module.split(".")
                 if len(parts) >= 2 and parts[0] == "adk":
                     imported.add(parts[1])
+                elif parts == ["adk"]:
+                    # from adk import foo — the imported name is the module
+                    for alias in node.names:
+                        imported.add(alias.name)
                 elif node.level and len(parts) >= 1:
                     imported.add(parts[0])
             elif isinstance(node, ast.Import):
