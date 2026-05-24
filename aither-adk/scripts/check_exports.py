@@ -11,8 +11,8 @@ Exit code 1 on any failure.
 """
 
 import ast
+import re
 import sys
-import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -73,8 +73,8 @@ def check_version_sync():
             init_version = line.split("=", 1)[1].strip().strip('"').strip("'")
             break
 
-    with open(PYPROJECT, "rb") as f:
-        pyproject_version = tomllib.load(f)["project"]["version"]
+    m = re.search(r'^version\s*=\s*"([^"]+)"', PYPROJECT.read_text(encoding="utf-8"), re.M)
+    pyproject_version = m.group(1) if m else None
 
     if init_version != pyproject_version:
         errors.append(
@@ -138,12 +138,9 @@ def check_orphan_modules():
                 imported.add(parts[1])
 
     # Entry points from pyproject.toml count as used
-    with open(PYPROJECT, "rb") as f:
-        scripts = tomllib.load(f).get("project", {}).get("scripts", {})
-    for entry in scripts.values():
-        mod = entry.split(":")[0]
-        parts = mod.split(".")
-        if len(parts) >= 2 and parts[0] == "adk":
+    for m in re.finditer(r'=\s*"(adk\.\w+):', PYPROJECT.read_text(encoding="utf-8")):
+        parts = m.group(1).split(".")
+        if len(parts) >= 2:
             imported.add(parts[1])
 
     for name, path in sorted(module_files.items()):
