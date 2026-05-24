@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sqlite3
 import time
 from dataclasses import dataclass
@@ -39,6 +40,10 @@ class Memory:
 
         self._db_path = str(db_path)
         self._agent = agent_name
+        self._spirit_url = os.environ.get("AITHER_SPIRIT_URL", "http://localhost:8087")
+        self._spirit_enabled = os.environ.get("AITHER_SPIRIT_BRIDGE", "true").lower() == "true"
+        self._tenant_id = os.environ.get("AITHER_TENANT_ID", "")
+        self._workspace_id = os.environ.get("AITHER_WORKSPACE_ID", "")
         self._init_db()
 
     # Schema version — increment when tables change, add migration in _migrate()
@@ -101,6 +106,54 @@ class Memory:
         conn.execute("PRAGMA journal_mode=WAL")
         return conn
 
+    async def _spirit_teach(self, content: str, category: str = "general"):
+        """Push memory to Spirit for cross-session persistence (best-effort).
+
+        Scoped by tenant_id + agent_name so each product/workspace gets
+        isolated memory. Platform agents (no AITHER_TENANT_ID) use shared scope.
+        """
+        if not self._spirit_enabled:
+            return
+        try:
+            import httpx
+            payload = {
+                "content": content,
+                "category": category,
+                "source_agent": self._agent,
+                "scope": f"agent:{self._agent}",
+            }
+            if self._tenant_id:
+                payload["tenant_id"] = self._tenant_id
+            async with httpx.AsyncClient(timeout=5.0, verify=False) as client:
+                await client.post(f"{self._spirit_url}/teach", json=payload)
+        except Exception as e:
+            logger.debug("SpiritBridge teach failed (non-fatal): %s", e)
+
+    async def _spirit_recall(self, query: str, limit: int = 5) -> list[dict]:
+        """Pull memories from Spirit (best-effort, returns [] on failure).
+
+        Scoped by tenant_id + agent_id so GARG can't see Chelle's memories.
+        """
+        if not self._spirit_enabled:
+            return []
+        try:
+            import httpx
+            payload = {
+                "query": query,
+                "limit": limit,
+                "agent_id": self._agent,
+            }
+            if self._tenant_id:
+                payload["tenant_id"] = self._tenant_id
+            async with httpx.AsyncClient(timeout=5.0, verify=False) as client:
+                resp = await client.post(f"{self._spirit_url}/recall", json=payload)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    return data.get("results", data.get("memories", []))
+        except Exception as e:
+            logger.debug("SpiritBridge recall failed (non-fatal): %s", e)
+        return []
+
     async def remember(self, key: str, value: str, category: str = "general", metadata: dict | None = None):
         """Store a key-value pair in memory."""
         with self._connect() as conn:
@@ -108,12 +161,27 @@ class Memory:
                 "INSERT OR REPLACE INTO kv_store (key, value, category, timestamp, metadata) VALUES (?, ?, ?, ?, ?)",
                 (key, value, category, time.time(), json.dumps(metadata) if metadata else None),
             )
+        await self._spirit_teach(f"{key}: {value}", category)
 
     async def recall(self, key: str) -> str | None:
         """Retrieve a value by key."""
         with self._connect() as conn:
             row = conn.execute("SELECT value FROM kv_store WHERE key = ?", (key,)).fetchone()
-        return row[0] if row else None
+        if row:
+            return row[0]
+        # Spirit fallback -- cross-session recall when local DB misses
+        spirit_results = await self._spirit_recall(key, limit=1)
+        if spirit_results:
+            value = spirit_results[0].get("content", spirit_results[0].get("value", ""))
+            if value:
+                # Cache locally for next time
+                with self._connect() as conn:
+                    conn.execute(
+                        "INSERT OR REPLACE INTO kv_store (key, value, category, timestamp) VALUES (?, ?, ?, ?)",
+                        (key, value, "spirit_cache", time.time()),
+                    )
+                return value
+        return None
 
     async def search(self, query: str, limit: int = 10) -> list[MemoryEntry]:
         """Search memory entries by substring match."""
@@ -123,13 +191,29 @@ class Memory:
                 "WHERE key LIKE ? OR value LIKE ? ORDER BY timestamp DESC LIMIT ?",
                 (f"%{query}%", f"%{query}%", limit),
             ).fetchall()
-        return [
+        results = [
             MemoryEntry(
                 key=r[0], value=r[1], category=r[2], timestamp=r[3],
                 metadata=json.loads(r[4]) if r[4] else None,
             )
             for r in rows
         ]
+        # Fill remaining slots from Spirit if local results are sparse
+        if len(results) < limit:
+            spirit_results = await self._spirit_recall(query, limit=limit - len(results))
+            seen_keys = {r.key for r in results}
+            for sr in spirit_results:
+                key = sr.get("title", sr.get("id", ""))
+                if key and key not in seen_keys:
+                    results.append(MemoryEntry(
+                        key=key,
+                        value=sr.get("content", sr.get("value", "")),
+                        category=sr.get("category", "spirit"),
+                        timestamp=sr.get("timestamp", 0.0),
+                        metadata={"source": "spirit"},
+                    ))
+                    seen_keys.add(key)
+        return results
 
     async def forget(self, key: str):
         """Remove a key from memory."""

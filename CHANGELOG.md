@@ -2,6 +2,23 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [1.8.0] - 2026-05-24
+
+### Removed
+- **11 dead modules** (3,023 lines) — `agent_deploy`, `cloud_deploy`, `create`,
+  `phonehome`, `sdk_bridge`, `sovereign`, `telemetry`, `telemetry_config`,
+  `error_reporter`, `anonymizer`, `package`. None were imported anywhere.
+- **29 ghost exports** from `__init__.py` — `secrets`, `otel`, `fs_sandbox`,
+  and `vector_memory` modules were listed in `__all__` and `__getattr__` but
+  the backing files never existed. Accessing them raised `ModuleNotFoundError`.
+- **Stale dist/ artifacts** — removed old wheels/tarballs (v0.4.0–v1.4.1, 11 MB).
+- **Orphan test scripts** — `test_phase1.py` and `test_phase23.py` (one-off
+  validation scripts not part of the pytest suite).
+
+### Fixed
+- **Version mismatch** — `__init__.__version__` now matches `pyproject.toml`
+  (was stuck at 1.6.0).
+
 ## [1.5.0] - 2026-05-23
 
 ### Added
