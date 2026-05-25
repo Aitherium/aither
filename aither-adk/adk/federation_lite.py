@@ -196,8 +196,9 @@ class FederationLiteClient:
         status: str = "online",
         metrics: Optional[Dict[str, Any]] = None,
         agents: Optional[List[Dict[str, Any]]] = None,
+        addons: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
-        """Send heartbeat + agent list to hub (POST /federation/heartbeat)."""
+        """Send heartbeat + agent list + addon inventory to hub."""
         data: Dict[str, Any] = {
             "node_id": self.node_id,
             "status": status,
@@ -206,6 +207,8 @@ class FederationLiteClient:
         }
         if agents:
             data["agents"] = agents
+        if addons:
+            data["addons"] = addons
         return await self._request("POST", "/federation/heartbeat", data)
 
     async def upsert_agents(
@@ -220,6 +223,22 @@ class FederationLiteClient:
             "agents": agents,
         }
         return await self._request("POST", "/v1/agents/upsert-batch", data)
+
+    async def report_addon_usage(
+        self, addon_id: str, events: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Batch-report addon usage events to hub (POST /federation/addon-usage)."""
+        data = {
+            "node_id": self.node_id,
+            "addon_id": addon_id,
+            "events": events,
+            "timestamp": int(time.time()),
+        }
+        return await self._request("POST", "/federation/addon-usage", data)
+
+    async def pull_addon_secrets(self, addon_id: str) -> Dict[str, Any]:
+        """Pull secrets for a specific addon (GET /federation/addon-secrets/{id})."""
+        return await self._request("GET", f"/federation/addon-secrets/{addon_id}")
 
     async def discover_remote_agents(
         self,

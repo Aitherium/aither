@@ -70,6 +70,11 @@ builtin_tools: true
 
 # Safety checks (enabled by default)
 safety: true
+
+# Required tool packs (auto-loaded at startup)
+# required_packs:
+#   - git-github
+#   - codegraph
 """
 
 _TOOLS_TEMPLATE = '''\
@@ -4027,6 +4032,126 @@ def _cmd_cron(args) -> int:
     return 1
 
 
+def _cmd_addon(args) -> int:
+    """Handle `adk addon` subcommands."""
+    import asyncio
+
+    sub = getattr(args, "addon_command", None)
+
+    if sub == "list" or sub is None:
+        from adk.addon_manager import load_all_manifests, AddonManager
+        manifests = load_all_manifests()
+        mgr = AddonManager()
+        states = {s.get("addon_id"): s for s in [inst.to_dict() for inst in asyncio.run(mgr.status())]}
+
+        if not manifests:
+            print("No addon manifests found.")
+            return 0
+
+        print(f"{'Addon':<20} {'Type':<10} {'Port':<7} {'Plan':<12} {'Status':<10} {'Pack'}")
+        print("-" * 80)
+        for m in manifests:
+            aid = m["id"]
+            state = states.get(aid, {})
+            status = state.get("status", "disabled")
+            health = " (healthy)" if state.get("health_ok") else ""
+            print(
+                f"{aid:<20} {m.get('type', '?'):<10} {m.get('default_port', '?'):<7} "
+                f"{m.get('requires_plan', 'free'):<12} {status + health:<10} "
+                f"{m.get('pack_id', '-')}"
+            )
+        return 0
+
+    elif sub == "enable":
+        from adk.addon_manager import AddonManager
+        addon_id = args.addon_id
+        config = {}
+        if getattr(args, "endpoint", None):
+            config["endpoint"] = args.endpoint
+        mgr = AddonManager()
+        try:
+            inst = asyncio.run(mgr.enable(addon_id, config=config))
+            print(f"Addon {addon_id} enabled")
+            print(f"  Status:   {inst.status}")
+            print(f"  Endpoint: {inst.endpoint}")
+            print(f"  Health:   {'OK' if inst.health_ok else 'checking...'}")
+            if inst.error_message:
+                print(f"  Error:    {inst.error_message}")
+        except ValueError as e:
+            print(f"Error: {e}")
+            return 1
+        except Exception as e:
+            print(f"Failed to enable {addon_id}: {e}")
+            return 1
+        return 0
+
+    elif sub == "disable":
+        from adk.addon_manager import AddonManager
+        mgr = AddonManager()
+        asyncio.run(mgr.disable(args.addon_id))
+        print(f"Addon {args.addon_id} disabled")
+        return 0
+
+    elif sub == "status":
+        from adk.addon_manager import AddonManager
+        mgr = AddonManager()
+        addon_id = getattr(args, "addon_id", None)
+        instances = asyncio.run(mgr.status(addon_id))
+        if not instances:
+            print("No addons enabled." if not addon_id else f"Addon {addon_id} not found.")
+            return 0
+        for inst in instances:
+            print(f"Addon: {inst.addon_id}")
+            print(f"  Status:    {inst.status}")
+            print(f"  Type:      {inst.addon_type}")
+            print(f"  Endpoint:  {inst.endpoint}")
+            print(f"  Health:    {'OK' if inst.health_ok else 'FAIL'}")
+            if inst.container_id:
+                print(f"  Container: {inst.container_id[:12]}")
+            if inst.error_message:
+                print(f"  Error:     {inst.error_message}")
+            print()
+        return 0
+
+    elif sub == "logs":
+        from adk.addon_manager import AddonManager, _load_state
+        state = _load_state()
+        addon_state = state.get(args.addon_id, {})
+        cid = addon_state.get("container_id", "")
+        if not cid:
+            print(f"No container found for {args.addon_id}")
+            return 1
+        from adk.addon_docker import container_logs
+        lines = getattr(args, "lines", 100)
+        print(container_logs(cid, tail=lines))
+        return 0
+
+    elif sub == "update":
+        from adk.addon_manager import AddonManager, _load_state, load_addon_manifest
+        from adk.addon_docker import pull_image
+        state = _load_state()
+        if not state:
+            print("No addons enabled.")
+            return 0
+        for addon_id, s in state.items():
+            manifest = load_addon_manifest(addon_id)
+            if not manifest or manifest.get("type") != "docker":
+                continue
+            image = manifest.get("image", "")
+            if image:
+                print(f"Pulling latest: {image}")
+                try:
+                    pull_image(image)
+                    print(f"  Updated {addon_id}")
+                except Exception as e:
+                    print(f"  Failed: {e}")
+        return 0
+
+    else:
+        print("Usage: adk addon [list|enable|disable|status|logs|update]")
+        return 1
+
+
 def _cmd_pack(args) -> int:
     """Handle `adk pack` subcommands."""
     sub = getattr(args, "pack_command", None)
@@ -4098,6 +4223,84 @@ def _cmd_pack(args) -> int:
             print(f"{pid:<25} {ver:<10} {status:<14} {price}")
         return 0
 
+    if sub == "search":
+        query = getattr(args, "query", "")
+        if not query:
+            print("Usage: adk pack search <query>")
+            return 1
+
+        try:
+            import httpx
+        except ImportError:
+            print("httpx required: pip install httpx")
+            return 1
+
+        catalog = []
+        try:
+            with httpx.Client(base_url=genesis_url, timeout=10) as c:
+                resp = c.get("/v1/packs/catalog")
+                if resp.status_code == 200:
+                    catalog = resp.json().get("packs", [])
+        except Exception as e:
+            print(f"Cannot reach Genesis at {genesis_url}: {e}")
+            return 1
+
+        q = query.lower()
+        matches = [
+            p for p in catalog
+            if q in p.get("name", "").lower()
+            or q in p.get("description", "").lower()
+            or q in p.get("id", "").lower()
+            or any(q in tag.lower() for tag in p.get("tags", []))
+        ]
+
+        if getattr(args, "json_output", False):
+            print(json.dumps({"query": query, "count": len(matches), "packs": matches}, indent=2))
+            return 0
+
+        if not matches:
+            print(f"No packs matching '{query}'")
+            return 0
+
+        print(f"{'Pack':<25} {'Version':<10} {'Status':<14} {'Price'}")
+        print("-" * 65)
+
+        # Check local packs
+        packs_dir = Path.home() / ".aitheros" / "packs"
+        local_ids = set()
+        if packs_dir.is_dir():
+            for child in packs_dir.iterdir():
+                if child.is_dir() and (child / ".toolpack.yaml").exists():
+                    local_ids.add(child.name)
+
+        for p in matches:
+            pid = p.get("id", "?")
+            ver = p.get("version", "?")
+            pricing = p.get("pricing", {})
+            is_free = not pricing
+            installed = p.get("installed", False) or pid in local_ids
+            licensed = p.get("licensed", False)
+
+            if installed and (is_free or licensed):
+                status = "installed"
+            elif licensed:
+                status = "licensed"
+            elif installed:
+                status = "installed"
+            else:
+                status = "available"
+
+            if is_free:
+                price = "free"
+            else:
+                cents = pricing.get("subscription_cents", 0)
+                price = f"${int(cents) / 100:.0f}/mo" if cents else "paid"
+
+            print(f"{pid:<25} {ver:<10} {status:<14} {price}")
+
+        print(f"\n{len(matches)} pack(s) matching '{query}'")
+        return 0
+
     if sub == "install":
         pack_id = args.pack_id
         import httpx
@@ -4154,8 +4357,20 @@ def _cmd_pack(args) -> int:
             tar.extractall(target, filter="data")
 
         version = resp.headers.get("X-Pack-Version", "unknown")
+
+        # Trigger MCP reload so new tools appear without manual restart
+        mcp_reloaded = False
+        try:
+            httpx.post(f"{genesis_url}/mcp/reload", timeout=5)
+            mcp_reloaded = True
+        except Exception:
+            pass  # Non-fatal — user can restart manually
+
         print(f"Pack '{pack_id}' v{version} installed to {target}")
-        print("Restart `adk mcp serve` to activate.")
+        if mcp_reloaded:
+            print("MCP tools reloaded — new tools are available now.")
+        else:
+            print("Restart `adk mcp serve` to activate.")
         return 0
 
     if sub == "remove":
@@ -4165,7 +4380,20 @@ def _cmd_pack(args) -> int:
             print(f"Pack '{args.pack_id}' is not installed")
             return 1
         shutil.rmtree(target)
-        print(f"Pack '{args.pack_id}' removed. Restart `adk mcp serve` to take effect.")
+
+        # Trigger MCP reload so removed tools disappear without manual restart
+        mcp_reloaded = False
+        try:
+            import httpx
+            httpx.post(f"{genesis_url}/mcp/reload", timeout=5)
+            mcp_reloaded = True
+        except Exception:
+            pass  # Non-fatal — user can restart manually
+
+        if mcp_reloaded:
+            print(f"Pack '{args.pack_id}' removed. MCP tools reloaded.")
+        else:
+            print(f"Pack '{args.pack_id}' removed. Restart `adk mcp serve` to take effect.")
         return 0
 
     if sub == "info":
@@ -4196,6 +4424,14 @@ def _cmd_pack(args) -> int:
         else:
             print("Price:       free")
 
+        skills = data.get("skills", [])
+        if skills:
+            print(f"Skills:      {', '.join(skills)}")
+
+        directives = data.get("persona_fragments", [])
+        if directives:
+            print(f"Directives:  {', '.join(directives)}")
+
         tools = data.get("tools", [])
         if tools:
             print(f"\nTools ({len(tools)}):")
@@ -4203,7 +4439,7 @@ def _cmd_pack(args) -> int:
                 print(f"  - {t['name']}: {t.get('description', '')[:60]}")
         return 0
 
-    print("Usage: adk pack [list|install|remove|info]")
+    print("Usage: adk pack [list|search|install|remove|info]")
     return 1
 
 
@@ -4909,6 +5145,7 @@ def _register_commands(sub):
     d_node.add_argument("--gpu", action="store_true", help="Enable GPU-accelerated services")
     d_node.add_argument("--dashboard", action="store_true", help="Enable AitherVeil dashboard (port 3000)")
     d_node.add_argument("--mesh", action="store_true", help="Enable mesh networking")
+    d_node.add_argument("--addons", help="Comma-separated addon IDs to co-deploy (e.g. qdrant,knowledge-rag)")
     d_node.add_argument("--tag", default="latest", help="Docker image tag (default: latest)")
     d_node.add_argument("--api-key", help="AITHER_API_KEY (or set env var)")
     d_node.add_argument("--dry-run", action="store_true", help="Show what would happen")
@@ -4920,6 +5157,7 @@ def _register_commands(sub):
 
     # aither deploy core
     d_core = deploy_sub.add_parser("core", help="Core services (Node, Pulse, Watch, Genesis, Veil)")
+    d_core.add_argument("--addons", help="Comma-separated addon IDs to co-deploy")
     d_core.add_argument("--tag", default="latest", help="Docker image tag (default: latest)")
     d_core.add_argument("--api-key", help="AITHER_API_KEY (or set env var)")
     d_core.add_argument("--dry-run", action="store_true", help="Show what would happen")
@@ -4929,9 +5167,24 @@ def _register_commands(sub):
     d_full.add_argument("--profile", default="chat-agents",
                         choices=["chat-minimal", "chat-full", "chat-agents"],
                         help="Docker Compose profile (default: chat-agents)")
+    d_full.add_argument("--addons", help="Comma-separated addon IDs to co-deploy")
     d_full.add_argument("--tag", default="latest", help="Docker image tag (default: latest)")
     d_full.add_argument("--api-key", help="AITHER_API_KEY (or set env var)")
     d_full.add_argument("--dry-run", action="store_true", help="Show what would happen")
+
+    # aither deploy addons
+    d_addons = deploy_sub.add_parser("addons", help="Deploy self-hosted addon services")
+    d_addons.add_argument("addon_ids", nargs="*", help="Addon IDs (default: all available)")
+    d_addons.add_argument("--list", dest="list_addons", action="store_true",
+                          help="List available addons without deploying")
+    d_addons.add_argument("--tag", default="latest", help="Docker image tag (default: latest)")
+    d_addons.add_argument("--api-key", help="AITHER_API_KEY (or set env var)")
+    d_addons.add_argument("--dry-run", action="store_true", help="Show what would happen")
+    d_addons.add_argument("--sovereign", action="store_true",
+                          help="Register with federation hub after deployment")
+    d_addons.add_argument("--hub", default="https://portal.aitherium.com",
+                          help="Hub URL for federation")
+    d_addons.add_argument("--tenant", help="Tenant slug for federation registration")
 
     # aither deploy connect
     d_connect = deploy_sub.add_parser("connect", help="AitherConnect browser extension")
@@ -5156,10 +5409,29 @@ def _register_commands(sub):
     skills_search_p.add_argument("query", help="Search query")
     skills_sub.add_parser("export", help="Export skills in agentskills.io format")
 
+    # adk addon — self-hosted addon management
+    addon_p = sub.add_parser("addon", help="Manage self-hosted service addons (Qdrant, RAG, CodeGraph, etc.)")
+    addon_sub = addon_p.add_subparsers(dest="addon_command")
+    addon_sub.add_parser("list", help="Show available addons + status")
+    addon_enable_p = addon_sub.add_parser("enable", help="Pull image, start container, register with portal")
+    addon_enable_p.add_argument("addon_id", help="Addon ID to enable (e.g. qdrant, knowledge-rag)")
+    addon_enable_p.add_argument("--endpoint", help="Endpoint URL (for external type addons)")
+    addon_disable_p = addon_sub.add_parser("disable", help="Stop container, deregister")
+    addon_disable_p.add_argument("addon_id", help="Addon ID to disable")
+    addon_status_p = addon_sub.add_parser("status", help="Health + metrics for addons")
+    addon_status_p.add_argument("addon_id", nargs="?", help="Specific addon (default: all)")
+    addon_logs_p = addon_sub.add_parser("logs", help="Tail container logs")
+    addon_logs_p.add_argument("addon_id", help="Addon ID")
+    addon_logs_p.add_argument("--lines", type=int, default=100, help="Number of log lines (default: 100)")
+    addon_sub.add_parser("update", help="Pull latest images for all enabled addons")
+
     # adk pack — tool pack management
-    pack_p = sub.add_parser("pack", help="Manage ToolPack extensions (list, install, remove, info)")
+    pack_p = sub.add_parser("pack", help="Manage ToolPack extensions (list, search, install, remove, info)")
     pack_sub = pack_p.add_subparsers(dest="pack_command")
     pack_sub.add_parser("list", help="List available and installed packs")
+    pack_search_p = pack_sub.add_parser("search", help="Search packs by name, description, or tags")
+    pack_search_p.add_argument("query", help="Search query")
+    pack_search_p.add_argument("--json", dest="json_output", action="store_true", help="JSON output")
     pack_install_p = pack_sub.add_parser("install", help="Install a tool pack")
     pack_install_p.add_argument("pack_id", help="Pack ID to install")
     pack_remove_p = pack_sub.add_parser("remove", help="Remove an installed pack")
@@ -5176,7 +5448,7 @@ def _register_commands(sub):
     soul_export_p.add_argument("name", help="Identity name to export")
 
     # adk mcp — MCP server (stdio for Claude Code, or config helper)
-    mcp_p = sub.add_parser("mcp", help="MCP server for Claude Code / OpenClaw integration")
+    mcp_p = sub.add_parser("mcp", help="MCP server, IDE setup, and cloud gateway connection")
     mcp_sub = mcp_p.add_subparsers(dest="mcp_command")
     mcp_serve_p = mcp_sub.add_parser("serve", help="Start stdio MCP server (for Claude Code)")
     mcp_serve_p.add_argument("-d", "--directory", default=".", help="Agent project directory")
@@ -5187,6 +5459,22 @@ def _register_commands(sub):
                               help="ADK server port (default: 8080)")
     mcp_config_p.add_argument("-m", "--mode", choices=["stdio", "http"], default="stdio",
                               help="Transport mode (default: stdio)")
+    # adk mcp setup — generate IDE config for cloud or local MCP gateway
+    mcp_setup_p = mcp_sub.add_parser("setup", help="Generate IDE config (.mcp.json) for MCP gateway")
+    mcp_setup_p.add_argument("--mode", choices=["local", "remote"], default="local",
+                             help="local = Docker gateway (8182), remote = mcp.aitherium.com")
+    mcp_setup_p.add_argument("--ide", choices=["claude-code", "cursor", "windsurf", "vscode"],
+                             default="claude-code", help="Target IDE")
+    mcp_setup_p.add_argument("--project-dir", default=".", help="Project directory for config file")
+    mcp_setup_p.add_argument("--bake-token", action="store_true",
+                             help="Bake auth token into headers (fallback for IDEs without OAuth)")
+    # adk mcp node — lightweight local MCP server
+    mcp_node_p = mcp_sub.add_parser("node", help="Start lightweight local MCP server")
+    mcp_node_p.add_argument("--mode", choices=["proxy", "standalone"], default="proxy",
+                            help="proxy = forward to cloud, standalone = local tools only")
+    mcp_node_p.add_argument("-p", "--port", type=int, default=8182, help="Port (default: 8182)")
+    # adk mcp status — check gateway connectivity
+    mcp_sub.add_parser("status", help="Check MCP gateway connectivity and tier")
 
     # adk shell — download/launch AitherShell interactive terminal
     shell_p = sub.add_parser("shell", help="Launch AitherShell interactive terminal")
@@ -5287,6 +5575,93 @@ def _register_commands(sub):
     train_register_gpu_p.add_argument("--vram", type=int, help="GPU VRAM in GB (auto-detected if omitted)")
 
 
+# ── MCP subcommand handlers ───────────────────────────────────────────────
+
+
+def _cmd_mcp_setup(args) -> int:
+    """Generate IDE MCP config with OAuth-first auth."""
+    from adk.mcp_setup import resolve_auth, resolve_gateway_url, generate_config, write_config, probe_gateway
+
+    mode = getattr(args, "mode", "local")
+    ide = getattr(args, "ide", "claude-code")
+    project_dir = getattr(args, "project_dir", ".")
+    bake_token = getattr(args, "bake_token", False)
+
+    url = resolve_gateway_url(mode)
+    token, source = resolve_auth()
+
+    if bake_token:
+        if token:
+            print(f"  Auth: baking token from {source}")
+        else:
+            print("  Auth: no token found for --bake-token")
+            print("  Run 'adk login' first, then re-run this command.")
+            return 1
+        config = generate_config(ide, url, token=token)
+    else:
+        print("  Auth: OAuth (IDE will handle via /authenticate)")
+        config = generate_config(ide, url, token=None)
+
+    out_path = write_config(config, ide, project_dir)
+    print(f"  Config: {out_path}")
+    print(f"  Gateway: {url}")
+
+    if mode == "local":
+        status = probe_gateway(url, token)
+        if status["connected"]:
+            print(f"  Status: connected ({status['status']})")
+        else:
+            print("  Status: not reachable")
+            print("  Tip: Run 'adk mcp node' for a lightweight local server.")
+
+        from adk.mcp_setup import ensure_local_ca_trust
+        ca_result = ensure_local_ca_trust()
+        if ca_result == "set":
+            print("  TLS: AitherNet CA trusted")
+        elif ca_result == "already":
+            print("  TLS: AitherNet CA already trusted")
+        elif ca_result:
+            print(f"  TLS: {ca_result}")
+
+    print()
+    if not bake_token:
+        print("  Restart your IDE, then use /authenticate to connect.")
+    else:
+        print("  Restart your IDE to apply.")
+    return 0
+
+
+def _cmd_mcp_node(args) -> int:
+    """Start lightweight local MCP server."""
+    from adk.node.server import run_node
+    mode = getattr(args, "mode", "proxy")
+    port = getattr(args, "port", 8182)
+    run_node(mode=mode, port=port)
+    return 0
+
+
+def _cmd_mcp_status(args) -> int:
+    """Check MCP gateway connectivity and tier."""
+    from adk.mcp_setup import resolve_auth, probe_gateway, _GATEWAY_URLS
+
+    token, source = resolve_auth()
+    print(f"  Auth source: {source}")
+
+    for mode_name, url in _GATEWAY_URLS.items():
+        result = probe_gateway(url, token)
+        icon = "[OK]" if result["connected"] else "[--]"
+        print(f"  {icon} {mode_name:8s} {url}")
+        if result["connected"]:
+            if result.get("tier"):
+                print(f"           tier={result['tier']}  tools={result['tool_count']}  "
+                      f"balance={result['balance']}")
+            if result.get("user"):
+                print(f"           user={result['user']}")
+        elif result.get("error"):
+            print(f"           {result['error']}")
+    return 0
+
+
 def main():
     global _cached_parser
     parser = argparse.ArgumentParser(
@@ -5379,6 +5754,8 @@ def main():
         sys.exit(cmd_gateway(args))
     elif args.command == "cron":
         sys.exit(_cmd_cron(args))
+    elif args.command == "addon":
+        sys.exit(_cmd_addon(args))
     elif args.command == "pack":
         sys.exit(_cmd_pack(args))
     elif args.command == "skills":
@@ -5393,11 +5770,20 @@ def main():
         elif mcp_cmd == "config":
             from adk.mcp_stdio import cmd_mcp_config
             sys.exit(cmd_mcp_config(args))
+        elif mcp_cmd == "setup":
+            sys.exit(_cmd_mcp_setup(args))
+        elif mcp_cmd == "node":
+            sys.exit(_cmd_mcp_node(args))
+        elif mcp_cmd == "status":
+            sys.exit(_cmd_mcp_status(args))
         else:
-            print("Usage: adk mcp [serve|config]")
+            print("Usage: adk mcp [serve|config|setup|node|status]")
             print()
-            print("  serve   Start stdio MCP server (pipe into Claude Code)")
-            print("  config  Print MCP client configuration JSON")
+            print("  serve    Start stdio MCP server (pipe into Claude Code)")
+            print("  config   Print MCP client configuration JSON")
+            print("  setup    Generate IDE config for MCP gateway (OAuth-first)")
+            print("  node     Start lightweight local MCP server")
+            print("  status   Check MCP gateway connectivity and tier")
             sys.exit(1)
     elif args.command == "shell":
         from adk.shell_launcher import cmd_shell

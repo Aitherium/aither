@@ -1101,6 +1101,205 @@ def deploy_full(
 
 
 # ===========================================================================
+# Component: Addons (self-hosted services via compose)
+# ===========================================================================
+
+def deploy_addons(
+    addon_ids: list[str] | None = None,
+    dry_run: bool = False,
+    tag: str = "latest",
+    api_key_arg: Optional[str] = None,
+    sovereign: bool = False,
+    hub_url: str = "https://portal.aitherium.com",
+    tenant: Optional[str] = None,
+) -> int:
+    """Deploy self-hosted addon services via Docker Compose.
+
+    Generates a docker-compose.addons.yml from addon manifests, pulls
+    images, starts everything with proper networking, and runs health
+    checks.  Follows the same pattern as deploy_node() / deploy_full().
+
+    Args:
+        addon_ids: Addon IDs to deploy.  None = all available.
+        dry_run: Show what would happen without executing.
+        tag: Docker image tag (default: latest).
+        api_key_arg: Explicit API key (falls back to env/config).
+        sovereign: Register with federation hub after deployment.
+        hub_url: Federation hub URL.
+        tenant: Tenant slug for federation.
+
+    Returns:
+        Exit code (0 = success, 1 = failure).
+    """
+    from adk.addon_compose import generate_addon_compose, list_available_addons
+    from adk.addon_manager import load_addon_manifest
+
+    # Resolve addon list
+    if not addon_ids:
+        manifests = list_available_addons()
+        addon_ids = [m["id"] for m in manifests]
+    if not addon_ids:
+        err("No addons found")
+        return 1
+
+    print()
+    print(bold("  AitherOS Addon Deployment"))
+    print(dim(f"  Addons: {', '.join(addon_ids)}"))
+    print()
+
+    if dry_run:
+        print(f"  {yellow('DRY RUN -- no changes will be made')}\n")
+
+    total_steps = 5 if sovereign else 4
+
+    # -- Step 1: Prerequisites ------------------------------------------------
+    step(1, total_steps, "Checking prerequisites")
+
+    docker_ok, docker_msg = _check_docker()
+    if docker_ok:
+        info(docker_msg)
+    else:
+        err(docker_msg)
+        print()
+        print(f"  Install Docker: {cyan('https://docker.com/products/docker-desktop')}")
+        return 1
+
+    # Ensure the shared network exists
+    if not dry_run:
+        net_check = _run(["docker", "network", "ls", "--filter",
+                          "name=aitheros_default", "--format", "{{.Name}}"])
+        if not net_check:
+            info("Creating aitheros_default network...")
+            subprocess.run(["docker", "network", "create", "aitheros_default"],
+                           capture_output=True)
+
+    # GHCR login for private images
+    has_private = any(
+        (load_addon_manifest(a) or {}).get("image", "").startswith("aitherium/")
+        for a in addon_ids
+    )
+    if has_private and not dry_run:
+        api_key = _get_api_key(api_key_arg)
+        if api_key and _docker_login_ghcr(api_key):
+            info(f"Authenticated with {REGISTRY}")
+
+    # Resource estimate
+    total_ram = 0.0
+    for aid in addon_ids:
+        m = load_addon_manifest(aid) or {}
+        mem_str = m.get("resources", {}).get("memory", "1Gi")
+        # Parse "2Gi" -> 2.0
+        try:
+            total_ram += float(mem_str.replace("Gi", "").replace("Mi", ""))
+        except (ValueError, AttributeError):
+            total_ram += 1.0
+    info(f"Estimated memory: ~{total_ram:.0f} GB")
+    gpu_addons = [
+        a for a in addon_ids
+        if (load_addon_manifest(a) or {}).get("resources", {}).get("gpu")
+    ]
+    if gpu_addons:
+        info(f"GPU required for: {', '.join(gpu_addons)}")
+    print()
+
+    # -- Step 2: Generate compose file ----------------------------------------
+    step(2, total_steps, "Generating compose configuration")
+
+    compose_file = AITHER_DIR / "docker-compose.addons.yml"
+    try:
+        generate_addon_compose(addon_ids, compose_file, tag=tag)
+        info(f"Compose file: {dim(str(compose_file))}")
+    except ValueError as e:
+        err(str(e))
+        return 1
+
+    if dry_run:
+        info("Compose contents:")
+        try:
+            print(compose_file.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    # -- Step 3: Pull and start -----------------------------------------------
+    step(3, total_steps, "Pulling images and starting containers")
+
+    rc = _docker_compose(compose_file, [], "pull", dry_run, timeout=600)
+    if rc != 0:
+        err("Failed to pull images")
+        return 1
+
+    rc = _docker_compose(compose_file, [], "up -d", dry_run, timeout=120)
+    if rc != 0:
+        err("Failed to start containers")
+        return 1
+
+    # -- Step 4: Health checks ------------------------------------------------
+    step(4, total_steps, "Verifying addon services")
+
+    if dry_run:
+        for aid in addon_ids:
+            m = load_addon_manifest(aid) or {}
+            port = m.get("default_port", 8000)
+            hc_path = m.get("health_check", {}).get("path", "/health")
+            info(f"Would check: http://localhost:{port}{hc_path} ({aid})")
+    else:
+        all_healthy = True
+        for aid in addon_ids:
+            m = load_addon_manifest(aid) or {}
+            port = m.get("default_port", 8000)
+            hc_path = m.get("health_check", {}).get("path", "/health")
+            url = f"http://localhost:{port}{hc_path}"
+            if _health_check(url, timeout=90):
+                info(f"{aid} (:{port}): {green('healthy')}")
+            else:
+                warn(f"{aid} (:{port}): not responding yet")
+                all_healthy = False
+
+    # -- Step 5 (optional): Federation registration ---------------------------
+    if sovereign:
+        step(total_steps, total_steps, "Registering with federation hub")
+        tenant_slug = tenant or os.environ.get("AITHER_TENANT") or "default"
+        reg_url = f"{hub_url.rstrip('/')}/federation/register"
+
+        if dry_run:
+            info(f"Would POST to {reg_url}")
+            info(f"  tenant_slug: {tenant_slug}")
+            info(f"  addons: {addon_ids}")
+        else:
+            try:
+                import json as _json
+                payload = _json.dumps({
+                    "tenant_slug": tenant_slug,
+                    "addons": addon_ids,
+                }).encode()
+                req = Request(reg_url, data=payload, method="POST",
+                              headers={"Content-Type": "application/json"})
+                with urlopen(req, timeout=15) as resp:
+                    result = _json.loads(resp.read())
+                info(f"Registered as node {cyan(result.get('node_id', ''))}")
+            except Exception as e:
+                warn(f"Federation registration failed: {e}")
+
+    # -- Summary --------------------------------------------------------------
+    print()
+    print(bold("  " + "-" * 60))
+    print()
+    for aid in addon_ids:
+        m = load_addon_manifest(aid) or {}
+        port = m.get("default_port", 8000)
+        info(f"{m.get('name', aid):20s} {cyan(f'http://localhost:{port}')}")
+    print()
+    info(f"Manage:")
+    info(f"  Logs:  {cyan(f'docker compose -f {compose_file} logs -f')}")
+    info(f"  Stop:  {cyan(f'aither deploy stop addons')}")
+    info(f"  PS:    {cyan(f'docker compose -f {compose_file} ps')}")
+    print()
+    if not dry_run:
+        info(f"{green(bold('Addon services are ready!'))}")
+    return 0
+
+
+# ===========================================================================
 # Component: AitherConnect (browser extension)
 # ===========================================================================
 
@@ -1685,6 +1884,7 @@ def cmd_deploy_component(args) -> int:
         print(f"    {bold('node')}       AitherNode MCP server + Genesis orchestrator")
         print(f"    {bold('core')}       Core services (Node, Pulse, Watch, Genesis, Veil)")
         print(f"    {bold('full')}       Full AitherOS stack (~31 containers)")
+        print(f"    {bold('addons')}     Self-hosted addon services (Qdrant, RAG, etc.)")
         print(f"    {bold('connect')}    AitherConnect browser extension")
         print(f"    {bold('desktop')}    AitherDesktop native application")
         print(f"    {bold('stop')}       Stop a running deployment")
@@ -1693,6 +1893,8 @@ def cmd_deploy_component(args) -> int:
         print(f"    {dim('aither deploy ollama')}")
         print(f"    {dim('aither deploy ollama --models qwen3:8b,phi4')}")
         print(f"    {dim('aither deploy node --gpu --dashboard')}")
+        print(f"    {dim('aither deploy node --addons qdrant,knowledge-rag')}")
+        print(f"    {dim('aither deploy addons qdrant knowledge-rag')}")
         print(f"    {dim('aither deploy full --profile chat-full')}")
         print(f"    {dim('aither deploy stop all')}")
         print()
@@ -1719,9 +1921,21 @@ def cmd_deploy_component(args) -> int:
         sovereign = getattr(args, "sovereign", False)
         hub_url = getattr(args, "hub", "https://portal.aitherium.com")
         tenant_arg = getattr(args, "tenant", None)
-        return deploy_node(dry_run=dry_run, tag=tag, gpu=gpu,
-                           dashboard=dashboard, mesh=mesh, api_key_arg=api_key,
-                           sovereign=sovereign, hub_url=hub_url, tenant=tenant_arg)
+        rc = deploy_node(dry_run=dry_run, tag=tag, gpu=gpu,
+                         dashboard=dashboard, mesh=mesh, api_key_arg=api_key,
+                         sovereign=sovereign, hub_url=hub_url, tenant=tenant_arg)
+        # Co-deploy addons if --addons specified
+        addons_str = getattr(args, "addons", None)
+        if addons_str and rc == 0:
+            addon_list = [a.strip() for a in addons_str.split(",") if a.strip()]
+            if addon_list:
+                info(f"\nCo-deploying addons: {', '.join(addon_list)}")
+                rc = deploy_addons(
+                    addon_ids=addon_list, dry_run=dry_run, tag=tag,
+                    api_key_arg=api_key, sovereign=sovereign,
+                    hub_url=hub_url, tenant=tenant_arg,
+                )
+        return rc
 
     elif component == "core":
         tag = getattr(args, "tag", "latest") or "latest"
@@ -1734,6 +1948,34 @@ def cmd_deploy_component(args) -> int:
         api_key = getattr(args, "api_key", None)
         return deploy_full(dry_run=dry_run, tag=tag, profile=profile, api_key_arg=api_key)
 
+    elif component == "addons":
+        addon_ids_raw = getattr(args, "addon_ids", []) or []
+        tag = getattr(args, "tag", "latest") or "latest"
+        api_key = getattr(args, "api_key", None)
+        sovereign = getattr(args, "sovereign", False)
+        hub_url = getattr(args, "hub", "https://portal.aitherium.com")
+        tenant_arg = getattr(args, "tenant", None)
+        list_only = getattr(args, "list_addons", False)
+        if list_only:
+            from adk.addon_compose import list_available_addons
+            manifests = list_available_addons()
+            print()
+            print(bold("  Available Addons"))
+            print()
+            for m in manifests:
+                gpu_tag = " [GPU]" if m.get("resources", {}).get("gpu") else ""
+                plan_tag = m.get("requires_plan", "free")
+                print(f"  {bold(m['id']):20s} {m.get('name', ''):25s} "
+                      f":{m.get('default_port', '?'):<6} "
+                      f"({plan_tag}){gpu_tag}")
+            print()
+            return 0
+        return deploy_addons(
+            addon_ids=addon_ids_raw or None, dry_run=dry_run, tag=tag,
+            api_key_arg=api_key, sovereign=sovereign,
+            hub_url=hub_url, tenant=tenant_arg,
+        )
+
     elif component == "connect":
         api_key = getattr(args, "api_key", None)
         return deploy_connect(dry_run=dry_run, api_key_arg=api_key)
@@ -1745,8 +1987,14 @@ def cmd_deploy_component(args) -> int:
     elif component == "stop":
         stop_target = getattr(args, "stop_target", None)
         if not stop_target:
-            err("Specify what to stop: ollama, vllm, node, core, full, all")
+            err("Specify what to stop: ollama, vllm, node, core, full, addons, all")
             return 1
+        if stop_target == "addons":
+            compose_file = AITHER_DIR / "docker-compose.addons.yml"
+            if not compose_file.exists():
+                err("No addon compose file found")
+                return 1
+            return _docker_compose(compose_file, [], "down", dry_run)
         return deploy_stop(stop_target)
 
     else:
