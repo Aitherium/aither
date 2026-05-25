@@ -191,3 +191,152 @@ def check_input(content: str, block_threshold: Severity = Severity.HIGH) -> str:
     if result.blocked:
         return result.sanitized_content
     return content
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Action-level Safety Gates (ported from AitherOS SafetyGates)
+# ─────────────────────────────────────────────────────────────────────
+
+class PermissionTier(int, Enum):
+    """Permission levels in ascending risk order."""
+    OBSERVE = 1       # Read-only operations
+    ALERT = 2         # Send notifications
+    FIX_SAFE = 3      # Safe auto-remediation
+    FIX_RISKY = 4     # Risky auto-remediation
+    HUMAN_REQUIRED = 5  # Must have human approval
+
+
+class GateDecision(str, Enum):
+    ALLOW = "allow"
+    DENY = "deny"
+    ESCALATE = "escalate"
+
+
+# Default action → tier mapping for standalone ADK agents
+ACTION_TIERS: dict[str, PermissionTier] = {
+    # OBSERVE
+    "file.read": PermissionTier.OBSERVE,
+    "file.list": PermissionTier.OBSERVE,
+    "file.search": PermissionTier.OBSERVE,
+    "web.search": PermissionTier.OBSERVE,
+    "web.fetch": PermissionTier.OBSERVE,
+    # ALERT
+    "file.write": PermissionTier.ALERT,
+    "file.edit": PermissionTier.ALERT,
+    # FIX_SAFE
+    "shell.run": PermissionTier.FIX_SAFE,
+    "python.eval": PermissionTier.FIX_SAFE,
+    # FIX_RISKY
+    "git.commit": PermissionTier.FIX_RISKY,
+    "git.push": PermissionTier.FIX_RISKY,
+    "docker.restart": PermissionTier.FIX_RISKY,
+    # HUMAN_REQUIRED
+    "deploy.production": PermissionTier.HUMAN_REQUIRED,
+    "data.delete": PermissionTier.HUMAN_REQUIRED,
+    "secrets.modify": PermissionTier.HUMAN_REQUIRED,
+    "shell.destructive": PermissionTier.HUMAN_REQUIRED,
+}
+
+
+@dataclass
+class GateResult:
+    """Result from an action gate check."""
+    decision: GateDecision = GateDecision.ALLOW
+    reason: str = ""
+    action_type: str = ""
+
+
+class ActionGate:
+    """Lightweight action-level permission gate for ADK agents.
+
+    Checks tool calls against permission tiers before execution.
+    When AitherOS is available, this defers to the full SafetyGates.
+    In standalone mode, it enforces locally.
+
+    Usage:
+        gate = ActionGate(auth_level=PermissionTier.FIX_SAFE)
+        result = gate.check("shell.run", {"command": "ls"})
+        if result.decision == GateDecision.DENY:
+            print(f"Blocked: {result.reason}")
+    """
+
+    def __init__(
+        self,
+        auth_level: PermissionTier = PermissionTier.FIX_SAFE,
+        custom_tiers: dict[str, PermissionTier] | None = None,
+    ):
+        self.auth_level = auth_level
+        self._tiers = dict(ACTION_TIERS)
+        if custom_tiers:
+            self._tiers.update(custom_tiers)
+        self._daily_counts: dict[str, int] = {}
+        self._daily_limits = {
+            PermissionTier.ALERT: 100,
+            PermissionTier.FIX_SAFE: 50,
+            PermissionTier.FIX_RISKY: 10,
+        }
+
+    def check(
+        self,
+        action_type: str,
+        args: dict[str, Any] | None = None,
+    ) -> GateResult:
+        """Check if an action is allowed at the current auth level."""
+        required = self._tiers.get(action_type, PermissionTier.FIX_SAFE)
+
+        # Detect destructive shell commands
+        if action_type == "shell.run" and args:
+            cmd = str(args.get("command", ""))
+            if any(kw in cmd for kw in (
+                "rm -rf", "del /s", "format", "DROP TABLE",
+                "shutdown", "reboot",
+            )):
+                required = PermissionTier.HUMAN_REQUIRED
+
+        if required <= self.auth_level:
+            # Rate limit check
+            count = self._daily_counts.get(action_type, 0)
+            limit = self._daily_limits.get(required, 999)
+            if count >= limit:
+                return GateResult(
+                    decision=GateDecision.DENY,
+                    reason=f"Rate limit ({limit}/day) for {action_type}",
+                    action_type=action_type,
+                )
+            self._daily_counts[action_type] = count + 1
+            return GateResult(
+                decision=GateDecision.ALLOW,
+                reason=f"Allowed at tier {required.name}",
+                action_type=action_type,
+            )
+
+        if required == PermissionTier.HUMAN_REQUIRED:
+            return GateResult(
+                decision=GateDecision.ESCALATE,
+                reason=f"Action '{action_type}' requires human approval",
+                action_type=action_type,
+            )
+
+        return GateResult(
+            decision=GateDecision.DENY,
+            reason=(
+                f"Action '{action_type}' requires {required.name} "
+                f"but auth level is {self.auth_level.name}"
+            ),
+            action_type=action_type,
+        )
+
+    def classify_tool(self, tool_name: str) -> str:
+        """Map a builtin tool name to an action_type string."""
+        mapping = {
+            "read_file": "file.read",
+            "write_file": "file.write",
+            "edit_file": "file.edit",
+            "list_directory": "file.list",
+            "search_files": "file.search",
+            "run_shell": "shell.run",
+            "python_eval": "python.eval",
+            "web_search": "web.search",
+            "web_fetch": "web.fetch",
+        }
+        return mapping.get(tool_name, f"tool.{tool_name}")

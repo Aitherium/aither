@@ -1,6 +1,6 @@
 """Aither ADK — Build AI agent fleets with any LLM backend."""
 
-__version__ = "1.12.1"
+__version__ = "1.13.0"
 
 from adk.agent import AitherAgent
 from adk.tools import tool, ToolRegistry

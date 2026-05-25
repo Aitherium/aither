@@ -1056,11 +1056,192 @@ def register_self_tools(agent: AitherAgent) -> int:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# AitherGraph tools (calls Genesis /api/graph/ — requires AitherOS running)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _graph_url() -> str:
+    return os.getenv("AITHER_GENESIS_URL", "http://localhost:8001") + "/api/graph"
+
+
+def _graph_request(
+    method: str, path: str, params: dict | None = None,
+    payload: dict | None = None, timeout: float = 30,
+) -> str:
+    """HTTP request to Genesis /api/graph/."""
+    import httpx
+    url = f"{_graph_url()}{path}"
+    try:
+        with httpx.Client(timeout=timeout, verify=False) as c:
+            if method == "GET":
+                resp = c.get(url, params=params)
+            else:
+                resp = c.post(url, json=payload, params=params)
+            resp.raise_for_status()
+            return json.dumps(resp.json(), indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+def graph_search(query: str, domain: str = "", limit: int = 10) -> str:
+    """Search across all AitherGraph domains (code, knowledge, events, memory).
+
+    Args:
+        query: What to search for.
+        domain: Optional domain filter (code, knowledge, events, memory, etc.).
+        limit: Max results.
+    """
+    params: dict = {"q": query, "limit": limit}
+    if domain:
+        params["domain"] = domain
+    return _graph_request("GET", "/search", params=params)
+
+
+def graph_code_search(query: str, limit: int = 10) -> str:
+    """Search CodeGraph for functions, classes, and symbols.
+
+    Args:
+        query: Symbol name or search text.
+        limit: Max results.
+    """
+    return _graph_request("GET", "/code/search", params={"q": query, "limit": limit})
+
+
+def graph_kb_query(base_id: str, query: str, limit: int = 10) -> str:
+    """RAG query against a knowledge base.
+
+    Args:
+        base_id: Knowledge base ID.
+        query: Natural language query.
+        limit: Max results.
+    """
+    return _graph_request(
+        "POST", f"/knowledge/bases/{base_id}/query",
+        params={"q": query, "limit": limit},
+    )
+
+
+def graph_memory_query(query: str, limit: int = 10) -> str:
+    """Query the memory graph.
+
+    Args:
+        query: What to recall.
+        limit: Max results.
+    """
+    return _graph_request(
+        "POST", "/memory/query",
+        payload={"query": query, "limit": limit},
+    )
+
+
+def graph_research(query: str, effort: str = "library_session") -> str:
+    """Trigger autonomous research on a topic.
+
+    Args:
+        query: Research topic.
+        effort: Depth (quick_glance, library_session, deep_dive, leave_no_stone).
+    """
+    return _graph_request(
+        "POST", "/research",
+        payload={"query": query, "effort": effort}, timeout=120,
+    )
+
+
+_GRAPH_TOOLS = [
+    graph_search, graph_code_search, graph_kb_query,
+    graph_memory_query, graph_research,
+]
+
+
+def _init_graph_tools():
+    """Lazily populate the graph category."""
+    if not TOOL_CATEGORIES.get("graph"):
+        TOOL_CATEGORIES["graph"] = _GRAPH_TOOLS
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Safety & Escalation tools
+# ─────────────────────────────────────────────────────────────────────────
+
+async def escalate_to_human(
+    reason: str,
+    action: str = "",
+    urgency: str = "medium",
+) -> str:
+    """Request human review for uncertain or risky actions.
+
+    Use when you're about to perform an irreversible action, when
+    confidence is low, or when the task involves sensitive systems.
+
+    Args:
+        reason: Why escalation is needed
+        action: The action requiring approval (e.g. deploy.production)
+        urgency: low, medium, high, or critical
+    """
+    # Try AitherOS escalation endpoint first
+    try:
+        from adk.aither_bridge import get_bridge
+        bridge = get_bridge()
+        if bridge and bridge.connected:
+            result = await bridge.post(
+                "/escalations/create",
+                {"reason": reason, "action_type": action, "urgency": urgency},
+            )
+            return json.dumps(result)
+    except Exception:
+        pass
+
+    # Standalone fallback: log and return guidance
+    logger.warning(
+        "[ESCALATION] %s | action=%s urgency=%s",
+        reason, action, urgency,
+    )
+    return json.dumps({
+        "status": "logged_locally",
+        "reason": reason,
+        "action": action,
+        "urgency": urgency,
+        "guidance": (
+            "No AitherOS connection — escalation logged locally. "
+            "Proceed with caution or wait for human input."
+        ),
+    })
+
+
+async def check_safety_gate(
+    tool_name: str,
+    args: str = "{}",
+) -> str:
+    """Check if a tool call is allowed by safety gates.
+
+    Call this before performing risky operations to verify
+    the action is within your permission level.
+
+    Args:
+        tool_name: Name of the tool to check
+        args: JSON string of tool arguments
+    """
+    from adk.safety import ActionGate, GateDecision
+    gate = ActionGate()
+    action_type = gate.classify_tool(tool_name)
+    try:
+        parsed_args = json.loads(args) if args else {}
+    except json.JSONDecodeError:
+        parsed_args = {}
+    result = gate.check(action_type, parsed_args)
+    return json.dumps({
+        "decision": result.decision.value,
+        "reason": result.reason,
+        "action_type": action_type,
+    })
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Registration
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Tool category definitions
-TOOL_CATEGORIES = {
+TOOL_CATEGORIES: dict = {
     "file_io": [file_read, file_write, file_edit, file_list, file_search],
     "shell": [shell_exec],
     "python": [python_exec],
@@ -1071,6 +1252,8 @@ TOOL_CATEGORIES = {
     "code": [code_search, code_symbols],
     "repowise": [repowise_search],
     "swarm": [swarm_code],
+    "graph": [],  # populated lazily by _init_graph_tools()
+    "safety": [escalate_to_human, check_safety_gate],
     # "self" is registered via register_self_tools(agent) (closures over agent state),
     # not a flat function list — see register_builtin_tools below.
     "self": [],
@@ -1080,17 +1263,17 @@ TOOL_CATEGORIES = {
 # Every identity gets "self" by default — self-introspection is universally safe and
 # directly addresses Reddit pain ("I asked the agent what it did and it lied").
 IDENTITY_DEFAULTS = {
-    "demiurge": ["file_io", "shell", "python", "web", "git", "code", "repowise", "swarm", "self"],
-    "atlas": ["file_io", "web", "secrets", "code", "self"],
-    "aither": ["file_io", "shell", "python", "web", "secrets", "creative", "git", "code", "repowise", "swarm", "self"],
-    "lyra": ["file_io", "web", "self"],
-    "hydra": ["file_io", "shell", "python", "git", "code", "repowise", "self"],
-    "prometheus": ["file_io", "shell", "secrets", "git", "self"],
-    "apollo": ["file_io", "shell", "python", "code", "repowise", "self"],
-    "athena": ["file_io", "web", "secrets", "code", "self"],
-    "scribe": ["file_io", "web", "code", "repowise", "self"],
-    "iris": ["file_io", "web", "creative", "self"],
-    "muse": ["file_io", "web", "creative", "self"],
+    "demiurge": ["file_io", "shell", "python", "web", "git", "code", "repowise", "swarm", "graph", "safety", "self"],
+    "atlas": ["file_io", "web", "secrets", "code", "graph", "safety", "self"],
+    "aither": ["file_io", "shell", "python", "web", "secrets", "creative", "git", "code", "repowise", "swarm", "graph", "safety", "self"],
+    "lyra": ["file_io", "web", "graph", "safety", "self"],
+    "hydra": ["file_io", "shell", "python", "git", "code", "repowise", "graph", "safety", "self"],
+    "prometheus": ["file_io", "shell", "secrets", "git", "safety", "self"],
+    "apollo": ["file_io", "shell", "python", "code", "repowise", "graph", "safety", "self"],
+    "athena": ["file_io", "web", "secrets", "code", "graph", "safety", "self"],
+    "scribe": ["file_io", "web", "code", "repowise", "graph", "safety", "self"],
+    "iris": ["file_io", "web", "creative", "safety", "self"],
+    "muse": ["file_io", "web", "creative", "safety", "self"],
 }
 
 
@@ -1110,6 +1293,8 @@ def register_builtin_tools(
     Returns:
         Number of tools registered.
     """
+    _init_graph_tools()  # lazily populate graph category
+
     if categories is None and auto:
         categories = IDENTITY_DEFAULTS.get(agent.name, ["file_io", "web"])
 
