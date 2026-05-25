@@ -451,7 +451,7 @@ class HybridConfig:
     
     def __init__(self):
         # Load from environment with sensible defaults
-        self.cloud_llm_model = os.getenv("CLOUD_LLM_MODEL", "gemini-2.5-flash")
+        self.cloud_llm_model = os.getenv("CLOUD_LLM_MODEL", "auto")
         self.local_llm_model = os.getenv("LOCAL_LLM_MODEL", "aither-orchestrator-8b-v4")
         
         # Preferences

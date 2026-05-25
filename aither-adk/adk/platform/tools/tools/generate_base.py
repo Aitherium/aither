@@ -33,7 +33,7 @@ def main():
     elif args.source in ["google", "imagen", "gemini"]:
         model_name = args.model if args.model else "imagen-3.0-generate-001"
         if args.source == "gemini":
-            model_name = "gemini-2.5-flash" # Default for gemini source
+            model_name = "auto" # Default for gemini source
 
         print(f"Using Google Cloud ({model_name})...")
         path = generate_google_image(args.prompt, model=model_name)

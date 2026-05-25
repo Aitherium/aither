@@ -24,7 +24,7 @@ class GoogleGenAIClient:
         if self.project_id:
             aiplatform.init(project=self.project_id, location=self.location)
 
-    def generate_image_gemini(self, prompt, model_name="gemini-2.5-flash"):
+    def generate_image_gemini(self, prompt, model_name="auto"):
         """
         Generates an image using Gemini's multimodal capabilities (if supported).
         Note: 'Nano Banana' / Gemini 2.5 Flash Image is the target here.

@@ -523,7 +523,7 @@ class DynamicModelManager:
             # Fallback to cloud
             if task == "image_gen":
                 return MODEL_REGISTRY.get("nano-banana", MODEL_REGISTRY["fal-flux-schnell"])
-            return MODEL_REGISTRY["gemini-2.5-flash"]
+            return MODEL_REGISTRY.get("gemini-2.5-flash", list(MODEL_REGISTRY.values())[0])
         
         # Sort by preference
         def score(m: ModelInfo) -> float:

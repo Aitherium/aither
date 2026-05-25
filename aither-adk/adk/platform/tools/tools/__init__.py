@@ -15,7 +15,7 @@ Usage:
     
     agent = Agent(
         name="MyAgent",
-        model="gemini-2.5-flash",
+        model="auto",
         tools=aither_tools + subagent_tools,
     )
 """

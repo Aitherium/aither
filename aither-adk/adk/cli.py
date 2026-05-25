@@ -2960,6 +2960,197 @@ def cmd_ingest(args):
     return asyncio.run(_ingest())
 
 
+def cmd_sync(args):
+    """AitherDrive — bidirectional file sync with AitherOS platform."""
+    import asyncio
+
+    action = getattr(args, "sync_action", None)
+    if not action:
+        # Default: show status
+        action = "status"
+
+    def _load_config():
+        """Load auth config from ~/.aither/config.json."""
+        cfg_path = Path.home() / ".aither" / "config.json"
+        if not cfg_path.exists():
+            print("Not logged in. Run `adk login` first.")
+            sys.exit(1)
+        import json
+        return json.loads(cfg_path.read_text(encoding="utf-8"))
+
+    async def _run():
+        from adk.sync import SyncManager, SyncManifest, MANIFEST_FILE
+        from adk.client.services.strata import StrataClient
+        from adk.client.services.data_plane import DataPlaneClient
+
+        if action == "init":
+            cfg = _load_config()
+            tenant_id = cfg.get("tenant_id", "")
+            if not tenant_id:
+                print("No tenant_id in config. Run `adk login` first.")
+                return 1
+
+            sync_dir = Path(getattr(args, "directory", ".")).resolve()
+            if not sync_dir.is_dir():
+                print(f"Directory not found: {sync_dir}")
+                return 1
+
+            # Check if already initialized
+            if (sync_dir / MANIFEST_FILE).exists():
+                print(f"Already initialized: {sync_dir / MANIFEST_FILE}")
+                return 0
+
+            import httpx
+            token = cfg.get("access_token", cfg.get("api_key", ""))
+            headers = {}
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+            if tenant_id:
+                headers["X-Tenant-ID"] = tenant_id
+            async with httpx.AsyncClient(timeout=30.0, headers=headers) as http:
+                async def get_client():
+                    return http
+
+                strata_url = cfg.get("strata_url", os.environ.get(
+                    "AITHER_STRATA_URL", "http://localhost:8136"))
+                dp_url = cfg.get("data_plane_url", os.environ.get(
+                    "AITHER_DATAPLANE_URL", "http://localhost:8170"))
+                strata = StrataClient(strata_url, get_client)
+                data_plane = DataPlaneClient(dp_url, get_client)
+                mgr = SyncManager(sync_dir, strata, data_plane, tenant_id)
+                result = await mgr.init()
+
+            if result.get("status") == "initialized":
+                print(f"Sync root initialized at {sync_dir}")
+                print(f"  Node ID:    {result['node_id']}")
+                print(f"  Source ID:  {result.get('source_id', 'n/a')}")
+                print(f"  Files:      {result['files_scanned']}")
+                print()
+                print("Run `adk sync push` to upload or `adk sync watch` to auto-sync.")
+            else:
+                print(f"Already initialized (node: {result.get('node_id', '?')})")
+            return 0
+
+        # All other actions require an existing manifest
+        sync_dir = Path(".").resolve()
+        manifest_path = sync_dir / MANIFEST_FILE
+        if not manifest_path.exists():
+            # Walk up to find manifest
+            for parent in sync_dir.parents:
+                if (parent / MANIFEST_FILE).exists():
+                    sync_dir = parent
+                    manifest_path = parent / MANIFEST_FILE
+                    break
+            else:
+                print("Not a sync root. Run `adk sync init` first.")
+                return 1
+
+        manifest = SyncManifest(sync_dir)
+        manifest.load()
+
+        cfg = _load_config()
+        token = cfg.get("access_token", cfg.get("api_key", ""))
+        tenant_id = manifest.tenant_id or cfg.get("tenant_id", "")
+
+        import httpx
+        headers = {}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        if tenant_id:
+            headers["X-Tenant-ID"] = tenant_id
+
+        async with httpx.AsyncClient(timeout=60.0, headers=headers) as http:
+            async def get_client():
+                return http
+
+            strata_url = cfg.get("strata_url", os.environ.get(
+                "AITHER_STRATA_URL", "http://localhost:8136"))
+            dp_url = cfg.get("data_plane_url", os.environ.get(
+                "AITHER_DATAPLANE_URL", "http://localhost:8170"))
+            strata = StrataClient(strata_url, get_client)
+            data_plane = DataPlaneClient(dp_url, get_client)
+            mgr = SyncManager(sync_dir, strata, data_plane, tenant_id, manifest.node_id)
+            mgr.manifest = manifest
+
+            if action == "status":
+                st = mgr.status()
+                print(f"Sync root: {sync_dir}")
+                print(f"Node:      {manifest.node_id}")
+                print(f"Last sync: {manifest.last_sync_at or 'never'}")
+                print(f"Status:    {st.summary()}")
+                if st.new:
+                    for f in st.new[:10]:
+                        print(f"  + {f}")
+                    if len(st.new) > 10:
+                        print(f"  ... and {len(st.new) - 10} more")
+                if st.changed:
+                    for f in st.changed[:10]:
+                        print(f"  ~ {f}")
+                    if len(st.changed) > 10:
+                        print(f"  ... and {len(st.changed) - 10} more")
+                if st.deleted:
+                    for f in st.deleted[:10]:
+                        print(f"  - {f}")
+                    if len(st.deleted) > 10:
+                        print(f"  ... and {len(st.deleted) - 10} more")
+
+            elif action == "push":
+                print("Pushing local changes...")
+                result = await mgr.push()
+                print(f"Uploaded: {result['uploaded']}  Deleted: {result['deleted']}")
+                if result["errors"]:
+                    for e in result["errors"][:5]:
+                        print(f"  Error: {e}")
+
+            elif action == "pull":
+                print("Pulling remote changes...")
+                result = await mgr.pull()
+                print(f"Downloaded: {result['downloaded']}")
+                if result.get("errors"):
+                    for e in result["errors"][:5]:
+                        print(f"  Error: {e}")
+
+            elif action == "watch":
+                started = await mgr.watch()
+                if not started:
+                    print("watchdog not installed. Install with:")
+                    print("  pip install aither-adk[sync]")
+                    return 1
+                print(f"Watching {sync_dir} for changes (Ctrl+C to stop)...")
+                try:
+                    while True:
+                        await asyncio.sleep(1)
+                except KeyboardInterrupt:
+                    mgr.stop()
+                    print("\nWatcher stopped.")
+
+            elif action == "stop":
+                mgr.stop()
+                print("Watcher stopped.")
+
+            elif action == "ignore":
+                pattern = getattr(args, "pattern", "")
+                if pattern:
+                    mgr.add_ignore(pattern)
+                    print(f"Added ignore pattern: {pattern}")
+
+            elif action == "config":
+                print(f"Sync root:     {sync_dir}")
+                print(f"Node ID:       {manifest.node_id}")
+                print(f"Tenant ID:     {manifest.tenant_id}")
+                print(f"Source ID:     {manifest.source_id}")
+                print(f"Strata prefix: {manifest.strata_prefix}")
+                print(f"Conflict:      {manifest.conflict_strategy}")
+                print(f"Settings sync: {manifest.settings_sync}")
+                print(f"Max file size: {manifest.max_file_size // (1024*1024)}MB")
+                print(f"Ignore:        {', '.join(manifest.ignore)}")
+                print(f"Tracked files: {len(manifest.files)}")
+
+        return 0
+
+    return asyncio.run(_run())
+
+
 def cmd_quickstart(args):
     """Unified first-run wizard — setup + auth + shell in one command."""
 
@@ -3833,6 +4024,186 @@ def _cmd_cron(args) -> int:
         return 0
 
     print("Usage: adk cron [list|add|remove]")
+    return 1
+
+
+def _cmd_pack(args) -> int:
+    """Handle `adk pack` subcommands."""
+    sub = getattr(args, "pack_command", None)
+    genesis_url = _get_genesis_url()
+
+    if sub == "list" or sub is None:
+        try:
+            import httpx
+        except ImportError:
+            print("httpx required: pip install httpx")
+            return 1
+
+        # Fetch remote catalog
+        catalog = []
+        try:
+            with httpx.Client(base_url=genesis_url, timeout=10) as c:
+                resp = c.get("/v1/packs/catalog")
+                if resp.status_code == 200:
+                    catalog = resp.json().get("packs", [])
+        except Exception as e:
+            print(f"Cannot reach Genesis at {genesis_url}: {e}")
+
+        # Check local packs
+        packs_dir = Path.home() / ".aitheros" / "packs"
+        local_ids = set()
+        if packs_dir.is_dir():
+            for child in packs_dir.iterdir():
+                if child.is_dir() and (child / ".toolpack.yaml").exists():
+                    local_ids.add(child.name)
+
+        # Merge local-only
+        catalog_ids = {p["id"] for p in catalog}
+        for lid in sorted(local_ids - catalog_ids):
+            catalog.append({"id": lid, "name": lid, "version": "local", "pricing": {}, "installed": True})
+
+        for entry in catalog:
+            if entry["id"] in local_ids:
+                entry["installed"] = True
+
+        if not catalog:
+            print("No packs found.")
+            return 0
+
+        print(f"{'Pack':<25} {'Version':<10} {'Status':<14} {'Price'}")
+        print("-" * 65)
+        for p in catalog:
+            pid = p.get("id", "?")
+            ver = p.get("version", "?")
+            pricing = p.get("pricing", {})
+            is_free = not pricing
+            installed = p.get("installed", False)
+            licensed = p.get("licensed", False)
+
+            if installed and (is_free or licensed):
+                status = "installed"
+            elif licensed:
+                status = "licensed"
+            elif installed:
+                status = "installed"
+            else:
+                status = "available"
+
+            if is_free:
+                price = "free"
+            else:
+                cents = pricing.get("subscription_cents", 0)
+                price = f"${int(cents) / 100:.0f}/mo" if cents else "paid"
+
+            print(f"{pid:<25} {ver:<10} {status:<14} {price}")
+        return 0
+
+    if sub == "install":
+        pack_id = args.pack_id
+        import httpx
+        import hashlib
+        import tarfile
+        import shutil
+        from io import BytesIO
+
+        packs_dir = Path.home() / ".aitheros" / "packs"
+        target = packs_dir / pack_id
+
+        try:
+            with httpx.Client(base_url=genesis_url, timeout=60) as c:
+                resp = c.get(f"/v1/packs/{pack_id}/download")
+
+            if resp.status_code == 402:
+                detail = resp.json().get("detail", "License required")
+                if isinstance(detail, dict):
+                    detail = detail.get("message", "License required")
+                print(f"License required: {detail}")
+                print("Purchase at: https://portal.aitherium.com/marketplace")
+                return 2
+
+            if resp.status_code == 404:
+                print(f"Pack '{pack_id}' not found")
+                return 1
+
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            print(f"Download failed: {e}")
+            return 1
+        except Exception as e:
+            print(f"Cannot reach Genesis: {e}")
+            return 1
+
+        # Verify SHA
+        expected_sha = resp.headers.get("X-Pack-SHA256", "")
+        actual_sha = hashlib.sha256(resp.content).hexdigest()
+        if expected_sha and actual_sha != expected_sha:
+            print(f"SHA256 mismatch: expected {expected_sha[:16]}..., got {actual_sha[:16]}...")
+            return 1
+
+        # Extract
+        if target.exists():
+            shutil.rmtree(target)
+        target.mkdir(parents=True, exist_ok=True)
+
+        buf = BytesIO(resp.content)
+        with tarfile.open(fileobj=buf, mode="r:gz") as tar:
+            for member in tar.getmembers():
+                if member.name.startswith("/") or ".." in member.name:
+                    print(f"Unsafe path in archive: {member.name}")
+                    return 1
+            tar.extractall(target, filter="data")
+
+        version = resp.headers.get("X-Pack-Version", "unknown")
+        print(f"Pack '{pack_id}' v{version} installed to {target}")
+        print("Restart `adk mcp serve` to activate.")
+        return 0
+
+    if sub == "remove":
+        import shutil
+        target = Path.home() / ".aitheros" / "packs" / args.pack_id
+        if not target.is_dir():
+            print(f"Pack '{args.pack_id}' is not installed")
+            return 1
+        shutil.rmtree(target)
+        print(f"Pack '{args.pack_id}' removed. Restart `adk mcp serve` to take effect.")
+        return 0
+
+    if sub == "info":
+        import httpx
+        try:
+            with httpx.Client(base_url=genesis_url, timeout=10) as c:
+                resp = c.get(f"/v1/packs/{args.pack_id}/manifest")
+            if resp.status_code == 404:
+                print(f"Pack '{args.pack_id}' not found")
+                return 1
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as e:
+            print(f"Cannot fetch pack info: {e}")
+            return 1
+
+        print(f"Pack:        {data.get('name', args.pack_id)}")
+        print(f"ID:          {data.get('id', args.pack_id)}")
+        print(f"Version:     {data.get('version', '?')}")
+        print(f"Author:      {data.get('author', 'unknown')}")
+        print(f"Category:    {data.get('category', '?')}")
+        print(f"Description: {data.get('description', '')}")
+
+        pricing = data.get("pricing", {})
+        if pricing:
+            cents = pricing.get("subscription_cents", 0)
+            print(f"Price:       ${int(cents) / 100:.0f}/mo" if cents else "Price:       paid")
+        else:
+            print("Price:       free")
+
+        tools = data.get("tools", [])
+        if tools:
+            print(f"\nTools ({len(tools)}):")
+            for t in tools:
+                print(f"  - {t['name']}: {t.get('description', '')[:60]}")
+        return 0
+
+    print("Usage: adk pack [list|install|remove|info]")
     return 1
 
 
@@ -4785,6 +5156,17 @@ def _register_commands(sub):
     skills_search_p.add_argument("query", help="Search query")
     skills_sub.add_parser("export", help="Export skills in agentskills.io format")
 
+    # adk pack — tool pack management
+    pack_p = sub.add_parser("pack", help="Manage ToolPack extensions (list, install, remove, info)")
+    pack_sub = pack_p.add_subparsers(dest="pack_command")
+    pack_sub.add_parser("list", help="List available and installed packs")
+    pack_install_p = pack_sub.add_parser("install", help="Install a tool pack")
+    pack_install_p.add_argument("pack_id", help="Pack ID to install")
+    pack_remove_p = pack_sub.add_parser("remove", help="Remove an installed pack")
+    pack_remove_p.add_argument("pack_id", help="Pack ID to remove")
+    pack_info_p = pack_sub.add_parser("info", help="Show pack details")
+    pack_info_p.add_argument("pack_id", help="Pack ID to inspect")
+
     # adk soul — SOUL.md import/export
     soul_p = sub.add_parser("soul", help="Import/export SOUL.md identity files")
     soul_sub = soul_p.add_subparsers(dest="soul_command")
@@ -4850,6 +5232,20 @@ def _register_commands(sub):
     listen_export_p.add_argument("session_id", help="Session ID")
     listen_export_p.add_argument("--format", dest="fmt", default="notes", choices=["notes", "transcript"])
     listen_export_p.add_argument("--output", "-o", help="Write to file instead of stdout")
+
+    # adk sync — bidirectional file sync (AitherDrive)
+    sync_p = sub.add_parser("sync", help="Sync local directory with AitherOS platform")
+    sync_sub = sync_p.add_subparsers(dest="sync_action")
+    sync_init_p = sync_sub.add_parser("init", help="Initialize sync root")
+    sync_init_p.add_argument("directory", nargs="?", default=".", help="Directory to sync")
+    sync_sub.add_parser("status", help="Show sync status (changed/new/deleted)")
+    sync_sub.add_parser("push", help="Upload local changes to platform")
+    sync_sub.add_parser("pull", help="Download remote changes")
+    sync_sub.add_parser("watch", help="Auto-sync on file changes (requires watchdog)")
+    sync_sub.add_parser("stop", help="Stop background watcher")
+    sync_ignore_p = sync_sub.add_parser("ignore", help="Add ignore pattern")
+    sync_ignore_p.add_argument("pattern", help="Glob pattern to ignore")
+    sync_sub.add_parser("config", help="Show sync configuration")
 
     # adk train — training pipeline management
     train_p = sub.add_parser("train", help="Manage model training (launch, monitor, cancel)")
@@ -4983,6 +5379,8 @@ def main():
         sys.exit(cmd_gateway(args))
     elif args.command == "cron":
         sys.exit(_cmd_cron(args))
+    elif args.command == "pack":
+        sys.exit(_cmd_pack(args))
     elif args.command == "skills":
         sys.exit(_cmd_skills(args))
     elif args.command == "soul":
@@ -5016,6 +5414,8 @@ def main():
             sys.exit(1)
     elif args.command == "listen":
         sys.exit(_cmd_listen(args))
+    elif args.command == "sync":
+        sys.exit(cmd_sync(args))
     elif args.command == "train":
         sys.exit(_cmd_train(args))
     elif args.command is None:

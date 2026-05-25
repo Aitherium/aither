@@ -1654,7 +1654,7 @@ def run_agent(
     name: str = typer.Argument(..., help="Name of the agent to run"),
     model: Optional[str] = typer.Option(
         None, "--model", "-m",
-        help="Model to use (e.g., gemini-2.5-flash, ollama/llama3)"
+        help="Model to use (e.g., auto, ollama/llama3)"
     ),
     local: bool = typer.Option(
         False, "--local", "-l",
@@ -1683,7 +1683,7 @@ def run_agent(
     Example:
         adk run agent Aither                           # Run Aither agent
         adk run agent Saga --local           # Run with local model
-        adk run agent Aither --model gemini-2.5-flash  # Specific model
+        adk run agent Aither --model auto  # Auto-select model
         adk run agent Aither --persona terra           # As Terra persona
     """
     workspace = _find_workspace()
@@ -1831,7 +1831,7 @@ def run_info(
     console.print("\n[bold]Run:[/]")
     console.print(f"  adk run agent {agent_info['name']}")
     console.print(f"  adk run agent {agent_info['name']} --local")
-    console.print(f"  adk run agent {agent_info['name']} --model gemini-2.5-flash")
+    console.print(f"  adk run agent {agent_info['name']} --model auto")
 
 
 @run_app.command("server")

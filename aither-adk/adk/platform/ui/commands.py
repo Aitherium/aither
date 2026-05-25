@@ -2429,7 +2429,7 @@ Format the report clearly with headings and bullet points if necessary.
                     "  [bold #ffb3d9]/settings help[/bold #ffb3d9]         - Show this help\n\n"
                     "[dim]Examples:[/dim]\n"
                     "  /settings model mistral-nemo\n"
-                    "  /settings model gemini-2.5-flash",
+                    "  /settings model auto",
                     title="[bold cyan]Settings Help[/bold cyan]",
                     border_style="cyan"
                 ))
@@ -2448,7 +2448,7 @@ Format the report clearly with headings and bullet points if necessary.
         # Default model info
         try:
             import AitherOS.agents.Saga.agent as saga_agent
-            default_model = saga_agent.LOCAL_MODEL_NAME if saga_agent.USE_LOCAL_MODELS else "gemini-2.5-flash"
+            default_model = saga_agent.LOCAL_MODEL_NAME if saga_agent.USE_LOCAL_MODELS else "auto"
             use_local = saga_agent.USE_LOCAL_MODELS
             settings_lines.append(f"[bold]Default Model:[/bold] {default_model} ({'local' if use_local else 'cloud'})")
         except Exception as exc:

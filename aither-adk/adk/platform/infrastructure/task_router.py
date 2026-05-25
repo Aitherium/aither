@@ -382,7 +382,7 @@ class RouterConfig:
     
     def __init__(self):
         # Model preferences
-        self.cloud_llm_model = os.getenv("CLOUD_LLM_MODEL", "gemini-2.5-flash")
+        self.cloud_llm_model = os.getenv("CLOUD_LLM_MODEL", "auto")
         self.local_llm_model = os.getenv("LOCAL_LLM_MODEL", "aither-orchestrator-8b-v4")
         self.cloud_image_model = os.getenv("CLOUD_IMAGE_MODEL", "fal-ai/flux/schnell")
         self.local_image_model_anime = os.getenv("LOCAL_IMAGE_MODEL_ANIME", "pony")

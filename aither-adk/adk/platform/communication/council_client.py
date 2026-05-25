@@ -11,10 +11,7 @@ from __future__ import annotations
 try:
     from .aeon_client import AeonClient as CouncilClient  # type: ignore[assignment]
 except ImportError:  # pragma: no cover — defensive
-    try:
-        from .council import Council as CouncilClient  # type: ignore[assignment]
-    except ImportError:
-        class CouncilClient:  # type: ignore[no-redef]
-            """Placeholder when no council/aeon implementation is available."""
+    class CouncilClient:  # type: ignore[no-redef]
+        """Placeholder when no aeon implementation is available."""
 
 __all__ = ["CouncilClient"]

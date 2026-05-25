@@ -115,7 +115,7 @@ async def run_agent_app(
 
     # Select Model - use intelligent default if not specified
     # Priority: --model arg > DEFAULT_MODEL env > best orchestration model > models_list[0]
-    default_model = os.getenv("DEFAULT_MODEL") or get_best_orchestration_model() or (models_list[0] if models_list else "gemini-2.5-flash")
+    default_model = os.getenv("DEFAULT_MODEL") or get_best_orchestration_model() or (models_list[0] if models_list else "auto")
 
     model_name = None
     if args.prompt:

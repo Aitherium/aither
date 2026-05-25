@@ -119,6 +119,7 @@ class AitherAgent:
         system_prompt: str | None = None,
         phonehome: bool = False,
         builtin_tools: bool = True,
+        load_packs: bool = False,
     ):
         self.config = config or Config.from_env()
 
@@ -220,11 +221,12 @@ class AitherAgent:
                 pass
 
         # Tool packs from config — non-fatal
-        # Check for packs in agent YAML config (tools.packs) or AITHER_TOOL_PACKS env
-        config_packs: list[str] = []
-        _raw = getattr(self.config, "raw", None)
-        if isinstance(_raw, dict):
-            config_packs = (_raw.get("tools") or {}).get("packs") or []
+        # Sources (in priority): config.required_packs, raw tools.packs, AITHER_TOOL_PACKS env
+        config_packs: list[str] = list(getattr(self.config, "required_packs", None) or [])
+        if not config_packs:
+            _raw = getattr(self.config, "raw", None)
+            if isinstance(_raw, dict):
+                config_packs = (_raw.get("tools") or {}).get("packs") or []
         if not config_packs:
             env_packs = os.environ.get("AITHER_TOOL_PACKS", "")
             if env_packs:
@@ -235,6 +237,13 @@ class AitherAgent:
                 register_tool_packs(self, pack_ids=config_packs)
             except ImportError:
                 pass
+
+        # Auto-discover packs from ~/.aitheros/packs/ — opt-in via load_packs=True
+        if load_packs and not config_packs:
+            try:
+                self._load_discovered_packs()
+            except Exception as exc:
+                logger.debug("Auto pack discovery failed: %s", exc)
 
     def _try_elysium_fallback(self):
         """If no local LLM is available but AITHER_API_KEY is set, use Elysium."""
@@ -261,6 +270,28 @@ class AitherAgent:
             )
         except Exception as exc:
             logger.debug("Elysium fallback failed: %s", exc)
+
+    def _load_discovered_packs(self) -> None:
+        """Auto-discover and register tool packs from ~/.aitheros/packs/.
+
+        Called when ``load_packs=True`` is passed to the constructor and no
+        explicit pack IDs were provided via config or environment.  Scans the
+        standard discovery directories and registers all licensed packs.
+        """
+        try:
+            from adk.builtin_tools import register_tool_packs
+        except ImportError:
+            logger.debug("register_tool_packs not available")
+            return
+
+        home_packs = os.path.join(os.path.expanduser("~"), ".aitheros", "packs")
+        packs_dir = home_packs if os.path.isdir(home_packs) else None
+        count = register_tool_packs(self, packs_dir=packs_dir)
+        if count:
+            logger.info(
+                "Auto-discovered %d tool-pack tools for agent '%s'",
+                count, self.name,
+            )
 
     def switch_backend(
         self,

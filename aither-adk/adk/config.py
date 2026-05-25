@@ -200,6 +200,9 @@ class Config:
     # Agent identity (from project config.yaml or env)
     identity: str = field(default_factory=lambda: os.getenv("AITHER_IDENTITY", ""))
 
+    # Required tool packs — auto-loaded at agent init (comma-separated env or config.yaml tools.packs)
+    required_packs: list[str] = field(default_factory=list)
+
     # Hardware profile (auto-detected or set via AITHER_PROFILE)
     profile: str = field(default_factory=lambda: os.getenv("AITHER_PROFILE", ""))
 
@@ -258,6 +261,11 @@ class Config:
         # Backfill from provider_keys.json (written by `adk keys set`)
         # This is the bridge between `adk keys` CLI and the LLMRouter.
         config._apply_provider_keys()
+
+        # Required packs from env var (comma-separated)
+        env_packs = os.getenv("AITHER_REQUIRED_PACKS", "")
+        if env_packs and not config.required_packs:
+            config.required_packs = [p.strip() for p in env_packs.split(",") if p.strip()]
 
         # Load project-level config.yaml (from CWD, created by `adk init`)
         config._apply_project_config()
@@ -386,6 +394,11 @@ class Config:
             self.model = data["model"]
         if self.server_port == 8080 and data.get("port"):
             self.server_port = int(data["port"])
+        # Tool packs from config.yaml: tools.packs or required_packs
+        if not self.required_packs:
+            _packs = (data.get("tools") or {}).get("packs") or data.get("required_packs") or []
+            if isinstance(_packs, list):
+                self.required_packs = _packs
 
     @property
     def backend(self) -> str:
