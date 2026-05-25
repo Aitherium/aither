@@ -145,10 +145,13 @@ class AitherAgent:
         # Tools
         self._tools = ToolRegistry()
         if tools:
-            registries = tools if isinstance(tools, list) else [tools]
-            for reg in registries:
-                for td in reg.list_tools():
-                    self._tools._tools[td.name] = td
+            items = tools if isinstance(tools, list) else [tools]
+            for item in items:
+                if isinstance(item, ToolRegistry):
+                    for td in item.list_tools():
+                        self._tools._tools[td.name] = td
+                elif callable(item):
+                    self._tools.register(item)
 
         # Memory
         self.memory = memory or Memory(agent_name=self.name)
@@ -221,20 +224,30 @@ class AitherAgent:
                 pass
 
         # Tool packs from config — non-fatal
-        # Sources (in priority): config.required_packs, raw tools.packs, AITHER_TOOL_PACKS env
+        # Sources (in priority): config.required_packs, raw tools.packs,
+        # identity YAML tools.packs, AITHER_TOOL_PACKS env
         config_packs: list[str] = list(getattr(self.config, "required_packs", None) or [])
         if not config_packs:
             _raw = getattr(self.config, "raw", None)
             if isinstance(_raw, dict):
                 config_packs = (_raw.get("tools") or {}).get("packs") or []
         if not config_packs:
+            # Check identity YAML raw data for tools.packs
+            _id_raw = getattr(self._identity, "raw", None)
+            if isinstance(_id_raw, dict):
+                config_packs = (_id_raw.get("tools") or {}).get("packs") or []
+        if not config_packs:
             env_packs = os.environ.get("AITHER_TOOL_PACKS", "")
             if env_packs:
                 config_packs = [p.strip() for p in env_packs.split(",") if p.strip()]
+        # Persona fragments collected from licensed packs
+        self._pack_persona_fragments: list[str] = []
+
         if config_packs:
             try:
                 from adk.builtin_tools import register_tool_packs
                 register_tool_packs(self, pack_ids=config_packs)
+                self._collect_pack_persona_fragments(config_packs)
             except ImportError:
                 pass
 
@@ -292,6 +305,60 @@ class AitherAgent:
                 "Auto-discovered %d tool-pack tools for agent '%s'",
                 count, self.name,
             )
+            # Collect persona fragments from all discovered packs
+            self._collect_pack_persona_fragments(pack_ids=None, packs_dir=packs_dir)
+
+    def _collect_pack_persona_fragments(
+        self,
+        pack_ids: list[str] | None = None,
+        packs_dir: str | None = None,
+    ) -> None:
+        """Collect persona_fragments from licensed packs into _pack_persona_fragments.
+
+        Mirrors AgentForge._build_pack_persona_layer() but for standalone ADK agents.
+        Fragments are later appended to the system prompt as a [PACK DIRECTIVES] block.
+        """
+        try:
+            from pathlib import Path as _P
+
+            try:
+                from lib.core.ToolPackLoader import get_tool_pack_loader
+            except ImportError:
+                _adk_root = _P(__file__).resolve().parent
+                _loader_path = _adk_root / "tool_pack_loader.py"
+                if _loader_path.exists():
+                    import importlib.util
+                    spec = importlib.util.spec_from_file_location(
+                        "adk.tool_pack_loader", _loader_path,
+                    )
+                    mod = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(mod)
+                    get_tool_pack_loader = mod.get_tool_pack_loader
+                else:
+                    return
+
+            extra = [_P(packs_dir)] if packs_dir else []
+            loader = get_tool_pack_loader(extra_dirs=extra)
+            manifests = loader.load_packs(pack_ids) if pack_ids else list(loader._manifests.values())
+
+            for manifest in manifests:
+                allowed, _ = loader.check_license(manifest)
+                if not allowed:
+                    continue
+                for frag in getattr(manifest, "persona_fragments", []):
+                    if frag and frag not in self._pack_persona_fragments:
+                        self._pack_persona_fragments.append(frag)
+
+            # Cap at 6 directives to avoid context bloat (same as AgentForge)
+            self._pack_persona_fragments = self._pack_persona_fragments[:6]
+
+            if self._pack_persona_fragments:
+                logger.info(
+                    "Collected %d pack persona fragments for agent '%s'",
+                    len(self._pack_persona_fragments), self.name,
+                )
+        except Exception as exc:
+            logger.debug("Pack persona fragment collection failed: %s", exc)
 
     def switch_backend(
         self,
@@ -324,15 +391,24 @@ class AitherAgent:
         self.llm.set_reasoning_backend(provider, base_url=base_url, api_key=api_key, model=model)
 
     @property
+    def tools(self) -> ToolRegistry:
+        """The agent's tool registry."""
+        return self._tools
+
+    @property
     def identity(self) -> Identity:
         """The agent's loaded identity (read-only)."""
         return self._identity
 
     @property
     def system_prompt(self) -> str:
-        if self._system_prompt:
-            return self._system_prompt
-        return self._identity.build_system_prompt()
+        base = self._system_prompt or self._identity.build_system_prompt()
+        # Append pack persona fragments as [PACK DIRECTIVES] block
+        if self._pack_persona_fragments:
+            lines = ["\n[PACK DIRECTIVES]"]
+            lines.extend(f"- {f}" for f in self._pack_persona_fragments)
+            base += "\n".join(lines)
+        return base
 
     @property
     def strata(self):

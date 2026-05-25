@@ -316,6 +316,77 @@ def check_version() -> bool:
     return True
 
 
+def check_packs() -> bool:
+    """Check installed tool packs and their health."""
+    packs_dir = Path.home() / ".aitheros" / "packs"
+    if not packs_dir.is_dir():
+        _ok("Packs: none installed (directory does not exist)")
+        return True
+
+    installed = []
+    broken = []
+    for child in sorted(packs_dir.iterdir()):
+        if not child.is_dir():
+            continue
+        manifest_path = child / ".toolpack.yaml"
+        if not manifest_path.exists():
+            broken.append(child.name)
+            continue
+        # Verify YAML parses
+        try:
+            import yaml
+            with open(manifest_path, "r", encoding="utf-8") as f:
+                yaml.safe_load(f)
+            installed.append(child.name)
+        except ImportError:
+            # yaml not available, file exists so count it
+            installed.append(child.name)
+        except Exception:
+            broken.append(child.name)
+
+    # Check entitlement cache for licensed status
+    licensed_count = 0
+    try:
+        ent_path = Path.home() / ".aitheros" / "entitlement.json"
+        if ent_path.exists():
+            ent_data = json.loads(ent_path.read_text())
+            licensed_packs = set(ent_data.get("licensed_packs", []))
+            licensed_count = len(licensed_packs & set(installed))
+    except Exception:
+        pass
+
+    unlicensed_count = len(installed) - licensed_count
+
+    if broken:
+        for b in broken:
+            _fail(f"Packs: {b} — missing or invalid .toolpack.yaml")
+
+    if installed:
+        parts = [f"{len(installed)} installed"]
+        if licensed_count:
+            parts.append(f"{licensed_count} licensed")
+        if unlicensed_count:
+            parts.append(f"{unlicensed_count} unlicensed")
+        _ok(f"Packs: {', '.join(parts)}")
+        for name in installed[:10]:
+            suffix = ""
+            try:
+                ent_path = Path.home() / ".aitheros" / "entitlement.json"
+                if ent_path.exists():
+                    ent_data = json.loads(ent_path.read_text())
+                    if name in ent_data.get("licensed_packs", []):
+                        suffix = " (licensed)"
+            except Exception:
+                pass
+            print(f"         - {name}{suffix}")
+        if len(installed) > 10:
+            print(f"         ... and {len(installed) - 10} more")
+    elif not broken:
+        _ok("Packs: none installed")
+
+    return not broken
+
+
 def cmd_doctor(_args=None) -> int:
     """Run all health checks."""
     from adk import __version__
@@ -339,6 +410,7 @@ def cmd_doctor(_args=None) -> int:
         ("API Key", check_api_key),
         ("Cloud APIs", check_cloud_keys),
         ("Disk", check_disk),
+        ("Packs", check_packs),
     ]:
         checks += 1
         try:

@@ -499,7 +499,11 @@ class TestRegistration:
 
         count = bt.register_builtin_tools(mock_agent)
         expected_cats = bt.IDENTITY_DEFAULTS["demiurge"]
+        # "self" category uses register_self_tools() (4 closure-based tools),
+        # not the empty TOOL_CATEGORIES["self"] list.
         expected_count = sum(len(bt.TOOL_CATEGORIES[c]) for c in expected_cats)
+        if "self" in expected_cats:
+            expected_count += 4
         assert count == expected_count
 
     def test_register_builtin_tools_auto_unknown_identity(self):
@@ -518,8 +522,10 @@ class TestRegistration:
         mock_agent._tools = MagicMock()
 
         count = bt.register_builtin_tools(mock_agent, auto=False)
-        # Should register all categories
+        # Should register all categories; "self" uses register_self_tools (4 tools)
         total = sum(len(fns) for fns in bt.TOOL_CATEGORIES.values())
+        if "self" in bt.TOOL_CATEGORIES:
+            total += 4
         assert count == total
 
     def test_register_empty_category(self):

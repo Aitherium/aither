@@ -681,6 +681,7 @@ class LLMRouter:
         if self._model:
             return self._model
 
+        effort = int(effort) if effort is not None else 5
         tier = "small" if effort <= 3 else "medium" if effort <= 6 else "large"
 
         # Check config profile models first (from hardware profile YAML)
@@ -795,6 +796,8 @@ class LLMRouter:
         Falls back to local if remote is unreachable.
         """
         provider = await self.get_provider()
+        if effort is not None:
+            effort = int(effort)
         if model is None and effort is not None:
             model = self.model_for_effort(effort)
 
@@ -857,6 +860,8 @@ class LLMRouter:
     ):
         """Stream a chat response with degeneration detection."""
         provider = await self.get_provider()
+        if effort is not None:
+            effort = int(effort)
         if model is None and effort is not None:
             model = self.model_for_effort(effort)
         detector = DegenerationDetector()

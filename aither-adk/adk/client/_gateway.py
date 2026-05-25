@@ -113,6 +113,7 @@ class GatewayClient:
         max_tokens: int = 4096,
         temperature: float = 0.7,
         stream: bool = False,
+        inference_url: str = "",
         **kwargs,
     ) -> dict:
         """Send a chat completion request to Elysium inference."""
@@ -124,8 +125,9 @@ class GatewayClient:
             "stream": stream,
             **kwargs,
         }
+        url = inference_url or f"{self.gateway_url}/v1/chat/completions"
         async with httpx.AsyncClient(timeout=120.0, headers=self._headers()) as c:
-            r = await c.post(f"{self.gateway_url}/v1/chat/completions", json=payload)
+            r = await c.post(url, json=payload)
             r.raise_for_status()
             return r.json()
 

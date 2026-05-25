@@ -83,7 +83,7 @@ Documentation = "https://github.com/Aitherium/aither#readme"
 
 [project.scripts]
 adk = "adk.cli:main"
-aither-py = "adk.cli:main"
+adk-py = "adk.cli:main"
 adk-serve = "adk.server:main"
 adk-bug = "adk.bugreport:main"
 
