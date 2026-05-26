@@ -12,9 +12,6 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     environment: pypi
-    defaults:
-      run:
-        working-directory: aither-adk
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -27,4 +24,4 @@ jobs:
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          packages-dir: aither-adk/dist/
+          packages-dir: dist/
