@@ -116,6 +116,7 @@ class GenesisClient:
         private_mode: bool = False,
         session_id: Optional[str] = None,
         on_event: Optional[Callable[[str, dict], Awaitable[None]]] = None,
+        prefer_cloud_model: Optional[str] = None,
     ) -> AsyncIterator[str]:
         """Stream a chat request via the /chat/stream SSE endpoint.
 
@@ -130,6 +131,7 @@ class GenesisClient:
             private_mode: Enable privacy mode
             session_id: Session ID for steering/context continuity
             on_event: Optional callback for ALL SSE events (pipeline, thinking, etc.)
+            prefer_cloud_model: Route to a specific cloud model (e.g. "deepseek-v4-flash")
 
         Yields:
             String chunks from the ``answer`` event (the actual response text).
@@ -152,6 +154,8 @@ class GenesisClient:
             payload["private_mode"] = True
         if session_id:
             payload["session_id"] = session_id
+        if prefer_cloud_model:
+            payload["prefer_cloud_model"] = prefer_cloud_model
 
         if self.enable_logging:
             logger.debug(f"Chat stream request: {json.dumps(payload, default=str)}")
@@ -332,6 +336,39 @@ class GenesisClient:
         except Exception as e:
             logger.warning(f"Steer failed: {e}")
             return {"ok": False, "error": str(e)}
+
+    async def download_file(self, file_path: str, dest: str) -> str:
+        """Download a file from Genesis /files/{path} to a local path.
+
+        Args:
+            file_path: Remote file path (e.g. Library/Output/images/gen_xxx.png)
+            dest: Local destination path
+
+        Returns:
+            Absolute path of saved file
+
+        Raises:
+            GenesisError: If download fails
+        """
+        from pathlib import Path as _Path
+
+        client = await self._get_client()
+        url = f"{self.base_url}/files/{file_path}"
+        try:
+            response = await client.get(url, timeout=60.0)
+            if response.status_code >= 400:
+                raise GenesisError(
+                    f"Download failed: HTTP {response.status_code}",
+                    status_code=response.status_code,
+                )
+            dest_path = _Path(dest)
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
+            dest_path.write_bytes(response.content)
+            return str(dest_path.resolve())
+        except GenesisError:
+            raise
+        except Exception as e:
+            raise GenesisError(f"Download failed: {e}")
 
     async def chat(
         self,

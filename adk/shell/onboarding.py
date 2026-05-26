@@ -38,7 +38,7 @@ from typing import Any, Dict, Optional
 import httpx
 
 from adk.shell.auth import AuthStore
-from adk.config import AitherConfig, CONFIG_DIR, CONFIG_FILE, load_config, save_config
+from adk.shell.config import AitherConfig, CONFIG_DIR, CONFIG_FILE, load_config, save_config
 
 logger = logging.getLogger(__name__)
 

@@ -23,7 +23,7 @@ Using Claude Code, Cursor, Copilot, or another AI coding agent? Copy the [Agent 
 | Locked appliances | Aither ADK |
 |---|---|
 | Their hardware, their cloud | **Your hardware, your rules** |
-| 1 AI assistant | **48 specialized agents** that delegate to each other |
+| 1 AI assistant | **43 specialized agents** that delegate to each other |
 | Their model picks | **Any model** — route by effort level automatically |
 | Data on their servers | **Data stays on your machine** |
 | Closed system, monthly fee | **Open source, Apache-2.0, free forever** |

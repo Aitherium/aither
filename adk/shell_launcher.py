@@ -241,6 +241,18 @@ def cmd_shell(args) -> int:
     except KeyboardInterrupt:
         return 0
     except FileNotFoundError:
-        print(f"Binary not executable or missing: {binary}")
-        print("Try: adk shell --install")
+        print(f"Binary not found: {binary}")
+        print("Falling back to Python REPL...")
+        return _run_python_repl(args)
+
+
+def _run_python_repl(args) -> int:
+    """Fall back to the built-in Python REPL (merged from aithershell)."""
+    try:
+        from adk.shell.cli import entry
+        return entry(standalone_mode=False) or 0
+    except ImportError:
+        print("Python shell not available. Install with: pip install aither-adk[shell]")
         return 1
+    except KeyboardInterrupt:
+        return 0

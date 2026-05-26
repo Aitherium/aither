@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Optional, List
 from uuid import uuid4
 
-from adk.config import AitherConfig, CONFIG_DIR
+from adk.shell.config import AitherConfig, CONFIG_DIR
 from adk.shell.genesis_client import GenesisClient, GenesisError
 
 logger = logging.getLogger(__name__)
@@ -55,6 +55,9 @@ class AitherREPL:
         self._input_queue: asyncio.Queue = asyncio.Queue()  # pending user inputs
         self._shutdown = False
         self._thinking_active = False  # True while streaming think tokens
+
+        # Artifact tracking — persists across generations within session
+        self._artifacts: List[dict] = []
 
     def _load_history(self) -> None:
         try:
@@ -144,6 +147,8 @@ class AitherREPL:
                 "\nAitherShell Built-in Commands:\n\n"
                 "/help               Show this help\n"
                 "/history            Show command history\n"
+                "/artifacts          List all artifacts from this session\n"
+                "/get N [path]       Download artifact #N (default: current dir)\n"
                 "/clear              Clear history\n"
                 "/exit, /quit        Exit shell\n\n"
                 "During generation, type anything to steer the active session.\n"
@@ -154,6 +159,12 @@ class AitherREPL:
                 return "History is empty."
             lines = [f"{i+1:3d} {c}" for i, c in enumerate(self.history[-20:])]
             return "\n".join(lines)
+        elif command == "artifacts":
+            return self._format_artifacts()
+        elif command == "get":
+            arg = parts[1].strip() if len(parts) > 1 else ""
+            await self._download_artifact(arg)
+            return None  # output handled internally
         elif command == "clear":
             self.history.clear()
             self._save_history()
@@ -163,6 +174,68 @@ class AitherREPL:
             return None
         else:
             return f"Unknown command: /{command}. Type /help for help."
+
+    def _format_artifacts(self) -> str:
+        """Format the artifact list for display."""
+        if not self._artifacts:
+            return "No artifacts in this session."
+        lines = [f"\n  Artifacts ({len(self._artifacts)} total):\n"]
+        for i, art in enumerate(self._artifacts, 1):
+            name = art.get("name") or art.get("filename") or art.get("path", "unknown")
+            atype = art.get("artifact_type") or art.get("type", "file")
+            size = art.get("size_bytes", 0)
+            size_str = f"  {size:,} bytes" if size else ""
+            lines.append(f"  #{i:2d}  {name}  [{atype}]{size_str}")
+        lines.append("\n  Use /get N to download (e.g. /get 1)")
+        return "\n".join(lines)
+
+    async def _download_artifact(self, arg: str) -> None:
+        """Download an artifact by index, optionally to a custom path."""
+        if not self._artifacts:
+            print("  No artifacts to download.", file=sys.stderr)
+            return
+
+        parts = arg.split(None, 1)
+        if not parts or not parts[0].isdigit():
+            print("  Usage: /get N [dest_path]", file=sys.stderr)
+            print(f"  Available: 1-{len(self._artifacts)}", file=sys.stderr)
+            return
+
+        idx = int(parts[0])
+        if idx < 1 or idx > len(self._artifacts):
+            print(f"  Invalid artifact #. Available: 1-{len(self._artifacts)}", file=sys.stderr)
+            return
+
+        art = self._artifacts[idx - 1]
+        remote_path = art.get("file_path") or art.get("path") or art.get("url", "")
+
+        if not remote_path:
+            print("  Artifact has no downloadable path.", file=sys.stderr)
+            return
+
+        # Strip leading /api/files?path= or /api/files/ if present
+        if "?path=" in remote_path:
+            remote_path = remote_path.split("?path=", 1)[1]
+        elif remote_path.startswith("/files/"):
+            remote_path = remote_path[len("/files/"):]
+        elif remote_path.startswith("/api/files/"):
+            remote_path = remote_path[len("/api/files/"):]
+
+        # Determine local filename
+        filename = art.get("name") or art.get("filename") or remote_path.rsplit("/", 1)[-1]
+
+        # Custom destination path
+        if len(parts) > 1:
+            dest = parts[1]
+        else:
+            dest = filename
+
+        print(f"  Downloading artifact #{idx}: {filename} ...", file=sys.stderr, flush=True)
+        try:
+            saved = await self.genesis_client.download_file(remote_path, dest)
+            print(f"  \u2713 Saved to: {saved}", file=sys.stderr, flush=True)
+        except Exception as e:
+            print(f"  \u2717 Download failed: {e}", file=sys.stderr, flush=True)
 
     # ── Main processing loop ─────────────────────────────────────────
 
@@ -260,13 +333,39 @@ class AitherREPL:
             action = data.get("action", "")
             msg = data.get("message", "")
             print(f"  [steer:{action}] {msg}", file=sys.stderr, flush=True)
-        elif event_type == "complete":
-            dur = data.get("duration_ms", 0)
-            model = data.get("model", "")
-            print(
-                f"  [done] {dur}ms {model}",
-                file=sys.stderr, flush=True,
-            )
+        elif event_type in ("answer", "complete"):
+            # Capture artifacts from answer/complete events (deduplicate)
+            arts = data.get("artifacts") or []
+            existing_ids = {a.get("id") for a in self._artifacts if a.get("id")}
+            for art in arts:
+                if isinstance(art, dict):
+                    art_id = art.get("id")
+                    if art_id and art_id in existing_ids:
+                        continue
+                    self._artifacts.append(art)
+                    if art_id:
+                        existing_ids.add(art_id)
+            if event_type == "complete":
+                dur = data.get("duration_ms", 0)
+                model = data.get("model", "")
+                print(
+                    f"  [done] {dur}ms {model}",
+                    file=sys.stderr, flush=True,
+                )
+                # Show artifact summary after generation
+                if self._artifacts:
+                    new_arts = self._artifacts[-len(arts):]  if arts else []
+                    for i, a in enumerate(new_arts):
+                        idx = len(self._artifacts) - len(new_arts) + i + 1
+                        name = a.get("name") or a.get("filename") or a.get("path", "unknown")
+                        atype = a.get("artifact_type") or a.get("type", "file")
+                        size = a.get("size_bytes", 0)
+                        size_str = f" ({size:,} bytes)" if size else ""
+                        print(
+                            f"  \U0001F4E6 Artifact #{idx}: {name}{size_str} [{atype}]"
+                            f" — /get {idx} to download",
+                            file=sys.stderr, flush=True,
+                        )
         # heartbeat: silently ignored (liveness only)
 
     async def _run_generation(self, user_input: str) -> None:
@@ -275,6 +374,21 @@ class AitherREPL:
         self._generating = True
         self._active_session = session_id
         self._thinking_active = False
+
+        # ── /deep prefix: per-message cloud escalation ──
+        _extra_kwargs: dict = {}
+        if user_input.startswith("/deep"):
+            parts = user_input.split(" ", 1)
+            prefix = parts[0]  # "/deep" or "/deep:model-name"
+            user_input = parts[1] if len(parts) > 1 else user_input
+            cloud_model = (
+                prefix.split(":", 1)[1] if ":" in prefix else "deepseek-v4-flash"
+            )
+            _extra_kwargs["prefer_cloud_model"] = cloud_model
+            print(
+                f"  [cloud] routing to {cloud_model}",
+                file=__import__("sys").stderr, flush=True,
+            )
 
         try:
             async for chunk in self.genesis_client.chat_stream(
@@ -286,6 +400,7 @@ class AitherREPL:
                 safety_level=self.config.safety_level,
                 session_id=session_id,
                 on_event=self._on_event,
+                **_extra_kwargs,
             ):
                 if self._shutdown:
                     break
