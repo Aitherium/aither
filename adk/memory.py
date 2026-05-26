@@ -44,6 +44,21 @@ class Memory:
         self._spirit_enabled = os.environ.get("AITHER_SPIRIT_BRIDGE", "true").lower() == "true"
         self._tenant_id = os.environ.get("AITHER_TENANT_ID", "")
         self._workspace_id = os.environ.get("AITHER_WORKSPACE_ID", "")
+        # Cloud mode: route memory through gateway when no local Spirit.
+        # Paths/URL may come from env (exported by Config.from_env from saved config).
+        self._spirit_teach_path = os.environ.get("AITHER_SPIRIT_TEACH_PATH", "/teach")
+        self._spirit_recall_path = os.environ.get("AITHER_SPIRIT_RECALL_PATH", "/recall")
+        self._spirit_auth_token = ""
+        cloud_mode = os.environ.get("AITHER_CLOUD_MODE", "")
+        if cloud_mode in ("cloud_first", "cloud_only") and self._spirit_url == "http://localhost:8087":
+            gateway = os.environ.get("AITHER_GATEWAY_URL", "https://gateway.aitherium.com")
+            self._spirit_url = gateway
+            if self._spirit_teach_path == "/teach":
+                self._spirit_teach_path = "/v1/memory/teach"
+            if self._spirit_recall_path == "/recall":
+                self._spirit_recall_path = "/v1/memory/recall"
+            # Use ACTA key or bearer token for gateway auth
+            self._spirit_auth_token = os.environ.get("AITHER_API_KEY", "")
         self._init_db()
 
     # Schema version — increment when tables change, add migration in _migrate()
@@ -111,6 +126,7 @@ class Memory:
 
         Scoped by tenant_id + agent_name so each product/workspace gets
         isolated memory. Platform agents (no AITHER_TENANT_ID) use shared scope.
+        In cloud mode, routes through the gateway memory proxy.
         """
         if not self._spirit_enabled:
             return
@@ -124,8 +140,15 @@ class Memory:
             }
             if self._tenant_id:
                 payload["tenant_id"] = self._tenant_id
+            headers = {}
+            if self._spirit_auth_token:
+                headers["Authorization"] = f"Bearer {self._spirit_auth_token}"
             async with httpx.AsyncClient(timeout=5.0, verify=os.getenv("AITHER_TLS_VERIFY", "true").lower() != "false") as client:
-                await client.post(f"{self._spirit_url}/teach", json=payload)
+                await client.post(
+                    f"{self._spirit_url}{self._spirit_teach_path}",
+                    json=payload,
+                    headers=headers,
+                )
         except Exception as e:
             logger.debug("SpiritBridge teach failed (non-fatal): %s", e)
 
@@ -133,6 +156,7 @@ class Memory:
         """Pull memories from Spirit (best-effort, returns [] on failure).
 
         Scoped by tenant_id + agent_id so GARG can't see Chelle's memories.
+        In cloud mode, routes through the gateway memory proxy.
         """
         if not self._spirit_enabled:
             return []
@@ -145,8 +169,15 @@ class Memory:
             }
             if self._tenant_id:
                 payload["tenant_id"] = self._tenant_id
+            headers = {}
+            if self._spirit_auth_token:
+                headers["Authorization"] = f"Bearer {self._spirit_auth_token}"
             async with httpx.AsyncClient(timeout=5.0, verify=os.getenv("AITHER_TLS_VERIFY", "true").lower() != "false") as client:
-                resp = await client.post(f"{self._spirit_url}/recall", json=payload)
+                resp = await client.post(
+                    f"{self._spirit_url}{self._spirit_recall_path}",
+                    json=payload,
+                    headers=headers,
+                )
                 if resp.status_code == 200:
                     data = resp.json()
                     return data.get("results", data.get("memories", []))

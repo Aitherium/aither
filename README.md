@@ -44,6 +44,21 @@ adk-serve --agents aither,lyra,demiurge,hydra,athena
 curl http://localhost:8080/v1/chat/completions -d '{"model":"aither","messages":[{"role":"user","content":"hello"}]}'
 ```
 
+## Cloud Quick Start (No GPU Required)
+
+```bash
+pip install aither-adk
+adk quickstart --cloud      # Enter your API key when prompted
+adk start                   # Start chatting
+```
+
+Works with Anthropic, OpenAI, or DeepSeek. Enter at least one API key and you get the full agent harness: tools, skills, memory, multi-agent coordination. Cloud memory syncs across devices automatically when connected to Aitherium gateway.
+
+```bash
+# Connect to AitherOS tools (code search, memory, delegation)
+adk mcp serve --remote
+```
+
 ## Setup
 
 One command gets you running. `adk quickstart` detects your GPU, pulls the right models, configures backends, and launches AitherShell.

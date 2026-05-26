@@ -257,6 +257,17 @@ class Config:
         # Cloud mode from setup --mode cloud/hybrid
         if saved.get("cloud_mode") and config.llm_backend == "auto":
             config.cloud_mode = saved["cloud_mode"]
+            # Export to env so Memory and other modules that read env directly see it
+            if not os.environ.get("AITHER_CLOUD_MODE"):
+                os.environ["AITHER_CLOUD_MODE"] = config.cloud_mode
+
+        # Cloud memory config (saved by `adk quickstart --cloud` gateway test)
+        if saved.get("spirit_url") and not os.environ.get("AITHER_SPIRIT_URL"):
+            os.environ["AITHER_SPIRIT_URL"] = saved["spirit_url"]
+        if saved.get("spirit_teach_path") and not os.environ.get("AITHER_SPIRIT_TEACH_PATH"):
+            os.environ["AITHER_SPIRIT_TEACH_PATH"] = saved["spirit_teach_path"]
+        if saved.get("spirit_recall_path") and not os.environ.get("AITHER_SPIRIT_RECALL_PATH"):
+            os.environ["AITHER_SPIRIT_RECALL_PATH"] = saved["spirit_recall_path"]
 
         # Backfill from provider_keys.json (written by `adk keys set`)
         # This is the bridge between `adk keys` CLI and the LLMRouter.

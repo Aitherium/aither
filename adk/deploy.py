@@ -608,10 +608,12 @@ def deploy_node(
     gpu: bool = False,
     dashboard: bool = False,
     mesh: bool = False,
+    memory: bool = False,
     api_key_arg: Optional[str] = None,
     sovereign: bool = False,
     hub_url: str = "https://portal.aitherium.com",
     tenant: Optional[str] = None,
+    storefront: bool = False,
 ) -> int:
     """Deploy AitherNode (MCP server) + Genesis orchestrator via Docker Compose.
 
@@ -621,16 +623,9 @@ def deploy_node(
     Resource estimates:
         Base:      ~2 GB RAM,  ~4 GB disk (images)
         + GPU:     +1 GB RAM,  +2 GB disk
+        + Memory:  +512 MB RAM, +500 MB disk
         + Dashboard: +512 MB RAM, +1 GB disk
         + Mesh:    +256 MB RAM
-
-    Args:
-        dry_run: If True, show what would happen without executing.
-        tag: Docker image tag (default: latest).
-        gpu: Enable GPU-accelerated services.
-        dashboard: Enable AitherVeil web dashboard (port 3000).
-        mesh: Enable mesh networking for multi-node setups.
-        api_key_arg: Explicit API key (falls back to env/config).
 
     Returns:
         Exit code (0 = success, 1 = failure).
@@ -684,19 +679,25 @@ def deploy_node(
     if gpu:
         profiles.append("gpu")
         info("Profile: gpu (GPU-accelerated services)")
+    if memory:
+        profiles.append("memory")
+        info("Profile: memory (Spirit + WorkingMemory for persistent vector memory)")
     if dashboard:
         profiles.append("dashboard")
         info("Profile: dashboard (AitherVeil on port 3000)")
     if mesh:
         profiles.append("mesh")
         info("Profile: mesh (multi-node networking)")
+    if storefront:
+        profiles.append("storefront")
+        info("Profile: storefront (public storefront + landing pages)")
 
     if not profiles:
         info("Profile: default (Node + Genesis)")
 
     # Resource estimates
-    ram_gb = 2.0 + (1.0 if gpu else 0) + (0.5 if dashboard else 0) + (0.25 if mesh else 0)
-    disk_gb = 4.0 + (2.0 if gpu else 0) + (1.0 if dashboard else 0)
+    ram_gb = 2.0 + (1.0 if gpu else 0) + (0.5 if dashboard else 0) + (0.25 if mesh else 0) + (0.5 if storefront else 0) + (0.5 if memory else 0)
+    disk_gb = 4.0 + (2.0 if gpu else 0) + (1.0 if dashboard else 0) + (0.5 if storefront else 0) + (0.5 if memory else 0)
     print()
     info(f"Estimated resources: ~{ram_gb:.1f} GB RAM, ~{disk_gb:.0f} GB disk (images)")
     print()
@@ -1917,12 +1918,14 @@ def cmd_deploy_component(args) -> int:
         gpu = getattr(args, "gpu", False)
         dashboard = getattr(args, "dashboard", False)
         mesh = getattr(args, "mesh", False)
+        memory_flag = getattr(args, "memory", False)
         api_key = getattr(args, "api_key", None)
         sovereign = getattr(args, "sovereign", False)
         hub_url = getattr(args, "hub", "https://portal.aitherium.com")
         tenant_arg = getattr(args, "tenant", None)
         rc = deploy_node(dry_run=dry_run, tag=tag, gpu=gpu,
-                         dashboard=dashboard, mesh=mesh, api_key_arg=api_key,
+                         dashboard=dashboard, mesh=mesh, memory=memory_flag,
+                         api_key_arg=api_key,
                          sovereign=sovereign, hub_url=hub_url, tenant=tenant_arg)
         # Co-deploy addons if --addons specified
         addons_str = getattr(args, "addons", None)

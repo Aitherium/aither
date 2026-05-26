@@ -2,6 +2,31 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [1.15.0] - 2026-05-26
+
+### Added
+- **Cloud memory** — `adk quickstart --cloud` now tests gateway memory and
+  auto-configures Spirit URL so memories persist across devices via
+  `gateway.aitherium.com/v1/memory/teach` and `/v1/memory/recall`.
+- **Config→env export for cloud mode** — `Config.from_env()` now exports
+  `AITHER_CLOUD_MODE`, `AITHER_SPIRIT_URL`, and spirit path env vars from
+  saved config so Memory and other modules pick them up without needing
+  explicit env vars set by the user.
+- **Cloud Quick Start section** in README — 3-command setup for users who
+  just want a Claude/GPT-4/DeepSeek API key and the full agent harness.
+- **`--memory` profile for node deployment** — `adk deploy node --memory`
+  adds Spirit (8087) + WorkingMemory (8101) containers for persistent
+  vector memory. Without this, agents use local SQLite only.
+- **Configurable vLLM in node compose** — `AITHER_VLLM_MODEL`,
+  `AITHER_VLLM_GPU_UTIL`, `AITHER_VLLM_CTX_LEN`, `AITHER_VLLM_QUANT_ARGS`
+  env vars let `adk setup` write GPU-detected tier settings to `.env`
+  and have the node compose pick them up (TQ4 for small GPUs, BNB for large).
+
+### Fixed
+- **Memory cloud routing** — `Memory._spirit_teach()` and `_spirit_recall()`
+  now use configurable paths and auth headers for gateway proxy. Previously
+  cloud-only users silently lost all Spirit memory calls.
+
 ## [1.9.0] - 2026-05-24
 
 ### Added

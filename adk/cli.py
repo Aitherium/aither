@@ -279,8 +279,8 @@ def cmd_workspace(args):
             "fullstack": "Full monorepo + AitherZero (admin/developer)",
             "frontend": "AitherVeil + packages",
             "backend": "lib + services + config + tests",
-            "gargbot": ".RESEARCH/.GARGBOT + portal-kit",
-            "chelle": ".RESEARCH/.CHELLE + portal-kit",
+            "gargbot": ".PRODUCTS/.GARGBOT + portal-kit",
+            "chelle": ".PRODUCTS/.CHELLE + portal-kit",
             "veil": "AitherVeil + all packages",
             "portal": "AitherVeil + portal-kit + desktop-core",
             "node": "AitherNode (standalone + monorepo)",
@@ -3248,6 +3248,30 @@ def cmd_quickstart(args):
             "configured_providers": configured_providers,
         })
 
+        # Step 2.5: Test cloud memory
+        print()
+        print("  Step 2.5: Cloud Memory")
+        print("  " + "-" * 38)
+        _GATEWAY_URL = "https://gateway.aitherium.com"
+        try:
+            import httpx as _httpx
+            _mem_resp = _httpx.post(
+                f"{_GATEWAY_URL}/v1/memory/teach",
+                json={"content": "adk_quickstart_test", "category": "system"},
+                timeout=5.0,
+            )
+            if _mem_resp.status_code in (200, 201):
+                print("  Cloud memory: connected")
+                save_saved_config({
+                    "spirit_url": _GATEWAY_URL,
+                    "spirit_teach_path": "/v1/memory/teach",
+                    "spirit_recall_path": "/v1/memory/recall",
+                })
+            else:
+                print("  Cloud memory: not available (memories will be local-only)")
+        except Exception:
+            print("  Cloud memory: not available (memories will be local-only)")
+
         # Step 3: Cost estimate
         print()
         print("  Step 3: Ready!")
@@ -5145,6 +5169,7 @@ def _register_commands(sub):
     d_node.add_argument("--gpu", action="store_true", help="Enable GPU-accelerated services")
     d_node.add_argument("--dashboard", action="store_true", help="Enable AitherVeil dashboard (port 3000)")
     d_node.add_argument("--mesh", action="store_true", help="Enable mesh networking")
+    d_node.add_argument("--memory", action="store_true", help="Enable persistent vector memory (Spirit + WorkingMemory)")
     d_node.add_argument("--addons", help="Comma-separated addon IDs to co-deploy (e.g. qdrant,knowledge-rag)")
     d_node.add_argument("--tag", default="latest", help="Docker image tag (default: latest)")
     d_node.add_argument("--api-key", help="AITHER_API_KEY (or set env var)")
