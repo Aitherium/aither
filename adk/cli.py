@@ -4188,13 +4188,18 @@ def _cmd_pack(args) -> int:
             print("httpx required: pip install httpx")
             return 1
 
-        # Fetch remote catalog
+        # Fetch remote catalog from new catalog API
         catalog = []
         try:
             with httpx.Client(base_url=genesis_url, timeout=10) as c:
-                resp = c.get("/v1/packs/catalog")
+                resp = c.get("/api/v1/catalog/packs")
                 if resp.status_code == 200:
                     catalog = resp.json().get("packs", [])
+                else:
+                    # Fallback to old API
+                    resp = c.get("/v1/packs/catalog")
+                    if resp.status_code == 200:
+                        catalog = resp.json().get("packs", [])
         except Exception as e:
             print(f"Cannot reach Genesis at {genesis_url}: {e}")
 
@@ -4209,7 +4214,7 @@ def _cmd_pack(args) -> int:
         # Merge local-only
         catalog_ids = {p["id"] for p in catalog}
         for lid in sorted(local_ids - catalog_ids):
-            catalog.append({"id": lid, "name": lid, "version": "local", "pricing": {}, "installed": True})
+            catalog.append({"id": lid, "name": lid, "version": "local", "tier": "free", "installed": True})
 
         for entry in catalog:
             if entry["id"] in local_ids:
@@ -4219,32 +4224,18 @@ def _cmd_pack(args) -> int:
             print("No packs found.")
             return 0
 
-        print(f"{'Pack':<25} {'Version':<10} {'Status':<14} {'Price'}")
-        print("-" * 65)
+        print(f"{'Pack':<25} {'Type':<12} {'Tier':<14} {'Status':<12} {'Version'}")
+        print("-" * 75)
         for p in catalog:
             pid = p.get("id", "?")
             ver = p.get("version", "?")
-            pricing = p.get("pricing", {})
-            is_free = not pricing
+            ptype = p.get("type", "?").replace("_pack", "").replace("_", " ")
+            tier = p.get("tier", "free")
             installed = p.get("installed", False)
-            licensed = p.get("licensed", False)
+            status = "installed" if installed else "available"
 
-            if installed and (is_free or licensed):
-                status = "installed"
-            elif licensed:
-                status = "licensed"
-            elif installed:
-                status = "installed"
-            else:
-                status = "available"
-
-            if is_free:
-                price = "free"
-            else:
-                cents = pricing.get("subscription_cents", 0)
-                price = f"${int(cents) / 100:.0f}/mo" if cents else "paid"
-
-            print(f"{pid:<25} {ver:<10} {status:<14} {price}")
+            print(f"{pid:<25} {ptype:<12} {tier:<14} {status:<12} {ver}")
+        print(f"\n{len(catalog)} pack(s) total")
         return 0
 
     if sub == "search":
@@ -4422,48 +4413,157 @@ def _cmd_pack(args) -> int:
 
     if sub == "info":
         import httpx
+        pack_id = args.pack_id
         try:
             with httpx.Client(base_url=genesis_url, timeout=10) as c:
-                resp = c.get(f"/v1/packs/{args.pack_id}/manifest")
-            if resp.status_code == 404:
-                print(f"Pack '{args.pack_id}' not found")
-                return 1
-            resp.raise_for_status()
-            data = resp.json()
+                # Try new catalog API first
+                resp = c.get(f"/api/v1/catalog/packs/{pack_id}")
+                if resp.status_code == 404:
+                    # Fallback to old API
+                    resp = c.get(f"/v1/packs/{pack_id}/manifest")
+                if resp.status_code == 404:
+                    print(f"Pack '{pack_id}' not found")
+                    return 1
+                resp.raise_for_status()
+                data = resp.json()
+                # New API wraps in {"pack": {...}}
+                if "pack" in data:
+                    data = data["pack"]
         except Exception as e:
             print(f"Cannot fetch pack info: {e}")
             return 1
 
-        print(f"Pack:        {data.get('name', args.pack_id)}")
-        print(f"ID:          {data.get('id', args.pack_id)}")
+        print(f"Pack:        {data.get('name', pack_id)}")
+        print(f"ID:          {data.get('id', pack_id)}")
         print(f"Version:     {data.get('version', '?')}")
-        print(f"Author:      {data.get('author', 'unknown')}")
+        print(f"Type:        {data.get('type', '?')}")
+        print(f"Tier:        {data.get('tier', 'free')}")
         print(f"Category:    {data.get('category', '?')}")
         print(f"Description: {data.get('description', '')}")
 
-        pricing = data.get("pricing", {})
-        if pricing:
-            cents = pricing.get("subscription_cents", 0)
-            print(f"Price:       ${int(cents) / 100:.0f}/mo" if cents else "Price:       paid")
-        else:
+        price = data.get("price_monthly_usd")
+        if price is None:
+            print("Price:       included in tier")
+        elif price == 0:
             print("Price:       free")
+        else:
+            print(f"Price:       ${price}/mo add-on")
+
+        deps = data.get("depends_on", [])
+        if deps:
+            print(f"Depends on:  {', '.join(deps)}")
+
+        includes = data.get("includes", [])
+        if includes:
+            print(f"Includes:    {', '.join(includes)}")
+
+        agents = data.get("agents", [])
+        if agents:
+            print(f"\nAgents ({len(agents)}):")
+            for a in agents:
+                identity = a.get("identity", "?").replace(".yaml", "")
+                print(f"  - {identity} (effort cap: {a.get('effort_cap', '?')})")
 
         skills = data.get("skills", [])
         if skills:
             print(f"Skills:      {', '.join(skills)}")
 
-        directives = data.get("persona_fragments", [])
-        if directives:
-            print(f"Directives:  {', '.join(directives)}")
+        mcp_modules = data.get("mcp_modules", [])
+        if mcp_modules:
+            print(f"\nMCP Modules ({len(mcp_modules)}):")
+            for m in mcp_modules:
+                print(f"  - {m}")
 
-        tools = data.get("tools", [])
-        if tools:
-            print(f"\nTools ({len(tools)}):")
-            for t in tools:
-                print(f"  - {t['name']}: {t.get('description', '')[:60]}")
+        tool_count = data.get("tool_count")
+        if tool_count:
+            print(f"Tool count:  {tool_count}")
+
+        skill_files = data.get("skill_files", [])
+        if skill_files:
+            print(f"\nSkill Files ({len(skill_files)}):")
+            for sf in skill_files:
+                print(f"  - {sf}")
+
+        services = data.get("services", [])
+        if services:
+            print(f"\nServices ({len(services)}):")
+            for s in services:
+                print(f"  - {s.get('addon_id', '?')} (port {s.get('port', '?')})")
+
+        # Fetch dependency tree
+        try:
+            with httpx.Client(base_url=genesis_url, timeout=10) as c:
+                deps_resp = c.get(f"/api/v1/catalog/packs/{pack_id}/deps")
+                if deps_resp.status_code == 200:
+                    deps_data = deps_resp.json()
+                    order = deps_data.get("install_order", [])
+                    if len(order) > 1:
+                        print(f"\nInstall order: {' -> '.join(order)}")
+        except Exception:
+            pass
+
         return 0
 
-    print("Usage: adk pack [list|search|install|remove|info]")
+    if sub == "update":
+        import httpx
+        pack_id = getattr(args, "pack_id", None)
+        packs_dir = Path.home() / ".aitheros" / "packs"
+
+        if pack_id:
+            # Update specific pack
+            target = packs_dir / pack_id
+            if not target.is_dir():
+                print(f"Pack '{pack_id}' is not installed")
+                return 1
+            print(f"Updating {pack_id}...")
+            args.pack_id = pack_id
+            # Re-use install logic
+            return _cmd_pack(type("Args", (), {"pack_command": "install", "pack_id": pack_id})())
+        else:
+            # Update all installed packs
+            if not packs_dir.is_dir():
+                print("No packs installed")
+                return 0
+            installed = [
+                d.name for d in packs_dir.iterdir()
+                if d.is_dir() and (d / ".toolpack.yaml").exists()
+            ]
+            if not installed:
+                print("No packs installed")
+                return 0
+            print(f"Updating {len(installed)} pack(s)...")
+            for pid in installed:
+                print(f"  Updating {pid}...")
+                _cmd_pack(type("Args", (), {"pack_command": "install", "pack_id": pid})())
+            print("All packs updated.")
+            return 0
+
+    if sub == "export":
+        pack_ids = getattr(args, "pack_ids", "").split(",")
+        output = getattr(args, "output", ".")
+        if not pack_ids or not pack_ids[0]:
+            print("Usage: adk pack export <pack-ids> [-o output_dir]")
+            return 1
+
+        import httpx
+        try:
+            with httpx.Client(base_url=genesis_url, timeout=30) as c:
+                resp = c.post("/api/v1/catalog/resolve", json={"packs": pack_ids})
+                if resp.status_code != 200:
+                    print(f"Failed to resolve packs: {resp.text}")
+                    return 1
+                resolved = resp.json()
+        except Exception as e:
+            print(f"Cannot reach Genesis: {e}")
+            return 1
+
+        order = resolved.get("install_order", [])
+        print(f"Resolved {len(order)} packs: {', '.join(order)}")
+        print(f"Export to: {output}")
+        print("(Offline export bundles are an enterprise feature — contact sales@aitherium.com)")
+        return 0
+
+    print("Usage: adk pack [list|search|install|remove|info|update|export]")
     return 1
 
 
@@ -5165,11 +5265,16 @@ def _register_commands(sub):
     d_vllm.add_argument("--dry-run", action="store_true", help="Show what would happen")
 
     # aither deploy node
-    d_node = deploy_sub.add_parser("node", help="AitherNode MCP server + Genesis orchestrator")
-    d_node.add_argument("--gpu", action="store_true", help="Enable GPU-accelerated services")
-    d_node.add_argument("--dashboard", action="store_true", help="Enable AitherVeil dashboard (port 3000)")
-    d_node.add_argument("--mesh", action="store_true", help="Enable mesh networking")
-    d_node.add_argument("--memory", action="store_true", help="Enable persistent vector memory (Spirit + WorkingMemory)")
+    d_node = deploy_sub.add_parser(
+        "node",
+        help="Deploy agent node (default: ADK-native lightweight; --genesis for full stack)",
+    )
+    d_node.add_argument("--genesis", action="store_true",
+                         help="Use full Genesis stack (14+ containers) instead of ADK-native (2 containers)")
+    d_node.add_argument("--gpu", action="store_true", help="Enable GPU-accelerated vLLM")
+    d_node.add_argument("--dashboard", action="store_true", help="Enable workspace dashboard (port 3000)")
+    d_node.add_argument("--mesh", action="store_true", help="Enable mesh networking (Genesis mode only)")
+    d_node.add_argument("--memory", action="store_true", help="Enable persistent vector memory (Spirit)")
     d_node.add_argument("--addons", help="Comma-separated addon IDs to co-deploy (e.g. qdrant,knowledge-rag)")
     d_node.add_argument("--tag", default="latest", help="Docker image tag (default: latest)")
     d_node.add_argument("--api-key", help="AITHER_API_KEY (or set env var)")
@@ -5461,6 +5566,11 @@ def _register_commands(sub):
     pack_install_p.add_argument("pack_id", help="Pack ID to install")
     pack_remove_p = pack_sub.add_parser("remove", help="Remove an installed pack")
     pack_remove_p.add_argument("pack_id", help="Pack ID to remove")
+    pack_update_p = pack_sub.add_parser("update", help="Update one or all installed packs")
+    pack_update_p.add_argument("pack_id", nargs="?", help="Pack ID to update (omit for all)")
+    pack_export_p = pack_sub.add_parser("export", help="Export offline bundle (.tar.gz)")
+    pack_export_p.add_argument("pack_ids", help="Comma-separated pack IDs")
+    pack_export_p.add_argument("-o", "--output", default=".", help="Output directory")
     pack_info_p = pack_sub.add_parser("info", help="Show pack details")
     pack_info_p.add_argument("pack_id", help="Pack ID to inspect")
 

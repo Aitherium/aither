@@ -61,6 +61,7 @@ REGISTRY = "ghcr.io/aitherium"
 
 # Compose file URLs (private repo — requires auth)
 COMPOSE_NODE_URL = f"{GITHUB_RAW}/docker-compose.node.yml"
+COMPOSE_NODE_ADK_URL = f"{GITHUB_RAW}/docker-compose.node-adk.yml"
 COMPOSE_FULL_URL = f"{GITHUB_RAW}/docker-compose.aitheros.yml"
 
 # Gateway for auth validation
@@ -599,7 +600,189 @@ def deploy_vllm(dry_run: bool = False, tier: Optional[str] = None, hf_token: str
 
 
 # ===========================================================================
-# Component: AitherNode
+# Component: ADK Node (Tier 2 — lightweight, no Genesis)
+# ===========================================================================
+
+def deploy_adk_node(
+    dry_run: bool = False,
+    tag: str = "latest",
+    gpu: bool = False,
+    dashboard: bool = False,
+    memory: bool = False,
+    api_key_arg: Optional[str] = None,
+    sovereign: bool = False,
+    hub_url: str = "https://portal.aitherium.com",
+    tenant: Optional[str] = None,
+) -> int:
+    """Deploy ADK-native node: ADK server + Ollama + optional profiles.
+
+    No Genesis, no Redis, no PostgreSQL, no MicroScheduler. The ADK server
+    IS the brain — ReAct loop, tools, fleet, forge all run in-process.
+
+    Resource estimates:
+        Base:      ~768 MB RAM, ~2 GB disk (images)
+        + GPU:     +1 GB RAM,   +2 GB disk
+        + Memory:  +512 MB RAM, +500 MB disk
+        + Dashboard: +768 MB RAM, +1 GB disk
+
+    Returns:
+        Exit code (0 = success, 1 = failure).
+    """
+    print()
+    print(bold("  ADK Node Deployment"))
+    print(dim("  ADK server (8080) + Ollama — lightweight, no Genesis"))
+    print()
+
+    # Auth gate
+    api_key = _require_auth(api_key_arg)
+    if not api_key:
+        return 1
+
+    if dry_run:
+        print(f"  {yellow('DRY RUN -- no changes will be made')}\n")
+
+    total_steps = 5 if sovereign else 4
+
+    # -- Step 1: Prerequisites ------------------------------------------------
+    step(1, total_steps, "Checking prerequisites")
+
+    docker_ok, docker_msg = _check_docker()
+    if docker_ok:
+        info(f"{docker_msg}")
+    else:
+        err(docker_msg)
+        print()
+        print(f"  Install Docker: {cyan('https://docker.com/products/docker-desktop')}")
+        return 1
+
+    if not dry_run:
+        if _docker_login_ghcr(api_key):
+            info(f"Authenticated with {REGISTRY}")
+        else:
+            warn("GHCR login failed -- image pulls may fail if images are private")
+
+    # -- Step 2: Download compose file ----------------------------------------
+    step(2, total_steps, "Downloading ADK compose configuration")
+
+    compose_file = AITHER_DIR / "docker-compose.node-adk.yml"
+    if not _download(COMPOSE_NODE_ADK_URL, compose_file, dry_run):
+        err("Failed to download compose file")
+        return 1
+
+    # -- Step 3: Pull and start -----------------------------------------------
+    step(3, total_steps, "Starting containers")
+
+    profiles = []
+    if gpu:
+        profiles.append("gpu")
+        info("Profile: gpu (vLLM GPU-accelerated inference)")
+    if memory:
+        profiles.append("memory")
+        info("Profile: memory (Spirit persistent vector memory)")
+    if dashboard:
+        profiles.append("dashboard")
+        info("Profile: dashboard (workspace app on port 3000)")
+
+    if not profiles:
+        info("Profile: default (ADK server + Ollama)")
+
+    # Resource estimates
+    ram_mb = 768 + (1024 if gpu else 0) + (512 if memory else 0) + (768 if dashboard else 0)
+    disk_gb = 2.0 + (2.0 if gpu else 0) + (0.5 if memory else 0) + (1.0 if dashboard else 0)
+    print()
+    info(f"Estimated resources: ~{ram_mb / 1024:.1f} GB RAM, ~{disk_gb:.0f} GB disk (images)")
+    print()
+
+    env = os.environ.copy()
+    env["ADK_IMAGE_TAG"] = tag
+    env["AITHEROS_IMAGE_TAG"] = tag
+    env["AITHEROS_REGISTRY"] = REGISTRY
+
+    # Wire vLLM URL into ADK server if gpu profile is active
+    if gpu:
+        env.setdefault("VLLM_URL", "http://vllm:8120")
+
+    # Wire Spirit URL into ADK server if memory profile is active
+    if memory:
+        env.setdefault("AITHER_SPIRIT_URL", "http://spirit:8087")
+
+    rc = _docker_compose(compose_file, profiles, "pull", dry_run, timeout=600)
+    if rc != 0:
+        err("Failed to pull images")
+        return 1
+
+    rc = _docker_compose(compose_file, profiles, "up -d", dry_run, timeout=120)
+    if rc != 0:
+        err("Failed to start containers")
+        return 1
+
+    # -- Step 4: Health checks ------------------------------------------------
+    step(4, total_steps, "Verifying services")
+
+    if dry_run:
+        info("Would check: http://localhost:8080/health (ADK server)")
+        if dashboard:
+            info("Would check: http://localhost:3000 (Workspace dashboard)")
+    else:
+        endpoints = [(8080, "ADK server")]
+        if dashboard:
+            endpoints.append((3000, "Workspace dashboard"))
+
+        for port, name in endpoints:
+            if _health_check(f"http://localhost:{port}/health", timeout=90):
+                info(f"{name} (:{port}): {green('healthy')}")
+            else:
+                warn(f"{name} (:{port}): not responding yet -- may still be starting")
+
+    # -- Step 5 (optional): Federation registration ----------------------------
+    if sovereign:
+        step(total_steps, total_steps, "Registering with federation hub")
+        tenant_slug = tenant or os.environ.get("AITHER_TENANT") or "default"
+        reg_url = f"{hub_url.rstrip('/')}/federation/register"
+
+        if dry_run:
+            info(f"Would POST to {reg_url}")
+            info(f"  tenant_slug: {tenant_slug}")
+        else:
+            try:
+                import json as _json
+                payload = _json.dumps({"tenant_slug": tenant_slug}).encode()
+                req = Request(reg_url, data=payload, method="POST",
+                              headers={"Content-Type": "application/json"})
+                with urlopen(req, timeout=15) as resp:
+                    result = _json.loads(resp.read())
+                info(f"Registered as node {cyan(result.get('node_id', ''))}")
+            except Exception as e:
+                warn(f"Federation registration failed: {e}")
+
+    # -- Summary --------------------------------------------------------------
+    print()
+    print(bold("  " + "-" * 60))
+    print()
+    info(f"ADK server:  {cyan('http://localhost:8080')}")
+    info(f"Ollama:      {cyan('http://localhost:11434')}")
+    if gpu:
+        info(f"vLLM:        {cyan('http://localhost:8120')}")
+    if memory:
+        info(f"Spirit:      {cyan('http://localhost:8087')}")
+    if dashboard:
+        info(f"Dashboard:   {cyan('http://localhost:3000')}")
+    print()
+    info("Manage:")
+    info(f"  Logs:  {cyan(f'docker compose -f {compose_file} logs -f')}")
+    info(f"  Stop:  {cyan('adk deploy stop node')}")
+    info(f"  PS:    {cyan(f'docker compose -f {compose_file} ps')}")
+    print()
+    info(f"  Containers: {bold('2')}" + (f" + {len(profiles)} profile(s)" if profiles else ""))
+    info(f"  vs 'adk deploy full': {dim('14+ containers with Genesis, Redis, PostgreSQL...')}")
+    print()
+    if not dry_run:
+        info(f"{green(bold('ADK Node is ready!'))}")
+    return 0
+
+
+# ===========================================================================
+# Component: AitherNode (Tier 3 — full Genesis stack)
 # ===========================================================================
 
 def deploy_node(
@@ -1522,15 +1705,27 @@ def deploy_stop(component: str) -> int:
         return 0
 
     elif component in ("node", "core"):
-        compose_file = AITHER_DIR / "docker-compose.node.yml"
-        if not compose_file.exists():
-            warn(f"Compose file not found: {compose_file}")
+        # Try ADK compose first, then Genesis compose
+        adk_compose = AITHER_DIR / "docker-compose.node-adk.yml"
+        genesis_compose = AITHER_DIR / "docker-compose.node.yml"
+        rc = 1
+        stopped = False
+        if adk_compose.exists():
+            rc = _docker_compose(adk_compose, [], "down", dry_run=False, timeout=120)
+            if rc == 0:
+                info(f"ADK {component} stack stopped")
+                stopped = True
+        if genesis_compose.exists():
+            rc2 = _docker_compose(genesis_compose, [], "down", dry_run=False, timeout=120)
+            if rc2 == 0:
+                info(f"Genesis {component} stack stopped")
+                stopped = True
+            rc = rc if stopped else rc2
+        if not stopped:
+            warn("No compose file found")
             warn("Nothing to stop (was it deployed with 'aither deploy node/core'?)")
             return 1
-        rc = _docker_compose(compose_file, [], "down", dry_run=False, timeout=120)
-        if rc == 0:
-            info(f"{component} stack stopped")
-        return rc
+        return 0 if stopped else rc
 
     elif component == "full":
         compose_file = AITHER_DIR / "docker-compose.aitheros.yml"
@@ -1882,7 +2077,8 @@ def cmd_deploy_component(args) -> int:
         print(f"  Components:")
         print(f"    {bold('ollama')}     Install Ollama + pull models for your GPU")
         print(f"    {bold('vllm')}       Deploy vLLM inference containers (NVIDIA GPU)")
-        print(f"    {bold('node')}       AitherNode MCP server + Genesis orchestrator")
+        print(f"    {bold('node')}       ADK-native node (lightweight: ADK server + Ollama)")
+        print(f"    {bold('node --genesis')}  Full node (Genesis + Redis + PostgreSQL + 14 services)")
         print(f"    {bold('core')}       Core services (Node, Pulse, Watch, Genesis, Veil)")
         print(f"    {bold('full')}       Full AitherOS stack (~31 containers)")
         print(f"    {bold('addons')}     Self-hosted addon services (Qdrant, RAG, etc.)")
@@ -1893,7 +2089,9 @@ def cmd_deploy_component(args) -> int:
         print(f"  Examples:")
         print(f"    {dim('aither deploy ollama')}")
         print(f"    {dim('aither deploy ollama --models qwen3:8b,phi4')}")
+        print(f"    {dim('aither deploy node')}")
         print(f"    {dim('aither deploy node --gpu --dashboard')}")
+        print(f"    {dim('aither deploy node --genesis --gpu --dashboard')}")
         print(f"    {dim('aither deploy node --addons qdrant,knowledge-rag')}")
         print(f"    {dim('aither deploy addons qdrant knowledge-rag')}")
         print(f"    {dim('aither deploy full --profile chat-full')}")
@@ -1923,10 +2121,22 @@ def cmd_deploy_component(args) -> int:
         sovereign = getattr(args, "sovereign", False)
         hub_url = getattr(args, "hub", "https://portal.aitherium.com")
         tenant_arg = getattr(args, "tenant", None)
-        rc = deploy_node(dry_run=dry_run, tag=tag, gpu=gpu,
-                         dashboard=dashboard, mesh=mesh, memory=memory_flag,
-                         api_key_arg=api_key,
-                         sovereign=sovereign, hub_url=hub_url, tenant=tenant_arg)
+
+        # ADK-native node (Tier 2, lightweight) is the new default
+        # --genesis flag opts into the full Genesis stack
+        use_genesis = getattr(args, "genesis", False)
+
+        if use_genesis:
+            rc = deploy_node(dry_run=dry_run, tag=tag, gpu=gpu,
+                             dashboard=dashboard, mesh=mesh, memory=memory_flag,
+                             api_key_arg=api_key,
+                             sovereign=sovereign, hub_url=hub_url, tenant=tenant_arg)
+        else:
+            rc = deploy_adk_node(dry_run=dry_run, tag=tag, gpu=gpu,
+                                 dashboard=dashboard, memory=memory_flag,
+                                 api_key_arg=api_key,
+                                 sovereign=sovereign, hub_url=hub_url, tenant=tenant_arg)
+
         # Co-deploy addons if --addons specified
         addons_str = getattr(args, "addons", None)
         if addons_str and rc == 0:

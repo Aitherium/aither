@@ -12,7 +12,7 @@ FROM python:3.12-slim
 
 LABEL org.opencontainers.image.title="aither-adk" \
       org.opencontainers.image.description="AitherOS Agent Development Kit server" \
-      org.opencontainers.image.version="1.5.0" \
+      org.opencontainers.image.version="1.16.0" \
       org.opencontainers.image.vendor="Aitherium" \
       org.opencontainers.image.url="https://aitherium.com" \
       org.opencontainers.image.source="https://github.com/Aitherium/aither" \
