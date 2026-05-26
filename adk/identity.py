@@ -281,14 +281,19 @@ def load_identity(name: str, search_paths: list[Path] | None = None) -> Identity
 
     Searches in order:
     1. Provided search_paths
-    2. Current directory ./identities/
-    3. Bundled package identities
+    2. User-installed identities (~/.aitheros/identities/)
+    3. Current directory ./identities/
+    4. Bundled package identities
     """
     paths_to_try = []
     if search_paths:
         for p in search_paths:
             paths_to_try.append(p / f"{name}.yaml")
             paths_to_try.append(p / f"{name}.yml")
+    # User-installed identities
+    user_dir = Path.home() / ".aitheros" / "identities"
+    paths_to_try.append(user_dir / f"{name}.yaml")
+    paths_to_try.append(user_dir / f"{name}.yml")
     paths_to_try.append(Path("identities") / f"{name}.yaml")
     paths_to_try.append(_IDENTITIES_DIR / f"{name}.yaml")
 
@@ -303,7 +308,7 @@ def load_identity(name: str, search_paths: list[Path] | None = None) -> Identity
 def list_identities(search_paths: list[Path] | None = None) -> list[str]:
     """List all available identity names."""
     names = set()
-    dirs = [_IDENTITIES_DIR, Path("identities")]
+    dirs = [_IDENTITIES_DIR, Path("identities"), Path.home() / ".aitheros" / "identities"]
     if search_paths:
         dirs.extend(search_paths)
 

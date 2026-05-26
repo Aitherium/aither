@@ -383,7 +383,7 @@ class AddonManager:
             return False
         url = f"{endpoint}{path}"
         try:
-            async with httpx.AsyncClient(timeout=5, verify=False) as client:
+            async with httpx.AsyncClient(timeout=5, verify=os.getenv("AITHER_TLS_VERIFY", "true").lower() != "false") as client:
                 resp = await client.get(url)
                 return resp.status_code < 400
         except Exception:

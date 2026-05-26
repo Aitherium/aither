@@ -206,10 +206,26 @@ def shell_exec(command: str, timeout: int = 30) -> str:
     command: Shell command to run
     timeout: Maximum execution time in seconds (default 30)
     """
+    import shlex
+
+    # Block obviously dangerous patterns before execution
+    _BLOCKED_PATTERNS = [
+        "rm -rf /", "mkfs.", "dd if=", "> /dev/sd",
+        ":(){ :|:", "chmod -R 777 /",
+    ]
+    cmd_lower = command.lower().strip()
+    for pat in _BLOCKED_PATTERNS:
+        if pat in cmd_lower:
+            return json.dumps({"error": f"Blocked: dangerous pattern '{pat}'"})
+
     try:
+        # On Unix, avoid shell=True to prevent injection.
+        # On Windows, shell=True is needed for built-in commands.
+        use_shell = sys.platform == "win32"
+        cmd_arg = command if use_shell else shlex.split(command)
         result = subprocess.run(
-            command,
-            shell=True,
+            cmd_arg,
+            shell=use_shell,
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -228,19 +244,50 @@ def shell_exec(command: str, timeout: int = 30) -> str:
         return json.dumps({"error": str(e)})
 
 
+_SAFE_BUILTINS = {
+    k: getattr(__builtins__, k) if hasattr(__builtins__, k) else __builtins__[k]
+    for k in (
+        "abs", "all", "any", "bool", "bytes", "callable", "chr", "dict",
+        "dir", "divmod", "enumerate", "filter", "float", "format",
+        "frozenset", "getattr", "hasattr", "hash", "hex", "id", "int",
+        "isinstance", "issubclass", "iter", "len", "list", "map", "max",
+        "min", "next", "oct", "ord", "pow", "print", "range", "repr",
+        "reversed", "round", "set", "slice", "sorted", "str", "sum",
+        "tuple", "type", "zip",
+    )
+    if (hasattr(__builtins__, k) if isinstance(__builtins__, type) else k in __builtins__)
+}
+# Allow safe imports only
+_ALLOWED_MODULES = {
+    "math", "json", "re", "datetime", "collections", "itertools",
+    "functools", "string", "textwrap", "statistics", "random",
+    "pathlib", "csv", "io", "base64", "hashlib", "urllib.parse",
+}
+
+
+def _restricted_import(name, *args, **kwargs):
+    if name.split(".")[0] not in _ALLOWED_MODULES:
+        raise ImportError(
+            f"Module '{name}' not allowed in sandbox. "
+            f"Allowed: {', '.join(sorted(_ALLOWED_MODULES))}"
+        )
+    return __import__(name, *args, **kwargs)
+
+
 def python_exec(code: str) -> str:
-    """Execute Python code in an isolated namespace and capture output.
+    """Execute Python code in a restricted sandbox and capture output.
 
     code: Python code to execute
     """
     stdout_capture = io.StringIO()
     stderr_capture = io.StringIO()
-    namespace: dict = {"__builtins__": __builtins__}
+    safe_builtins = {**_SAFE_BUILTINS, "__import__": _restricted_import}
+    namespace: dict = {"__builtins__": safe_builtins}
     result_val = None
 
     try:
         with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
-            exec(code, namespace)
+            exec(code, namespace)  # noqa: S102
             # If there's a 'result' variable, capture it
             if "result" in namespace:
                 result_val = namespace["result"]
@@ -306,15 +353,50 @@ async def web_search(query: str, limit: int = 5) -> str:
         return json.dumps({"error": str(e)})
 
 
+def _is_safe_url(url: str) -> bool:
+    """Block SSRF: reject private IPs, localhost, metadata endpoints."""
+    from urllib.parse import urlparse
+    import ipaddress
+    try:
+        parsed = urlparse(url)
+        hostname = parsed.hostname or ""
+        # Block non-HTTP schemes
+        if parsed.scheme not in ("http", "https"):
+            return False
+        # Block localhost and common internal hostnames
+        if hostname in ("localhost", "0.0.0.0", "127.0.0.1", "[::]", "[::1]"):
+            return False
+        if hostname.startswith("169.254.") or hostname.startswith("fe80:"):
+            return False  # Link-local / cloud metadata
+        if hostname.endswith(".internal") or hostname.endswith(".local"):
+            return False
+        # Block private IP ranges
+        try:
+            ip = ipaddress.ip_address(hostname)
+            if ip.is_private or ip.is_loopback or ip.is_link_local:
+                return False
+        except ValueError:
+            pass  # hostname, not IP — OK
+        return True
+    except Exception:
+        return False
+
+
 async def web_fetch(url: str, max_chars: int = 20000) -> str:
     """Fetch a webpage and return its text content.
 
     url: URL to fetch
     max_chars: Maximum characters to return (default 20000)
     """
+    if not _is_safe_url(url):
+        return json.dumps({
+            "error": "URL blocked: private/internal addresses not allowed"
+        })
     try:
         import httpx
-        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+        async with httpx.AsyncClient(
+            timeout=15.0, follow_redirects=True, max_redirects=5,
+        ) as client:
             resp = await client.get(
                 url,
                 headers={"User-Agent": "AitherADK/1.0"},
@@ -343,16 +425,62 @@ async def web_fetch(url: str, max_chars: int = 20000) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 _secrets_cache: dict[str, str] | None = None
-_SECRETS_FILE = Path(os.getenv("AITHER_DATA_DIR", os.path.expanduser("~/.aither"))) / "secrets.json"
+_SECRETS_FILE = Path(os.getenv("AITHER_DATA_DIR", os.path.expanduser("~/.aither"))) / "secrets.enc"
+_SECRETS_FILE_LEGACY = _SECRETS_FILE.with_suffix(".json")
+
+
+def _derive_key() -> bytes:
+    """Derive an encryption key from machine-specific data."""
+    import hashlib
+    # Combine username + home dir + machine-specific salt
+    material = f"{os.getlogin()}:{Path.home()}:aither-adk-secrets-v1"
+    return hashlib.pbkdf2_hmac("sha256", material.encode(), b"adk-salt-v1", 100_000)
+
+
+def _encrypt_secrets(data: dict) -> bytes:
+    """XOR-based obfuscation with derived key. Not military-grade but prevents
+    casual plaintext exposure in backups/cloud sync."""
+    import hashlib
+    key = _derive_key()
+    plaintext = json.dumps(data).encode()
+    stream = hashlib.sha256(key).digest()  # Expand key
+    result = bytearray()
+    for i, b in enumerate(plaintext):
+        result.append(b ^ stream[i % len(stream)])
+    return bytes(result)
+
+
+def _decrypt_secrets(data: bytes) -> dict:
+    """Reverse XOR obfuscation."""
+    import hashlib
+    key = _derive_key()
+    stream = hashlib.sha256(key).digest()
+    result = bytearray()
+    for i, b in enumerate(data):
+        result.append(b ^ stream[i % len(stream)])
+    return json.loads(bytes(result).decode())
 
 
 def _load_secrets() -> dict[str, str]:
     global _secrets_cache
     if _secrets_cache is not None:
         return _secrets_cache
+    # Try encrypted file first
     if _SECRETS_FILE.exists():
         try:
-            _secrets_cache = json.loads(_SECRETS_FILE.read_text(encoding="utf-8"))
+            _secrets_cache = _decrypt_secrets(_SECRETS_FILE.read_bytes())
+            return _secrets_cache
+        except Exception:
+            _secrets_cache = {}
+    # Migrate legacy plaintext if exists
+    if _SECRETS_FILE_LEGACY.exists():
+        try:
+            _secrets_cache = json.loads(
+                _SECRETS_FILE_LEGACY.read_text(encoding="utf-8")
+            )
+            _save_secrets(_secrets_cache)  # Re-save encrypted
+            _SECRETS_FILE_LEGACY.unlink()  # Remove plaintext
+            return _secrets_cache
         except Exception:
             _secrets_cache = {}
     else:
@@ -364,12 +492,12 @@ def _save_secrets(data: dict[str, str]):
     global _secrets_cache
     _secrets_cache = data
     _SECRETS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    _SECRETS_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
-    # Restrict permissions on Unix
+    _SECRETS_FILE.write_bytes(_encrypt_secrets(data))
+    # Restrict permissions
     try:
         os.chmod(_SECRETS_FILE, 0o600)
     except (OSError, AttributeError):
-        pass
+        pass  # Windows — best-effort
 
 
 def secret_get(key: str) -> str:
@@ -1072,7 +1200,8 @@ def _graph_request(
     import httpx
     url = f"{_graph_url()}{path}"
     try:
-        with httpx.Client(timeout=timeout, verify=False) as c:
+        _tls = os.getenv("AITHER_TLS_VERIFY", "true").lower() != "false"
+        with httpx.Client(timeout=timeout, verify=_tls) as c:
             if method == "GET":
                 resp = c.get(url, params=params)
             else:

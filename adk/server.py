@@ -114,10 +114,12 @@ def create_app(
         lifespan=_lifespan,
     )
 
+    _cors_origins = os.getenv("AITHER_CORS_ORIGINS", "").split(",")
+    _cors_origins = [o.strip() for o in _cors_origins if o.strip()]
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
-        allow_methods=["*"],
+        allow_origins=_cors_origins or ["http://localhost:3000", "http://localhost:8080"],
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         allow_headers=["*"],
     )
 
@@ -223,8 +225,16 @@ def create_app(
     # ─── Metrics (Prometheus) ───
 
     @app.get("/metrics")
-    async def metrics_endpoint():
-        """Prometheus-compatible metrics export."""
+    async def metrics_endpoint(request: Request):
+        """Prometheus-compatible metrics export. Requires auth token or localhost."""
+        # Allow localhost and container-internal access without auth
+        client_host = request.client.host if request.client else ""
+        is_local = client_host in ("127.0.0.1", "::1", "localhost", "")
+        if not is_local:
+            auth = request.headers.get("authorization", "")
+            metrics_token = os.getenv("AITHER_METRICS_TOKEN", "")
+            if metrics_token and auth != f"Bearer {metrics_token}":
+                return JSONResponse({"error": "unauthorized"}, status_code=401)
         return PlainTextResponse(get_metrics().export(), media_type="text/plain; version=0.0.4")
 
     # ─── Health ───

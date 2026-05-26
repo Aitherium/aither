@@ -265,11 +265,13 @@ class ActionGate:
         auth_level: PermissionTier = PermissionTier.FIX_SAFE,
         custom_tiers: dict[str, PermissionTier] | None = None,
     ):
+        import time as _time
         self.auth_level = auth_level
         self._tiers = dict(ACTION_TIERS)
         if custom_tiers:
             self._tiers.update(custom_tiers)
         self._daily_counts: dict[str, int] = {}
+        self._last_reset: float = _time.time()
         self._daily_limits = {
             PermissionTier.ALERT: 100,
             PermissionTier.FIX_SAFE: 50,
@@ -282,6 +284,13 @@ class ActionGate:
         args: dict[str, Any] | None = None,
     ) -> GateResult:
         """Check if an action is allowed at the current auth level."""
+        import time as _time
+        # Reset daily counters if 24h elapsed
+        now = _time.time()
+        if now - self._last_reset > 86400:
+            self._daily_counts.clear()
+            self._last_reset = now
+
         required = self._tiers.get(action_type, PermissionTier.FIX_SAFE)
 
         # Detect destructive shell commands

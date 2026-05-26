@@ -207,10 +207,10 @@ def probe_gateway(url: str, token: Optional[str] = None) -> Dict[str, Any]:
         "error": None,
     }
 
-    # Health check (no auth) — verify=False for self-signed local certs
+    # Health check (no auth) — verify=os.getenv("AITHER_TLS_VERIFY", "true").lower() != "false" for self-signed local certs
     health_url = url.rsplit("/mcp", 1)[0] + "/health"
     try:
-        with httpx.Client(timeout=5, verify=False) as client:
+        with httpx.Client(timeout=5, verify=os.getenv("AITHER_TLS_VERIFY", "true").lower() != "false") as client:
             resp = client.get(health_url)
             if resp.status_code != 200:
                 result["error"] = f"Health endpoint returned {resp.status_code}"
@@ -225,7 +225,7 @@ def probe_gateway(url: str, token: Optional[str] = None) -> Dict[str, Any]:
     if token:
         headers = {"Authorization": f"Bearer {token}", "X-API-Key": token}
         try:
-            with httpx.Client(timeout=10, verify=False) as client:
+            with httpx.Client(timeout=10, verify=os.getenv("AITHER_TLS_VERIFY", "true").lower() != "false") as client:
                 # Use the well-known endpoint for metadata
                 info_url = url.rsplit("/mcp", 1)[0] + "/.well-known/mcp.json"
                 resp = client.get(info_url, headers=headers)

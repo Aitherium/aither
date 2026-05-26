@@ -124,7 +124,7 @@ class Memory:
             }
             if self._tenant_id:
                 payload["tenant_id"] = self._tenant_id
-            async with httpx.AsyncClient(timeout=5.0, verify=False) as client:
+            async with httpx.AsyncClient(timeout=5.0, verify=os.getenv("AITHER_TLS_VERIFY", "true").lower() != "false") as client:
                 await client.post(f"{self._spirit_url}/teach", json=payload)
         except Exception as e:
             logger.debug("SpiritBridge teach failed (non-fatal): %s", e)
@@ -145,7 +145,7 @@ class Memory:
             }
             if self._tenant_id:
                 payload["tenant_id"] = self._tenant_id
-            async with httpx.AsyncClient(timeout=5.0, verify=False) as client:
+            async with httpx.AsyncClient(timeout=5.0, verify=os.getenv("AITHER_TLS_VERIFY", "true").lower() != "false") as client:
                 resp = await client.post(f"{self._spirit_url}/recall", json=payload)
                 if resp.status_code == 200:
                     data = resp.json()
