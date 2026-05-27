@@ -1819,6 +1819,330 @@ async def _stream_agent_response(agent, message: str, history: list[dict], model
     yield "data: [DONE]\n\n"
 
 
+def _resolve_portal_kit_backend() -> bool:
+    """Add portal-kit-backend to sys.path if running in the monorepo.
+
+    Search order:
+    1. Already importable (pip install / Docker mount) — no action needed
+    2. PORTAL_KIT_BACKEND_PATH env var
+    3. Monorepo sibling: AitherOS/apps/packages/portal-kit-backend/
+    4. Relative from ADK: ../../AitherOS/apps/packages/portal-kit-backend/
+
+    Returns True if portal_kit_backend is importable after this call.
+    """
+    import importlib
+    import sys
+    from pathlib import Path
+
+    # Already available?
+    try:
+        importlib.import_module("portal_kit_backend")
+        return True
+    except ImportError:
+        pass
+
+    candidates = []
+
+    # Env override
+    env_path = os.getenv("PORTAL_KIT_BACKEND_PATH")
+    if env_path:
+        candidates.append(Path(env_path))
+
+    # Monorepo: ADK is at <root>/aither-adk/, backend at <root>/AitherOS/apps/packages/
+    adk_root = Path(__file__).resolve().parent.parent  # aither-adk/
+    monorepo_root = adk_root.parent  # project root
+    candidates.append(monorepo_root / "AitherOS" / "apps" / "packages")
+    # Also try if portal-kit-backend parent is directly at packages/
+    candidates.append(monorepo_root / "AitherOS" / "apps" / "packages" / "portal-kit-backend")
+
+    for cand in candidates:
+        # The package dir must contain portal_kit_backend/__init__.py or be the
+        # parent that contains portal_kit_backend/ as a subdirectory.
+        pkg_init = cand / "portal_kit_backend" / "__init__.py"
+        parent_init = cand / "__init__.py"
+        if pkg_init.exists():
+            # cand is the parent we need on sys.path
+            path_str = str(cand)
+            if path_str not in sys.path:
+                sys.path.insert(0, path_str)
+        elif parent_init.exists() and cand.name == "portal-kit-backend":
+            # portal-kit-backend IS the package (uses portal_kit_backend as import name)
+            # Add its parent so `import portal_kit_backend` works
+            path_str = str(cand.parent)
+            if path_str not in sys.path:
+                sys.path.insert(0, path_str)
+
+        try:
+            importlib.import_module("portal_kit_backend")
+            return True
+        except ImportError:
+            continue
+
+    return False
+
+
+def _load_capability_domains_config() -> dict:
+    """Load capability_domains.yaml from AitherOS config.
+
+    Returns parsed dict or {} if not found.
+    """
+    from pathlib import Path
+
+    candidates = [
+        Path(os.getenv("CAPABILITY_DOMAINS_PATH", "")),
+        Path(__file__).resolve().parent.parent.parent / "AitherOS" / "config" / "capability_domains.yaml",
+        Path("/app/AitherOS/config/capability_domains.yaml"),
+    ]
+    for p in candidates:
+        if p.exists():
+            try:
+                import yaml
+                return yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+            except Exception:
+                pass
+    return {}
+
+
+def _mount_workspace_routers(app: FastAPI, port: int) -> None:
+    """Mount portal-kit-backend routers for workspace mode.
+
+    Makes the ADK server function like a full WorkspaceRuntime with
+    calendar, mail, social, executive, workspace intelligence, documents,
+    onboarding, file sync, contacts, and config endpoints.
+
+    Resolves portal-kit-backend from the monorepo if not pip-installed,
+    initialises the SQLite workspace store, and wires portal registration
+    + Proton auto-connect into the server lifespan.
+    """
+    _ws_log = logging.getLogger("adk.workspace")
+    mounted = 0
+
+    # ── Resolve portal-kit-backend package ──
+    if not _resolve_portal_kit_backend():
+        _ws_log.error(
+            "portal-kit-backend not found. Install it or set PORTAL_KIT_BACKEND_PATH. "
+            "Workspace routers will not be available."
+        )
+        return
+
+    # ── Set up workspace data directory ──
+    from pathlib import Path as _P
+    data_dir = _P(os.getenv("AITHER_DATA_DIR", os.path.expanduser("~/.aither")))
+    store_path = data_dir / "workspace" / "aitherchat.db"
+    store_path.parent.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("AITHER_CHAT_STORE_PATH", str(store_path))
+
+    # ── Read agent.yaml for enabled_domains ──
+    _agent_yaml = _P(__file__).resolve().parent.parent / "agent.yaml"
+    enabled_domains: list[str] = []
+    agent_spec: dict = {}
+    if _agent_yaml.exists():
+        try:
+            import yaml
+            agent_spec = yaml.safe_load(_agent_yaml.read_text(encoding="utf-8")) or {}
+            enabled_domains = agent_spec.get("enabled_domains", [])
+        except Exception:
+            pass
+
+    # ── Load structured domain definitions for API ──
+    domain_config = _load_capability_domains_config()
+    domain_defs = domain_config.get("capability_domains", {})
+
+    def _domain_ok(domain: str) -> bool:
+        return not enabled_domains or domain in enabled_domains
+
+    # ── Router mount helper ──
+    def _try_mount(import_fn, label: str, domain: str = ""):
+        nonlocal mounted
+        if domain and not _domain_ok(domain):
+            _ws_log.debug("Skipped %s (domain '%s' not enabled)", label, domain)
+            return
+        try:
+            router = import_fn()
+            app.include_router(router)
+            mounted += 1
+            _ws_log.info("Workspace router: %s", label)
+        except ImportError as e:
+            _ws_log.debug("Workspace router %s not available: %s", label, e)
+        except Exception as e:
+            _ws_log.warning("Failed to mount %s: %s", label, e)
+
+    app_id = os.getenv("APP_ID", "aither-local")
+
+    # ── Mount portal-kit-backend routers (domain-gated) ──
+
+    # Calendar + mail
+    def _cal():
+        from portal_kit_backend.routers.calendar import create_calendar_router
+        return create_calendar_router(app_id=app_id)
+    _try_mount(_cal, "calendar (/api/calendar/*)", "calendar_mail")
+
+    def _mail():
+        from portal_kit_backend.routers.workspace_mail import create_workspace_mail_router
+        return create_workspace_mail_router(app_id=app_id)
+    _try_mount(_mail, "mail (/api/mail/*)", "calendar_mail")
+
+    # People + directory
+    def _dir():
+        from portal_kit_backend.routers.workspace_directory import create_workspace_directory_router
+        return create_workspace_directory_router()
+    _try_mount(_dir, "directory (/api/directory/*)", "people")
+
+    def _contacts():
+        from portal_kit_backend.routers.contacts import create_contacts_router
+        return create_contacts_router()
+    _try_mount(_contacts, "contacts (/api/contacts/*)", "people")
+
+    # Proton suite / file sync
+    def _fs():
+        from portal_kit_backend.routers.file_sync import router
+        return router
+    _try_mount(_fs, "file-sync (/api/file-sync/*)", "proton_suite")
+
+    # Social + marketing
+    def _soc():
+        from portal_kit_backend.routers.social import create_social_router
+        return create_social_router()
+    _try_mount(_soc, "social (/api/social/*)", "social_marketing")
+
+    # Executive assistant
+    def _exec():
+        from portal_kit_backend.routers.executive_briefing import create_executive_briefing_router
+        return create_executive_briefing_router(app_id=app_id)
+    _try_mount(_exec, "executive (/api/executive/*)", "executive_assistant")
+
+    # Workspace intelligence
+    def _wi():
+        from portal_kit_backend.routers.workspace_intelligence import create_workspace_intelligence_router
+        return create_workspace_intelligence_router(app_id=app_id)
+    _try_mount(_wi, "workspace-intelligence (/api/workspace-intelligence/*)", "workspace_intelligence")
+
+    # Documents
+    def _docs():
+        from portal_kit_backend.routers.documents import create_documents_router
+        return create_documents_router()
+    _try_mount(_docs, "documents (/api/documents/*)", "documents")
+
+    # Onboarding (no domain gate — always available)
+    def _onb():
+        from portal_kit_backend.routers.onboarding import create_onboarding_router
+        return create_onboarding_router(app_id=app_id)
+    _try_mount(_onb, "onboarding (/api/onboarding/*)")
+
+    # ── Workspace config endpoints (portal iframe + domain info) ──
+
+    @app.get("/api/config/embed")
+    async def config_embed():
+        return {
+            "app_id": app_id,
+            "name": agent_spec.get("name", "Aither"),
+            "embed": True,
+            "url": f"http://localhost:{port}",
+            "embed_url": f"http://localhost:{port}/?embedded=true",
+        }
+
+    @app.get("/api/config/tabs")
+    async def config_tabs():
+        portal = agent_spec.get("portal", {})
+        return {"tabs": portal.get("capabilities", []), "app_id": app_id}
+
+    @app.get("/api/config/domains")
+    async def config_domains():
+        """Return structured domain definitions with enabled state."""
+        domains_out = []
+        for did, ddef in domain_defs.items():
+            domains_out.append({
+                "id": did,
+                "label": ddef.get("label", did),
+                "description": ddef.get("description", ""),
+                "panels": ddef.get("panels", []),
+                "routers": ddef.get("routers", []),
+                "tools": ddef.get("tools", []),
+                "enabled": _domain_ok(did),
+            })
+        return {
+            "domains": domains_out,
+            "enabled_domains": enabled_domains,
+            "app_id": app_id,
+        }
+
+    # ── Wire lifespan: store init, portal registration, Proton auto-connect ──
+
+    _orig_lifespan = app.router.lifespan_context
+
+    @asynccontextmanager
+    async def _workspace_lifespan(a):
+        async with _orig_lifespan(a):
+            # Initialise SQLite workspace store
+            try:
+                from portal_kit_backend.aither_store import _ensure_init
+                await _ensure_init()
+                _ws_log.info("Workspace store initialised at %s", store_path)
+            except Exception as e:
+                _ws_log.warning("Workspace store init failed: %s", e)
+
+            # Register with portal
+            try:
+                from adk.registration import start_registration
+                await start_registration(
+                    agent_spec=agent_spec,
+                    server_url=f"http://localhost:{port}",
+                )
+            except Exception as e:
+                _ws_log.debug("Portal registration skipped: %s", e)
+
+            # Auto-connect Proton if detected
+            try:
+                from adk.proton_setup import detect_proton_bridge, auto_connect_mail
+                detection = detect_proton_bridge()
+                if detection["bridge_running"]:
+                    _ws_log.info("Proton Bridge detected — attempting auto-connect")
+                    result = await auto_connect_mail(
+                        api_base=f"http://localhost:{port}",
+                    )
+                    if result.get("ok"):
+                        _ws_log.info("Proton mail connected: %s", result.get("email"))
+                    else:
+                        _ws_log.info(
+                            "Proton auto-connect: %s (run --setup or configure secrets)",
+                            result.get("reason", "unknown"),
+                        )
+            except Exception:
+                pass
+
+            yield
+
+            # Cleanup
+            try:
+                from adk.registration import stop_registration
+                await stop_registration()
+            except Exception:
+                pass
+
+    app.router.lifespan_context = _workspace_lifespan
+
+    # ── Serve workspace frontend (catch-all, MUST be last) ──
+    # Search order: custom frontend-dist, WorkspaceRuntime frontend, bundled fallback
+    from pathlib import Path as _FP
+    from fastapi.staticfiles import StaticFiles
+
+    _frontend_candidates = [
+        _FP(os.getenv("AITHER_FRONTEND_DIR", "")),                    # explicit override
+        _FP.cwd() / "frontend-dist",                                  # local build output
+        _FP.cwd() / "frontend",                                       # local dev frontend
+        _FP(__file__).resolve().parent / "workspace-frontend",        # bundled with ADK
+    ]
+    for fdir in _frontend_candidates:
+        if fdir.exists() and (fdir / "index.html").exists():
+            app.mount("/", StaticFiles(directory=str(fdir), html=True), name="frontend")
+            _ws_log.info("Workspace frontend: %s", fdir)
+            break
+    else:
+        _ws_log.warning("No workspace frontend found — API-only mode")
+
+    _ws_log.info("Workspace mode: %d portal-kit routers mounted, store=%s", mounted, store_path)
+
+
 def main():
     """CLI entry point: aither-serve"""
     parser = argparse.ArgumentParser(description="AitherADK Agent Server")
@@ -1830,6 +2154,8 @@ def main():
     parser.add_argument("--fleet", "-f", default=None, help="Fleet YAML config file for multi-agent mode")
     parser.add_argument("--agents", "-a", default=None, help="Comma-separated agent identities for fleet mode (e.g. aither,lyra,demiurge)")
     parser.add_argument("--invoke-url", default=None, help="Publicly reachable URL for fleet dispatch (e.g. http://192.168.1.50:8900)")
+    parser.add_argument("--workspace", action="store_true", help="Workspace mode: mount portal-kit-backend routers, register with portal")
+    parser.add_argument("--setup", action="store_true", help="Run first-time setup wizard (Proton auto-detect, etc.)")
     args = parser.parse_args()
 
     config = Config.from_env()
@@ -1849,12 +2175,30 @@ def main():
     fleet_agents = args.agents.split(",") if args.agents else None
     is_fleet = bool(fleet_path or fleet_agents)
 
+    # Workspace mode flag (env var or CLI)
+    workspace_mode = args.workspace or os.getenv("AITHER_WORKSPACE_MODE", "").lower() in ("true", "1")
+    if workspace_mode:
+        os.environ["AITHER_WORKSPACE_MODE"] = "true"
+
+    # First-run setup wizard (--setup)
+    if args.setup:
+        from adk.proton_setup import print_detection_summary
+        print("\n  AitherADK Workspace Setup\n")
+        print_detection_summary()
+        print("  Setup complete. Start the workspace server with:")
+        print(f"    aither serve --workspace --port {port}")
+        return
+
     app = create_app(
         identity=args.identity,
         config=config,
         fleet_path=fleet_path,
         fleet_agents=fleet_agents,
     )
+
+    # ── Workspace mode: mount portal-kit-backend routers ──
+    if workspace_mode:
+        _mount_workspace_routers(app, port)
 
     import uvicorn
 
@@ -1872,6 +2216,10 @@ def main():
         print(f"  Fleet:  GET  http://localhost:{port}/agents")
         print(f"  Chat:   POST http://localhost:{port}/agents/<name>/chat")
         print(f"  Forge:  POST http://localhost:{port}/forge/dispatch")
+    elif workspace_mode:
+        print(f"Starting AitherADK workspace server — identity: {args.identity}, port: {port}")
+        print(f"  Portal: http://localhost:{port} (workspace UI)")
+        print(f"  Embed:  http://localhost:{port}/?embedded=true")
     else:
         print(f"Starting AitherADK server — identity: {args.identity}, port: {port}")
 
@@ -1889,6 +2237,14 @@ def main():
     print(f"  Docs:   GET  http://localhost:{port}/docs")
     print(gateway_line)
     uvicorn.run(app, host=host, port=port, log_level="info")
+
+
+def main_workspace():
+    """CLI entry point: adk-workspace — shortcut for `adk-serve --workspace`."""
+    import sys
+    if "--workspace" not in sys.argv:
+        sys.argv.insert(1, "--workspace")
+    main()
 
 
 if __name__ == "__main__":

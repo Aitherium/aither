@@ -1516,6 +1516,24 @@ def generate_document(document_type: str, instructions: str = "", context: str =
         return json.dumps({"error": str(e)})
 
 
+# Domain tags for workspace tools — matches capability_domains.yaml
+_WORKSPACE_TOOL_DOMAINS: dict[str, str] = {
+    "workspace_health": "workspace_intelligence",
+    "email_intelligence": "workspace_intelligence",
+    "meeting_intelligence": "workspace_intelligence",
+    "collaboration_signals": "workspace_intelligence",
+    "person_intelligence": "workspace_intelligence",
+    "relationship_insights": "workspace_intelligence",
+    "post_to_social": "social_marketing",
+    "social_analytics": "social_marketing",
+    "executive_briefing": "executive_assistant",
+    "meeting_prep": "executive_assistant",
+    "email_triage": "executive_assistant",
+    "rag_search": "documents",
+    "staff_search": "people",
+    "generate_document": "documents",
+}
+
 _WORKSPACE_TOOLS = [
     # Intelligence
     workspace_health, email_intelligence, meeting_intelligence,
@@ -1530,8 +1548,21 @@ _WORKSPACE_TOOLS = [
 
 
 def _init_workspace_tools():
-    """Lazily populate the workspace category."""
-    if not TOOL_CATEGORIES.get("workspace"):
+    """Lazily populate the workspace category.
+
+    Respects AITHER_ENABLED_DOMAINS env var (comma-separated).
+    If unset, all workspace tools are registered.
+    """
+    if TOOL_CATEGORIES.get("workspace"):
+        return
+    enabled_raw = os.getenv("AITHER_ENABLED_DOMAINS", "")
+    if enabled_raw:
+        enabled = {d.strip() for d in enabled_raw.split(",") if d.strip()}
+        TOOL_CATEGORIES["workspace"] = [
+            fn for fn in _WORKSPACE_TOOLS
+            if _WORKSPACE_TOOL_DOMAINS.get(fn.__name__, "") in enabled
+        ]
+    else:
         TOOL_CATEGORIES["workspace"] = _WORKSPACE_TOOLS
 
 

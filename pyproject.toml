@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "aither-adk"
-version = "1.18.1"
+version = "1.19.0"
 description = "Build AI agent fleets. Any backend, local or cloud. Runtime backend switching, hybrid reasoning, effort-based routing, 17 bundled identities, knowledge graph memory."
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -30,6 +30,7 @@ dependencies = [
     "fastapi>=0.104.0",
     "uvicorn[standard]>=0.24.0",
     "jinja2>=3.1.0",
+    "aiosqlite>=0.19.0",
 ]
 
 [project.optional-dependencies]
@@ -46,6 +47,9 @@ node = ["mcp>=1.0", "starlette>=0.36"]
 sync = ["watchdog>=3.0.0"]
 federation = ["cryptography>=41.0.0"]
 addons = ["docker>=7.0"]
+workspace = [
+    "aither-adk[platform]",
+]
 shell = [
     "rich>=13.0",
     "click>=8.0",
@@ -90,6 +94,7 @@ Documentation = "https://github.com/Aitherium/aither#readme"
 adk = "adk.cli:main"
 adk-py = "adk.cli:main"
 adk-serve = "adk.server:main"
+adk-workspace = "adk.server:main_workspace"
 adk-bug = "adk.bugreport:main"
 adk-shell = "adk.shell.cli:entry"
 aither-py = "adk.shell.cli:entry"
@@ -110,6 +115,7 @@ artifacts = [
 packages = ["adk"]
 [tool.hatch.build.targets.wheel.force-include]
 "docker-compose.adk-vllm.yml" = "adk/docker-compose.adk-vllm.yml"
+"agent.yaml" = "adk/workspace-agent.yaml"
 
 
 [tool.pytest.ini_options]
