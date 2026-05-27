@@ -60,6 +60,7 @@ def create_app(
         )
 
         await _register_with_gateway()
+        await _sync_secrets()
         await _join_aithernet()
         await _init_chat_relay()
         await _init_mail_relay()
@@ -968,6 +969,16 @@ def create_app(
                 consecutive_failures += 1
                 if consecutive_failures <= 3 or consecutive_failures % 10 == 0:
                     logger.warning("Fleet heartbeat error (%d): %s", consecutive_failures, exc)
+
+    async def _sync_secrets():
+        """Pull secrets from platform vault into local ADK store on startup."""
+        try:
+            from adk.secrets_sync import sync_secrets
+            synced = await sync_secrets()
+            if synced:
+                logger.info("Synced %d secrets from vault", len(synced))
+        except (ImportError, RuntimeError, OSError, ConnectionError) as exc:
+            logger.debug("Secrets sync failed (non-fatal): %s", exc)
 
     async def _register_with_gateway():
         if not config.gateway_url or not config.aither_api_key:

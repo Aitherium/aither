@@ -223,6 +223,15 @@ class AitherAgent:
             except Exception:
                 pass
 
+        # App proxy tools — register HTTP proxy tools from ADK_APP_PROXY_URL
+        try:
+            from adk.app_proxy_tools import register_app_proxy_tools
+            register_app_proxy_tools(self)
+        except ImportError:
+            pass
+        except Exception as exc:
+            logger.debug("App proxy tool registration failed: %s", exc)
+
         # Tool packs from config — non-fatal
         # Sources (in priority): config.required_packs, raw tools.packs,
         # identity YAML tools.packs, AITHER_TOOL_PACKS env
@@ -257,6 +266,31 @@ class AitherAgent:
                 self._load_discovered_packs()
             except Exception as exc:
                 logger.debug("Auto pack discovery failed: %s", exc)
+
+        # Filter out tools that can't work in current deployment context
+        self._filter_unavailable_tools()
+
+    def _filter_unavailable_tools(self):
+        """Remove tools that can't work in current deployment context."""
+        try:
+            from adk.tool_readiness import check_tool_readiness_adk
+        except ImportError:
+            return
+        if not hasattr(self, "_tools") or not hasattr(self._tools, "_tools"):
+            return
+        unavailable = []
+        for name in list(self._tools._tools.keys()):
+            report = check_tool_readiness_adk(name)
+            if report.broken:
+                unavailable.append(name)
+                del self._tools._tools[name]
+        if unavailable:
+            logger.info(
+                "Filtered %d unavailable tools: %s%s",
+                len(unavailable),
+                unavailable[:5],
+                "..." if len(unavailable) > 5 else "",
+            )
 
     def _try_elysium_fallback(self):
         """If no local LLM is available but AITHER_API_KEY is set, use Elysium."""

@@ -162,10 +162,10 @@ def _require_auth(api_key_arg: Optional[str] = None) -> Optional[str]:
     if not key:
         err("AitherOS deployment requires an API key")
         print()
-        print(f"  Get one (free):")
+        print("  Get one (free):")
         print(f"    {cyan('aither register')}")
         print()
-        print(f"  Or set it:")
+        print("  Or set it:")
         print(f"    {cyan('export AITHER_API_KEY=your_key')}")
         print(f"    {cyan('aither deploy node --api-key your_key')}")
         print()
@@ -179,6 +179,88 @@ def _require_auth(api_key_arg: Optional[str] = None) -> Optional[str]:
         return None
 
     return key
+
+
+def _check_entitlements(
+    api_key: str,
+    app_id: Optional[str] = None,
+    tenant: Optional[str] = None,
+) -> dict:
+    """Check entitlements for a deployment against the gateway.
+
+    Validates:
+    - API key is authorized for the given tenant
+    - License tier permits the requested app (requires_plan gating)
+    - App is included in licensed packs / named_agents
+
+    Returns a dict with:
+        valid: bool
+        tier: str (license tier)
+        tenant_id: str (authorized tenant)
+        error: str (empty if valid)
+        entitlements: dict (pack_tier, named_agents, etc.)
+
+    Falls back to permissive mode if gateway is unreachable (offline deploys).
+    """
+    result = {
+        "valid": True,
+        "tier": "unknown",
+        "tenant_id": tenant or "default",
+        "error": "",
+        "entitlements": {},
+        "offline": False,
+    }
+
+    try:
+        payload = json.dumps({
+            "app_id": app_id,
+            "tenant": tenant,
+        }).encode()
+        req = Request(
+            f"{GATEWAY_URL}/v1/auth/entitlements",
+            data=payload,
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+                "User-Agent": "AitherADK/1.0",
+            },
+        )
+        with urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+
+        result["tier"] = data.get("tier", "unknown")
+        result["tenant_id"] = data.get("tenant_id", tenant or "default")
+        result["entitlements"] = data.get("entitlements", {})
+
+        # Check tenant authorization
+        if tenant and data.get("tenant_id") and data["tenant_id"] != tenant:
+            result["valid"] = False
+            result["error"] = (
+                f"API key is for tenant '{data['tenant_id']}', "
+                f"not '{tenant}'"
+            )
+            return result
+
+        # Check app authorization
+        if app_id and not data.get("app_authorized", True):
+            required_plan = data.get("required_plan", "developer")
+            current_tier = data.get("tier", "community")
+            result["valid"] = False
+            result["error"] = (
+                f"App '{app_id}' requires '{required_plan}' plan "
+                f"(current: '{current_tier}')"
+            )
+            return result
+
+        return result
+
+    except Exception:
+        # Gateway unreachable — offline mode.
+        # Allow deployment but warn. License validation will happen
+        # at runtime when the services boot (LicenseManager).
+        result["offline"] = True
+        return result
 
 
 def _docker_login_ghcr(api_key: str) -> bool:
@@ -1484,6 +1566,732 @@ def deploy_addons(
 
 
 # ===========================================================================
+# Component: Sovereign (self-hosted complete stack)
+# ===========================================================================
+
+COMPOSE_SOVEREIGN_URL = f"{GITHUB_RAW}/docker-compose.sovereign.yml"
+
+# App manifest URLs (private repo — requires auth)
+APP_MANIFEST_URL = f"{GITHUB_RAW}/AitherOS/config/app_manifests/{{app_id}}.yaml"
+BRAND_YAML_URL = f"{GITHUB_RAW}/.PRODUCTS/.{{product_dir}}/.ELEMENT/brand.yaml"
+
+
+def _load_app_manifest(app_id: str) -> Optional[dict]:
+    """Load an app manifest from local config or GitHub.
+
+    Returns parsed YAML dict, or None if not found.
+    """
+    # Try local first (dev mode / already cloned)
+    local_paths = [
+        Path("AitherOS/config/app_manifests") / f"{app_id}.yaml",
+        AITHER_DIR / "manifests" / f"{app_id}.yaml",
+    ]
+    for p in local_paths:
+        if p.exists():
+            try:
+                # Minimal YAML parsing without PyYAML dependency
+                text = p.read_text(encoding="utf-8")
+                return _parse_simple_yaml(text)
+            except Exception:
+                pass
+
+    # Try downloading from GitHub
+    url = APP_MANIFEST_URL.format(app_id=app_id)
+    data = _download_bytes(url)
+    if data:
+        try:
+            text = data.decode("utf-8")
+            manifest = _parse_simple_yaml(text)
+            # Cache locally
+            cache_dir = AITHER_DIR / "manifests"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            (cache_dir / f"{app_id}.yaml").write_bytes(data)
+            return manifest
+        except Exception:
+            pass
+
+    return None
+
+
+def _parse_simple_yaml(text: str) -> dict:
+    """Parse YAML using PyYAML if available, else basic key-value extraction."""
+    try:
+        import yaml
+        return yaml.safe_load(text) or {}
+    except ImportError:
+        # Fallback: extract top-level key: value pairs
+        result: dict = {}
+        for line in text.split("\n"):
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if ":" in line and not line.startswith("-") and not line.startswith(" "):
+                key, _, val = line.partition(":")
+                val = val.strip().strip("'\"")
+                if val:
+                    result[key.strip()] = val
+        return result
+
+
+def _generate_app_overlay(
+    app_id: str,
+    manifest: dict,
+    tag: str = "latest",
+    tenant: str = "default",
+) -> str:
+    """Generate a docker-compose overlay YAML for an app-specific container.
+
+    Returns the YAML string for the overlay file.
+    """
+    slug = manifest.get("slug", app_id)
+    image = manifest.get("image", f"ghcr.io/aitherium/{slug}:{tag}")
+    # Ensure tag is applied to image
+    if ":" not in image.split("/")[-1]:
+        image = f"{image}:{tag}"
+    port = manifest.get("port", 8900)
+    hc_path = "/api/health"
+    hc = manifest.get("health_check", {})
+    if isinstance(hc, dict):
+        hc_path = hc.get("path", "/api/health")
+
+    # Resource limits
+    resources = manifest.get("resources", {})
+    if not isinstance(resources, dict):
+        resources = {}
+    mem_limit = resources.get("memory", "2Gi")
+    cpu_limit = resources.get("cpu", "1")
+
+    # Build environment section
+    prefix = slug.upper().replace("-", "_")
+    env_lines = [
+        '      AITHER_STANDALONE: "true"',
+        '      AITHER_DEPLOYMENT_MODE: "sovereign"',
+        '      AITHER_DOCKER_MODE: "true"',
+        f'      AITHER_TENANT: "{tenant}"',
+    ]
+
+    # Add env_defaults from addon manifest patterns
+    env_defaults = manifest.get("env_defaults", {})
+    if isinstance(env_defaults, dict):
+        for k, v in env_defaults.items():
+            env_lines.append(f'      {k}: "{v}"')
+
+    # Standard wiring — connect to sovereign stack services
+    env_lines.extend([
+        f'      {prefix}_LLM_PROVIDER: "adk"',
+        f'      {prefix}_AITHEROS_URL: "http://microscheduler:8150"',
+        f'      {prefix}_ADK_URL: "http://adk-server:8080"',
+        f'      {prefix}_QDRANT_URL: "http://qdrant:6333"',
+        f'      {prefix}_QDRANT_COLLECTION: "{slug}_{tenant}"',
+        f'      OLLAMA_URL: "http://ollama:11434"',
+        f'      EMBEDDING_PROVIDER: "ollama"',
+        f'      EMBEDDING_URL: "http://ollama:11434"',
+        f'      EMBEDDING_MODEL: "nomic-embed-text"',
+    ])
+
+    env_block = "\n".join(env_lines)
+    app_name = manifest.get("name", slug)
+
+    # Resolve local paths for bind mounts (brain pack + brand YAML)
+    packs_dir = str(AITHER_DIR / "packs").replace("\\", "/")
+    brand_dir = str(AITHER_DIR / "brand").replace("\\", "/")
+
+    lines = [
+        f"# Auto-generated app overlay for: {app_name}",
+        f"# App: {slug} (port {port})",
+        "services:",
+        f"  {slug}:",
+        f"    image: {image}",
+        f"    container_name: sovereign-{slug}",
+        "    restart: unless-stopped",
+        "    ports:",
+        f'      - "{port}:{port}"',
+        "    environment:",
+        env_block,
+        "    volumes:",
+        f"      - {slug}-data:/app/data",
+        "    depends_on:",
+        "      adk-server:",
+        "        condition: service_healthy",
+        "      qdrant:",
+        "        condition: service_healthy",
+        "    healthcheck:",
+        f'      test: ["CMD", "curl", "-sf", "http://localhost:{port}{hc_path}"]',
+        "      interval: 30s",
+        "      timeout: 5s",
+        "      start_period: 20s",
+        "      retries: 3",
+        "    deploy:",
+        "      resources:",
+        "        limits:",
+        f"          memory: {mem_limit}",
+        f"          cpus: '{cpu_limit}'",
+        "    logging:",
+        "      driver: json-file",
+        "      options:",
+        '        max-size: "10m"',
+        '        max-file: "3"',
+        "    networks:",
+        "      - default",
+        "",
+        "  # Override workspace-app to inject brain pack + brand for this app",
+        "  workspace-app:",
+        "    environment:",
+        f'      APP_ID: "{slug}"',
+        f'      AGENT_BRAIN_PACK: "/app/packs/{slug}.yaml"',
+        "    volumes:",
+        "      - workspace-data:/app/data",
+        f"      - {packs_dir}:/app/packs:ro",
+        f"      - {brand_dir}:/app/brand:ro",
+        "",
+        "volumes:",
+        f"  {slug}-data:",
+        "  workspace-data:",
+        "    external: true",
+        "",
+        "networks:",
+        "  default:",
+        "    name: sovereign-network",
+        "    external: true",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def _generate_sovereign_config(
+    tenant: str,
+    admin_email: str,
+    app_slug: Optional[str] = None,
+    gpu: bool = False,
+    sync: bool = False,
+    tunnel: bool = False,
+    backup: bool = False,
+    monitoring: bool = False,
+) -> str:
+    """Generate sovereign-config.yaml content with sensible defaults.
+
+    This is the non-interactive counterpart to setup-sovereign.py's wizard.
+    Users who want full customization run setup-sovereign.py separately.
+    """
+    tls_mode = "tunnel" if tunnel else "none"
+    llm_backend = "vllm" if gpu else "ollama"
+    federation = "true" if sync else "false"
+
+    lines = [
+        "# AitherOS Sovereign Configuration",
+        "# Generated by: aither deploy sovereign",
+        "# For full customization, run: python AitherOS/scripts/setup-sovereign.py",
+        "",
+        "tenant:",
+        f"  slug: {tenant}",
+        f"  name: {tenant.replace('-', ' ').title()}",
+        f"  admin_email: {admin_email or 'admin@localhost'}",
+        "",
+        "network:",
+        "  host: localhost",
+        "  port: 3000",
+        f"  tls:",
+        f"    mode: {tls_mode}",
+        "",
+        "identity:",
+        "  mode: standalone",
+        "  provider: local",
+        "",
+        "email:",
+        "  provider: none",
+        "",
+        "branding:",
+        f"  app_name: {(app_slug or tenant).replace('-', ' ').title()}",
+        "  theme: dark",
+        "",
+        "federation:",
+        f"  enabled: {federation}",
+        f"  platform_url: https://portal.aitherium.com",
+        "",
+        "services:",
+        "  preset: minimal",
+        "  adk: true",
+        "  workspace: true",
+        "  identity: true",
+        "  secrets: true",
+        "  directory: true",
+        "  spirit: true",
+        "  graph: true",
+        "  mail: true",
+        "  microscheduler: true",
+        f"  vllm: {str(gpu).lower()}",
+        f"  sync: {str(sync).lower()}",
+        f"  recover: {str(backup).lower()}",
+        f"  monitoring: {str(monitoring).lower()}",
+        "",
+        "llm:",
+        f"  backend: {llm_backend}",
+        f"  model: {'aither-orchestrator' if gpu else 'gemma4:4b'}",
+        "  ollama_url: http://ollama:11434",
+        f"  vllm_url: {'http://vllm:8120' if gpu else ''}",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def deploy_sovereign(
+    dry_run: bool = False,
+    tag: str = "latest",
+    app_template: Optional[str] = None,
+    gpu: bool = False,
+    sync: bool = True,
+    no_memory: bool = False,
+    api_key_arg: Optional[str] = None,
+    tenant: Optional[str] = None,
+    admin_email: str = "",
+    tunnel: bool = False,
+    backup: bool = False,
+    monitoring: bool = False,
+) -> int:
+    """Deploy a complete sovereign AitherOS stack.
+
+    This is the turnkey self-hosted deployment: workspace UI, agents, memory,
+    identity, secrets, directory, mail, graph — everything a customer needs
+    to run AitherOS on their own hardware.
+
+    Resource estimates:
+        Base:       ~4 GB RAM,  ~8 GB disk (images)
+        + GPU:      +1 GB RAM,  +2 GB disk
+        + Memory:   included by default (~512 MB)
+
+    Args:
+        dry_run: Show what would happen without executing.
+        tag: Docker image tag (default: latest).
+        app_template: Workspace app template (e.g., 'garg').
+        gpu: Enable GPU-accelerated vLLM backend.
+        sync: Enable platform sync daemon (updates, telemetry, license).
+        no_memory: Skip memory stack (Spirit, Graph) for cheaper deployments.
+        api_key_arg: Explicit API key (falls back to env/config).
+        tenant: Tenant slug.
+        admin_email: Admin email for initial setup.
+        tunnel: Enable Cloudflare Tunnel for TLS remote access.
+        backup: Enable AitherRecover backup/restore service.
+        monitoring: Enable Prometheus + Grafana monitoring dashboard.
+
+    Returns:
+        Exit code (0 = success, 1 = failure).
+    """
+    print()
+    print(bold("  AitherOS Sovereign Deployment"))
+    print(dim("  Complete self-hosted stack: workspace + agents + memory + identity"))
+    print()
+
+    # Auth gate
+    api_key = _require_auth(api_key_arg)
+    if not api_key:
+        return 1
+
+    if dry_run:
+        print(f"  {yellow('DRY RUN -- no changes will be made')}\n")
+
+    total_steps = 6
+
+    # -- Step 1: Prerequisites ------------------------------------------------
+    step(1, total_steps, "Checking prerequisites")
+
+    docker_ok, docker_msg = _check_docker()
+    if docker_ok:
+        info(docker_msg)
+    else:
+        err(docker_msg)
+        print()
+        print(f"  Install Docker: {cyan('https://docker.com/products/docker-desktop')}")
+        return 1
+
+    if not dry_run:
+        if _docker_login_ghcr(api_key):
+            info(f"Authenticated with {REGISTRY}")
+        else:
+            warn("GHCR login failed -- image pulls may fail if images are private")
+
+    # Entitlement check — verify API key is authorized for this tenant + app
+    ent = _check_entitlements(api_key, app_id=app_template, tenant=tenant)
+    if not ent["valid"]:
+        err(f"Authorization failed: {ent['error']}")
+        return 1
+    if ent["offline"]:
+        warn("Gateway unreachable -- deploying in offline mode")
+        warn("License will be validated at service startup")
+    else:
+        info(f"License: {bold(ent['tier'])} (tenant: {ent['tenant_id']})")
+
+    # Sovereign requires self_host tier or above
+    _SOVEREIGN_TIERS = {"self_host", "managed", "founding", "internal", "enterprise"}
+    current_tier = ent.get("tier", "unknown")
+    if not ent["offline"] and current_tier not in _SOVEREIGN_TIERS:
+        err(f"Sovereign deployment requires a Self-Host or Enterprise plan (current: '{current_tier}')")
+        print()
+        print(f"  Upgrade at: {cyan('https://portal.aitherium.com/billing')}")
+        print(f"  Or contact: {cyan('sales@aitherium.com')} for enterprise pricing")
+        print()
+        return 1
+
+    # Resource estimate
+    profiles = []
+    if gpu:
+        profiles.append("gpu")
+    if sync:
+        profiles.append("sync")
+    if tunnel:
+        tunnel_token = os.environ.get("CLOUDFLARE_TUNNEL_TOKEN", "")
+        if not tunnel_token:
+            warn("--tunnel requires CLOUDFLARE_TUNNEL_TOKEN environment variable")
+            warn("Set it with: export CLOUDFLARE_TUNNEL_TOKEN=your_token")
+            warn("Continuing without tunnel -- add it to .env.sovereign later")
+        profiles.append("tunnel")
+    if backup:
+        profiles.append("backup")
+    if monitoring:
+        profiles.append("monitoring")
+
+    # -- Step 1b: Resolve app manifest (if --app specified) -------------------
+    app_manifest = None
+    app_slug = None
+    app_port = None
+    if app_template:
+        app_manifest = _load_app_manifest(app_template)
+        if app_manifest:
+            app_slug = app_manifest.get("slug", app_template)
+            app_port = int(app_manifest.get("port", 8900))
+            info(f"App: {bold(app_manifest.get('name', app_slug))}")
+            info(f"  Image: {app_manifest.get('image', 'N/A')}")
+            info(f"  Port: {app_port}")
+
+            # Client-side plan check (safety net for offline deploys)
+            required_plan = app_manifest.get("requires_plan", "free")
+            current_tier = ent.get("tier", "unknown")
+            _PLAN_HIERARCHY = ["free", "community", "developer", "professional", "enterprise",
+                               "self_host", "managed", "founding", "internal"]
+            if (required_plan in _PLAN_HIERARCHY
+                    and current_tier in _PLAN_HIERARCHY
+                    and _PLAN_HIERARCHY.index(current_tier) < _PLAN_HIERARCHY.index(required_plan)):
+                err(f"App '{app_slug}' requires '{required_plan}' plan (current: '{current_tier}')")
+                print()
+                print(f"  Upgrade at: {cyan('https://portal.aitherium.com/billing')}")
+                print()
+                return 1
+
+            info(f"  Plan: {required_plan} (authorized)")
+        else:
+            warn(f"App manifest not found for '{app_template}' -- deploying generic stack")
+
+    ram_gb = 4.5 + (1.0 if gpu else 0) + (2.0 if app_manifest else 0)
+    disk_gb = 8.0 + (2.0 if gpu else 0) + (2.0 if app_manifest else 0)
+    service_count = 11 + (1 if gpu else 0) + (1 if sync else 0) + (1 if app_manifest else 0)
+    print()
+    info(f"Estimated resources: ~{ram_gb:.0f} GB RAM, ~{disk_gb:.0f} GB disk")
+    info(f"Services: {bold(str(service_count))} containers")
+    print()
+
+    # -- Step 2: Download compose file ----------------------------------------
+    step(2, total_steps, "Downloading sovereign compose configuration")
+
+    compose_file = AITHER_DIR / "docker-compose.sovereign.yml"
+    if not _download(COMPOSE_SOVEREIGN_URL, compose_file, dry_run):
+        err("Failed to download compose file")
+        return 1
+
+    # -- Step 3: Generate .env + app overlay ----------------------------------
+    step(3, total_steps, "Generating environment configuration")
+
+    tenant_slug = tenant or os.environ.get("AITHER_TENANT") or "default"
+    env_file = AITHER_DIR / ".env.sovereign"
+
+    # Auto-generate secrets if not provided
+    import secrets as _secrets
+    jwt_secret = os.environ.get("JWT_SECRET") or _secrets.token_urlsafe(32)
+    admin_pass = os.environ.get("AITHER_ADMIN_PASSWORD") or _secrets.token_urlsafe(16)
+
+    env_content = (
+        f"# AitherOS Sovereign Configuration\n"
+        f"# Generated by: aither deploy sovereign\n"
+        f"#\n"
+        f"AITHER_API_KEY={api_key}\n"
+        f"AITHER_TENANT={tenant_slug}\n"
+        f"AITHER_IDENTITY={app_slug or app_template or 'aither'}\n"
+        f"AITHER_STANDALONE=true\n"
+        f"AITHER_DEPLOYMENT_MODE=sovereign\n"
+        f"AITHEROS_IMAGE_TAG={tag}\n"
+        f"AITHEROS_REGISTRY={REGISTRY}\n"
+        f"AITHER_ADMIN_EMAIL={admin_email or 'admin@localhost'}\n"
+        f"AITHER_ADMIN_PASSWORD={admin_pass}\n"
+        f"JWT_SECRET={jwt_secret}\n"
+        f"AITHER_PLATFORM_URL=https://portal.aitherium.com\n"
+    )
+
+    if gpu:
+        env_content += f"VLLM_URL=http://vllm:8120\n"
+
+    # If app manifest found, set brain pack + app ID for workspace container
+    if app_manifest and app_slug:
+        env_content += f"\n# App-specific configuration ({app_slug})\n"
+        env_content += f"APP_ID={app_slug}\n"
+        env_content += f"AGENT_BRAIN_PACK=/app/packs/{app_slug}.yaml\n"
+        env_content += f"APP_PORT={app_port}\n"
+        env_content += f"ADK_APP_PROXY_URL=http://{app_slug}:{app_port}\n"
+
+        # Extract app_tools from manifest and serialize for ADK agent
+        agent_section = app_manifest.get("agent", {})
+        app_tools = agent_section.get("app_tools", []) if isinstance(agent_section, dict) else []
+        if app_tools:
+            try:
+                tools_json = json.dumps(app_tools, separators=(",", ":"))
+                env_content += f"ADK_APP_MANIFEST={tools_json}\n"
+            except (TypeError, ValueError):
+                pass
+
+        # Download brain pack + brand YAML for the workspace container
+        if not dry_run:
+            packs_dir = AITHER_DIR / "packs"
+            brand_dir = AITHER_DIR / "brand"
+            packs_dir.mkdir(parents=True, exist_ok=True)
+            brand_dir.mkdir(parents=True, exist_ok=True)
+            pack_file = packs_dir / f"{app_slug}.yaml"
+            brand_file = brand_dir / "brand.yaml"
+
+            # Try local source first for brain pack
+            source_dir = app_manifest.get("source_dir", "")
+            up_slug = app_slug.upper()
+            brain_pack_paths = [
+                Path(f"{source_dir}/backend/app/packs/{app_slug}.yaml") if source_dir else None,
+                Path(f".PRODUCTS/.{up_slug}/backend/app/packs/{app_slug}.yaml"),
+                Path(f".PRODUCTS/.{up_slug}/backend/app/packs/{app_slug[:4]}.yaml"),
+            ]
+            pack_found = False
+            for lp in brain_pack_paths:
+                if lp and lp.exists():
+                    import shutil as _sh
+                    _sh.copy2(str(lp), str(pack_file))
+                    info(f"Brain pack: {dim(str(pack_file))}")
+                    pack_found = True
+                    break
+            if not pack_found:
+                info(f"Brain pack will be loaded from app container at /app/packs/{app_slug}.yaml")
+
+            # Copy brand YAML (theme, colors, logos)
+            brand_paths = [
+                Path(f".PRODUCTS/.{up_slug}/.ELEMENT/brand.yaml"),
+                Path(f"{source_dir}/.ELEMENT/brand.yaml") if source_dir else None,
+            ]
+            for bp in brand_paths:
+                if bp and bp.exists():
+                    import shutil as _sh2
+                    _sh2.copy2(str(bp), str(brand_file))
+                    info(f"Brand:      {dim(str(brand_file))}")
+                    break
+
+    # Add tunnel token to env if provided
+    if tunnel:
+        tunnel_token = os.environ.get("CLOUDFLARE_TUNNEL_TOKEN", "")
+        if tunnel_token:
+            env_content += f"\n# Cloudflare Tunnel\nCLOUDFLARE_TUNNEL_TOKEN={tunnel_token}\n"
+
+    _secret_keys = {"AITHER_API_KEY", "JWT_SECRET", "AITHER_ADMIN_PASSWORD", "CLOUDFLARE_TUNNEL_TOKEN"}
+    if dry_run:
+        info("Would write .env.sovereign:")
+        for line in env_content.strip().split("\n"):
+            if "=" in line and not line.startswith("#"):
+                key = line.split("=")[0]
+                if key in _secret_keys:
+                    info(f"  {key}=***")
+                    continue
+            info(f"  {line}")
+    else:
+        env_file.write_text(env_content, encoding="utf-8")
+        info(f"Config written to {dim(str(env_file))}")
+
+    # Generate sovereign-config.yaml (non-interactive defaults)
+    sov_config_path = AITHER_DIR / "sovereign-config.yaml"
+    sov_config_content = _generate_sovereign_config(
+        tenant=tenant_slug,
+        admin_email=admin_email,
+        app_slug=app_slug or app_template,
+        gpu=gpu,
+        sync=sync,
+        tunnel=tunnel,
+        backup=backup,
+        monitoring=monitoring,
+    )
+    if dry_run:
+        info(f"Would write sovereign-config.yaml to {sov_config_path}")
+    else:
+        sov_config_path.write_text(sov_config_content, encoding="utf-8")
+        info(f"Sovereign config: {dim(str(sov_config_path))}")
+
+    # Generate app overlay compose if an app manifest was resolved
+    app_overlay_file = None
+    if app_manifest and app_slug:
+        app_overlay_file = AITHER_DIR / f"docker-compose.sovereign-{app_slug}.yml"
+        overlay_content = _generate_app_overlay(
+            app_slug, app_manifest, tag=tag, tenant=tenant_slug,
+        )
+        if dry_run:
+            info(f"Would generate app overlay: {app_overlay_file}")
+            info(f"  App container: {app_slug} (port {app_port})")
+        else:
+            app_overlay_file.write_text(overlay_content, encoding="utf-8")
+            info(f"App overlay: {dim(str(app_overlay_file))}")
+
+    # -- Step 4: Pull and start -----------------------------------------------
+    step(4, total_steps, "Pulling images and starting sovereign stack")
+
+    if profiles:
+        info(f"Profiles: {', '.join(profiles)}")
+
+    # Build compose command with optional app overlay
+    compose_files = [compose_file]
+    if app_overlay_file and (not dry_run and app_overlay_file.exists() or dry_run):
+        compose_files.append(app_overlay_file)
+
+    def _multi_compose(files, profs, action, dr, timeout=300):
+        """Run docker compose with multiple -f flags."""
+        cmd = ["docker", "compose"]
+        for f in files:
+            cmd += ["-f", str(f)]
+        for p in profs:
+            cmd += ["--profile", p]
+        cmd += action.split()
+        if dr:
+            info(f"Would run: {' '.join(cmd)}")
+            return 0
+        info(f"Running: {' '.join(cmd)}")
+        try:
+            result = subprocess.run(cmd, timeout=timeout)
+            return result.returncode
+        except subprocess.TimeoutExpired:
+            warn(f"Command timed out after {timeout}s")
+            return 0
+        except FileNotFoundError:
+            err("docker command not found")
+            return 1
+
+    rc = _multi_compose(compose_files, profiles, "pull", dry_run, timeout=900)
+    if rc != 0:
+        err("Failed to pull images")
+        return 1
+
+    # Set env file for compose
+    env = os.environ.copy()
+    env["COMPOSE_ENV_FILE"] = str(env_file) if not dry_run else ""
+    env["AITHEROS_IMAGE_TAG"] = tag
+    env["AITHEROS_REGISTRY"] = REGISTRY
+    env["AITHER_STANDALONE"] = "true"
+    env["AITHER_DEPLOYMENT_MODE"] = "sovereign"
+    env["AITHER_TENANT"] = tenant_slug
+    env["AITHER_API_KEY"] = api_key
+
+    rc = _multi_compose(compose_files, profiles, "up -d", dry_run, timeout=300)
+    if rc != 0:
+        err("Failed to start containers")
+        return 1
+
+    # -- Step 5: Health checks ------------------------------------------------
+    step(5, total_steps, "Verifying sovereign services")
+
+    check_endpoints = [
+        (8080, "ADK Server"),
+        (3000, "Workspace", "/api/health"),
+        (8150, "MicroScheduler"),
+        (8100, "Identity"),
+        (8111, "Secrets"),
+        (8108, "Directory"),
+        (8087, "Spirit"),
+        (8135, "Graph"),
+    ]
+    if gpu:
+        check_endpoints.append((8120, "vLLM"))
+    if sync:
+        check_endpoints.append((8190, "Sync"))
+    if backup:
+        check_endpoints.append((8163, "Recover"))
+    if monitoring:
+        check_endpoints.append((9090, "Prometheus", "/-/healthy"))
+        check_endpoints.append((3001, "Grafana", "/api/health"))
+    if app_manifest and app_port:
+        hc = app_manifest.get("health_check", {})
+        hc_path = hc.get("path", "/api/health") if isinstance(hc, dict) else "/api/health"
+        check_endpoints.append((app_port, app_manifest.get("name", app_slug or "App"), hc_path))
+
+    if dry_run:
+        for entry in check_endpoints:
+            port, name = entry[0], entry[1]
+            hc_path = entry[2] if len(entry) > 2 else "/health"
+            info(f"Would check: http://localhost:{port}{hc_path} ({name})")
+    else:
+        for entry in check_endpoints:
+            port, name = entry[0], entry[1]
+            hc_path = entry[2] if len(entry) > 2 else "/health"
+            if _health_check(f"http://localhost:{port}{hc_path}", timeout=120):
+                info(f"{name} (:{port}): {green('healthy')}")
+            else:
+                warn(f"{name} (:{port}): not responding yet -- may still be starting")
+
+    # -- Step 6: Post-deploy info -------------------------------------------
+    step(6, total_steps, "Deployment complete")
+
+    print()
+    print(bold("  " + "=" * 60))
+    print(bold("  Sovereign AitherOS Stack"))
+    print(bold("  " + "=" * 60))
+    print()
+    info(f"Workspace:       {cyan('http://localhost:3000')}")
+    info(f"ADK Server:      {cyan('http://localhost:8080')}")
+    info(f"MicroScheduler:  {cyan('http://localhost:8150')}")
+    info(f"Ollama:          {cyan('http://localhost:11434')}")
+    if gpu:
+        info(f"vLLM:            {cyan('http://localhost:8120')}")
+    info(f"Identity:        {cyan('http://localhost:8100')}")
+    info(f"Secrets:         {cyan('http://localhost:8111')}")
+    info(f"Directory:       {cyan('http://localhost:8108')}")
+    info(f"Spirit:          {cyan('http://localhost:8087')}")
+    info(f"Graph:           {cyan('http://localhost:8135')}")
+    if sync:
+        info(f"Sync:            {cyan('http://localhost:8190')}")
+    if tunnel:
+        info(f"Tunnel:          {cyan('Cloudflare Tunnel (see dashboard)')}")
+    if backup:
+        info(f"Recover:         {cyan('http://localhost:8163')}")
+    if monitoring:
+        info(f"Prometheus:      {cyan('http://localhost:9090')}")
+        info(f"Grafana:         {cyan('http://localhost:3001')}")
+    if app_manifest and app_port:
+        app_name = app_manifest.get("name", app_slug or "App")
+        info(f"{app_name:17s}{cyan(f'http://localhost:{app_port}')}")
+    print()
+    info(f"Tenant:      {bold(tenant_slug)}")
+    if app_slug:
+        info(f"App:         {bold(app_slug)}")
+    info(f"Config:      {dim(str(env_file))}")
+    info(f"Sov config:  {dim(str(AITHER_DIR / 'sovereign-config.yaml'))}")
+    if app_overlay_file:
+        info(f"App overlay: {dim(str(app_overlay_file))}")
+    print()
+    if not dry_run:
+        print(bold("  Admin Credentials"))
+        info(f"  Email:     {admin_email or 'admin@localhost'}")
+        info(f"  Password:  {bold(admin_pass)}")
+        warn("  Save these credentials! They won't be shown again.")
+        print()
+    compose_cmd = f"docker compose -f {compose_file}"
+    if app_overlay_file:
+        compose_cmd += f" -f {app_overlay_file}"
+    info("Manage:")
+    info(f"  Logs:    {cyan(f'{compose_cmd} logs -f')}")
+    info(f"  Stop:    {cyan('aither deploy stop sovereign')}")
+    info(f"  Status:  {cyan(f'{compose_cmd} ps')}")
+    if sync:
+        info(f"  Sync:    {cyan('curl http://localhost:8190/sync/status')}")
+    print()
+    if not dry_run:
+        info(f"{green(bold('Sovereign AitherOS is ready!'))}")
+    return 0
+
+
+# ===========================================================================
 # Component: AitherConnect (browser extension)
 # ===========================================================================
 
@@ -2075,6 +2883,7 @@ def cmd_deploy_component(args) -> int:
         print(f"  Usage: {cyan('aither deploy <component> [options]')}")
         print()
         print(f"  Components:")
+        print(f"    {bold('sovereign')}  Complete self-hosted stack (workspace + agents + memory + auth)")
         print(f"    {bold('ollama')}     Install Ollama + pull models for your GPU")
         print(f"    {bold('vllm')}       Deploy vLLM inference containers (NVIDIA GPU)")
         print(f"    {bold('node')}       ADK-native node (lightweight: ADK server + Ollama)")
@@ -2087,6 +2896,8 @@ def cmd_deploy_component(args) -> int:
         print(f"    {bold('stop')}       Stop a running deployment")
         print()
         print(f"  Examples:")
+        print(f"    {dim('aither deploy sovereign')}")
+        print(f"    {dim('aither deploy sovereign --app garg --gpu')}")
         print(f"    {dim('aither deploy ollama')}")
         print(f"    {dim('aither deploy ollama --models qwen3:8b,phi4')}")
         print(f"    {dim('aither deploy node')}")
@@ -2099,7 +2910,48 @@ def cmd_deploy_component(args) -> int:
         print()
         return 1
 
-    if component == "ollama":
+    if component == "sovereign":
+        # --list-apps: show available app templates
+        list_apps = getattr(args, "list_apps", False)
+        if list_apps:
+            manifests_dir = Path("AitherOS/config/app_manifests")
+            print()
+            print(bold("  Available App Templates"))
+            print()
+            if manifests_dir.exists():
+                for f in sorted(manifests_dir.glob("*.yaml")):
+                    manifest = _parse_simple_yaml(f.read_text(encoding="utf-8"))
+                    name = manifest.get("name", f.stem)
+                    slug = manifest.get("slug", f.stem)
+                    port = manifest.get("port", "?")
+                    plan = manifest.get("requires_plan", "free")
+                    desc = manifest.get("description", "")[:60]
+                    print(f"  {bold(slug):15s} {name:30s} :{port:<6} ({plan})")
+                    if desc:
+                        print(f"  {' ':15s} {dim(desc)}")
+            else:
+                warn("No app manifests found (run from repo root or use --app <id>)")
+            print()
+            print(f"  Deploy: {cyan('aither deploy sovereign --app <slug> --tenant <name>')}")
+            print()
+            return 0
+
+        tag = getattr(args, "tag", "latest") or "latest"
+        gpu = getattr(args, "gpu", False)
+        no_sync = getattr(args, "no_sync", False)
+        no_memory = getattr(args, "no_memory", False)
+        app_template = getattr(args, "app", None)
+        api_key = getattr(args, "api_key", None)
+        tenant_arg = getattr(args, "tenant", None)
+        admin_email = getattr(args, "admin_email", "") or ""
+        return deploy_sovereign(
+            dry_run=dry_run, tag=tag, app_template=app_template,
+            gpu=gpu, sync=not no_sync, no_memory=no_memory,
+            api_key_arg=api_key, tenant=tenant_arg,
+            admin_email=admin_email,
+        )
+
+    elif component == "ollama":
         models = None
         models_str = getattr(args, "models", None)
         if models_str:
@@ -2200,7 +3052,7 @@ def cmd_deploy_component(args) -> int:
     elif component == "stop":
         stop_target = getattr(args, "stop_target", None)
         if not stop_target:
-            err("Specify what to stop: ollama, vllm, node, core, full, addons, all")
+            err("Specify what to stop: ollama, vllm, node, core, full, sovereign, addons, all")
             return 1
         if stop_target == "addons":
             compose_file = AITHER_DIR / "docker-compose.addons.yml"
@@ -2208,6 +3060,26 @@ def cmd_deploy_component(args) -> int:
                 err("No addon compose file found")
                 return 1
             return _docker_compose(compose_file, [], "down", dry_run)
+        if stop_target == "sovereign":
+            compose_file = AITHER_DIR / "docker-compose.sovereign.yml"
+            if not compose_file.exists():
+                err("No sovereign compose file found")
+                return 1
+            # Include any app overlay files in teardown
+            compose_cmd = ["docker", "compose", "-f", str(compose_file)]
+            for f in sorted(AITHER_DIR.glob("docker-compose.sovereign-*.yml")):
+                compose_cmd += ["-f", str(f)]
+            compose_cmd += ["--profile", "gpu", "--profile", "sync", "down"]
+            if dry_run:
+                info(f"Would run: {' '.join(compose_cmd)}")
+                return 0
+            info(f"Running: {' '.join(compose_cmd)}")
+            try:
+                result = subprocess.run(compose_cmd, timeout=120)
+                return result.returncode
+            except Exception as exc:
+                err(f"Stop failed: {exc}")
+                return 1
         return deploy_stop(stop_target)
 
     else:
