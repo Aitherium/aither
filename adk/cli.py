@@ -4386,6 +4386,26 @@ def _cmd_pack(args) -> int:
             print("MCP tools reloaded — new tools are available now.")
         else:
             print("Restart `adk mcp serve` to activate.")
+
+        # Auto-register with portal if pack has agent.yaml
+        agent_yaml = target / pack_id / "agent.yaml"
+        if not agent_yaml.exists():
+            agent_yaml = target / "agent.yaml"
+        if agent_yaml.exists():
+            try:
+                import yaml
+                spec = yaml.safe_load(agent_yaml.read_text(encoding="utf-8")) or {}
+                if spec.get("portal"):
+                    import asyncio
+                    from adk.registration import register_with_portal
+                    success = asyncio.run(register_with_portal(spec))
+                    if success:
+                        print(f"Registered '{spec.get('name', pack_id)}' with portal.")
+                    else:
+                        print("Portal registration skipped (portal unreachable).")
+            except Exception as e:
+                print(f"Portal registration skipped: {e}")
+
         return 0
 
     if sub == "remove":

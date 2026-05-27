@@ -1932,15 +1932,29 @@ def _mount_workspace_routers(app: FastAPI, port: int) -> None:
     store_path.parent.mkdir(parents=True, exist_ok=True)
     os.environ.setdefault("AITHER_CHAT_STORE_PATH", str(store_path))
 
-    # ── Read agent.yaml for enabled_domains ──
-    _agent_yaml = _P(__file__).resolve().parent.parent / "agent.yaml"
+    # ── Discover brain pack + agent.yaml via pack_discovery ──
+    from adk.pack_discovery import discover_agent_yaml, discover_brain_pack, discover_pack_dir
+    import yaml
+
+    agent_yaml_path = discover_agent_yaml()
+    brain_pack_path = discover_brain_pack()
+    pack_dir = discover_pack_dir()
+
+    # Set env vars so portal-kit-backend picks them up
+    if brain_pack_path:
+        os.environ.setdefault("AGENT_BRAIN_PACK", str(brain_pack_path))
+        _ws_log.info("Brain pack: %s", brain_pack_path)
+    if pack_dir:
+        _ws_log.info("Pack directory: %s", pack_dir)
+
+    # Read agent spec
     enabled_domains: list[str] = []
     agent_spec: dict = {}
-    if _agent_yaml.exists():
+    if agent_yaml_path and agent_yaml_path.exists():
         try:
-            import yaml
-            agent_spec = yaml.safe_load(_agent_yaml.read_text(encoding="utf-8")) or {}
+            agent_spec = yaml.safe_load(agent_yaml_path.read_text(encoding="utf-8")) or {}
             enabled_domains = agent_spec.get("enabled_domains", [])
+            _ws_log.info("Agent spec: %s (domains=%s)", agent_yaml_path, enabled_domains or "all")
         except Exception:
             pass
 

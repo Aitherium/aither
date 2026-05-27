@@ -4,7 +4,7 @@ Discovers installed packs via:
 1. ``AGENT_BRAIN_PACK`` env var (explicit path)
 2. ``brain_pack.yaml`` in current directory
 3. Python entry points group ``aither.brain_packs``
-4. ``~/.aither/packs/`` directory scan
+4. ``~/.aither/packs/`` and ``~/.aitheros/packs/`` directory scan
 5. Bundled ``adk/workspace-agent.yaml`` fallback
 
 A "pack" is a pip-installable package that ships:
@@ -29,6 +29,30 @@ from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger("adk.pack_discovery")
+
+
+def _find_library_packs() -> list[dict]:
+    """Scan Library/packs/ for brain packs (monorepo / Genesis container)."""
+    packs = []
+    # Try multiple candidate paths: monorepo layout and Docker container layout
+    candidates = [
+        Path(os.getenv("AITHER_LIBRARY", "")) / "packs" if os.getenv("AITHER_LIBRARY") else None,
+        Path(__file__).resolve().parents[2] / "AitherOS" / "Library" / "packs",  # monorepo
+        Path("/app/AitherOS/Library/packs"),  # Docker
+    ]
+    for packs_dir in candidates:
+        if packs_dir is None or not packs_dir.is_dir():
+            continue
+        for candidate in sorted(packs_dir.iterdir()):
+            if candidate.is_dir() and (candidate / "brain_pack.yaml").exists():
+                packs.append({
+                    "name": candidate.name,
+                    "dir": candidate,
+                    "source": "library",
+                })
+                logger.info("Found library brain pack: %s -> %s", candidate.name, candidate)
+        break  # Use the first valid packs_dir
+    return packs
 
 
 def _find_entrypoint_packs() -> list[dict]:
@@ -62,22 +86,27 @@ def _find_entrypoint_packs() -> list[dict]:
 
 
 def _find_local_packs() -> list[dict]:
-    """Scan ~/.aither/packs/ for brain packs."""
+    """Scan ~/.aither/packs/ and ~/.aitheros/packs/ for brain packs."""
     packs = []
-    packs_dir = Path(os.getenv("AITHER_PACKS_DIR", os.path.expanduser("~/.aither/packs")))
-    if not packs_dir.is_dir():
-        return packs
-
-    for candidate in sorted(packs_dir.iterdir()):
-        if candidate.is_dir():
-            bp = candidate / "brain_pack.yaml"
-            if bp.exists():
-                packs.append({
-                    "name": candidate.name,
-                    "dir": candidate,
-                    "source": "local",
-                })
-                logger.info("Found local brain pack: %s -> %s", candidate.name, candidate)
+    candidates = [
+        Path(os.getenv("AITHER_PACKS_DIR", os.path.expanduser("~/.aither/packs"))),
+        Path.home() / ".aitheros" / "packs",  # ADK CLI install target
+    ]
+    seen: set[str] = set()
+    for packs_dir in candidates:
+        if not packs_dir.is_dir():
+            continue
+        for candidate in sorted(packs_dir.iterdir()):
+            if candidate.is_dir() and candidate.name not in seen:
+                bp = candidate / "brain_pack.yaml"
+                if bp.exists():
+                    seen.add(candidate.name)
+                    packs.append({
+                        "name": candidate.name,
+                        "dir": candidate,
+                        "source": "local",
+                    })
+                    logger.info("Found local brain pack: %s -> %s", candidate.name, candidate)
     return packs
 
 
@@ -108,14 +137,21 @@ def discover_brain_pack() -> Optional[Path]:
         logger.info("Brain pack from CWD: %s", cwd_pack)
         return cwd_pack
 
-    # 3. Entry points
+    # 3. Library/packs/ (monorepo / Genesis container)
+    lib_packs = _find_library_packs()
+    if lib_packs:
+        bp = lib_packs[0]["dir"] / "brain_pack.yaml"
+        if bp.exists():
+            return bp
+
+    # 4. Entry points
     ep_packs = _find_entrypoint_packs()
     if ep_packs:
         bp = ep_packs[0]["dir"] / "brain_pack.yaml"
         if bp.exists():
             return bp
 
-    # 4. Local packs dir
+    # 5. Local packs dir
     local_packs = _find_local_packs()
     if local_packs:
         bp = local_packs[0]["dir"] / "brain_pack.yaml"
@@ -142,6 +178,13 @@ def discover_agent_yaml() -> Optional[Path]:
     cwd = Path.cwd() / "agent.yaml"
     if cwd.exists():
         return cwd
+
+    # Library packs
+    lib_packs = _find_library_packs()
+    if lib_packs:
+        ay = lib_packs[0]["dir"] / "agent.yaml"
+        if ay.exists():
+            return ay
 
     # Entry-point pack
     ep_packs = _find_entrypoint_packs()
@@ -175,6 +218,11 @@ def discover_pack_dir() -> Optional[Path]:
 
     Used by workspace mode to set AGENT_BRAIN_PACK and load skills/tool packs.
     """
+    # Library packs (monorepo / container)
+    lib_packs = _find_library_packs()
+    if lib_packs:
+        return lib_packs[0]["dir"]
+
     # Entry-point packs
     ep_packs = _find_entrypoint_packs()
     if ep_packs:
@@ -194,7 +242,7 @@ def discover_pack_dir() -> Optional[Path]:
 
 def list_available_packs() -> list[dict]:
     """List all discoverable packs (for CLI/UI display)."""
-    packs = _find_entrypoint_packs() + _find_local_packs()
+    packs = _find_library_packs() + _find_entrypoint_packs() + _find_local_packs()
 
     # Deduplicate by name
     seen = set()

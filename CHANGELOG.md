@@ -2,6 +2,20 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [1.20.0] - 2026-05-27
+
+### Fixed
+- **Pack discovery path mismatch** — `_find_local_packs()` now scans both
+  `~/.aither/packs/` and `~/.aitheros/packs/`, so packs installed via
+  `adk pack install` are discovered by `adk-workspace`.
+
+### Added
+- **Auto-register on pack install** — `adk pack install` now auto-registers
+  with the portal if the pack contains an `agent.yaml` with a `portal` section.
+  One command does download + extract + register.
+- **Flux event on agent registration** — `developer_portal.py` emits
+  `agent.registered` Flux event so the portal fleet UI updates in real-time.
+
 ## [1.15.0] - 2026-05-26
 
 ### Added
