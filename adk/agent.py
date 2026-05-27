@@ -136,6 +136,9 @@ class AitherAgent:
         self.name = name or self._identity.name
         self._system_prompt = system_prompt
 
+        # License gate: verify agent is licensed and custom agents are allowed
+        self._check_agent_license(load_packs)
+
         # LLM — auto-detect Elysium if no local backend and API key present
         self.llm = llm or LLMRouter(config=self.config)
         self._elysium_connected = False
@@ -269,6 +272,39 @@ class AitherAgent:
 
         # Filter out tools that can't work in current deployment context
         self._filter_unavailable_tools()
+
+    def _check_agent_license(self, load_packs: bool) -> None:
+        """Verify this agent identity is licensed and custom agents are allowed.
+
+        Raises RuntimeError if:
+        - The agent identity requires a pack subscription the user doesn't have
+        - load_packs=True but the license doesn't allow custom agent creation
+        """
+        try:
+            from lib.licensing.LicenseManager import get_license_manager
+        except ImportError:
+            return  # LicenseManager not available (standalone/dev mode)
+
+        lm = get_license_manager()
+
+        # Check if this specific agent identity is licensed
+        if not lm.is_agent_licensed(self.name):
+            raise RuntimeError(
+                f"Agent '{self.name}' requires a pack subscription. "
+                f"Visit portal.aitherium.com/portal/marketplace/packs "
+                f"or use 'aither' (included in all tiers)."
+            )
+
+        # If loading packs with a custom identity, check custom_agents permission
+        if load_packs and not lm.can_build_custom_agents():
+            # Only block if this is a truly custom identity (not in standard catalog)
+            _catalog_names = set(lm.license.entitlements.named_agents)
+            if self.name not in _catalog_names:
+                raise RuntimeError(
+                    f"Custom agent creation requires a Creator subscription ($999/mo). "
+                    f"Current tier: {lm.license.tier.value}. "
+                    f"Visit portal.aitherium.com/portal/marketplace/packs"
+                )
 
     def _filter_unavailable_tools(self):
         """Remove tools that can't work in current deployment context."""

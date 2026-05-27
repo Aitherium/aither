@@ -26,7 +26,7 @@ Library usage:
 
 from __future__ import annotations
 
-__version__ = "1.17.0"
+__version__ = "1.18.0"
 
 # Public symbols are imported lazily on attribute access so that the
 # package stays cheap to import (the CLI submodules pull in click,
