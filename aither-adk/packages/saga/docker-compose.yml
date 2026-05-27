@@ -1,0 +1,35 @@
+version: "3.8"
+
+services:
+  saga:
+    build:
+      context: ../..
+      dockerfile: packages/saga/Dockerfile
+    ports:
+      - "${SAGA_PORT:-8080}:8080"
+    environment:
+      - SAGA_PORT=8080
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      # vLLM on host or DGX Spark
+      - AITHER_VLLM_URL=${AITHER_VLLM_URL:-}
+      - VLLM_URL=${VLLM_URL:-}
+      # llama.cpp endpoint (if installed on host)
+      - AITHER_LLAMACPP_URL=${AITHER_LLAMACPP_URL:-}
+      # Cloud API keys (optional)
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      # Prometheus simulation backend
+      - SAGA_PROMETHEUS_URL=${SAGA_PROMETHEUS_URL:-}
+    volumes:
+      - saga-data:/root/.saga
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  saga-data:
