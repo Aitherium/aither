@@ -923,7 +923,8 @@ def setup(email, password, auto_mode, skip_gpu, skip_deploy, skip_mcp, skip_llm,
 @click.option("--offline", type=click.Path(exists=True), help="Import offline bundle")
 @click.option("--dry-run", is_flag=True, help="Preview without pulling")
 @click.option("--json", "output_json", is_flag=True, help="JSON output")
-def deploy(subcommand, profile, ver, gpu, data_dir, offline, dry_run, output_json):
+@click.option("--register-fleet", is_flag=True, help="Register with fleet after deploy ($5/mo)")
+def deploy(subcommand, profile, ver, gpu, data_dir, offline, dry_run, output_json, register_fleet):
     """Deploy AitherOS locally via Docker.
 
     \b
@@ -1021,6 +1022,123 @@ def deploy(subcommand, profile, ver, gpu, data_dir, offline, dry_run, output_jso
             print(f"  {svc}: {'healthy' if ok else 'unhealthy'}")
         print(f"\n  Genesis:   http://localhost:8001")
         print(f"  Dashboard: http://localhost:3000")
+
+        if register_fleet:
+            try:
+                import httpx
+                from adk.shell.auth import AuthStore
+
+                token = None
+                try:
+                    token = AuthStore.get_active_token() if AuthStore else None
+                except Exception:
+                    pass
+
+                portal_url = os.environ.get("AITHER_PORTAL_URL", "https://portal.aitherium.com")
+                headers = {"Content-Type": "application/json"}
+                if token:
+                    headers["Authorization"] = f"Bearer {token}"
+
+                with httpx.Client(timeout=15) as client:
+                    resp = client.post(
+                        f"{portal_url}/api/fleet/endpoints/register",
+                        json={
+                            "name": profile or "aither-agent",
+                            "url": "http://localhost:8080",
+                            "agent_type": "adk-deploy",
+                            "capabilities": ["chat", "tools"],
+                        },
+                        headers=headers,
+                    )
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        print(f"\n  Fleet registered: {data.get('endpoint_id')}")
+                        print(f"  API Key: {data.get('api_key')} (save this)")
+                        print("  Billing: $5/mo")
+                    else:
+                        print(f"\n  Fleet registration failed: {resp.status_code}")
+            except Exception as e:
+                print(f"\n  Fleet registration failed (non-fatal): {e}")
+
+
+# ─── aither download (download purchased pack bundles) ──────────────────────
+
+@cli.command()
+@click.argument("pack_id")
+@click.option("--output-dir", "-o", default=".", type=click.Path(), help="Output directory")
+@click.option("--extract", "-x", is_flag=True, help="Auto-extract after download")
+@click.option("--portal-url", default=None, help="Portal URL override")
+def download(pack_id, output_dir, extract, portal_url):
+    """Download a purchased pack bundle.
+
+    \b
+    aither download aither-knowledge             # Download to current dir
+    aither download aither-knowledge -o ./agent  # Download to specific dir
+    aither download aither-knowledge -x          # Download and extract
+    """
+    import httpx
+    from pathlib import Path as P
+
+    base = portal_url or os.environ.get("AITHER_PORTAL_URL", "https://portal.aitherium.com")
+    headers = {"Content-Type": "application/json"}
+
+    # Try to get auth token if available
+    try:
+        from adk.shell.auth import AuthStore
+        token = AuthStore.get_active_token() if AuthStore else None
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+    except Exception:
+        pass
+
+    # First get pack info
+    print(f"Fetching pack info: {pack_id}")
+    try:
+        with httpx.Client(timeout=30) as client:
+            info_resp = client.get(f"{base}/api/marketplace/packs/{pack_id}", headers=headers)
+            if info_resp.status_code == 404:
+                print(f"Pack '{pack_id}' not found.")
+                raise SystemExit(1)
+            pack_info = info_resp.json() if info_resp.status_code == 200 else {}
+            pack_name = pack_info.get("name", pack_id)
+
+            # Download bundle
+            print(f"Downloading {pack_name}...")
+            dl_resp = client.get(
+                f"{base}/api/agent-builder/build/{pack_id}/download",
+                headers=headers,
+                follow_redirects=True,
+            )
+            if dl_resp.status_code != 200:
+                print(f"Download failed: {dl_resp.status_code}")
+                raise SystemExit(1)
+
+            out_path = P(output_dir)
+            out_path.mkdir(parents=True, exist_ok=True)
+            filename = f"{pack_id}.tar.gz"
+            filepath = out_path / filename
+            filepath.write_bytes(dl_resp.content)
+            print(f"Saved: {filepath} ({len(dl_resp.content)} bytes)")
+
+            if extract:
+                import tarfile
+                with tarfile.open(filepath, "r:gz") as tar:
+                    extract_dir = out_path / pack_id
+                    tar.extractall(path=str(extract_dir))
+                    print(f"Extracted to: {extract_dir}")
+                    # Show first 10 files in bundle
+                    for member in tar.getnames()[:10]:
+                        print(f"  {member}")
+                    if len(tar.getnames()) > 10:
+                        print(f"  ... and {len(tar.getnames()) - 10} more files")
+
+            print(f"\nNext steps:")
+            print(f"  cd {pack_id if extract else output_dir}")
+            print(f"  docker compose up -d")
+            print(f"  # Or: aither run")
+    except httpx.ConnectError:
+        print(f"Could not connect to {base}")
+        raise SystemExit(1)
 
 
 # ─── aither rebuild (build + restart with base image auto-detection) ────────
@@ -2377,6 +2495,101 @@ def node(mode, port):
     """
     from adk.shell.node.server import run_node
     run_node(mode=mode, port=port)
+
+
+@mcp.command("add")
+@click.argument("server_url")
+@click.option("--api-key", "-k", required=True, help="MCP gateway API key")
+@click.option("--name", "-n", default=None, help="Friendly name for this server")
+def mcp_add(server_url, api_key, name):
+    """Register a remote MCP tool server.
+
+    \b
+    aither mcp add mcp.aitherium.com --api-key <key>
+    aither mcp add https://mcp.example.com -k <key> -n "My Tools"
+    """
+    from pathlib import Path as P
+    import datetime
+
+    # Normalize URL
+    if not server_url.startswith("http"):
+        server_url = f"https://{server_url}"
+
+    config_dir = P.home() / ".aither"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    config_file = config_dir / "mcp_servers.json"
+
+    # Load existing
+    servers = {}
+    if config_file.exists():
+        servers = json.loads(config_file.read_text())
+
+    server_name = name or server_url.split("//")[-1].split("/")[0]
+    servers[server_name] = {
+        "url": server_url,
+        "api_key": api_key,
+        "added_at": datetime.datetime.now().isoformat(),
+    }
+
+    config_file.write_text(json.dumps(servers, indent=2))
+    config_file.chmod(0o600)
+    print(f"Added MCP server: {server_name} -> {server_url}")
+    print(f"Config saved to: {config_file}")
+
+    # Verify connection
+    try:
+        import httpx
+        with httpx.Client(timeout=10) as client:
+            resp = client.get(f"{server_url}/health", headers={"Authorization": f"Bearer {api_key}"})
+            if resp.status_code == 200:
+                print("Connection verified: healthy")
+            else:
+                print(f"Warning: server returned {resp.status_code} (may still work)")
+    except Exception as e:
+        print(f"Warning: could not verify connection ({e})")
+
+
+@mcp.command("list")
+def mcp_list():
+    """List registered MCP servers."""
+    from pathlib import Path as P
+
+    config_file = P.home() / ".aither" / "mcp_servers.json"
+    if not config_file.exists():
+        print("No MCP servers registered. Use: aither mcp add <url> --api-key <key>")
+        return
+
+    servers = json.loads(config_file.read_text())
+    if not servers:
+        print("No MCP servers registered.")
+        return
+
+    print(f"{'Name':<25} {'URL':<40} {'Added'}")
+    print("-" * 80)
+    for name, info in servers.items():
+        added = info.get("added_at", "")[:10]
+        print(f"{name:<25} {info['url']:<40} {added}")
+
+
+@mcp.command("remove")
+@click.argument("name")
+def mcp_remove(name):
+    """Remove a registered MCP server."""
+    from pathlib import Path as P
+
+    config_file = P.home() / ".aither" / "mcp_servers.json"
+    if not config_file.exists():
+        print("No MCP servers registered.")
+        return
+
+    servers = json.loads(config_file.read_text())
+    if name not in servers:
+        print(f"Server '{name}' not found. Available: {', '.join(servers.keys())}")
+        return
+
+    del servers[name]
+    config_file.write_text(json.dumps(servers, indent=2))
+    print(f"Removed MCP server: {name}")
 
 
 @cli.command()

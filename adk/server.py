@@ -834,6 +834,33 @@ def create_app(
             _state["fleet_registered"] = False
             logger.warning("Fleet endpoint registration failed (non-fatal): %s", exc)
 
+        # Register with new fleet API (separate try/except for resilience)
+        try:
+            portal_url = os.getenv("AITHER_PORTAL_URL", "https://portal.aitherium.com")
+            import httpx
+            billing_email = saved.get("billing_email", "")
+            async with httpx.AsyncClient(timeout=15) as client:
+                fleet_resp = await client.post(
+                    f"{portal_url}/api/fleet/endpoints/register",
+                    json={
+                        "name": agent_name,
+                        "url": invoke_url,
+                        "agent_type": "adk-agent",
+                        "capabilities": ["chat", "tools"],
+                        "billing_email": billing_email,
+                    },
+                    headers={"Authorization": f"Bearer {api_key}"},
+                )
+                if fleet_resp.status_code == 200:
+                    data = fleet_resp.json()
+                    _state["fleet_endpoint_id"] = data.get("endpoint_id", "")
+                    _state["fleet_api_key"] = data.get("api_key", "")
+                    logger.info("Registered fleet API endpoint: %s (id=%s)", agent_name, _state.get("fleet_endpoint_id"))
+                else:
+                    logger.debug("Fleet API registration returned %d", fleet_resp.status_code)
+        except (ImportError, RuntimeError, OSError, ConnectionError) as exc:
+            logger.debug("Fleet API registration failed (non-fatal): %s", exc)
+
     async def _deregister_fleet_endpoint():
         """Mark agent as offline in portal fleet on shutdown."""
         if not _state.get("fleet_registered"):
@@ -861,6 +888,21 @@ def create_app(
             logger.info("Deregistered fleet endpoint: %s", agent_name)
         except (ImportError, RuntimeError, OSError, ConnectionError) as exc:
             logger.debug("Fleet endpoint deregistration failed (non-fatal): %s", exc)
+
+        # Deregister from fleet API (separate try/except for resilience)
+        fleet_endpoint_id = _state.get("fleet_endpoint_id")
+        if fleet_endpoint_id:
+            try:
+                portal_url = os.getenv("AITHER_PORTAL_URL", "https://portal.aitherium.com")
+                import httpx
+                async with httpx.AsyncClient(timeout=10) as client:
+                    await client.delete(
+                        f"{portal_url}/api/fleet/endpoints/{fleet_endpoint_id}",
+                        headers={"Authorization": f"Bearer {api_key}"},
+                    )
+                logger.info("Deregistered fleet API endpoint: %s (id=%s)", agent_name, fleet_endpoint_id)
+            except (ImportError, RuntimeError, OSError, ConnectionError) as exc:
+                logger.debug("Fleet API deregistration failed (non-fatal): %s", exc)
 
     async def _fleet_heartbeat_loop():
         """Continuously heartbeat to portal every 60s using FederationLiteClient.

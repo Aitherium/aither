@@ -3174,6 +3174,34 @@ def cmd_quickstart(args):
         print()
         return 0
 
+    # Step 1.5: Check for brain_pack.yaml in marketplace/local projects
+    brain_pack_path = None
+    if Path("brain_pack.yaml").exists():
+        brain_pack_path = Path("brain_pack.yaml")
+    elif Path("config/brain_pack.yaml").exists():
+        brain_pack_path = Path("config/brain_pack.yaml")
+
+    if brain_pack_path:
+        print(f"  Found brain pack: {brain_pack_path}")
+        try:
+            import yaml
+            with open(brain_pack_path) as f:
+                brain = yaml.safe_load(f) or {}
+            agent_name = brain.get("agent_name", "agent")
+            model = brain.get("model", "")
+            llm_backend = brain.get("llm_backend", "auto")
+            print(f"    Agent: {agent_name}")
+            print(f"    Model: {model or 'auto'}")
+            print(f"    Backend: {llm_backend}")
+            print()
+
+            if model and llm_backend == "local":
+                print(f"  Preparing model: {model}")
+        except Exception as e:
+            print(f"  Warning: could not parse brain pack: {e}")
+            brain_pack_path = None
+            print()
+
     if cloud_mode:
         # ── Cloud-only quickstart ──────────────────────────────────────
         print("  Cloud-Only Setup (no GPU required)")
@@ -3294,6 +3322,18 @@ def cmd_quickstart(args):
         print("    adk doctor           Check system health")
         print()
 
+        if brain_pack_path:
+            print("  Marketplace pack shortcuts:")
+            print("    adk run              Launch your packaged agent")
+            print("    docker compose up -d")
+            print()
+            print("  To register with fleet ($5/mo):")
+            print("    adk deploy --register-fleet")
+            print()
+            print("  To add cloud MCP tools:")
+            print("    adk mcp add mcp.aitherium.com --api-key <your-key>")
+            print()
+
         # Offer local orchestrator
         try:
             answer = input("  Set up a local orchestrator to reduce costs further? [y/N]: ").strip().lower()
@@ -3375,6 +3415,19 @@ def cmd_quickstart(args):
     print("    adk run              Start the agent server")
     print("    adk doctor           Check system health")
     print()
+
+    if brain_pack_path:
+        print("  Marketplace pack shortcuts:")
+        print("    adk run              Launch your packaged agent")
+        print("    docker compose up -d")
+        print()
+        print("  To register with fleet ($5/mo):")
+        print("    adk deploy --register-fleet")
+        print()
+        print("  To add cloud MCP tools:")
+        print("    adk mcp add mcp.aitherium.com --api-key <your-key>")
+        print()
+
     return 0
 
 
