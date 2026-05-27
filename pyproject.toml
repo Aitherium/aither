@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "aither-adk"
-version = "1.18.0"
+version = "1.18.1"
 description = "Build AI agent fleets. Any backend, local or cloud. Runtime backend switching, hybrid reasoning, effort-based routing, 17 bundled identities, knowledge graph memory."
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -96,25 +96,14 @@ aither-py = "adk.shell.cli:entry"
 
 [tool.hatch.build]
 # Only ship the free-tier identity (aither.yaml) in the PyPI package.
-# Premium identities require a pack subscription and are delivered via
-# the pack download API after purchase.
+# All other identities are premium IP delivered via pack download after
+# subscription. This pattern excludes everything in identities/ EXCEPT
+# aither.yaml (the free-tier core agent).
 exclude = [
-    "adk/identities/apollo.yaml",
-    "adk/identities/athena.yaml",
-    "adk/identities/atlas.yaml",
-    "adk/identities/chaos.yaml",
-    "adk/identities/demiurge.yaml",
-    "adk/identities/hera.yaml",
-    "adk/identities/hydra.yaml",
-    "adk/identities/iris.yaml",
-    "adk/identities/lyra.yaml",
-    "adk/identities/morgana.yaml",
-    "adk/identities/muse.yaml",
-    "adk/identities/prometheus.yaml",
-    "adk/identities/saga.yaml",
-    "adk/identities/themis.yaml",
-    "adk/identities/vera.yaml",
-    "adk/identities/viviane.yaml",
+    "adk/identities/*.yaml",
+]
+artifacts = [
+    "adk/identities/aither.yaml",
 ]
 
 [tool.hatch.build.targets.wheel]
