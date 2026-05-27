@@ -835,6 +835,7 @@ def create_app(
             logger.warning("Fleet endpoint registration failed (non-fatal): %s", exc)
 
         # Register with new fleet API (separate try/except for resilience)
+        workspace_id = saved.get("workspace_id", "") or os.getenv("AITHER_WORKSPACE_ID", "")
         try:
             portal_url = os.getenv("AITHER_PORTAL_URL", "https://portal.aitherium.com")
             import httpx
@@ -849,7 +850,11 @@ def create_app(
                         "capabilities": ["chat", "tools"],
                         "billing_email": billing_email,
                     },
-                    headers={"Authorization": f"Bearer {api_key}"},
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "X-Tenant-ID": tenant_id,
+                        "X-Workspace-ID": workspace_id,
+                    },
                 )
                 if fleet_resp.status_code == 200:
                     data = fleet_resp.json()
@@ -860,6 +865,32 @@ def create_app(
                     logger.debug("Fleet API registration returned %d", fleet_resp.status_code)
         except (ImportError, RuntimeError, OSError, ConnectionError) as exc:
             logger.debug("Fleet API registration failed (non-fatal): %s", exc)
+
+        # Register with AitherFleet service (central roster for cycle dispatch)
+        try:
+            fleet_svc_url = os.getenv("AITHER_FLEET_URL", "http://localhost:8162")
+            import httpx
+            async with httpx.AsyncClient(timeout=10) as client:
+                await client.post(
+                    f"{fleet_svc_url}/fleet/agents",
+                    json={
+                        "name": agent_name,
+                        "visibility": "tenant",
+                        "status": "active",
+                        "card": {
+                            "agent_type": "adk-agent",
+                            "capabilities": ["chat", "tools", "forge"],
+                            "invoke_url": invoke_url,
+                        },
+                    },
+                    headers={
+                        "X-Tenant-ID": tenant_id,
+                        "X-Workspace-ID": workspace_id,
+                    },
+                )
+            logger.info("Registered with AitherFleet service: %s", agent_name)
+        except (ImportError, RuntimeError, OSError, ConnectionError) as exc:
+            logger.debug("AitherFleet registration failed (non-fatal): %s", exc)
 
     async def _deregister_fleet_endpoint():
         """Mark agent as offline in portal fleet on shutdown."""

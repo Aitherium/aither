@@ -231,23 +231,52 @@ class AgentsPlugin(SlashCommand):
             except Exception:
                 pass
 
-            lines = [f"**Fleet Overview**\n"]
+            # Fetch workspace cycles with fleet bindings
+            cycle_bindings: Dict[str, List[str]] = {}  # agent_id -> [cycle summaries]
+            try:
+                async with httpx.AsyncClient(timeout=10, verify=False) as c:
+                    # Query all workspaces for cycles — Genesis iterates them
+                    r3 = await c.get(
+                        f"{_genesis_url()}/fleet/agents",
+                        headers=_api_headers(),
+                    )
+                    if r3.status_code == 200:
+                        fleet_agents = r3.json().get("agents", [])
+                        for fa in fleet_agents:
+                            name = fa.get("name", "")
+                            invoke = fa.get("invoke_url", "")
+                            if invoke and name:
+                                cycle_bindings.setdefault(name, []).append(invoke)
+            except Exception:
+                pass
+
+            lines = ["**Fleet Overview**\n"]
             lines.append(f"  Local workspace: {len(local)} agents")
             if portal_agents:
                 lines.append(f"  Portal federated: {len(portal_agents)} agents")
+            if cycle_bindings:
+                lines.append(f"  Cycle-bound agents: {len(cycle_bindings)}")
             lines.append("")
 
             if local:
                 lines.append("**Local:**")
                 for a in local:
-                    lines.append(f"  - {a.get('slug', '?')} ({a.get('type', 'identity')})")
+                    slug = a.get("slug", "?")
+                    line = f"  - {slug} ({a.get('type', 'identity')})"
+                    if slug in cycle_bindings:
+                        line += f" [fleet: {cycle_bindings[slug][0][:40]}...]"
+                    lines.append(line)
 
             if portal_agents:
                 lines.append("\n**Federated:**")
                 for a in portal_agents[:20]:
                     name = a.get("name", "?")
                     node = a.get("node_id", "?")
-                    lines.append(f"  - {name} (node: {node})")
+                    url = a.get("invoke_url", "")
+                    line = f"  - {name} (node: {node})"
+                    if url:
+                        line += f" @ {url[:50]}"
+                    lines.append(line)
 
             return "\n".join(lines)
 
