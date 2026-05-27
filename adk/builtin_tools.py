@@ -1289,6 +1289,253 @@ def _init_graph_tools():
 
 
 # ─────────────────────────────────────────────────────────────────────────
+# Workspace Intelligence tools — people analytics, meetings, email, collab
+# ─────────────────────────────────────────────────────────────────────────
+
+def _wi_base_url() -> str:
+    """Resolve workspace intelligence base URL."""
+    return os.getenv(
+        "ADK_APP_PROXY_URL",
+        os.getenv("AITHER_GENESIS_URL", "http://localhost:8001"),
+    ).rstrip("/")
+
+
+def _wi_get(path: str, params: dict | None = None) -> str:
+    """GET workspace intelligence endpoint with graceful degradation."""
+    import httpx
+    url = f"{_wi_base_url()}{path}"
+    try:
+        resp = httpx.get(url, params=params, timeout=10)
+        if resp.status_code == 200:
+            return json.dumps(resp.json(), indent=2)
+        return json.dumps({"error": f"HTTP {resp.status_code}", "detail": resp.text[:300]})
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+def workspace_health(days: int = 7) -> str:
+    """Get workspace health score and engagement metrics.
+
+    Returns composite health score (0-100), active users, engagement rate,
+    meeting/email/message volume, activity trends, and top contributors.
+
+    Args:
+        days: Number of days to analyze (default 7)
+    """
+    return _wi_get("/api/workspace-intelligence/health", {"days": days})
+
+
+def email_intelligence(days: int = 30) -> str:
+    """Analyze email patterns: top senders, categories, busiest hours.
+
+    Provides sender frequency, VIP/urgent/approval/FYI categorization,
+    peak activity hours, and thread depth analysis.
+
+    Args:
+        days: Number of days to analyze (default 30)
+    """
+    return _wi_get("/api/workspace-intelligence/email-intelligence", {"days": days})
+
+
+def meeting_intelligence(days: int = 30) -> str:
+    """Analyze meeting patterns: time spent, types, top collaborators, free time.
+
+    Shows total hours in meetings, type breakdown (1:1, team, all-hands),
+    top meeting partners, busiest days, and free time percentage.
+
+    Args:
+        days: Number of days to analyze (default 30)
+    """
+    return _wi_get("/api/workspace-intelligence/meeting-intelligence", {"days": days})
+
+
+def collaboration_signals(days: int = 30) -> str:
+    """Get team collaboration metrics: interaction density, pairs, silos.
+
+    Analyzes cross-channel collaboration from meetings, emails, messages.
+    Identifies strongest pairs, communication flow, and potential silos.
+
+    Args:
+        days: Number of days to analyze (default 30)
+    """
+    return _wi_get("/api/workspace-intelligence/collaboration", {"days": days})
+
+
+def person_intelligence(person_id: str, days: int = 30) -> str:
+    """Get engagement and activity profile for a specific person.
+
+    Returns engagement score, email volume, meetings, activity trends,
+    and top contacts for the specified person.
+
+    Args:
+        person_id: Person identifier (email or user ID)
+        days: Number of days to analyze (default 30)
+    """
+    return _wi_get(f"/api/workspace-intelligence/person/{person_id}", {"days": days})
+
+
+def relationship_insights() -> str:
+    """Get network relationship analytics from the social graph.
+
+    Returns relationship type distribution, network density,
+    key connectors, and isolated members needing support.
+    """
+    return _wi_get("/api/workspace-intelligence/relationships")
+
+
+def post_to_social(text: str, platforms: str = "bluesky,linkedin") -> str:
+    """Create a social media post across selected platforms.
+
+    Args:
+        text: Post content
+        platforms: Comma-separated platform names (default: bluesky,linkedin)
+    """
+    import httpx
+    url = f"{_wi_base_url()}/api/social/posts/draft"
+    plat_list = [p.strip() for p in platforms.split(",") if p.strip()]
+    try:
+        resp = httpx.post(url, json={"text": text, "platforms": plat_list}, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            post_id = data.get("id", "")
+            if post_id:
+                httpx.post(f"{_wi_base_url()}/api/social/posts/{post_id}/publish", timeout=10)
+            return json.dumps(data, indent=2)
+        return json.dumps({"error": f"HTTP {resp.status_code}"})
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+def social_analytics(days: int = 30) -> str:
+    """Get social media engagement metrics and top posts.
+
+    Args:
+        days: Number of days to analyze (default 30)
+    """
+    return _wi_get("/api/social/analytics", {"days": days})
+
+
+def executive_briefing() -> str:
+    """Get unified morning briefing: calendar, priority emails, tasks, messages.
+
+    Returns today's events, next meeting countdown, priority items
+    (VIP emails, urgent tasks, imminent meetings), and unread counts.
+    """
+    return _wi_get("/api/executive/briefing")
+
+
+def meeting_prep(event_id: str, title: str = "") -> str:
+    """Prepare for a meeting: talking points, related docs, attendee context.
+
+    Args:
+        event_id: Calendar event ID to prepare for
+        title: Meeting title for additional context
+    """
+    import httpx
+    url = f"{_wi_base_url()}/api/executive/meeting/prep"
+    try:
+        resp = httpx.post(url, json={"event_id": event_id, "title": title}, timeout=15)
+        if resp.status_code == 200:
+            return json.dumps(resp.json(), indent=2)
+        return json.dumps({"error": f"HTTP {resp.status_code}"})
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+def email_triage(email_id: str, subject: str, sender: str, body: str) -> str:
+    """Categorize an email by importance: VIP, urgent, approval, or FYI.
+
+    Args:
+        email_id: Email identifier
+        subject: Email subject line
+        sender: Sender email address
+        body: Email body text
+    """
+    import httpx
+    url = f"{_wi_base_url()}/api/executive/email/triage"
+    try:
+        resp = httpx.post(url, json={
+            "email_id": email_id, "subject": subject,
+            "sender": sender, "body": body,
+        }, timeout=10)
+        if resp.status_code == 200:
+            return json.dumps(resp.json(), indent=2)
+        return json.dumps({"error": f"HTTP {resp.status_code}"})
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+def rag_search(query: str, top_k: int = 5) -> str:
+    """Search document knowledge base for relevant content.
+
+    Args:
+        query: Search query
+        top_k: Number of results (default 5)
+    """
+    import httpx
+    url = f"{_wi_base_url()}/api/documents/search"
+    try:
+        resp = httpx.post(url, json={"query": query, "top_k": top_k}, timeout=10)
+        return resp.text if resp.status_code == 200 else json.dumps({"error": f"HTTP {resp.status_code}"})
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+def staff_search(query: str) -> str:
+    """Search staff/team members by skills, role, department, or name.
+
+    Args:
+        query: Search criteria (name, skill, role, etc.)
+    """
+    import httpx
+    url = f"{_wi_base_url()}/api/people/search"
+    try:
+        resp = httpx.post(url, json={"query": query}, timeout=10)
+        return resp.text if resp.status_code == 200 else json.dumps({"error": f"HTTP {resp.status_code}"})
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+def generate_document(document_type: str, instructions: str = "", context: str = "") -> str:
+    """Generate a formatted document (report, summary, proposal, etc.).
+
+    Args:
+        document_type: Type of document (report, summary, proposal, resume, etc.)
+        instructions: Additional generation instructions
+        context: Background context for the document
+    """
+    import httpx
+    url = f"{_wi_base_url()}/api/content/generate"
+    try:
+        resp = httpx.post(url, json={
+            "document_type": document_type,
+            "instructions": instructions, "context": context,
+        }, timeout=30)
+        return resp.text if resp.status_code == 200 else json.dumps({"error": f"HTTP {resp.status_code}"})
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+_WORKSPACE_TOOLS = [
+    # Intelligence
+    workspace_health, email_intelligence, meeting_intelligence,
+    collaboration_signals, person_intelligence, relationship_insights,
+    # Social / Marketing
+    post_to_social, social_analytics,
+    # Executive Assistant
+    executive_briefing, meeting_prep, email_triage,
+    # Documents / Knowledge
+    rag_search, staff_search, generate_document,
+]
+
+
+def _init_workspace_tools():
+    """Lazily populate the workspace category."""
+    if not TOOL_CATEGORIES.get("workspace"):
+        TOOL_CATEGORIES["workspace"] = _WORKSPACE_TOOLS
+
+
+# ─────────────────────────────────────────────────────────────────────────
 # Safety & Escalation tools
 # ─────────────────────────────────────────────────────────────────────────
 
@@ -1383,6 +1630,7 @@ TOOL_CATEGORIES: dict = {
     "swarm": [swarm_code],
     "graph": [],  # populated lazily by _init_graph_tools()
     "safety": [escalate_to_human, check_safety_gate],
+    "workspace": [],  # populated lazily by _init_workspace_tools()
     # "self" is registered via register_self_tools(agent) (closures over agent state),
     # not a flat function list — see register_builtin_tools below.
     "self": [],
@@ -1392,17 +1640,17 @@ TOOL_CATEGORIES: dict = {
 # Every identity gets "self" by default — self-introspection is universally safe and
 # directly addresses Reddit pain ("I asked the agent what it did and it lied").
 IDENTITY_DEFAULTS = {
-    "demiurge": ["file_io", "shell", "python", "web", "git", "code", "repowise", "swarm", "graph", "safety", "self"],
-    "atlas": ["file_io", "web", "secrets", "code", "graph", "safety", "self"],
-    "aither": ["file_io", "shell", "python", "web", "secrets", "creative", "git", "code", "repowise", "swarm", "graph", "safety", "self"],
-    "lyra": ["file_io", "web", "graph", "safety", "self"],
-    "hydra": ["file_io", "shell", "python", "git", "code", "repowise", "graph", "safety", "self"],
-    "prometheus": ["file_io", "shell", "secrets", "git", "safety", "self"],
-    "apollo": ["file_io", "shell", "python", "code", "repowise", "graph", "safety", "self"],
-    "athena": ["file_io", "web", "secrets", "code", "graph", "safety", "self"],
-    "scribe": ["file_io", "web", "code", "repowise", "graph", "safety", "self"],
-    "iris": ["file_io", "web", "creative", "safety", "self"],
-    "muse": ["file_io", "web", "creative", "safety", "self"],
+    "demiurge": ["file_io", "shell", "python", "web", "git", "code", "repowise", "swarm", "graph", "workspace", "safety", "self"],
+    "atlas": ["file_io", "web", "secrets", "code", "graph", "workspace", "safety", "self"],
+    "aither": ["file_io", "shell", "python", "web", "secrets", "creative", "git", "code", "repowise", "swarm", "graph", "workspace", "safety", "self"],
+    "lyra": ["file_io", "web", "graph", "workspace", "safety", "self"],
+    "hydra": ["file_io", "shell", "python", "git", "code", "repowise", "graph", "workspace", "safety", "self"],
+    "prometheus": ["file_io", "shell", "secrets", "git", "workspace", "safety", "self"],
+    "apollo": ["file_io", "shell", "python", "code", "repowise", "graph", "workspace", "safety", "self"],
+    "athena": ["file_io", "web", "secrets", "code", "graph", "workspace", "safety", "self"],
+    "scribe": ["file_io", "web", "code", "repowise", "graph", "workspace", "safety", "self"],
+    "iris": ["file_io", "web", "creative", "workspace", "safety", "self"],
+    "muse": ["file_io", "web", "creative", "workspace", "safety", "self"],
 }
 
 
@@ -1423,9 +1671,10 @@ def register_builtin_tools(
         Number of tools registered.
     """
     _init_graph_tools()  # lazily populate graph category
+    _init_workspace_tools()  # lazily populate workspace category
 
     if categories is None and auto:
-        categories = IDENTITY_DEFAULTS.get(agent.name, ["file_io", "web"])
+        categories = IDENTITY_DEFAULTS.get(agent.name, ["file_io", "web", "workspace"])
 
     if categories is None:
         categories = list(TOOL_CATEGORIES.keys())
