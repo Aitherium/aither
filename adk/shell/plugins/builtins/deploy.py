@@ -91,6 +91,20 @@ class DeployPlugin(SlashCommand):
                     profile_name = args[i]
                 i += 1
 
+        # Auto-resolve "personal" to the right sub-profile based on hardware
+        if profile_name == "personal":
+            from adk.shell.deployer import _detect_gpu
+            gpu_name, vram_gb = _detect_gpu()
+            if gpu_name and vram_gb >= 8:
+                profile_name = "personal-gpu"
+                print(f"  Detected {gpu_name} ({vram_gb:.0f}GB) -> using vLLM (best performance)")
+            elif gpu_name and vram_gb >= 6:
+                profile_name = "personal-ollama"
+                print(f"  Detected {gpu_name} ({vram_gb:.0f}GB) -> using Ollama GPU")
+            else:
+                profile_name = "personal-cpu"
+                print("  No compatible GPU detected -> using CPU inference (32GB+ RAM required)")
+
         deployer = Deployer(
             version=version,
             gpu_mode=gpu_mode,
@@ -111,7 +125,11 @@ class DeployPlugin(SlashCommand):
         except ImportError:
             pass
 
-        # Run deploy
+        # Run deploy with crash reporting
+        from adk.shell.crash_reporter import set_current_command, handle_crash
+
+        set_current_command(f"deploy --profile {profile_name}")
+
         lines: List[str] = []
 
         def progress(phase: str, detail: str = ""):
@@ -119,11 +137,15 @@ class DeployPlugin(SlashCommand):
                 return  # Too noisy per-image
             lines.append(f"  [{phase}] {detail}")
 
-        result = await deployer.deploy(
-            profile_name=profile_name,
-            dry_run=dry_run,
-            progress_callback=progress,
-        )
+        try:
+            result = await deployer.deploy(
+                profile_name=profile_name,
+                dry_run=dry_run,
+                progress_callback=progress,
+            )
+        except Exception as exc:
+            handle_crash(exc, source="deploy")
+            return f"Deployment failed: {exc}"
 
         # Format output
         output_lines = [f"\n**AitherOS Deploy** — {profile_name}\n"]
@@ -294,12 +316,24 @@ class DeployPlugin(SlashCommand):
         profiles = deployer.list_profiles()
 
         lines = ["\n**Available Deployment Profiles**\n"]
+        personal_lines: List[str] = []
         for p in profiles:
             gpu = f"GPU: {p.min_vram_gb}GB VRAM" if p.gpu_required else "No GPU required"
-            lines.append(f"  **{p.name}** — {p.description}")
-            lines.append(f"    RAM: {p.min_ram_gb}GB | Disk: {p.min_disk_gb}GB | {gpu}")
-            lines.append(f"    Containers: ~{p.containers_approx} | Layers: {', '.join(p.layers) or 'none'}")
-            lines.append("")
+            entry = [
+                f"  **{p.name}** — {p.description}",
+                f"    RAM: {p.min_ram_gb}GB | Disk: {p.min_disk_gb}GB | {gpu}",
+                f"    Containers: ~{p.containers_approx} | Layers: {', '.join(p.layers) or 'none'}",
+                "",
+            ]
+            if p.name.startswith("personal-"):
+                personal_lines.extend(entry)
+            else:
+                lines.extend(entry)
+
+        if personal_lines:
+            lines.append("**Personal Agent ($20/mo)**\n")
+            lines.extend(personal_lines)
+            lines.append("  Tip: `/deploy --profile personal` auto-detects your hardware.\n")
 
         lines.append("Deploy: `/deploy --profile <name>`")
         return "\n".join(lines)
@@ -336,7 +370,7 @@ Usage:
   `/deploy export`       — Create offline bundle
   `/deploy profiles`     — List available profiles
 
-Profiles: chat-minimal, chat-full, chat-agents, full, dev, inference-only
+Profiles: chat-minimal, chat-full, chat-agents, full, dev, inference-only, personal
 
 Examples:
   `/deploy --profile chat-full`

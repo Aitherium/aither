@@ -522,6 +522,34 @@ class Deployer:
 
         return results
 
+    # ─── Phase 6b: Ollama Model Pull ─────────────────────────────────────
+
+    async def pull_ollama_model(
+        self, profile: DeployProfile, progress_callback=None
+    ) -> bool:
+        """Pull Ollama model after boot (for personal-ollama/personal-cpu profiles)."""
+        if profile.name not in ("personal-ollama", "personal-cpu"):
+            return True  # Not applicable
+
+        container = "aither-ollama-personal"
+        if profile.name == "personal-cpu":
+            container = "aither-ollama-personal-cpu"
+        model = "nemotron-orchestrator:8b-q4_K_M"
+
+        if progress_callback:
+            progress_callback("model_pull", f"Pulling {model} into {container}...")
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "docker", "exec", container, "ollama", "pull", model,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=600)
+            return proc.returncode == 0
+        except (asyncio.TimeoutError, FileNotFoundError):
+            return False
+
     # ─── Phase 7: Stop ────────────────────────────────────────────────────
 
     async def stop(self) -> bool:
@@ -624,6 +652,13 @@ class Deployer:
             result["status"] = "failed"
             result["errors"].append("docker compose up failed")
             return result
+
+        # 6b. Ollama model pull (personal profiles)
+        if profile.name in ("personal-ollama", "personal-cpu"):
+            _progress("model_pull", "Downloading Nemotron-Orchestrator-8B model...")
+            model_ok = await self.pull_ollama_model(profile, progress_callback=_progress)
+            if not model_ok:
+                result["warnings"].append("Model pull failed — will download on first use")
 
         # 7. Verify
         _progress("verify", "Waiting for services to become healthy...")
