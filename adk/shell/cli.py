@@ -27,6 +27,11 @@ from adk.shell.config import save_default_config, load_config, AitherConfig
 from adk.shell.shell import run_repl
 from adk.shell.commands import execute_command, CommandError
 from adk.shell.genesis_client import GenesisClient, GenesisError
+from adk.shell.crash_reporter import install_crash_reporter, set_current_command
+
+# Install global crash reporter — catches uncaught exceptions,
+# prompts user to send error report, creates GitHub issue automatically.
+install_crash_reporter()
 
 logger = logging.getLogger(__name__)
 
@@ -4722,6 +4727,126 @@ def listen_to_video(session_id, voice, output_json):
             click.echo(f"Video: {path}")
         else:
             click.echo("Video render queued (check Remotion status)")
+
+
+# ---------------------------------------------------------------------------
+# aither docker — Docker Desktop recovery (WSL2 500-error hang)
+# ---------------------------------------------------------------------------
+
+@cli.group()
+def docker():
+    """Docker Desktop management and recovery."""
+    pass
+
+
+def _docker_healthy() -> bool:
+    """Check if Docker engine responds without 500 errors."""
+    import subprocess as _sp
+    try:
+        r = _sp.run(["docker", "info"], capture_output=True, timeout=10)
+        return r.returncode == 0 and b"500 Internal Server Error" not in r.stderr
+    except Exception:
+        return False
+
+
+def _docker_recover(verbose: bool = False) -> bool:
+    """Kill Docker Desktop + WSL, restart cleanly. Returns True on success."""
+    import subprocess as _sp
+    import time
+
+    def _run(cmd: str):
+        if verbose:
+            click.echo(f"  $ {cmd}")
+        _sp.run(cmd, shell=True, capture_output=not verbose, timeout=30)
+
+    click.echo(click.style("[1/5] Killing Docker Desktop...", fg="yellow"))
+    for proc in ("Docker Desktop", "com.docker.backend", "com.docker.build",
+                 "docker-agent", "docker-sandbox"):
+        _run(f'taskkill /F /IM "{proc}.exe" 2>NUL')
+    time.sleep(2)
+
+    click.echo(click.style("[2/5] Shutting down WSL...", fg="yellow"))
+    _run("wsl --shutdown")
+    time.sleep(3)
+
+    click.echo(click.style("[3/5] Cleaning up zombie processes...", fg="yellow"))
+    _run("taskkill /F /IM vmmem 2>NUL")
+    _run("taskkill /F /IM wslservice.exe 2>NUL")
+    time.sleep(2)
+
+    click.echo(click.style("[4/5] Restarting Docker service...", fg="yellow"))
+    # Try admin service restart — will silently fail if not elevated
+    _run('net stop com.docker.service 2>NUL & net start com.docker.service 2>NUL')
+    time.sleep(2)
+
+    click.echo(click.style("[5/5] Starting Docker Desktop...", fg="yellow"))
+    docker_exe = r"C:\Program Files\Docker\Docker\Docker Desktop.exe"
+    _sp.Popen([docker_exe], creationflags=0x00000008)  # DETACHED_PROCESS
+
+    click.echo("Waiting for Docker engine...")
+    for elapsed in range(5, 95, 5):
+        time.sleep(5)
+        if _docker_healthy():
+            click.echo(click.style(f"Docker recovered in {elapsed}s!", fg="green"))
+            # Clean up dead containers
+            dead = _sp.run(
+                ["docker", "ps", "-a", "--filter", "status=dead", "--format", "{{.Names}}"],
+                capture_output=True, text=True, timeout=10,
+            )
+            for name in dead.stdout.strip().splitlines():
+                if name:
+                    click.echo(f"  Removing dead container: {name}")
+                    _run(f"docker rm -f {name}")
+            # Restart exited containers
+            exited = _sp.run(
+                ["docker", "ps", "-a", "--filter", "status=exited", "--format", "{{.Names}}"],
+                capture_output=True, text=True, timeout=10,
+            )
+            for name in exited.stdout.strip().splitlines():
+                if name:
+                    click.echo(f"  Restarting: {name}")
+                    _run(f"docker start {name}")
+            return True
+        if verbose:
+            click.echo(f"  ... {elapsed}s")
+
+    click.echo(click.style("Recovery FAILED after 90s. You may need to reboot.", fg="red"))
+    return False
+
+
+@docker.command()
+@click.option("--verbose", "-v", is_flag=True, help="Show commands being run")
+def recover(verbose):
+    """Recover Docker Desktop from WSL2 500-error hang (no reboot needed)."""
+    if _docker_healthy():
+        click.echo(click.style("Docker engine is healthy. Nothing to do.", fg="green"))
+        import subprocess as _sp
+        r = _sp.run(
+            ["docker", "ps", "--format", "table {{.Names}}\t{{.Status}}"],
+            capture_output=True, text=True, timeout=10,
+        )
+        click.echo(r.stdout[:2000])
+        return
+    ok = _docker_recover(verbose=verbose)
+    raise SystemExit(0 if ok else 1)
+
+
+@docker.command()
+@click.option("--interval", "-i", default=30, help="Seconds between health checks (default: 30)")
+@click.option("--verbose", "-v", is_flag=True, help="Show commands being run")
+def watch(interval, verbose):
+    """Monitor Docker health and auto-recover on failure."""
+    import time
+    click.echo(f"Docker health monitor started (checking every {interval}s). Ctrl+C to stop.")
+    try:
+        while True:
+            if not _docker_healthy():
+                ts = time.strftime("%H:%M:%S")
+                click.echo(f"\n[{ts}] Docker is DOWN — recovering...")
+                _docker_recover(verbose=verbose)
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        click.echo("\nMonitor stopped.")
 
 
 if __name__ == "__main__":
