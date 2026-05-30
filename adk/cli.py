@@ -4734,6 +4734,23 @@ def _cmd_pack(args) -> int:
 
     if sub == "install":
         pack_id = args.pack_id
+
+        # Deploy-based packs (grid, sovereign) — redirect to deploy command
+        _DEPLOY_PACKS = {
+            "grid-distributed": ("grid", "adk deploy grid"),
+            "grid": ("grid", "adk deploy grid"),
+        }
+        if pack_id in _DEPLOY_PACKS:
+            component, hint = _DEPLOY_PACKS[pack_id]
+            print(f"\n  {pack_id} is an infrastructure pack — installing via deploy.\n")
+            print(f"  Running: {hint}")
+            print()
+            # Delegate to deploy
+            args.component = component
+            args.dry_run = getattr(args, "dry_run", False)
+            from adk.deploy import cmd_deploy_component
+            return cmd_deploy_component(args)
+
         import httpx
         import hashlib
         import tarfile
