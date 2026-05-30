@@ -2864,6 +2864,65 @@ def cmd_deploy_tenant_agent(args) -> int:
 
 
 # ===========================================================================
+# GargBot deployment
+# ===========================================================================
+
+def deploy_gargbot(
+    dry_run: bool = False,
+    tier: Optional[str] = None,
+    no_pull: bool = False,
+    start: bool = True,
+    api_key_arg: Optional[str] = None,
+) -> int:
+    """Deploy GargBot sovereign package — single command for the full flow.
+
+    Wraps setup-gargbot.py: hardware detect -> tier select -> .env generation ->
+    docker compose up -> health check -> print access info.
+    """
+    import shutil
+
+    print()
+    print(bold("  GargBot Sovereign Deployment"))
+    print()
+
+    # Locate the setup script (works from repo root or adk package)
+    setup_script = None
+    for candidate in [
+        Path("AitherOS/scripts/setup-gargbot.py"),
+        Path(__file__).parent.parent.parent / "AitherOS" / "scripts" / "setup-gargbot.py",
+    ]:
+        if candidate.exists():
+            setup_script = candidate
+            break
+
+    if not setup_script:
+        warn("Cannot find AitherOS/scripts/setup-gargbot.py — run from repo root")
+        return 1
+
+    # Build the command
+    cmd_parts = [sys.executable, str(setup_script)]
+    if tier:
+        cmd_parts += ["--tier", tier]
+    if no_pull:
+        cmd_parts.append("--no-pull")
+    if start:
+        cmd_parts.append("--start")
+
+    if dry_run:
+        print(f"  [dry-run] Would run: {' '.join(cmd_parts)}")
+        return 0
+
+    # Inject API key into env if provided
+    env = dict(os.environ)
+    if api_key_arg:
+        env["AITHER_API_KEY"] = api_key_arg
+
+    # Run the setup wizard (it's interactive, so use subprocess with inherited stdio)
+    result = subprocess.run(cmd_parts, env=env)
+    return result.returncode
+
+
+# ===========================================================================
 # CLI entry point
 # ===========================================================================
 
@@ -2949,6 +3008,16 @@ def cmd_deploy_component(args) -> int:
             gpu=gpu, sync=not no_sync, no_memory=no_memory,
             api_key_arg=api_key, tenant=tenant_arg,
             admin_email=admin_email,
+        )
+
+    elif component == "gargbot":
+        tier = getattr(args, "tier", None)
+        no_pull = getattr(args, "no_pull", False)
+        no_start = getattr(args, "no_start", False)
+        api_key = getattr(args, "api_key", None)
+        return deploy_gargbot(
+            dry_run=dry_run, tier=tier, no_pull=no_pull,
+            start=not no_start, api_key_arg=api_key,
         )
 
     elif component == "ollama":

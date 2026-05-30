@@ -5399,6 +5399,17 @@ def _register_commands(sub):
     d_desktop.add_argument("--api-key", help="AITHER_API_KEY (or set env var)")
     d_desktop.add_argument("--dry-run", action="store_true", help="Show what would happen")
 
+    # aither deploy gargbot
+    d_gargbot = deploy_sub.add_parser("gargbot", help="Deploy GargBot sovereign package (setup + compose + health)")
+    d_gargbot.add_argument("--tier", choices=["lite", "entry", "pro", "pro-reasoning", "full"],
+                           help="Force a specific tier (default: auto-detect)")
+    d_gargbot.add_argument("--no-pull", action="store_true", help="Skip image pulling")
+    d_gargbot.add_argument("--start", action="store_true", default=True,
+                           help="Start services after setup (default: true)")
+    d_gargbot.add_argument("--no-start", action="store_true", help="Generate config only, don't start")
+    d_gargbot.add_argument("--api-key", help="AITHER_API_KEY for portal federation")
+    d_gargbot.add_argument("--dry-run", action="store_true", help="Show what would happen")
+
     # aither deploy stop <component>
     d_stop = deploy_sub.add_parser("stop", help="Stop a running deployment")
     d_stop.add_argument("stop_target", nargs="?",
