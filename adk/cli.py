@@ -4593,32 +4593,50 @@ def _cmd_addon(args) -> int:
         return 1
 
 
+def _load_pack_catalog(genesis_url: str) -> list[dict]:
+    """Load pack catalog: Genesis API first, bundled offline catalog as fallback.
+
+    The bundled catalog at ``adk/data/packs_catalog.json`` is auto-generated
+    from ``AitherOS/config/packs_catalog.yaml`` by the ADK sync workflow.
+    This ensures ``adk pack list`` and ``adk pack search`` always work,
+    even without internet or a running Genesis.
+    """
+    catalog: list[dict] = []
+
+    # Try Genesis API
+    try:
+        import httpx
+        with httpx.Client(base_url=genesis_url, timeout=5) as c:
+            resp = c.get("/api/v1/catalog/packs")
+            if resp.status_code == 200:
+                catalog = resp.json().get("packs", [])
+            else:
+                resp = c.get("/v1/packs/catalog")
+                if resp.status_code == 200:
+                    catalog = resp.json().get("packs", [])
+    except Exception:
+        pass
+
+    # Fallback: bundled offline catalog
+    if not catalog:
+        try:
+            bundled = Path(__file__).parent / "data" / "packs_catalog.json"
+            if bundled.exists():
+                catalog = json.loads(bundled.read_text(encoding="utf-8")).get("packs", [])
+        except Exception:
+            pass
+
+    return catalog
+
+
 def _cmd_pack(args) -> int:
     """Handle `adk pack` subcommands."""
     sub = getattr(args, "pack_command", None)
     genesis_url = _get_genesis_url()
 
     if sub == "list" or sub is None:
-        try:
-            import httpx
-        except ImportError:
-            print("httpx required: pip install httpx")
-            return 1
-
-        # Fetch remote catalog from new catalog API
-        catalog = []
-        try:
-            with httpx.Client(base_url=genesis_url, timeout=10) as c:
-                resp = c.get("/api/v1/catalog/packs")
-                if resp.status_code == 200:
-                    catalog = resp.json().get("packs", [])
-                else:
-                    # Fallback to old API
-                    resp = c.get("/v1/packs/catalog")
-                    if resp.status_code == 200:
-                        catalog = resp.json().get("packs", [])
-        except Exception as e:
-            print(f"Cannot reach Genesis at {genesis_url}: {e}")
+        # Fetch catalog: Genesis API → bundled offline catalog fallback
+        catalog = _load_pack_catalog(genesis_url)
 
         # Check local packs
         packs_dir = Path.home() / ".aitheros" / "packs"
@@ -4661,21 +4679,7 @@ def _cmd_pack(args) -> int:
             print("Usage: adk pack search <query>")
             return 1
 
-        try:
-            import httpx
-        except ImportError:
-            print("httpx required: pip install httpx")
-            return 1
-
-        catalog = []
-        try:
-            with httpx.Client(base_url=genesis_url, timeout=10) as c:
-                resp = c.get("/v1/packs/catalog")
-                if resp.status_code == 200:
-                    catalog = resp.json().get("packs", [])
-        except Exception as e:
-            print(f"Cannot reach Genesis at {genesis_url}: {e}")
-            return 1
+        catalog = _load_pack_catalog(genesis_url)
 
         q = query.lower()
         matches = [
