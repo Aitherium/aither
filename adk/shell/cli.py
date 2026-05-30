@@ -1224,7 +1224,16 @@ def _build_base_image(image_tag: str, repo_root: str) -> bool:
 
 
 def _find_repo_root() -> str:
-    """Find the AitherOS repo root (has docker-compose.aitheros.yml)."""
+    """Find the AitherOS repo root (canonical marker: .DEPLOYMENT/compose/docker-compose.aitheros.yml)."""
+    # Canonical marker first, then the legacy repo-root path as a fallback.
+    markers = [
+        os.path.join(".DEPLOYMENT", "compose", "docker-compose.aitheros.yml"),
+        "docker-compose.aitheros.yml",
+    ]
+
+    def _is_root(path: str) -> bool:
+        return any(os.path.isfile(os.path.join(path, m)) for m in markers)
+
     # Check common locations
     candidates = [
         os.getcwd(),
@@ -1233,7 +1242,7 @@ def _find_repo_root() -> str:
         "D:/AitherOS-Fresh",
     ]
     for c in candidates:
-        if os.path.isfile(os.path.join(c, "docker-compose.aitheros.yml")):
+        if _is_root(c):
             return c
     # Try git root
     try:
@@ -1243,7 +1252,7 @@ def _find_repo_root() -> str:
         )
         if result.returncode == 0:
             root = result.stdout.strip()
-            if os.path.isfile(os.path.join(root, "docker-compose.aitheros.yml")):
+            if _is_root(root):
                 return root
     except Exception:
         pass
@@ -1303,7 +1312,9 @@ def rebuild(services, rebuild_all, no_cache, skip_health, compose):
     import time
 
     repo_root = _find_repo_root()
-    compose_file = compose or os.path.join(repo_root, "docker-compose.aitheros.yml")
+    compose_file = compose or os.path.join(
+        repo_root, ".DEPLOYMENT", "compose", "docker-compose.aitheros.yml"
+    )
 
     if not os.path.isfile(compose_file):
         click.echo(f"Compose file not found: {compose_file}", err=True)
@@ -1313,7 +1324,7 @@ def rebuild(services, rebuild_all, no_cache, skip_health, compose):
     if rebuild_all:
         # Get all running services
         result = subprocess.run(
-            ["docker", "compose", "-f", compose_file, "ps", "--format", "{{.Service}}"],
+            ["docker", "compose", "-f", compose_file, "--project-directory", repo_root, "ps", "--format", "{{.Service}}"],
             capture_output=True, text=True, timeout=30
         )
         targets = [s.strip() for s in result.stdout.strip().split("\n") if s.strip()]
@@ -1353,7 +1364,7 @@ def rebuild(services, rebuild_all, no_cache, skip_health, compose):
 
     # Step 2: Build service images
     click.echo("\n--- Step 2: Build services ---")
-    build_cmd = ["docker", "compose", "-f", compose_file, "build"]
+    build_cmd = ["docker", "compose", "-f", compose_file, "--project-directory", repo_root, "build"]
     if no_cache:
         build_cmd.append("--no-cache")
     build_cmd.extend(targets)
@@ -1366,7 +1377,7 @@ def rebuild(services, rebuild_all, no_cache, skip_health, compose):
 
     # Step 3: Restart services
     click.echo("\n--- Step 3: Restart services ---")
-    up_cmd = ["docker", "compose", "-f", compose_file, "up", "-d"]
+    up_cmd = ["docker", "compose", "-f", compose_file, "--project-directory", repo_root, "up", "-d"]
     up_cmd.extend(targets)
     result = subprocess.run(up_cmd, cwd=repo_root, timeout=300)
     if result.returncode != 0:
@@ -2731,15 +2742,18 @@ def up(profile, recipe, skip_pull, skip_docker, skip_integrate, dry_run):
         # Find compose file by walking up
         cwd = Path.cwd().resolve()
         compose_file = None
+        compose_root = None
         for parent in [cwd, *cwd.parents]:
-            cand = parent / "docker-compose.aitheros.yml"
+            cand = parent / ".DEPLOYMENT" / "compose" / "docker-compose.aitheros.yml"
             if cand.exists():
                 compose_file = cand
+                compose_root = parent
                 break
         if not compose_file:
-            click.echo("docker-compose.aitheros.yml not found anywhere up the tree.", err=True)
+            click.echo(".DEPLOYMENT/compose/docker-compose.aitheros.yml not found anywhere up the tree.", err=True)
             sys.exit(2)
         plan.append(("docker-up", [compose, "compose", "-f", str(compose_file),
+                                     "--project-directory", str(compose_root),
                                      "--profile", profile, "up", "-d"]))
 
     # Step 4 — agent integrate (portal federation)

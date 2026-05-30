@@ -167,7 +167,7 @@ if ($Full) {
         Write-Host "[OK] Docker available" -ForegroundColor Green
         Write-Host "  Full stack install requires the AitherOS repo."
         Write-Host "  git clone https://github.com/Aitherium/aither && cd aither"
-        Write-Host "  docker compose -f docker-compose.aitheros.yml up -d"
+        Write-Host "  .DEPLOYMENT/scripts/compose.sh aitheros up -d"
     } elseif (Get-Command winget -ErrorAction SilentlyContinue) {
         Write-Host "[!!] Docker not found. Installing..." -ForegroundColor Yellow
         Write-Host "  winget install Docker.DockerDesktop"

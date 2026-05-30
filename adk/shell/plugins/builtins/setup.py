@@ -476,16 +476,16 @@ class SetupPlugin(SlashCommand):
         if not docker:
             return "❌ Docker not found. Install Docker Desktop: https://docker.com/get-started"
 
-        compose_file = repo / "docker-compose.aitheros.yml"
+        compose_file = repo / ".DEPLOYMENT" / "compose" / "docker-compose.aitheros.yml"
         if not compose_file.exists():
-            compose_file = repo / "docker-compose.node.yml"
+            compose_file = repo / ".DEPLOYMENT" / "compose" / "docker-compose.node.yml"
 
         if not compose_file.exists():
-            return f"❌ No compose file found in `{repo}`"
+            return f"❌ No compose file found in `{repo}/.DEPLOYMENT/compose`"
 
         lines.append("  Starting AitherNode container...")
         rc, out, err = await _run(
-            [docker, "compose", "-f", str(compose_file), "up", "-d", "aither-node"],
+            [docker, "compose", "-f", str(compose_file), "--project-directory", str(repo), "up", "-d", "aither-node"],
             cwd=str(repo), timeout=180,
         )
         if rc == 0:
@@ -611,9 +611,9 @@ class SetupPlugin(SlashCommand):
             lines.append("  For CPU-only, use `/setup node` (Ollama backend)")
             return "\n".join(lines)
 
-        compose_file = repo / "docker-compose.aitheros.yml"
+        compose_file = repo / ".DEPLOYMENT" / "compose" / "docker-compose.aitheros.yml"
         if not compose_file.exists():
-            return "❌ docker-compose.aitheros.yml not found"
+            return "❌ .DEPLOYMENT/compose/docker-compose.aitheros.yml not found"
 
         # Start vLLM service
         model = "Qwen/Qwen3-8B"
@@ -625,7 +625,7 @@ class SetupPlugin(SlashCommand):
         lines.append("  Starting vLLM container (this may pull a large image)...")
 
         rc, out, err = await _run(
-            [docker, "compose", "-f", str(compose_file), "--profile", "gpu", "up", "-d", "aither-vllm"],
+            [docker, "compose", "-f", str(compose_file), "--project-directory", str(repo), "--profile", "gpu", "up", "-d", "aither-vllm"],
             cwd=str(repo), timeout=600,
         )
         if rc == 0:
@@ -637,7 +637,7 @@ class SetupPlugin(SlashCommand):
         # Start MicroScheduler (routes to vLLM)
         lines.append("  Starting MicroScheduler...")
         rc, out, err = await _run(
-            [docker, "compose", "-f", str(compose_file), "up", "-d", "aither-scheduler"],
+            [docker, "compose", "-f", str(compose_file), "--project-directory", str(repo), "up", "-d", "aither-scheduler"],
             cwd=str(repo), timeout=120,
         )
         lines.append(f"  {'✅' if rc == 0 else '❌'} MicroScheduler")
@@ -688,12 +688,12 @@ class SetupPlugin(SlashCommand):
         # Phase 3: Docker services
         docker = shutil.which("docker")
         if docker:
-            compose = repo / "docker-compose.aitheros.yml"
+            compose = repo / ".DEPLOYMENT" / "compose" / "docker-compose.aitheros.yml"
             if compose.exists():
                 lines.append("\n━━━ Phase 3: Core Services ━━━")
                 lines.append("  Starting core Docker services...")
                 rc, out, err = await _run(
-                    [docker, "compose", "-f", str(compose), "up", "-d"],
+                    [docker, "compose", "-f", str(compose), "--project-directory", str(repo), "up", "-d"],
                     cwd=str(repo), timeout=300,
                 )
                 if rc == 0:

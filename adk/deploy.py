@@ -60,9 +60,12 @@ AITHER_DIR = Path.home() / ".aither"
 REGISTRY = "ghcr.io/aitherium"
 
 # Compose file URLs (private repo — requires auth)
-COMPOSE_NODE_URL = f"{GITHUB_RAW}/docker-compose.node.yml"
-COMPOSE_NODE_ADK_URL = f"{GITHUB_RAW}/docker-compose.node-adk.yml"
-COMPOSE_FULL_URL = f"{GITHUB_RAW}/docker-compose.aitheros.yml"
+# Canonical home is .DEPLOYMENT/compose/ (see .DEPLOYMENT/MANIFEST.yaml).
+# NOTE: these raw.githubusercontent.com paths are only valid once the move is
+# merged + pushed to the default branch — verify post-merge with a curl check.
+COMPOSE_NODE_URL = f"{GITHUB_RAW}/.DEPLOYMENT/compose/docker-compose.node.yml"
+COMPOSE_NODE_ADK_URL = f"{GITHUB_RAW}/.DEPLOYMENT/compose/docker-compose.node-adk.yml"
+COMPOSE_FULL_URL = f"{GITHUB_RAW}/.DEPLOYMENT/compose/docker-compose.aitheros.yml"
 
 # Gateway for auth validation
 GATEWAY_URL = "https://gateway.aitherium.com"
@@ -1569,7 +1572,7 @@ def deploy_addons(
 # Component: Sovereign (self-hosted complete stack)
 # ===========================================================================
 
-COMPOSE_SOVEREIGN_URL = f"{GITHUB_RAW}/docker-compose.sovereign.yml"
+COMPOSE_SOVEREIGN_URL = f"{GITHUB_RAW}/.DEPLOYMENT/compose/docker-compose.sovereign.yml"
 
 # App manifest URLs (private repo — requires auth)
 APP_MANIFEST_URL = f"{GITHUB_RAW}/AitherOS/config/app_manifests/{{app_id}}.yaml"

@@ -172,11 +172,11 @@ if [[ "$FULL_STACK" == "true" ]]; then
         echo -e "${GREEN}[OK]${RESET} Docker available"
         # Download and run docker-compose
         echo "  Pulling AitherOS containers..."
-        echo "  docker compose -f docker-compose.aitheros.yml up -d"
+        echo "  .DEPLOYMENT/scripts/compose.sh aitheros up -d"
         echo ""
         echo -e "${YELLOW}[!!]${RESET} Full stack install requires the AitherOS repo."
         echo "  git clone https://github.com/Aitherium/aither && cd aither"
-        echo "  docker compose -f docker-compose.aitheros.yml up -d"
+        echo "  .DEPLOYMENT/scripts/compose.sh aitheros up -d"
     else
         echo -e "${YELLOW}[!!]${RESET} Docker not found. Install Docker first:"
         echo "  https://docs.docker.com/get-docker/"
