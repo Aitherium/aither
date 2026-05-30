@@ -3058,6 +3058,190 @@ def _grid_health_check(saved: dict, grid_nodes: dict, target_host: str | None = 
         print(f"  No node found with host: {target_host}")
 
 
+# ── Phase 3.6: adk explore — marketplace browser ─────────────────────────
+
+
+def cmd_explore(args) -> int:
+    """Browse packs, agents, and skills in the Aitherium marketplace."""
+    genesis_url = _get_genesis_url()
+    category = getattr(args, "category", "all").lower()
+    free_only = getattr(args, "free", False)
+
+    catalog = _load_pack_catalog(genesis_url)
+
+    if not catalog:
+        print("\n  No catalog available. Install aither-adk or connect to Genesis.\n")
+        return 1
+
+    # Filter
+    filtered = catalog
+    if category == "agents":
+        filtered = [p for p in catalog if p.get("type") == "agent_pack"]
+    elif category == "tools":
+        filtered = [p for p in catalog if p.get("type") == "tool_pack"]
+    elif category == "skills":
+        filtered = [p for p in catalog if p.get("type") == "skill_pack"]
+    elif category == "grid":
+        filtered = [p for p in catalog if "grid" in p.get("tags", []) or "distributed" in p.get("tags", [])]
+
+    if free_only:
+        filtered = [p for p in filtered if p.get("tier") == "free"]
+
+    # Check installed
+    packs_dir = Path.home() / ".aitheros" / "packs"
+    installed_ids = set()
+    if packs_dir.is_dir():
+        for child in packs_dir.iterdir():
+            if child.is_dir() and (child / ".toolpack.yaml").exists():
+                installed_ids.add(child.name)
+
+    # Group by type
+    groups: dict[str, list] = {}
+    for p in filtered:
+        ptype = p.get("type", "other").replace("_pack", "").replace("_", " ").title()
+        groups.setdefault(ptype, []).append(p)
+
+    print()
+    print("  Aitherium Marketplace")
+    print("  " + "=" * 60)
+
+    for gname in sorted(groups):
+        packs = groups[gname]
+        print(f"\n  {gname} Packs ({len(packs)})")
+        print("  " + "-" * 55)
+        for p in packs:
+            pid = p.get("id", "?")
+            name = p.get("name", pid)
+            desc = p.get("description", "")[:70]
+            tier = p.get("tier", "free")
+            installed = pid in installed_ids
+            pricing = p.get("pricing", {})
+
+            icon = "[+]" if installed else "[ ]"
+            tier_label = tier
+            price = ""
+            if pricing.get("subscription_cents"):
+                price = f"${int(pricing['subscription_cents']) / 100:.0f}/mo"
+            elif pricing.get("one_time_cents"):
+                price = f"${int(pricing['one_time_cents']) / 100:.0f}"
+
+            status = "installed" if installed else tier_label
+            print(f"  {icon} {name}")
+            if desc:
+                print(f"      {desc}")
+            parts = [status]
+            if price:
+                parts.append(price)
+            if p.get("install_command"):
+                parts.append(p["install_command"])
+            print(f"      {' | '.join(parts)}")
+
+    total = len(filtered)
+    free_count = sum(1 for p in filtered if p.get("tier") == "free")
+    inst_count = sum(1 for p in filtered if p.get("id") in installed_ids)
+
+    print(f"\n  {total} packs shown ({free_count} free, {inst_count} installed)")
+    print()
+    print("  Quick actions:")
+    print("    adk explore agents          Browse agent packs")
+    print("    adk explore tools --free    Free tool packs only")
+    print("    adk explore grid            Grid infrastructure")
+    print("    adk pack install <id>       Install a pack")
+    print("    adk upgrade <id>            Open checkout page")
+    print()
+    print("  Full catalog: https://portal.aitherium.com/marketplace")
+    print()
+    return 0
+
+
+# ── Phase 3.7: adk upgrade — checkout shortcut ──────────────────────────
+
+
+_UPGRADE_URLS: dict[str, tuple[str, str]] = {
+    "managed": ("https://portal.aitherium.com/marketplace/grid?sku=grid_managed_monthly", "Grid Managed ($49/mo)"),
+    "setup": ("https://portal.aitherium.com/marketplace/grid?sku=grid_setup_onetime", "Grid Setup Call ($199)"),
+    "grid": ("https://portal.aitherium.com/marketplace/grid", "Grid Distributed Inference"),
+    "demiurge": ("https://portal.aitherium.com/marketplace/agent.demiurge", "Demiurge — Code Architect"),
+    "hydra": ("https://portal.aitherium.com/marketplace/agent.hydra", "Hydra — Code Guardian"),
+    "athena": ("https://portal.aitherium.com/marketplace/agent.athena", "Athena — Security Oracle"),
+    "lyra": ("https://portal.aitherium.com/marketplace/agent.lyra", "Lyra — Research Muse"),
+    "pro": ("https://portal.aitherium.com/pricing", "Professional Plan"),
+}
+
+
+def cmd_upgrade(args) -> int:
+    """Open upgrade/checkout page for a pack or plan."""
+    target = getattr(args, "target", "").lower().strip()
+
+    if not target:
+        print("\n  Upgrade Options\n")
+        for key, (url, label) in _UPGRADE_URLS.items():
+            print(f"    {key:15s} {label}")
+        print()
+        print("  Usage: adk upgrade managed")
+        print("         adk upgrade demiurge")
+        print("         adk upgrade pro")
+        print()
+        return 0
+
+    if target in _UPGRADE_URLS:
+        url, label = _UPGRADE_URLS[target]
+    else:
+        url = f"https://portal.aitherium.com/marketplace/{target}"
+        label = target
+
+    print(f"\n  Opening: {label}")
+    print(f"  {url}\n")
+
+    import webbrowser
+    try:
+        webbrowser.open(url)
+    except Exception:
+        print("  (Could not open browser — copy the URL above)")
+
+    return 0
+
+
+# ── Version check (runs once per day, non-blocking) ─────────────────────
+
+
+def _check_for_updates() -> None:
+    """Check PyPI for newer aither-adk version. Runs at most once per day."""
+    marker = Path.home() / ".aither" / ".last_update_check"
+    now = time.time()
+
+    # Check at most once per day
+    if marker.exists():
+        try:
+            last = float(marker.read_text(encoding="utf-8").strip())
+            if now - last < 86400:
+                return
+        except (ValueError, OSError):
+            pass
+
+    try:
+        from urllib.request import urlopen
+        resp = urlopen("https://pypi.org/pypi/aither-adk/json", timeout=3)
+        data = json.loads(resp.read())
+        latest = data.get("info", {}).get("version", "")
+
+        # Read current version
+        try:
+            from importlib.metadata import version as pkg_version
+            current = pkg_version("aither-adk")
+        except Exception:
+            current = ""
+
+        if latest and current and latest != current:
+            print(f"\n  Update available: aither-adk {current} -> {latest}")
+            print(f"  Run: pip install --upgrade aither-adk\n")
+
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(str(now), encoding="utf-8")
+    except Exception:
+        pass  # Best effort, never crash
+
+
 # ── Phase 4: aither costs — token economy visibility ──────────────────────
 
 def cmd_costs(args):
@@ -3682,7 +3866,9 @@ def cmd_quickstart(args):
         print()
         print("  Next steps:")
         print("    adk start            Start chatting with your codebase")
-        print("    adk run              Start the agent server")
+        print("    adk shell            Interactive terminal with agents")
+        print("    adk explore          Browse 47 packs (agents, tools, skills)")
+        print("    adk deploy grid      Distributed inference (GPU + Mac + cluster)")
         print("    adk doctor           Check system health")
         print()
 
@@ -6071,6 +6257,20 @@ def _register_commands(sub):
     pack_info_p = pack_sub.add_parser("info", help="Show pack details")
     pack_info_p.add_argument("pack_id", help="Pack ID to inspect")
 
+    # adk support — help and community links
+    sub.add_parser("support", help="Get help — Discord, GitHub, docs")
+
+    # adk explore — browse marketplace catalog
+    explore_p = sub.add_parser("explore", help="Browse packs, agents, and skills in the Aitherium marketplace")
+    explore_p.add_argument("category", nargs="?", default="all",
+                           help="Filter: agents, tools, skills, grid, all (default: all)")
+    explore_p.add_argument("--free", action="store_true", help="Show only free packs")
+
+    # adk upgrade — open checkout page
+    upgrade_p = sub.add_parser("upgrade", help="Open upgrade/checkout page for a pack or plan")
+    upgrade_p.add_argument("target", nargs="?", default="",
+                           help="Pack ID or plan: managed, setup, grid, demiurge, pro")
+
     # adk soul — SOUL.md import/export
     soul_p = sub.add_parser("soul", help="Import/export SOUL.md identity files")
     soul_sub = soul_p.add_subparsers(dest="soul_command")
@@ -6306,6 +6506,9 @@ def main():
 
     args = parser.parse_args()
 
+    # Non-blocking update check (once per day)
+    _check_for_updates()
+
     if args.command == "start":
         sys.exit(cmd_start(args))
     elif args.command == "init":
@@ -6436,6 +6639,20 @@ def main():
         sys.exit(cmd_sync(args))
     elif args.command == "grid":
         sys.exit(cmd_grid(args))
+    elif args.command == "explore":
+        sys.exit(cmd_explore(args))
+    elif args.command == "upgrade":
+        sys.exit(cmd_upgrade(args))
+    elif args.command == "support":
+        print("\n  AitherADK Support")
+        print("  " + "=" * 40)
+        print("  Docs:      https://github.com/Aitherium/aither-adk")
+        print("  Discord:   https://discord.gg/aitherium")
+        print("  Issues:    https://github.com/Aitherium/aither-adk/issues")
+        print("  Portal:    https://portal.aitherium.com")
+        print("  Email:     support@aitherium.com")
+        print()
+        sys.exit(0)
     elif args.command == "train":
         sys.exit(_cmd_train(args))
     elif args.command is None:
