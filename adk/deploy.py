@@ -3269,8 +3269,18 @@ def deploy_grid(
     print(f"    {cyan('adk grid status')}                    # Show topology + health")
     print(f"    {cyan('adk grid add reasoning <ip>')}        # Add Mac node later")
     print(f"    {cyan('adk grid add cluster <ip>')}          # Add CPU node later")
-    print(f"    {cyan('adk login')}                          # Auth for cloud sync")
-    print(f"    {cyan('adk grid sync')}                      # Push config to workspace")
+    # Show account nudge only if not logged in
+    from adk.config import load_saved_config as _load_cfg
+    _saved = _load_cfg()
+    if _saved.get("api_key"):
+        print(f"    {cyan('adk grid sync')}                      # Push config to workspace")
+    else:
+        print()
+        print(bold("  Optional: Cloud Sync"))
+        print("  " + "-" * 50)
+        print(f"    {cyan('adk login')}                          # Free account — sync config across machines")
+        print(f"    {cyan('adk grid sync')}                      # Backup your grid config to the cloud")
+        print(f"    {dim('Upgrade: https://portal.aitherium.com/marketplace/grid')}")
 
     print()
     return 0

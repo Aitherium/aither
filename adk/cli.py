@@ -2759,8 +2759,9 @@ def cmd_grid(args) -> int:
             print(f"  Auth:     {username or 'logged in'} (tenant: {tenant or 'default'})")
             print(f"  Sync:     adk grid sync → portal.aitherium.com")
         else:
-            print("  Auth:     not logged in")
-            print("  Login:    adk login → enables cloud sync of grid config")
+            print("  Account:  none (everything works locally without one)")
+            print(f"  Optional: adk login → free account, enables config sync across machines")
+            print(f"            https://portal.aitherium.com/signup")
 
         # Health check all nodes
         print()
