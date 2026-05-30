@@ -123,6 +123,10 @@ class LLMRouter:
         self._reasoning_provider: LLMProvider | None = None
         self._reasoning_provider_name: str = ""
         self._reasoning_model: str | None = None
+        # Cluster backend — dedicated CPU cluster for effort 9+ (grid mode)
+        self._cluster_provider: LLMProvider | None = None
+        self._cluster_provider_name: str = ""
+        self._cluster_model: str | None = None
 
         if provider:
             self._provider = self._create_provider(provider, base_url, api_key)
@@ -389,10 +393,15 @@ class LLMRouter:
             logger.debug("Reasoning backend '%s' configured but no API key available", backend)
             return
 
+        # Ollama uses native /api/chat, not OpenAI /v1 — strip /v1 suffix
+        base_url = cfg.reasoning_base_url or None
+        if base_url and backend == "ollama":
+            base_url = base_url.rstrip("/").removesuffix("/v1")
+
         try:
             self._reasoning_provider = self._create_provider(
                 backend,
-                base_url=cfg.reasoning_base_url or None,
+                base_url=base_url,
                 api_key=api_key,
             )
             self._reasoning_provider_name = backend
@@ -403,6 +412,32 @@ class LLMRouter:
             )
         except Exception as e:
             logger.warning("Failed to set up reasoning backend '%s': %s", backend, e)
+
+    def _setup_cluster_backend(self) -> None:
+        """Configure a dedicated cluster provider for effort 9+ (CPU inference).
+
+        Grid mode: local GPU (1-6) → reasoning (7-8) → cluster (9-10).
+        The cluster runs llama.cpp with --api-oai on CPU mini PCs.
+        """
+        cfg = self._config
+        if not cfg:
+            return
+        backend = cfg.cluster_backend
+        if not backend:
+            return
+
+        try:
+            self._cluster_provider = self._create_provider(
+                backend, base_url=cfg.cluster_base_url or None, api_key="not-needed",
+            )
+            self._cluster_provider_name = backend
+            self._cluster_model = cfg.cluster_model or None
+            logger.info(
+                "Grid cluster: %s (model=%s) for effort 9+",
+                backend, self._cluster_model or "default",
+            )
+        except Exception as e:
+            logger.warning("Failed to set up cluster backend '%s': %s", backend, e)
 
     async def _try_cloud_apis(self) -> LLMProvider | None:
         """Try cloud API keys from Config (populated by provider_keys.json).
@@ -605,6 +640,9 @@ class LLMRouter:
             # Set up hybrid reasoning backend after primary detection
             if self._reasoning_provider is None:
                 self._setup_reasoning_backend()
+            # Set up cluster backend for grid mode (effort 9+)
+            if self._cluster_provider is None:
+                self._setup_cluster_backend()
         return self._provider
 
     @property
@@ -663,6 +701,10 @@ class LLMRouter:
             info["reasoning"] = self._reasoning_provider_name
             if self._reasoning_model:
                 info["reasoning_model"] = self._reasoning_model
+        if hasattr(self, "_cluster_provider") and self._cluster_provider is not None:
+            info["cluster"] = self._cluster_provider_name
+            if self._cluster_model:
+                info["cluster_model"] = self._cluster_model
         return info
 
     def model_for_effort(self, effort: int) -> str:
@@ -800,6 +842,21 @@ class LLMRouter:
             effort = int(effort)
         if model is None and effort is not None:
             model = self.model_for_effort(effort)
+
+        # Grid cluster: effort 9+ → dedicated CPU cluster (big model, slow)
+        cluster_prov = getattr(self, "_cluster_provider", None)
+        if effort is not None and effort >= 9 and cluster_prov is not None:
+            cluster_model = getattr(self, "_cluster_model", None) or model
+            try:
+                resp = await cluster_prov.chat(
+                    messages, model=cluster_model, tool_choice=tool_choice,
+                    top_p=top_p, repetition_penalty=repetition_penalty, **kwargs,
+                )
+                resp.effort_level = effort
+                self._log_cost(resp, "cluster")
+                return resp
+            except Exception as e:
+                logger.warning("Cluster backend failed, falling back to reasoning: %s", e)
 
         # Hybrid reasoning: effort 7+ → dedicated reasoning provider (cloud API)
         reasoning_prov = getattr(self, "_reasoning_provider", None)

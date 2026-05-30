@@ -767,6 +767,40 @@ Aither auto-detects your hardware and selects the right models. TQ4 (TurboQuant 
 | `apple_silicon` | M1/M2/M3/M4 | Ollama nemotron-8b | Ollama deepseek-r1:8b | -- |
 | `amd` | ROCm | Ollama nemotron-8b | Ollama deepseek-r1:8b | -- |
 | `cpu_only` | None | Cloud (gateway) | Cloud | Cloud |
+| **`grid_distributed`** | **6GB+ NVIDIA + Mac + mini PCs** | **Nemotron-8B TQ4 (vLLM)** | **DeepSeek-R1 8B (Mac llama.cpp)** | **+ Qwen2.5-32B Q4 (CPU cluster)** |
+
+## Grid Distributed Inference
+
+Run AI inference across multiple machines — GPU desktop, Mac, and CPU mini PCs. One command sets up 3-tier effort-based routing with automatic fallback.
+
+```
+  Main PC (GPU)          Mac Mini              Mini PC Cluster
+  ┌──────────────┐       ┌──────────────┐      ┌──────────────┐
+  │ vLLM :8120   │       │ llama.cpp    │      │ llama.cpp    │
+  │ Nemotron-8B  │       │ :8121        │      │ :8121        │
+  │ effort 1-6   │       │ DeepSeek-R1  │      │ Qwen2.5-32B  │
+  │ 15-25 tok/s  │       │ effort 7-8   │      │ effort 9-10  │
+  └──────────────┘       └──────────────┘      └──────────────┘
+```
+
+```bash
+# 1. On Mac (one-time):
+bash <(curl -fsSL https://raw.githubusercontent.com/Aitherium/aither-adk/main/scripts/setup-mac-node.sh)
+
+# 2. On each mini PC (one-time):
+bash <(curl -fsSL https://raw.githubusercontent.com/Aitherium/aither-adk/main/scripts/setup-cluster-node.sh)
+
+# 3. On main PC:
+pip install aither-adk
+adk deploy grid --mac-host 192.168.1.100 --cluster-nodes '["192.168.1.10"]'
+
+# 4. Start chatting:
+adk shell
+```
+
+If `--mac-host` is omitted, it auto-scans your LAN. All remote nodes use llama.cpp with `--api-oai` for a uniform OpenAI-compatible API. Each tier falls back to the next if unavailable.
+
+See [GRID_SETUP.md](GRID_SETUP.md) for the full walkthrough, hardware requirements, model sizing, and troubleshooting.
 
 ## Connect to Elysium
 

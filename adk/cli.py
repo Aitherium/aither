@@ -2694,6 +2694,369 @@ def cmd_routing(args):
         return 0
 
 
+# ── Phase 3.5: adk grid — manage grid distributed infrastructure ──────────
+
+_GRID_CONFIG_STRATA_PATH = "grid/config.json"
+
+
+def cmd_grid(args) -> int:
+    """Manage grid distributed inference nodes."""
+    import asyncio
+
+    sub = getattr(args, "grid_command", None)
+    saved = load_saved_config()
+
+    # Grid config lives under a "grid_nodes" key in ~/.aither/config.json
+    grid_nodes = saved.get("grid_nodes", {})
+    # grid_nodes = { "reasoning": {"host": "...", "port": 8121, "model": "..."},
+    #                "cluster": [{"host": "...", "port": 8121, "model": "..."}] }
+
+    if sub == "status" or sub is None:
+        print()
+        print("  Grid Topology")
+        print("  " + "=" * 55)
+
+        # Primary (local GPU)
+        backend = saved.get("backend", "")
+        base_url = saved.get("base_url", "")
+        model = saved.get("model", "")
+        if backend:
+            print(f"  [GPU]     {base_url or 'auto-detect':30s}  {model or 'auto'}")
+        else:
+            print("  [GPU]     not configured (run: adk deploy grid)")
+
+        # Reasoning node
+        r_node = grid_nodes.get("reasoning")
+        r_url = saved.get("reasoning_url", "")
+        r_model = saved.get("reasoning_model", "")
+        if r_node:
+            r_display = f"{r_node['host']}:{r_node.get('port', 8121)}"
+            print(f"  [reason]  {r_display:30s}  {r_node.get('model', r_model or 'auto')}")
+        elif r_url:
+            print(f"  [reason]  {r_url:30s}  {r_model or 'auto'}")
+        else:
+            print("  [reason]  not configured (run: adk grid add reasoning <ip>)")
+
+        # Cluster nodes
+        c_nodes = grid_nodes.get("cluster", [])
+        c_url = saved.get("cluster_url", "")
+        c_model = saved.get("cluster_model", "")
+        if c_nodes:
+            for i, node in enumerate(c_nodes):
+                c_display = f"{node['host']}:{node.get('port', 8121)}"
+                print(f"  [cpu.{i}]   {c_display:30s}  {node.get('model', c_model or 'auto')}")
+        elif c_url:
+            print(f"  [cpu.0]   {c_url:30s}  {c_model or 'auto'}")
+        else:
+            print("  [cpu]     not configured (run: adk grid add cluster <ip>)")
+
+        # Auth status
+        print()
+        api_key = saved.get("api_key", "")
+        tenant = saved.get("tenant_id", "")
+        username = saved.get("username", "")
+        if api_key:
+            print(f"  Auth:     {username or 'logged in'} (tenant: {tenant or 'default'})")
+            print(f"  Sync:     adk grid sync → portal.aitherium.com")
+        else:
+            print("  Auth:     not logged in")
+            print("  Login:    adk login → enables cloud sync of grid config")
+
+        # Health check all nodes
+        print()
+        print("  Health")
+        print("  " + "-" * 55)
+        _grid_health_check(saved, grid_nodes)
+
+        print()
+        return 0
+
+    elif sub == "add":
+        role = args.role
+        host = args.host
+        port = getattr(args, "port", 8121) or 8121
+        model_override = getattr(args, "model", None)
+
+        node_entry = {"host": host, "port": port}
+        if model_override:
+            node_entry["model"] = model_override
+
+        if role == "reasoning":
+            grid_nodes["reasoning"] = node_entry
+            # Also update the flat config for LLM router
+            update = {
+                "reasoning_backend": "openai",
+                "reasoning_url": f"http://{host}:{port}/v1",
+                "reasoning_model": model_override or "deepseek-r1-8b",
+                "grid_nodes": grid_nodes,
+            }
+        else:  # cluster
+            cluster_list = grid_nodes.get("cluster", [])
+            # Deduplicate by host
+            cluster_list = [n for n in cluster_list if n["host"] != host]
+            cluster_list.append(node_entry)
+            grid_nodes["cluster"] = cluster_list
+            # Use the first cluster node for routing
+            first = cluster_list[0]
+            update = {
+                "cluster_backend": "openai",
+                "cluster_url": f"http://{first['host']}:{first.get('port', 8121)}/v1",
+                "cluster_model": model_override or "qwen2.5-32b",
+                "grid_nodes": grid_nodes,
+            }
+
+        save_saved_config(update)
+        print(f"  Added {role} node: {host}:{port}")
+
+        # Quick health check
+        _grid_test_node(host, port)
+
+        print(f"\n  Config saved to ~/.aither/config.json")
+        print(f"  Sync to cloud: adk grid sync")
+        return 0
+
+    elif sub == "remove":
+        host = args.host
+        removed = False
+
+        r_node = grid_nodes.get("reasoning")
+        if r_node and r_node.get("host") == host:
+            del grid_nodes["reasoning"]
+            save_saved_config({
+                "reasoning_backend": "",
+                "reasoning_url": "",
+                "reasoning_model": "",
+                "grid_nodes": grid_nodes,
+            })
+            removed = True
+            print(f"  Removed reasoning node: {host}")
+
+        c_nodes = grid_nodes.get("cluster", [])
+        new_cluster = [n for n in c_nodes if n.get("host") != host]
+        if len(new_cluster) < len(c_nodes):
+            grid_nodes["cluster"] = new_cluster
+            update = {"grid_nodes": grid_nodes}
+            if new_cluster:
+                first = new_cluster[0]
+                update["cluster_url"] = f"http://{first['host']}:{first.get('port', 8121)}/v1"
+            else:
+                update["cluster_backend"] = ""
+                update["cluster_url"] = ""
+                update["cluster_model"] = ""
+            save_saved_config(update)
+            removed = True
+            print(f"  Removed cluster node: {host}")
+
+        if not removed:
+            print(f"  No node found with host: {host}")
+            return 1
+        return 0
+
+    elif sub == "test":
+        target = getattr(args, "host", None)
+        print()
+        print("  Grid Node Tests")
+        print("  " + "=" * 50)
+        _grid_health_check(saved, grid_nodes, target_host=target)
+        print()
+        return 0
+
+    elif sub == "sync":
+        api_key = saved.get("api_key", "")
+        tenant = saved.get("tenant_id", "")
+        if not api_key:
+            print("  Not logged in. Run: adk login")
+            print("  Grid sync requires authentication to store config in your workspace.")
+            return 1
+
+        grid_data = {
+            "profile": saved.get("profile", ""),
+            "backend": saved.get("backend", ""),
+            "base_url": saved.get("base_url", ""),
+            "model": saved.get("model", ""),
+            "reasoning_backend": saved.get("reasoning_backend", ""),
+            "reasoning_url": saved.get("reasoning_url", ""),
+            "reasoning_model": saved.get("reasoning_model", ""),
+            "cluster_backend": saved.get("cluster_backend", ""),
+            "cluster_url": saved.get("cluster_url", ""),
+            "cluster_model": saved.get("cluster_model", ""),
+            "grid_nodes": grid_nodes,
+        }
+
+        async def _sync():
+            from adk.strata import get_strata
+            strata = get_strata()
+            import json as _json
+            ok = await strata.write(
+                _GRID_CONFIG_STRATA_PATH,
+                _json.dumps(grid_data, indent=2),
+            )
+            if ok:
+                print(f"  Grid config synced to workspace (tenant: {tenant or 'default'})")
+                print(f"  Pull on another machine: adk grid pull")
+            else:
+                # Fallback: try direct gateway API
+                try:
+                    import httpx
+                    gateway = saved.get("gateway_url", "https://gateway.aitherium.com")
+                    async with httpx.AsyncClient(timeout=10.0) as client:
+                        resp = await client.put(
+                            f"{gateway}/api/v1/config/grid",
+                            json=grid_data,
+                            headers={"Authorization": f"Bearer {api_key}"},
+                        )
+                        if resp.status_code in (200, 201):
+                            print(f"  Grid config synced via gateway")
+                            return
+                except Exception:
+                    pass
+                print("  Sync failed — Strata not available and gateway unreachable.")
+                print("  Config is saved locally at ~/.aither/config.json")
+
+        asyncio.run(_sync())
+        return 0
+
+    elif sub == "pull":
+        api_key = saved.get("api_key", "")
+        if not api_key:
+            print("  Not logged in. Run: adk login")
+            return 1
+
+        async def _pull():
+            import json as _json
+            from adk.strata import get_strata
+            strata = get_strata()
+            data = await strata.read_text(_GRID_CONFIG_STRATA_PATH)
+            if data:
+                grid_data = _json.loads(data)
+                save_saved_config(grid_data)
+                print("  Grid config pulled from workspace and saved locally.")
+                print("  Run: adk grid status")
+                return
+
+            # Fallback: try gateway API
+            try:
+                import httpx
+                gateway = saved.get("gateway_url", "https://gateway.aitherium.com")
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    resp = await client.get(
+                        f"{gateway}/api/v1/config/grid",
+                        headers={"Authorization": f"Bearer {api_key}"},
+                    )
+                    if resp.status_code == 200:
+                        grid_data = resp.json()
+                        save_saved_config(grid_data)
+                        print("  Grid config pulled from gateway and saved locally.")
+                        print("  Run: adk grid status")
+                        return
+            except Exception:
+                pass
+            print("  No grid config found in workspace. Run: adk grid sync (from configured machine)")
+
+        asyncio.run(_pull())
+        return 0
+
+    else:
+        print()
+        print("  adk grid — Manage distributed inference nodes")
+        print()
+        print("  Commands:")
+        print("    adk grid status              Show topology + health")
+        print("    adk grid add reasoning <ip>  Add Mac/reasoning node")
+        print("    adk grid add cluster <ip>    Add CPU cluster node")
+        print("    adk grid remove <ip>         Remove a node")
+        print("    adk grid test                Test all nodes")
+        print("    adk grid test <ip>           Test specific node")
+        print("    adk grid sync                Push config to your Aitherium workspace")
+        print("    adk grid pull                Pull config from workspace (new machine)")
+        print()
+        print("  Setup:")
+        print("    adk deploy grid              Deploy vLLM + configure grid")
+        print("    adk login                    Auth for cloud sync")
+        print()
+        return 0
+
+
+def _grid_test_node(host: str, port: int) -> bool:
+    """Test connectivity and API compatibility of a single grid node."""
+    from urllib.request import Request, urlopen
+
+    try:
+        req = Request(
+            f"http://{host}:{port}/health",
+            headers={"User-Agent": "AitherADK/1.0"},
+        )
+        with urlopen(req, timeout=5):
+            pass
+    except Exception:
+        print(f"  [x] {host}:{port} — unreachable")
+        return False
+
+    try:
+        req = Request(
+            f"http://{host}:{port}/v1/models",
+            headers={"User-Agent": "AitherADK/1.0"},
+        )
+        with urlopen(req, timeout=5) as resp:
+            if resp.status == 200:
+                import json as _json
+                data = _json.loads(resp.read())
+                models = [m.get("id", "") for m in data.get("data", [])]
+                print(f"  [+] {host}:{port} — healthy, models: {', '.join(models[:3]) or 'default'}")
+                return True
+    except Exception:
+        print(f"  [!] {host}:{port} — healthy but no /v1 API (missing --api-oai?)")
+        return False
+
+    return False
+
+
+def _grid_health_check(saved: dict, grid_nodes: dict, target_host: str | None = None):
+    """Run health checks on all or a specific grid node."""
+    checked = False
+
+    # Reasoning node
+    r_node = grid_nodes.get("reasoning")
+    if r_node and (target_host is None or target_host == r_node.get("host")):
+        _grid_test_node(r_node["host"], r_node.get("port", 8121))
+        checked = True
+
+    # Cluster nodes
+    for node in grid_nodes.get("cluster", []):
+        if target_host is None or target_host == node.get("host"):
+            _grid_test_node(node["host"], node.get("port", 8121))
+            checked = True
+
+    # Fallback: check flat config URLs if no grid_nodes
+    if not checked and not target_host:
+        r_url = saved.get("reasoning_url", "")
+        if r_url:
+            try:
+                from urllib.parse import urlparse
+                parsed = urlparse(r_url)
+                host = parsed.hostname or ""
+                port = parsed.port or 8121
+                if host:
+                    _grid_test_node(host, port)
+            except Exception:
+                pass
+
+        c_url = saved.get("cluster_url", "")
+        if c_url:
+            try:
+                from urllib.parse import urlparse
+                parsed = urlparse(c_url)
+                host = parsed.hostname or ""
+                port = parsed.port or 8121
+                if host:
+                    _grid_test_node(host, port)
+            except Exception:
+                pass
+
+    if not checked and target_host:
+        print(f"  No node found with host: {target_host}")
+
+
 # ── Phase 4: aither costs — token economy visibility ──────────────────────
 
 def cmd_costs(args):
@@ -5410,6 +5773,18 @@ def _register_commands(sub):
     d_gargbot.add_argument("--api-key", help="AITHER_API_KEY for portal federation")
     d_gargbot.add_argument("--dry-run", action="store_true", help="Show what would happen")
 
+    # aither deploy grid
+    d_grid = deploy_sub.add_parser(
+        "grid",
+        help="Deploy grid distributed stack (GPU + Mac + cluster)",
+    )
+    d_grid.add_argument("--mac-host", help="Mac Mini IP for Ollama reasoning")
+    d_grid.add_argument("--cluster-nodes", help="JSON array of cluster node IPs")
+    d_grid.add_argument("--hf-token", default="", help="HuggingFace token for gated models")
+    d_grid.add_argument("--skip-health", action="store_true",
+                           help="Skip remote node health checks")
+    d_grid.add_argument("--dry-run", action="store_true", help="Show what would happen")
+
     # aither deploy stop <component>
     d_stop = deploy_sub.add_parser("stop", help="Stop a running deployment")
     d_stop.add_argument("stop_target", nargs="?",
@@ -5553,6 +5928,22 @@ def _register_commands(sub):
     keys_test_p.add_argument("provider", nargs="?", help="Specific provider to test (default: all)")
     keys_rm_p = keys_sub.add_parser("remove", help="Remove a provider key")
     keys_rm_p.add_argument("provider", help="Provider to remove")
+
+    # adk grid — manage grid distributed infrastructure
+    grid_p = sub.add_parser("grid", help="Manage grid distributed nodes (add, remove, list, test, sync)")
+    grid_sub = grid_p.add_subparsers(dest="grid_command")
+    grid_sub.add_parser("status", help="Show grid topology and health of all nodes")
+    grid_add_p = grid_sub.add_parser("add", help="Add a node to the grid")
+    grid_add_p.add_argument("role", choices=["reasoning", "cluster"], help="Node role")
+    grid_add_p.add_argument("host", help="Hostname or IP address")
+    grid_add_p.add_argument("--port", type=int, default=8121, help="llama.cpp port (default: 8121)")
+    grid_add_p.add_argument("--model", help="Model name override")
+    grid_rm_p = grid_sub.add_parser("remove", help="Remove a node from the grid")
+    grid_rm_p.add_argument("host", help="Hostname or IP to remove")
+    grid_test_p = grid_sub.add_parser("test", help="Test connectivity to all or specific nodes")
+    grid_test_p.add_argument("host", nargs="?", help="Specific host to test (default: all)")
+    grid_sub.add_parser("sync", help="Sync grid config to your Aitherium workspace (requires login)")
+    grid_sub.add_parser("pull", help="Pull grid config from your Aitherium workspace")
 
     # adk routing — per-intent model routing
     routing_p = sub.add_parser("routing", help="Manage per-intent model routing (which model handles which task)")
@@ -6021,6 +6412,8 @@ def main():
         sys.exit(_cmd_listen(args))
     elif args.command == "sync":
         sys.exit(cmd_sync(args))
+    elif args.command == "grid":
+        sys.exit(cmd_grid(args))
     elif args.command == "train":
         sys.exit(_cmd_train(args))
     elif args.command is None:

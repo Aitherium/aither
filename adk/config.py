@@ -130,6 +130,12 @@ class Config:
     reasoning_base_url: str = field(default_factory=lambda: os.getenv("AITHER_REASONING_BASE_URL", ""))
     reasoning_model: str = field(default_factory=lambda: os.getenv("AITHER_REASONING_MODEL", ""))
 
+    # Cluster backend — dedicated CPU cluster for effort 9+ tasks (grid mode)
+    # Values: "", "openai", "vllm", "llamacpp"
+    cluster_backend: str = field(default_factory=lambda: os.getenv("AITHER_CLUSTER_BACKEND", ""))
+    cluster_base_url: str = field(default_factory=lambda: os.getenv("AITHER_CLUSTER_BASE_URL", ""))
+    cluster_model: str = field(default_factory=lambda: os.getenv("AITHER_CLUSTER_MODEL", ""))
+
     # Extra vLLM ports to scan (comma-separated)
     vllm_extra_ports: str = field(default_factory=lambda: os.getenv("AITHER_VLLM_PORTS", ""))
 
@@ -253,6 +259,12 @@ class Config:
             config.deepseek_api_key = saved["deepseek_api_key"]
         if not config.dgx_url and saved.get("dgx_url"):
             config.dgx_url = saved["dgx_url"]
+        if not config.cluster_backend and saved.get("cluster_backend"):
+            config.cluster_backend = saved["cluster_backend"]
+        if not config.cluster_base_url and saved.get("cluster_url"):
+            config.cluster_base_url = saved["cluster_url"]
+        if not config.cluster_model and saved.get("cluster_model"):
+            config.cluster_model = saved["cluster_model"]
 
         # Cloud mode from setup --mode cloud/hybrid
         if saved.get("cloud_mode") and config.llm_backend == "auto":

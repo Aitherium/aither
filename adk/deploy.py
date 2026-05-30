@@ -2923,6 +2923,360 @@ def deploy_gargbot(
 
 
 # ===========================================================================
+# Component: Grid Distributed
+# ===========================================================================
+
+
+def _discover_llamacpp_lan(timeout: float = 1.0) -> str:
+    """Scan LAN for a llama.cpp instance with OpenAI API enabled.
+
+    Probes the local /24 subnet for llama.cpp on port 8121 (default grid port).
+    Returns the first responding IP or empty string.
+    """
+    import concurrent.futures
+    import socket
+
+    scan_port = int(os.environ.get("LLAMACPP_PORT", "8121"))
+
+    def _probe(ip: str) -> str | None:
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(timeout)
+            if sock.connect_ex((ip, scan_port)) == 0:
+                sock.close()
+                # Verify it has OpenAI-compatible API (--api-oai)
+                try:
+                    req = Request(
+                        f"http://{ip}:{scan_port}/v1/models",
+                        headers={"User-Agent": "AitherADK/1.0"},
+                    )
+                    with urlopen(req, timeout=2) as resp:
+                        if resp.status == 200:
+                            return ip
+                except Exception:
+                    pass
+            else:
+                sock.close()
+        except Exception:
+            pass
+        return None
+
+    # Get local IP to determine subnet
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        local_ip = s.getsockname()[0]
+        s.close()
+    except Exception:
+        return ""
+
+    # Build scan list: common LAN IPs on the same /24 subnet, excluding self
+    prefix = ".".join(local_ip.split(".")[:3])
+    targets = [f"{prefix}.{i}" for i in range(1, 255) if f"{prefix}.{i}" != local_ip]
+
+    info(f"Scanning LAN ({prefix}.0/24) for llama.cpp nodes on port {scan_port}...")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=50) as pool:
+        futures = {pool.submit(_probe, ip): ip for ip in targets}
+        for future in concurrent.futures.as_completed(futures, timeout=timeout + 3):
+            try:
+                result = future.result()
+                if result:
+                    return result
+            except Exception:
+                pass
+    return ""
+
+
+def deploy_grid(
+    dry_run: bool = False,
+    mac_host: str = "",
+    cluster_nodes: str = "",
+    hf_token: str = "",
+    skip_health: bool = False,
+) -> int:
+    """Deploy grid distributed inference stack.
+
+    Main PC gets vLLM orchestrator (Nemotron-8B TQ4). Mac Mini and cluster
+    nodes are validated but set up separately via scripts.
+
+    Returns exit code (0 = success, 1 = failure).
+    """
+    print()
+    print(bold("  AitherADK Grid Distributed Deployment"))
+    print(dim("  GPU orchestrator + Mac reasoning + CPU cluster"))
+    print()
+
+    mac_host = mac_host or os.environ.get("AITHER_GRID_MAC_HOST", "")
+    cluster_nodes = cluster_nodes or os.environ.get("AITHER_GRID_CLUSTER_NODES", "")
+
+    total_steps = 5
+
+    # -- Step 1: Prerequisites --------------------------------------------------
+    step(1, total_steps, "Checking prerequisites")
+
+    docker_ok, docker_msg = _check_docker()
+    if docker_ok:
+        info(docker_msg)
+    else:
+        err(docker_msg)
+        print(f"\n  Install Docker: {cyan('https://docker.com/products/docker-desktop')}")
+        return 1
+
+    gpu = detect_gpu()
+    if gpu.vendor != "nvidia":
+        err(f"NVIDIA GPU required for vLLM orchestrator (detected: {gpu.vendor or 'none'})")
+        print(f"\n  For non-NVIDIA setups, use: {cyan('adk setup --tier llamacpp')}")
+        return 1
+
+    vram_gb = gpu.vram_mb / 1024 if gpu.vram_mb else 0
+    if vram_gb < 6:
+        err(f"Need at least 6GB VRAM for TQ4 orchestrator (detected: {vram_gb:.0f}GB)")
+        return 1
+
+    info(f"GPU: {gpu.name} ({vram_gb:.0f}GB VRAM)")
+
+    # -- Auto-discover Mac Ollama on LAN if --mac-host not set ------------------
+    # Auto-discover llama.cpp nodes on LAN if --mac-host not set
+    if not mac_host and not dry_run:
+        discovered = _discover_llamacpp_lan()
+        if discovered:
+            mac_host = discovered
+            info(f"Auto-discovered llama.cpp at {mac_host}")
+
+    # -- Step 2: Validate remote nodes ------------------------------------------
+    step(2, total_steps, "Checking remote nodes")
+
+    mac_port = os.environ.get("AITHER_GRID_MAC_PORT", "8121")
+    mac_ok = False
+    if mac_host:
+        info(f"Mac reasoning node: {mac_host}:{mac_port}")
+        if not dry_run and not skip_health:
+            try:
+                req = Request(
+                    f"http://{mac_host}:{mac_port}/health",
+                    headers={"User-Agent": "AitherADK/1.0"},
+                )
+                with urlopen(req, timeout=5) as resp:
+                    if resp.status == 200:
+                        info(f"Mac llama.cpp healthy")
+                # Verify OpenAI API is available
+                oai_req = Request(
+                    f"http://{mac_host}:{mac_port}/v1/models",
+                    headers={"User-Agent": "AitherADK/1.0"},
+                )
+                with urlopen(oai_req, timeout=5) as resp:
+                    if resp.status == 200:
+                        info(f"Mac OpenAI API available")
+                        mac_ok = True
+            except Exception:
+                warn(f"Mac node at {mac_host}:{mac_port} unreachable")
+                print(f"    Run on Mac: {cyan('bash scripts/setup-mac-node.sh')}")
+        else:
+            info("(skipping health check)")
+    else:
+        warn("No Mac reasoning node configured")
+        print(f"    Set: {cyan('export AITHER_GRID_MAC_HOST=192.168.1.100')}")
+        print(f"    Setup: {cyan('bash scripts/setup-mac-node.sh')} (on Mac)")
+
+    cluster_ok = False
+    if cluster_nodes and cluster_nodes != "[]":
+        try:
+            nodes = json.loads(cluster_nodes) if isinstance(cluster_nodes, str) else cluster_nodes
+        except json.JSONDecodeError:
+            nodes = [cluster_nodes]
+
+        info(f"Cluster nodes: {', '.join(nodes)}")
+        if not dry_run and not skip_health:
+            for node_ip in nodes:
+                port = os.environ.get("LLAMACPP_PORT", "8121")
+                try:
+                    req = Request(
+                        f"http://{node_ip}:{port}/health",
+                        headers={"User-Agent": "AitherADK/1.0"},
+                    )
+                    with urlopen(req, timeout=5) as resp:
+                        if resp.status == 200:
+                            info(f"  {node_ip}:{port} healthy")
+                except Exception:
+                    warn(f"  {node_ip}:{port} unreachable")
+                    continue
+                # Verify OpenAI-compatible API is enabled (--api-oai flag)
+                try:
+                    oai_req = Request(
+                        f"http://{node_ip}:{port}/v1/models",
+                        headers={"User-Agent": "AitherADK/1.0"},
+                    )
+                    with urlopen(oai_req, timeout=5) as resp:
+                        if resp.status == 200:
+                            info(f"  {node_ip}:{port} OpenAI API available")
+                            cluster_ok = True
+                        else:
+                            warn(f"  {node_ip}:{port} missing --api-oai flag (no /v1 endpoint)")
+                            print(f"    Re-run: {cyan('bash scripts/setup-cluster-node.sh')} on that node")
+                except Exception:
+                    warn(f"  {node_ip}:{port} missing --api-oai flag (no /v1 endpoint)")
+                    print(f"    Re-run: {cyan('bash scripts/setup-cluster-node.sh')} on that node")
+        else:
+            info("(skipping health check)")
+    else:
+        warn("No cluster nodes configured (optional)")
+        print(f"    Set: {cyan('export AITHER_GRID_CLUSTER_NODES=')}'[\"192.168.1.10\"]'")
+        print(f"    Setup: {cyan('bash scripts/setup-cluster-node.sh')} (on each node)")
+
+    # -- Step 3: Locate compose file --------------------------------------------
+    step(3, total_steps, "Locating compose configuration")
+
+    # Check for compose file in adk package directory or current dir
+    compose_candidates = [
+        Path(__file__).parent.parent / "docker-compose.grid.yml",
+        Path("aither-adk") / "docker-compose.grid.yml",
+        Path("docker-compose.grid.yml"),
+        AITHER_DIR / "docker-compose.grid.yml",
+    ]
+
+    compose_file = None
+    for candidate in compose_candidates:
+        if candidate.exists():
+            compose_file = candidate
+            break
+
+    if not compose_file:
+        err("docker-compose.grid.yml not found")
+        print(f"    Expected at: {compose_candidates[0]}")
+        return 1
+
+    info(f"Using {compose_file}")
+
+    # -- Step 4: Start containers -----------------------------------------------
+    step(4, total_steps, "Starting vLLM orchestrator")
+
+    env_overrides = {}
+    if hf_token:
+        env_overrides["HUGGING_FACE_HUB_TOKEN"] = hf_token
+    if mac_host:
+        env_overrides["AITHER_GRID_MAC_HOST"] = mac_host
+    if cluster_nodes:
+        env_overrides["AITHER_GRID_CLUSTER_NODES"] = cluster_nodes
+
+    # Set env vars for docker compose
+    old_env = {}
+    for k, v in env_overrides.items():
+        old_env[k] = os.environ.get(k)
+        os.environ[k] = v
+
+    try:
+        rc = _docker_compose(compose_file, [], "up -d", dry_run, timeout=600)
+    finally:
+        for k, v in old_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    if rc != 0:
+        err("Failed to start containers")
+        return 1
+
+    # -- Step 5: Health checks + summary ----------------------------------------
+    step(5, total_steps, "Verifying deployment")
+
+    vllm_ok = False
+    if not dry_run and not skip_health:
+        info("Waiting for vLLM orchestrator (may take 5-10 min on first run)...")
+        vllm_ok = _health_check("http://localhost:8120/health", timeout=600)
+        if vllm_ok:
+            info("vLLM orchestrator is healthy")
+        else:
+            warn("vLLM orchestrator not responding yet — may still be downloading model")
+            print(f"    Check: {cyan('docker logs -f adk-vllm-orchestrator')}")
+    else:
+        info("(skipping health check)")
+
+    # Summary
+    print()
+    print(bold("  Topology Summary"))
+    print("  " + "=" * 50)
+    vllm_icon = green("+") if vllm_ok or dry_run else yellow("?")
+    mac_icon = green("+") if mac_ok else (yellow("?") if mac_host else red("-"))
+    cluster_icon = green("+") if cluster_ok else (yellow("?") if cluster_nodes else red("-"))
+
+    mac_display = f"{mac_host}:{mac_port}" if mac_host else "<not set>"
+    print(f"  [{vllm_icon}] GPU Orchestrator  localhost:8120   Nemotron-8B TQ4")
+    print(f"  [{mac_icon}] Mac Reasoning     {mac_display:18s} DeepSeek-R1 8B")
+    print(f"  [{cluster_icon}] CPU Cluster       {cluster_nodes or '<not set>':18s} Qwen2.5-32B Q4")
+    print()
+    print(dim("  All remote nodes use llama.cpp with --api-oai (OpenAI-compatible)"))
+
+    print()
+    print(bold("  Effort Routing"))
+    print("  " + "-" * 50)
+    print("    1-6:  Nemotron-8B TQ4 (local GPU, 15-25 tok/s)")
+    print("    7-8:  DeepSeek-R1 8B  (Mac llama.cpp, 8-15 tok/s)")
+    print("    9-10: Qwen2.5-32B Q4  (CPU cluster, 5-10 tok/s)")
+
+    if not mac_host or not mac_ok:
+        print()
+        print(bold("  Next Steps"))
+        print("  " + "-" * 50)
+        if not mac_host:
+            print(f"  1. Set up Mac: {cyan('bash scripts/setup-mac-node.sh')} (on Mac Mini)")
+            print(f"     Then:       {cyan('export AITHER_GRID_MAC_HOST=<mac-ip>')}")
+        if not cluster_nodes or cluster_nodes == "[]":
+            print(f"  2. Set up cluster: {cyan('bash scripts/setup-cluster-node.sh')} (on each node)")
+            print(f"     Then:           {cyan('export AITHER_GRID_CLUSTER_NODES=[\"<ip>\"]')}")
+
+    # -- Save routing config for adk shell / adk-serve ----------------------------
+    from adk.config import save_saved_config
+
+    grid_config: dict = {
+        "profile": "grid_distributed",
+        "backend": "vllm",
+        "base_url": "http://localhost:8120/v1",
+        "model": "aither-orchestrator",
+    }
+    # Structured node registry for `adk grid status/add/remove`
+    grid_nodes: dict = {}
+
+    if mac_host:
+        grid_config["reasoning_backend"] = "openai"
+        grid_config["reasoning_url"] = f"http://{mac_host}:{mac_port}/v1"
+        grid_config["reasoning_model"] = "deepseek-r1-8b"
+        grid_nodes["reasoning"] = {"host": mac_host, "port": int(mac_port)}
+
+    if cluster_nodes and cluster_nodes != "[]":
+        nodes = json.loads(cluster_nodes) if isinstance(cluster_nodes, str) else cluster_nodes
+        if nodes:
+            llamacpp_port = int(os.environ.get("LLAMACPP_PORT", "8121"))
+            grid_config["cluster_backend"] = "openai"
+            grid_config["cluster_url"] = f"http://{nodes[0]}:{llamacpp_port}/v1"
+            grid_config["cluster_model"] = "qwen2.5-32b"
+            grid_nodes["cluster"] = [{"host": n, "port": llamacpp_port} for n in nodes]
+
+    if grid_nodes:
+        grid_config["grid_nodes"] = grid_nodes
+
+    cfg_path = save_saved_config(grid_config)
+    info(f"Config saved to {cfg_path}")
+
+    print()
+    print(bold("  Start Chatting"))
+    print("  " + "-" * 50)
+    print(f"    {cyan('adk shell')}                          # Interactive terminal")
+    print(f"    {cyan('adk-serve --port 8080')}              # HTTP API (OpenAI-compatible)")
+    print()
+    print(bold("  Manage Your Grid"))
+    print("  " + "-" * 50)
+    print(f"    {cyan('adk grid status')}                    # Show topology + health")
+    print(f"    {cyan('adk grid add reasoning <ip>')}        # Add Mac node later")
+    print(f"    {cyan('adk grid add cluster <ip>')}          # Add CPU node later")
+    print(f"    {cyan('adk login')}                          # Auth for cloud sync")
+    print(f"    {cyan('adk grid sync')}                      # Push config to workspace")
+
+    print()
+    return 0
+
+
+# ===========================================================================
 # CLI entry point
 # ===========================================================================
 
@@ -2950,6 +3304,7 @@ def cmd_deploy_component(args) -> int:
         print(f"    {bold('core')}       Core services (Node, Pulse, Watch, Genesis, Veil)")
         print(f"    {bold('full')}       Full AitherOS stack (~31 containers)")
         print(f"    {bold('addons')}     Self-hosted addon services (Qdrant, RAG, etc.)")
+        print(f"    {bold('grid')}    Grid distributed (GPU + Mac + cluster)")
         print(f"    {bold('connect')}    AitherConnect browser extension")
         print(f"    {bold('desktop')}    AitherDesktop native application")
         print(f"    {bold('stop')}       Stop a running deployment")
@@ -2959,6 +3314,7 @@ def cmd_deploy_component(args) -> int:
         print(f"    {dim('aither deploy sovereign --app garg --gpu')}")
         print(f"    {dim('aither deploy ollama')}")
         print(f"    {dim('aither deploy ollama --models qwen3:8b,phi4')}")
+        print(f"    {dim('aither deploy grid --mac-host 192.168.1.100')}")
         print(f"    {dim('aither deploy node')}")
         print(f"    {dim('aither deploy node --gpu --dashboard')}")
         print(f"    {dim('aither deploy node --genesis --gpu --dashboard')}")
@@ -3018,6 +3374,17 @@ def cmd_deploy_component(args) -> int:
         return deploy_gargbot(
             dry_run=dry_run, tier=tier, no_pull=no_pull,
             start=not no_start, api_key_arg=api_key,
+        )
+
+    elif component == "grid":
+        mac_host = getattr(args, "mac_host", "") or ""
+        cluster_nodes = getattr(args, "cluster_nodes", "") or ""
+        hf_token = getattr(args, "hf_token", "") or ""
+        skip_health = getattr(args, "skip_health", False)
+        return deploy_grid(
+            dry_run=dry_run, mac_host=mac_host,
+            cluster_nodes=cluster_nodes, hf_token=hf_token,
+            skip_health=skip_health,
         )
 
     elif component == "ollama":
