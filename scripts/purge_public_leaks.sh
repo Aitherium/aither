@@ -82,11 +82,24 @@ if [[ $REWRITE -eq 1 && $EXECUTE -eq 1 ]]; then
   command -v git-filter-repo >/dev/null 2>&1 || {
     warn "  git-filter-repo not installed: pip install git-filter-repo"; exit 3; }
   WORK="$(mktemp -d)"
-  note "  cloning mirror into $WORK ..."
+  note "  cloning mirror into $WORK (a fresh mirror does NOT inherit the"
+  note "  monorepo pre-push hook, so it can push to the public repo) ..."
   git clone --mirror "$REMOTE_URL" "$WORK/aither-adk.git"
   ( cd "$WORK/aither-adk.git"
     git filter-repo --force --invert-paths --path "$LEAK_PATH"
-    warn "  about to FORCE-PUSH rewritten history (irreversible) ..."
+    # Drop every pre-2.0 version tag (they mark leaky, ungated releases). The
+    # matching GitHub releases were already deleted in step 1.
+    for tag in $(git tag); do
+      [[ "$tag" =~ ^v[0-9] ]] || continue
+      if is_pre_2 "$tag"; then git tag -d "$tag" >/dev/null; fi
+    done
+    # Verify the leak is gone from ALL history before the irreversible push.
+    if [[ -n "$(git log --all --oneline -- "$LEAK_PATH")" ]]; then
+      warn "  ABORT: $LEAK_PATH still present in history after filter — not pushing."
+      exit 4
+    fi
+    note "  verified: $LEAK_PATH absent from all history; $(git rev-list --count HEAD) commits remain."
+    warn "  FORCE-PUSHING rewritten history + tag deletions (irreversible) ..."
     git push --force --mirror "$REMOTE_URL"
   )
   rm -rf "$WORK"
