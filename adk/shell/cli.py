@@ -372,17 +372,116 @@ Config: edit {CONFIG_FILE}
 # Device flow helper (RFC 8628) — used by `aither login --browser`
 # ---------------------------------------------------------------------------
 
+class _DeviceCodeExpiredError(RuntimeError):
+    """The device code is no longer valid (expired or unknown to the server)."""
+
+
 def _device_flow_login(identity_url: str, client_name: str = "AitherShell") -> dict:
-    """Run RFC 8628 device code flow. Returns token response dict or raises."""
+    """Run RFC 8628 device code flow. Returns token response dict or raises.
+
+    The pending device code is cached to ``~/.aither/device_pending.json`` so
+    that if the poll is interrupted (e.g. a dropped terminal connection in a
+    web workspace), simply re-running ``aither login --browser`` RESUMES the
+    same code — if it was already approved in the browser, sign-in completes
+    instantly with no second authorization. Stale/expired caches fall back to a
+    fresh code automatically.
+    """
     import time
     import urllib.request
     import urllib.error
     import webbrowser
+    from pathlib import Path
 
-    # Step 1: Request device code
+    base = identity_url.rstrip("/")
+    pending_path = Path.home() / ".aither" / "device_pending.json"
+
+    def _load_pending() -> dict | None:
+        try:
+            d = json.loads(pending_path.read_text())
+        except Exception:
+            return None
+        if d.get("identity_url") == base and d.get("device_code") and d.get("deadline", 0) > time.time():
+            return d
+        return None
+
+    def _save_pending(device_code: str, user_code: str, deadline: float, verification_uri: str) -> None:
+        try:
+            pending_path.parent.mkdir(parents=True, exist_ok=True)
+            pending_path.write_text(json.dumps({
+                "identity_url": base,
+                "device_code": device_code,
+                "user_code": user_code,
+                "deadline": deadline,
+                "verification_uri": verification_uri,
+            }))
+        except Exception:
+            pass  # Cache is best-effort
+
+    def _clear_pending() -> None:
+        try:
+            pending_path.unlink()
+        except Exception:
+            pass
+
+    def _poll_once(device_code: str) -> dict:
+        """One poll. Returns the token dict (status/access_token) or raises
+        _DeviceCodeExpiredError on a terminal error; transient errors -> pending."""
+        poll_data = json.dumps({"device_code": device_code}).encode()
+        poll_req = urllib.request.Request(
+            f"{base}/auth/device/token",
+            data=poll_data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(poll_req, timeout=10) as resp:
+                return json.loads(resp.read())
+        except urllib.error.HTTPError as exc:
+            if exc.code == 400:
+                try:
+                    detail = json.loads(exc.read()).get("detail", "")
+                except Exception:
+                    detail = ""
+                if detail in ("expired_token", "invalid_device_code"):
+                    raise _DeviceCodeExpiredError(detail) from exc
+            return {"status": "authorization_pending"}
+        except (urllib.error.URLError, OSError):
+            return {"status": "authorization_pending"}
+
+    def _poll_until(device_code: str, deadline: float, interval: int) -> dict | None:
+        """Poll until approved (token dict), pending-timeout (None), or raise
+        _DeviceCodeExpiredError. Polls immediately so an already-approved resume
+        completes without waiting a full interval."""
+        while time.time() < deadline:
+            result = _poll_once(device_code)
+            if result.get("access_token"):
+                return result
+            click.echo(".", nl=False)
+            time.sleep(interval)
+        return None
+
+    # ── Resume a previously-issued (still-valid) device code ───────────────
+    resumed = _load_pending()
+    if resumed:
+        click.echo()
+        click.echo(f"  Resuming previous device authorization (code: {click.style(resumed.get('user_code', ''), bold=True)})")
+        if resumed.get("verification_uri"):
+            click.echo(f"  If not yet approved, visit: {resumed['verification_uri']}")
+        click.echo("  Waiting for approval", nl=False)
+        try:
+            token_result = _poll_until(resumed["device_code"], resumed["deadline"], 5)
+            if token_result:
+                _clear_pending()
+                click.echo(" approved!")
+                return token_result
+        except _DeviceCodeExpiredError:
+            pass  # stale cache — fall through to a fresh device code
+        _clear_pending()
+
+    # ── Step 1: Request a fresh device code ────────────────────────────────
     req_data = json.dumps({"client_name": client_name, "scopes": "full"}).encode()
     req = urllib.request.Request(
-        f"{identity_url.rstrip('/')}/auth/device/code",
+        f"{base}/auth/device/code",
         data=req_data,
         headers={"Content-Type": "application/json"},
         method="POST",
@@ -398,13 +497,15 @@ def _device_flow_login(identity_url: str, client_name: str = "AitherShell") -> d
     verification_uri = data.get("verification_uri_complete") or data.get("verification_uri", "")
     interval = max(2, int(data.get("interval", 5)))
     expires_in = int(data.get("expires_in", 900))
+    deadline = time.time() + expires_in
+    _save_pending(device_code, user_code, deadline, verification_uri)
 
-    # Step 2: Show code + open browser
+    # ── Step 2: Show code + open browser ───────────────────────────────────
     click.echo()
     click.echo(f"  Your code: {click.style(user_code, bold=True)}")
     click.echo()
     click.echo(f"  Opening browser to: {verification_uri}")
-    click.echo(f"  (If it doesn't open, visit the URL manually and enter the code)")
+    click.echo("  (If it doesn't open, visit the URL manually and enter the code)")
     click.echo()
 
     try:
@@ -414,48 +515,22 @@ def _device_flow_login(identity_url: str, client_name: str = "AitherShell") -> d
 
     click.echo("  Waiting for approval", nl=False)
 
-    # Step 3: Poll for token
-    deadline = time.time() + expires_in
-    while time.time() < deadline:
-        time.sleep(interval)
-        poll_data = json.dumps({"device_code": device_code}).encode()
-        poll_req = urllib.request.Request(
-            f"{identity_url.rstrip('/')}/auth/device/token",
-            data=poll_data,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(poll_req, timeout=10) as resp:
-                result = json.loads(resp.read())
-        except urllib.error.HTTPError as exc:
-            if exc.code == 400:
-                try:
-                    err_body = json.loads(exc.read())
-                    detail = err_body.get("detail", "")
-                except Exception:
-                    detail = ""
-                if detail == "expired_token":
-                    click.echo()
-                    raise RuntimeError("Device code expired. Run `aither login --browser` again.")
-                if detail == "invalid_device_code":
-                    click.echo()
-                    raise RuntimeError("Invalid device code.")
-            click.echo(".", nl=False)
-            continue
-        except (urllib.error.URLError, OSError):
-            click.echo(".", nl=False)
-            continue
+    # ── Step 3: Poll for token ─────────────────────────────────────────────
+    try:
+        token_result = _poll_until(device_code, deadline, interval)
+    except _DeviceCodeExpiredError as exc:
+        _clear_pending()
+        click.echo()
+        if str(exc) == "invalid_device_code":
+            raise RuntimeError("Invalid device code.") from exc
+        raise RuntimeError("Device code expired. Run `aither login --browser` again.") from exc
 
-        status = result.get("status", "")
-        if status == "authorization_pending":
-            click.echo(".", nl=False)
-            continue
-        if result.get("access_token"):
-            click.echo(" approved!")
-            return result
-        click.echo(".", nl=False)
+    if token_result:
+        _clear_pending()
+        click.echo(" approved!")
+        return token_result
 
+    _clear_pending()
     click.echo()
     raise RuntimeError("Timed out waiting for approval.")
 
