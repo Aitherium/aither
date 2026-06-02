@@ -476,6 +476,92 @@ def cmd_register(args):
 _DEFAULT_IDENTITY_URL = "https://portal.aitherium.com"
 
 
+def _derive_cloud_endpoints(identity_url: str) -> dict | None:
+    """Map the identity/portal URL a user logged into → their workspace's
+    data-plane endpoints (inference + MCP + identity).
+
+    The Aitherium cloud serves both OpenAI-compatible inference (``/v1/*``)
+    and the MCP protocol (``/mcp``) from ``mcp.aitherium.com`` — see
+    AitherOS/config/tunnel-routes.yaml. We only auto-derive for the known
+    aitherium.com topology; localhost and unknown hosts return None so we
+    never clobber a local-dev or bespoke sovereign setup with a guess.
+    """
+    from urllib.parse import urlparse
+
+    host = (urlparse(identity_url).hostname or "").lower()
+    if not host or host in ("localhost", "127.0.0.1", "::1"):
+        return None
+    if host == "aitherium.com" or host.endswith(".aitherium.com"):
+        return {
+            "api_url": "https://mcp.aitherium.com",
+            "mcp_url": "https://mcp.aitherium.com/mcp",
+            "inference_url": "https://mcp.aitherium.com/v1",
+            "identity_url": "https://idp.aitherium.com",
+        }
+    return None
+
+
+def _persist_workspace_endpoints(identity_url: str) -> dict | None:
+    """After login, write the workspace endpoints to ~/.aither/config.json AND
+    ~/.aither/shell.yaml so the `aither` REPL connects to the cloud with no
+    manual env vars. Returns the endpoints, or None if nothing was derived.
+    """
+    eps = _derive_cloud_endpoints(identity_url)
+    if not eps:
+        return None
+
+    # 1) config.json — Python SDK + `adk whoami`.
+    save_saved_config(eps)
+
+    # 2) shell.yaml — the TS `aither` shell reads api_url/mcp_url/identity_url.
+    try:
+        cfg_dir = Path.home() / ".aither"
+        cfg_dir.mkdir(parents=True, exist_ok=True)
+        shell_yaml = cfg_dir / "shell.yaml"
+        existing: dict[str, str] = {}
+        if shell_yaml.exists():
+            for line in shell_yaml.read_text(encoding="utf-8").splitlines():
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#") or ":" not in line:
+                    continue
+                key, _, value = line.partition(":")
+                existing[key.strip()] = value.strip()
+        existing.update({
+            "api_url": eps["api_url"],
+            "mcp_url": eps["mcp_url"],
+            "identity_url": eps["identity_url"],
+        })
+        shell_yaml.write_text(
+            "\n".join(f"{k}: {v}" for k, v in existing.items()) + "\n",
+            encoding="utf-8",
+        )
+    except OSError:
+        pass  # config.json still carries the endpoints
+
+    return eps
+
+
+def _persist_shell_auth(identity_url: str, eps: dict | None, result: dict) -> bool:
+    """Mirror the login into ~/.aither/auth.json so the `aither` (npm) shell
+    picks up the token + cloud endpoint without a second login.
+
+    `adk login` historically wrote only ~/.aither/config.json, but the
+    TypeScript shell reads its token from auth.json — so one login left the
+    REPL unauthenticated. Best-effort: never fails the login.
+    """
+    try:
+        from adk.shell.auth import AuthStore, build_profile_from_response
+    except Exception:
+        return False
+    genesis_url = (eps or {}).get("api_url") or identity_url
+    try:
+        profile = build_profile_from_response(identity_url, genesis_url, result)
+        AuthStore.set_profile("cloud" if eps else "default", profile)
+        return True
+    except Exception:
+        return False
+
+
 def _device_flow_login(identity_url: str, client_name: str = "adk") -> dict:
     """Run RFC 8628 device code flow. Returns token response dict or raises."""
     import json as _json
@@ -576,7 +662,11 @@ def cmd_login(args) -> int:
     api_key = getattr(args, "api_key", None)
     if api_key:
         save_saved_config({"api_key": api_key})
-        print(f"  API key saved to ~/.aither/config.json")
+        print("  API key saved to ~/.aither/config.json")
+        eps = _persist_workspace_endpoints(identity_url)
+        _persist_shell_auth(identity_url, eps, {"access_token": api_key, "token_type": "api_key", "user": {}})
+        if eps:
+            print(f"  Workspace endpoints configured → {eps['api_url']}")
         return 0
 
     # Path 2: Email/password
@@ -601,7 +691,11 @@ def cmd_login(args) -> int:
             if token:
                 save_saved_config({"api_key": token, "email": email})
                 print(f"  Logged in as {email}")
-                print(f"  Token saved to ~/.aither/config.json")
+                print("  Token saved to ~/.aither/config.json")
+                eps = _persist_workspace_endpoints(identity_url)
+                _persist_shell_auth(identity_url, eps, result)
+                if eps:
+                    print(f"  Workspace endpoints configured → {eps['api_url']}")
                 return 0
             print(f"  Login failed: {result}")
             return 1
@@ -633,10 +727,15 @@ def cmd_login(args) -> int:
             config_update["username"] = user["username"]
     save_saved_config(config_update)
 
+    eps = _persist_workspace_endpoints(identity_url)
+    _persist_shell_auth(identity_url, eps, result)
+
     username = user.get("username", "") if isinstance(user, dict) else ""
     print()
     print(f"  Logged in{' as ' + username if username else ''}!")
-    print(f"  Token saved to ~/.aither/config.json")
+    print("  Token saved to ~/.aither/config.json")
+    if eps:
+        print(f"  Workspace endpoints configured → {eps['api_url']} (inference + MCP)")
     print()
     return 0
 

@@ -142,6 +142,18 @@ class License:
         return bool(self.expires_at) and time.time() > self.expires_at
 
 
+def _public_key_is_placeholder() -> bool:
+    """True when no real verification key is configured (ships fail-closed).
+
+    Until the real Ed25519 public key is baked into ``_LICENSE_PUBLIC_KEY_HEX``
+    or supplied via ``AITHER_LICENSE_PUBLIC_KEY``, every signed license fails
+    verification and resolves to COMMUNITY. This helper lets callers emit a
+    *specific* warning ("no key configured") vs a generic "bad signature".
+    """
+    pub_hex = os.environ.get("AITHER_LICENSE_PUBLIC_KEY", _LICENSE_PUBLIC_KEY_HEX)
+    return (not pub_hex) or set(pub_hex) <= {"0"}
+
+
 def _verify_signature(payload: bytes, signature_hex: str) -> bool:
     """Verify an Ed25519 signature over *payload*.
 
@@ -190,10 +202,18 @@ def _license_from_envelope(envelope: dict[str, Any], source: str) -> License | N
 
     payload_bytes = base64.b64decode(payload_b64)
     if not _verify_signature(payload_bytes, signature):
-        logger.warning(
-            "License signature INVALID (source=%s) — falling back to free tier.",
-            source,
-        )
+        if _public_key_is_placeholder():
+            logger.warning(
+                "License present (source=%s) but NO verification key is configured — "
+                "resolving to free tier. Set AITHER_LICENSE_PUBLIC_KEY=<hex> (or bake the "
+                "real key into adk/licensing.py) so portal-signed licenses verify.",
+                source,
+            )
+        else:
+            logger.warning(
+                "License signature INVALID (source=%s) — falling back to free tier.",
+                source,
+            )
         return None
 
     data = json.loads(payload_bytes.decode("utf-8"))

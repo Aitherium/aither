@@ -1205,6 +1205,185 @@ class AitherAgent:
             except Exception:
                 pass
 
+    async def stream_react(
+        self,
+        message: str,
+        on_event,
+        history: list[dict] | None = None,
+        max_steps: int = 6,
+        session_id: str | None = None,
+    ) -> AgentResponse:
+        """Streaming, tool-using ReAct loop.
+
+        Unlike ``chat()`` (native OpenAI function-calling, which can't stream —
+        streaming structured tool_calls is unsupported), this drives a TEXT-based
+        ReAct protocol so the model's ``<think>`` reasoning AND the final answer
+        stream live via ``on_event`` while tools still execute. This is the
+        canonical *streaming* agent loop — surfaces shipping live reasoning
+        (terminals, web chat) should use it; ``chat()`` remains for one-shot.
+
+        ``on_event`` is a sync or async callable receiving dict events::
+
+            {"type": "thinking", "text": ...}     # reasoning delta (live)
+            {"type": "token", "text": ...}         # final-answer delta (live)
+            {"type": "tool", "name": ..., "args": ...}
+            {"type": "tool_result", "name": ..., "result": ...}
+            {"type": "error", "error": ...}
+            {"type": "done"}
+        """
+        import re as _re
+        import json as _json
+        sid = session_id or self._session_id
+        _t0 = time.perf_counter()
+
+        async def _emit(evt: dict) -> None:
+            try:
+                r = on_event(evt)
+                if asyncio.iscoroutine(r):
+                    await r
+            except Exception:
+                pass
+
+        # System prompt = agent instructions + the ReAct text protocol + tools.
+        tool_lines = []
+        for td in self._tools.list_tools():
+            props = (td.parameters or {}).get("properties", {}) if isinstance(td.parameters, dict) else {}
+            tool_lines.append(f"- {td.name}({', '.join(props.keys())}) -> {td.description}")
+        tools_block = "\n".join(tool_lines) if tool_lines else "(no tools available)"
+        sys_prompt = (
+            (self.system_prompt or "").rstrip() + "\n\n"
+            "Think step by step inside <think>...</think>. To call a tool, after your "
+            "<think> reply EXACTLY:\nACTION: <tool_name>\nINPUT: <one-line JSON args, or {}>\n"
+            "When you have enough information, after your <think> reply:\n"
+            "FINAL: <concise answer for the user>\n\n"
+            f"Available tools:\n{tools_block}"
+        )
+
+        msgs = [Message(role="system", content=sys_prompt)]
+        for h in (history or [])[-8:]:
+            if isinstance(h, dict) and h.get("role") in ("user", "assistant") and h.get("content"):
+                msgs.append(Message(role=h["role"], content=str(h["content"])[:3000]))
+        msgs.append(Message(role="user", content=message))
+
+        _ACT = _re.compile(r"ACTION:\s*([a-zA-Z_][a-zA-Z0-9_]*)", _re.I)
+        _INP = _re.compile(r"INPUT:\s*(\{.*?\})", _re.I | _re.S)
+        _THINK = _re.compile(r"<think>.*?</think>\s*", _re.S)
+
+        answer = ""
+        tools_made: list[str] = []
+        for _step in range(max_steps):
+            full = ""
+            buf = ""
+            phase = "scan"  # scan | thinking | answer | action
+            _turn_err = None
+            # Retry the turn once on a transient connection error (the provider may
+            # hold a stale keep-alive between turns). Only retry if nothing has been
+            # emitted yet, so a mid-stream failure never double-streams.
+            for _attempt in range(2):
+                full = ""
+                buf = ""
+                phase = "scan"
+                _emitted = False
+                try:
+                    async for chunk in self.llm.chat_stream(msgs):
+                        delta = getattr(chunk, "content", "") or ""
+                        if not delta:
+                            continue
+                        full += delta
+                        buf += delta
+                        progress = True
+                        while progress:
+                            progress = False
+                            if phase == "scan":
+                                cands = [(p, k) for p, k in (
+                                    (buf.find("<think>"), "t"), (buf.find("FINAL:"), "f"), (buf.find("ACTION:"), "a")
+                                ) if p != -1]
+                                if cands:
+                                    pos, kind = min(cands)
+                                    if kind == "t":
+                                        buf = buf[pos + 7:]; phase = "thinking"; progress = True
+                                    elif kind == "f":
+                                        buf = buf[pos + 6:]; phase = "answer"; progress = True
+                                    else:
+                                        phase = "action"
+                                elif len(buf) > 8:
+                                    buf = buf[-8:]
+                            elif phase == "thinking":
+                                j = buf.find("</think>")
+                                if j != -1:
+                                    if buf[:j]:
+                                        await _emit({"type": "thinking", "text": buf[:j]}); _emitted = True
+                                    buf = buf[j + 8:]; phase = "scan"; progress = True
+                                elif len(buf) > 9:
+                                    emit, buf = buf[:-9], buf[-9:]
+                                    if emit:
+                                        await _emit({"type": "thinking", "text": emit}); _emitted = True
+                            elif phase == "answer":
+                                if buf:
+                                    await _emit({"type": "token", "text": buf}); buf = ""; _emitted = True
+                    _turn_err = None
+                    break
+                except Exception as exc:
+                    _turn_err = exc
+                    if _attempt == 0 and not _emitted:
+                        logger.warning("stream_react retry (%s) for %s", type(exc).__name__, self.name)
+                        await asyncio.sleep(0.3)
+                        continue
+                    break
+            if _turn_err is not None:
+                logger.warning("stream_react turn failed for %s: %s", self.name, _turn_err)
+                await _emit({"type": "error", "error": type(_turn_err).__name__})
+                break
+            if phase == "thinking" and buf:
+                await _emit({"type": "thinking", "text": buf.replace("</think>", "")})
+            elif phase == "answer" and buf:
+                await _emit({"type": "token", "text": buf})
+
+            if phase == "answer":
+                cleaned = _THINK.sub("", full)
+                answer = cleaned.split("FINAL:", 1)[-1].strip() if "FINAL:" in cleaned else cleaned.strip()
+                break
+            m = _ACT.search(full)
+            if not m:
+                answer = _THINK.sub("", full).strip()
+                if answer:
+                    await _emit({"type": "token", "text": answer})
+                break
+            name = m.group(1)
+            args: dict = {}
+            im = _INP.search(full)
+            if im:
+                try:
+                    args = _json.loads(im.group(1))
+                except Exception:
+                    args = {}
+            await _emit({"type": "tool", "name": name, "args": args})
+            try:
+                obs = str(await self._tools.execute(name, args))
+            except Exception as exc:
+                obs = f"(tool error: {type(exc).__name__}: {exc})"
+            tools_made.append(name)
+            await _emit({"type": "tool_result", "name": name, "result": obs[:1500]})
+            msgs.append(Message(role="assistant", content=full))
+            msgs.append(Message(role="user", content=f"OBSERVATION: {obs[:3000]}"))
+        else:
+            await _emit({"type": "token", "text": "\n(reached step limit)"})
+
+        await _emit({"type": "done"})
+        try:
+            await self.memory.add_message(sid, "user", message)
+            if answer:
+                await self.memory.add_message(sid, "assistant", answer)
+        except Exception:
+            pass
+        return AgentResponse(
+            content=answer or "",
+            session_id=sid,
+            tool_calls_made=tools_made,
+            latency_ms=round((time.perf_counter() - _t0) * 1000, 1),
+            finish_reason="stop",
+        )
+
     async def run(self, task: str, **kwargs) -> AgentResponse:
         """Execute a task with ReAct-style reasoning.
 

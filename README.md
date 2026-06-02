@@ -14,6 +14,29 @@ adk init my-agent && cd my-agent && python agent.py
 
 Try it now at [chat.aitherium.com](https://chat.aitherium.com) — free, unlimited, no sign-up.
 
+### The Sovereign Loop vs the Genesis Orchestrated Loop — when to use which
+
+`aither-adk` runs the **Sovereign Loop**: a self-hosted ReAct agent (`AitherAgent.chat()`) that
+reaches LLMs **directly** (`LLMRouter`: Ollama → Elysium gateway), keeps memory in local SQLite,
+and is governed by an open-core license tier. **It does not depend on a running AitherOS / Genesis
+stack** — that is the whole point. (The portal-kit apps Chelle and Gargbot run the *same*
+Sovereign Loop via `run_react`.)
+
+AitherOS also ships a second, heavier path — the **Genesis Orchestrated Loop** — used by the
+Genesis API, AitherShell-on-Genesis, and the Veil/Portal web chat. It routes every LLM call
+through MicroScheduler (VRAM coordination), assembles context through a multi-stage pipeline, and
+enforces capability tokens + identity + audit. It requires the full stack.
+
+| You want… | Use |
+|---|---|
+| A portable agent that runs offline / without the stack | **`aither-adk`** (this SDK) |
+| To embed an agent in your own app or CLI | **`aither-adk`** |
+| A tenant SaaS app that must keep working when Genesis is down | **portal-kit `run_react`** (sibling Sovereign Loop) |
+| VRAM-coordinated multi-model routing, capability-gated tools, full audit | **Genesis API** (Orchestrated Loop) |
+
+Full technical contrast (call chains, governance, the differentiator table) lives in the platform
+doctrine: `.AITHERIUM/CAPABILITY/AGENTIC-EXECUTION-PATHS.md`.
+
 ### AI Agent Setup Guide
 
 Using Claude Code, Cursor, Copilot, or another AI coding agent? Copy the [Agent Setup Prompt](adk/AGENT_PROMPT.md) into your session — it covers install, auth, GPU setup, common mistakes, and all 10 steps from zero to fleet mode.
@@ -26,7 +49,7 @@ Using Claude Code, Cursor, Copilot, or another AI coding agent? Copy the [Agent 
 | 1 AI assistant | **43 specialized agents** that delegate to each other |
 | Their model picks | **Any model** — route by effort level automatically |
 | Data on their servers | **Data stays on your machine** |
-| Closed system, monthly fee | **Open source, Apache-2.0, free forever** |
+| Closed system, monthly fee | **Open-core (BUSL-1.1) — free COMMUNITY tier, runs entirely on your box** |
 | Consumer toy | **SDK + API** — build on it |
 | No agent coordination | **Fleet mode** — agents collaborate in real-time |
 | No GPU management | **VRAM-aware scheduling** — runs what fits |

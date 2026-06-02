@@ -110,6 +110,43 @@ async def _run(cmd: List[str], cwd: Optional[str] = None, timeout: int = 120) ->
     return proc.returncode, stdout.decode(errors="replace"), stderr.decode(errors="replace")
 
 
+# Canonical Aitherium cloud endpoints — see AitherOS/config/tunnel-routes.yaml.
+# A laptop with no local inference points here: mcp.aitherium.com serves BOTH
+# OpenAI-compatible inference (/v1/*) and the MCP protocol (/mcp).
+CLOUD_API_URL = "https://mcp.aitherium.com"
+CLOUD_MCP_URL = "https://mcp.aitherium.com/mcp"
+CLOUD_IDENTITY_URL = "https://idp.aitherium.com"
+CLOUD_PORTAL_URL = "https://portal.aitherium.com"
+
+
+def _write_cloud_shell_config() -> Path:
+    """Point ~/.aither/shell.yaml at the Aitherium cloud (thin client, no local
+    inference). Preserves unrelated keys; (re)writes only the endpoint keys.
+    The AitherShell config loader reads api_url/mcp_url/identity_url from here.
+    """
+    cfg_dir = Path.home() / ".aither"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    shell_yaml = cfg_dir / "shell.yaml"
+
+    existing: Dict[str, str] = {}
+    if shell_yaml.exists():
+        for line in shell_yaml.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or ":" not in line:
+                continue
+            key, _, value = line.partition(":")
+            existing[key.strip()] = value.strip()
+
+    existing.update({
+        "api_url": CLOUD_API_URL,
+        "mcp_url": CLOUD_MCP_URL,
+        "identity_url": CLOUD_IDENTITY_URL,
+    })
+    body = "\n".join(f"{k}: {v}" for k, v in existing.items()) + "\n"
+    shell_yaml.write_text(body, encoding="utf-8")
+    return shell_yaml
+
+
 @dataclass
 class SetupPlugin(SlashCommand):
     name: str = "setup"
@@ -158,7 +195,8 @@ class SetupPlugin(SlashCommand):
 | `/setup desktop` | Install AitherDesktop (system tray + hotkeys) |
 | `/setup node` | Start AitherNode (MCP/tooling hub) via Docker |
 | `/setup zero` | Bootstrap AitherZero PowerShell automation |
-| `/setup connect` | Install AitherConnect (SDK + Shell + Node bundle) |
+| `/setup connect` | Install AitherConnect (SDK + `aither` shell + MCP) |
+| `/setup connect --remote` | Cloud thin client — auth + route API/MCP/inference to the cloud (laptop) |
 | `/setup vllm` | Deploy vLLM + KVCache for local inference |
 | `/setup aitherium` | Full platform bootstrap (all of the above) |
 | `/setup status` | Show what's currently installed |
@@ -538,50 +576,90 @@ class SetupPlugin(SlashCommand):
     # ─── Connect ──────────────────────────────────────────────────────────
 
     async def _setup_connect(self, args: List[str], ctx: Dict[str, Any]) -> str:
-        """Install AitherConnect: SDK + Shell + Node in one shot."""
-        lines = ["🔧 **Installing AitherConnect**\n"]
+        """Install AitherConnect: the SDK + the `aither` shell + MCP wiring.
+
+        With ``--remote`` (or ``--cloud``) this configures a thin client that
+        authenticates to the Aitherium cloud and routes inference + API + MCP
+        there — no local inference needed. Use that on a laptop.
+
+            /setup connect --remote     # cloud thin client (recommended on a laptop)
+            /setup connect              # local/dev install
+            /setup connect --no-node    # skip the optional local Docker node
+        """
+        remote = "--remote" in args or "--cloud" in args
+        lines = ["🔧 **Installing AitherConnect**" + (" (cloud)" if remote else "") + "\n"]
 
         repo = _find_repo_root()
         pip = shutil.which("pip") or shutil.which("pip3")
         if not pip:
-            return "❌ pip not found."
+            return "❌ pip not found. Install Python 3.10+ first: https://python.org"
 
-        # Install AitherSDK
-        sdk_dir = repo / "AitherOS" / "packages" / "AitherSDK" if repo else None
-        if sdk_dir and sdk_dir.exists():
-            lines.append("  Installing AitherSDK from source...")
-            rc, out, err = await _run([pip, "install", "-e", str(sdk_dir)], timeout=120)
-            lines.append(f"  {'✅' if rc == 0 else '❌'} AitherSDK")
+        # ── 1. aither-adk — agent runtime + `adk`/`aither-py` + `mcp setup` ──
+        sdk_dir = repo / "aither-adk" if repo else None
+        if sdk_dir and (sdk_dir / "pyproject.toml").exists():
+            lines.append("  Installing aither-adk[shell,node] from source...")
+            rc, out, err = await _run([pip, "install", "-e", f"{sdk_dir}[shell,node]"], timeout=300)
         else:
-            lines.append("  Installing AitherSDK from PyPI...")
-            rc, out, err = await _run([pip, "install", "aitheros"], timeout=120)
-            lines.append(f"  {'✅' if rc == 0 else '❌'} AitherSDK")
+            lines.append("  Installing aither-adk[shell,node] from PyPI...")
+            rc, out, err = await _run([pip, "install", "aither-adk[shell,node]"], timeout=300)
+        lines.append(f"  {'✅' if rc == 0 else '❌'} aither-adk (SDK + node MCP server)")
+        if rc != 0 and err:
+            lines.append(f"     {err[:200]}")
 
-        # Install AitherShell
-        shell_dir = repo / "aithershell" if repo else None
-        if shell_dir and shell_dir.exists():
-            lines.append("  Installing AitherShell from source...")
-            rc, out, err = await _run([pip, "install", "-e", str(shell_dir)], timeout=120)
-            lines.append(f"  {'✅' if rc == 0 else '❌'} AitherShell")
+        # ── 2. The `aither` REPL — npm @aitherium/shell-cli (the terminal) ──
+        npm = _find_npm()
+        if npm:
+            cli_dir = repo / ".PRODUCTS" / ".AITHERSHELL" / "cli" if repo else None
+            if cli_dir and (cli_dir / "package.json").exists():
+                lines.append("  Building the `aither` shell from source (npm)...")
+                rc, out, err = await _run([npm, "install"], cwd=str(cli_dir), timeout=300)
+                if rc == 0:
+                    rc, out, err = await _run([npm, "run", "build"], cwd=str(cli_dir), timeout=300)
+                if rc == 0:
+                    rc, out, err = await _run([npm, "link"], cwd=str(cli_dir), timeout=120)
+                lines.append(f"  {'✅' if rc == 0 else '❌'} aither shell (npm link)")
+            else:
+                lines.append("  Installing the `aither` shell from npm...")
+                rc, out, err = await _run([npm, "install", "-g", "@aitherium/shell-cli"], timeout=300)
+                lines.append(f"  {'✅' if rc == 0 else '❌'} @aitherium/shell-cli")
+            if rc != 0 and err:
+                lines.append(f"     {err[:200]}")
         else:
-            lines.append("  Installing AitherShell from PyPI...")
-            rc, out, err = await _run([pip, "install", "aithershell"], timeout=120)
-            lines.append(f"  {'✅' if rc == 0 else '❌'} AitherShell")
+            lines.append("  ⚠️ npm not found — skipping the `aither` REPL.")
+            lines.append("     The Python shell is available as `aither-py`. For the full")
+            lines.append("     `aither` terminal, install Node.js 18+: https://nodejs.org")
 
-        # Configure
-        lines.append("")
-        shell_result = await self._setup_shell(args, ctx)
-        lines.append(shell_result)
+        # ── 3. Configure endpoints ──
+        if remote:
+            shell_yaml = _write_cloud_shell_config()
+            lines.append("")
+            lines.append("  ☁️ **Cloud client configured** (no local inference):")
+            lines.append(f"     `{shell_yaml}`")
+            lines.append(f"     • inference + chat → {CLOUD_API_URL}")
+            lines.append(f"     • MCP tools        → {CLOUD_MCP_URL}")
+            lines.append(f"     • identity         → {CLOUD_IDENTITY_URL}")
+        else:
+            lines.append("")
+            shell_result = await self._setup_shell(args, ctx)
+            lines.append(shell_result)
 
-        # Start node if Docker available
+        # ── 4. Optional local Node (Docker) for offline/basic tools ──
         docker = shutil.which("docker")
-        if docker and repo:
+        if docker and repo and not remote and "--no-node" not in args:
             lines.append("")
             node_result = await self._setup_node(args, ctx)
             lines.append(node_result)
 
+        # ── 5. Next steps ──
         lines.append("\n---")
-        lines.append("🚀 **AitherConnect ready!** Run `aither` to start chatting.")
+        lines.append("🚀 **AitherConnect ready!** Next:")
+        if remote:
+            lines.append(f"  1. `aither login`                       — authorize this device at {CLOUD_PORTAL_URL}")
+            lines.append("  2. `aither mcp setup --mode remote`     — wire Claude Code/Cursor to your workspace")
+            lines.append("  3. `aither`                             — chat with cloud inference + full MCP tools")
+            lines.append("\n  Tip: set `AITHER_REQUIRE_AUTH=1` so the shell always uses your login (no local root).")
+        else:
+            lines.append("  • `aither login`   — authenticate   ·   `aither` — start chatting")
         return "\n".join(lines)
 
     # ─── vLLM + KVCache ───────────────────────────────────────────────────
