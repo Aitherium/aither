@@ -1,6 +1,6 @@
 import os
 import requests
-from aither_adk.ui.console import safe_print
+from adk.platform.ui.console import safe_print
 
 class ComfyUIService:
     """

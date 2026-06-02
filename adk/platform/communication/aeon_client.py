@@ -12,7 +12,7 @@ Features:
 - Service health monitoring
 
 Usage:
-    from aither_adk.communication.aeon_client import AeonClient, aeon
+    from adk.platform.communication.aeon_client import AeonClient, aeon
 
     # Quick group chat
     response = await aeon.chat("What should we prioritize?", ["aither", "hydra", "terra"])

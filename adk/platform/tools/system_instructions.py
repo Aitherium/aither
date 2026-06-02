@@ -1073,7 +1073,7 @@ def inject_tdd_workflow(base_prompt: str) -> str:
 
 # Import ecosystem awareness (cached environment context is FAST - no HTTP calls)
 try:
-    from aither_adk.infrastructure.ecosystem import (
+    from adk.platform.infrastructure.ecosystem import (
         get_codebase_expertise_prompt,
         get_environment_context,
         get_temporal_context_prompt,

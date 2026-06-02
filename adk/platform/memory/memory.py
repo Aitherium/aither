@@ -7,7 +7,7 @@ when available (shared cache, consistent embeddings) with fallback to
 Google Gemini API.
 
 Usage:
-    from aither_adk.memory.memory import MemoryManager
+    from adk.platform.memory.memory import MemoryManager
     
     memory = MemoryManager("memory/long_term.json")
     memory.add_memory("User prefers dark mode", source="preference")
@@ -26,21 +26,23 @@ from typing import List, Dict, Optional, Any
 _MIND_CLIENT_AVAILABLE = False
 _mind_client = None
 
-try:
-    # AitherMindClient provides unified embeddings across all AitherOS services
-    from lib.AitherMindClient import get_mind_client, cosine_similarity, embed_sync
-    _MIND_CLIENT_AVAILABLE = True
-except ImportError:
-    # Fallback - define our own cosine similarity
-    def cosine_similarity(vec1: List[float], vec2: List[float]) -> float:
-        if not vec1 or not vec2:
-            return 0.0
-        dot_product = sum(a * b for a, b in zip(vec1, vec2))
-        norm_a = math.sqrt(sum(a * a for a in vec1))
-        norm_b = math.sqrt(sum(b * b for b in vec2))
-        if norm_a == 0 or norm_b == 0:
-            return 0.0
-        return dot_product / (norm_a * norm_b)
+# AitherMindClient provides unified embeddings across all AitherOS services
+# In standalone mode, these are set to None (feature requires running AitherOS instance)
+get_mind_client = None  # Requires AitherOS Mind service
+embed_sync = None  # Requires AitherOS Mind service
+
+# Define our own cosine similarity (always available)
+def cosine_similarity(vec1: List[float], vec2: List[float]) -> float:
+    if not vec1 or not vec2:
+        return 0.0
+    dot_product = sum(a * b for a, b in zip(vec1, vec2))
+    norm_a = math.sqrt(sum(a * a for a in vec1))
+    norm_b = math.sqrt(sum(b * b for b in vec2))
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot_product / (norm_a * norm_b)
+
+_MIND_CLIENT_AVAILABLE = False  # Standalone mode: Mind client not available
 
 # Lazy import for Gemini fallback
 _gemini_client = None
@@ -98,7 +100,7 @@ class MemoryManager:
         Get embedding for text using unified MindClient or Gemini fallback.
         """
         # Try AitherMindClient first (unified embeddings, shared cache)
-        if self.use_mind_client and _MIND_CLIENT_AVAILABLE:
+        if self.use_mind_client and _MIND_CLIENT_AVAILABLE and embed_sync:
             try:
                 embedding = embed_sync(text)
                 if embedding:

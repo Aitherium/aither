@@ -1,13 +1,20 @@
 import os
-import google.generativeai as genai
-from google.cloud import aiplatform
-# from config_manager import OUTPUT_DIR # Removed dependency
-from google.protobuf import json_format
-from google.protobuf.struct_pb2 import Value
 import base64
 import time
-from google.adk.tools import ToolContext
-from google.genai import types
+from adk.tools import ToolContext
+
+# Optional Google Cloud / GenAI SDKs. This is the Google Imagen/Vertex image
+# tool; the package imports fine without these, and the tool reports a clear
+# error if invoked when they aren't installed.
+try:
+    import google.generativeai as genai
+    from google.cloud import aiplatform
+    from google.protobuf import json_format
+    from google.protobuf.struct_pb2 import Value
+    _HAS_GOOGLE = True
+except ImportError:  # pragma: no cover - optional dep
+    genai = aiplatform = json_format = Value = None
+    _HAS_GOOGLE = False
 
 # Default output directory if not specified
 DEFAULT_OUTPUT_DIR = os.getenv("AITHER_OUTPUT_DIR", os.path.join(os.getcwd(), "output"))
@@ -90,10 +97,12 @@ class GoogleGenAIClient:
             print(f"Error generating with Imagen: {e}")
             return None
 
-from google.adk.tools import ToolContext
-from google.genai import types
+from adk.tools import ToolContext
 
 async def generate_google_image(prompt: str, tool_context: ToolContext, model: str = "imagen-3.0-generate-001"):
+    if not _HAS_GOOGLE:
+        return {"error": "Google image generation requires the optional Google SDKs "
+                "(google-generativeai, google-cloud-aiplatform). Install them to use this tool."}
     client = GoogleGenAIClient()
     filepath = None
 
@@ -114,7 +123,7 @@ async def generate_google_image(prompt: str, tool_context: ToolContext, model: s
 
             await tool_context.save_artifact(
                 os.path.basename(filepath),
-                types.Part.from_bytes(data=image_bytes, mime_type="image/png"),
+                {"data": image_bytes, "mime_type": "image/png"},
             )
 
             return {

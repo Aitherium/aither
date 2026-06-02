@@ -15,7 +15,7 @@ Modules:
   - ``adk.platform.ui``              — Console UI, toolbars, commands
 
 Migration:
-  Old imports like ``from aither_adk.ai.ollama import OllamaLlm``
+  Old imports like ``from adk.platform.ai.ollama import OllamaLlm``
   now resolve to ``from adk.platform.ai.ollama import OllamaLlm``.
   A compatibility shim in the ``aither_adk`` package re-exports everything,
   so existing code continues to work without changes.

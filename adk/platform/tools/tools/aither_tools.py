@@ -1,26 +1,17 @@
 import json
 import os
 from typing import Optional, List, Dict
-from google.adk.tools import FunctionTool
+from adk.tools import FunctionTool
 
 # Import MCP Client tools
 try:
     from .mcp_client import list_mcp_servers, list_mcp_tools, call_mcp_tool
 except ImportError:
-    # Fallback for different import contexts
-    try:
-        from AitherOS.agents.common.tools.mcp_client import list_mcp_servers, list_mcp_tools, call_mcp_tool
-    except ImportError:
-        pass
+    list_mcp_servers = list_mcp_tools = call_mcp_tool = None
 
 # Import Workflow Engine
-try:
-    from AitherOS.agents.AitherZeroAutomationAgent.workflows.engine import WorkflowEngine
-except ImportError:
-    try:
-        from workflows.engine import WorkflowEngine
-    except ImportError:
-        WorkflowEngine = None
+# WorkflowEngine requires a running AitherOS instance (not available in standalone ADK)
+WorkflowEngine = None
 
 # Determine project root
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))

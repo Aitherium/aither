@@ -20,7 +20,7 @@ from collections import deque
 
 # Paths - use writable data directory (avoids read-only filesystem in Docker)
 try:
-    from aither_adk.paths import get_saga_subdir, get_saga_data_dir
+    from adk.platform.paths import get_saga_subdir, get_saga_data_dir
     NARRATIVE_AGENT_DIR = get_saga_data_dir()
     MEMORY_DIR = get_saga_subdir("memory", create=True)
 except ImportError:

@@ -12,7 +12,7 @@ the automatic context injection for prompts.
 
 Usage:
 ------
-    from aither_adk.tools.awareness_tools import (
+    from adk.platform.tools.awareness_tools import (
         awareness_tools,
         emit_sensation,
         get_affect_state,

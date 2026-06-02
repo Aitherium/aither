@@ -10,15 +10,15 @@ import os
 import yaml
 import asyncio
 from typing import List, Dict
-from aither_adk.ui.console import safe_print
-from aither_adk.ai.llm_prompt_generator import generate_sd_prompt, generate_visual_identity
-from aither_adk.ai.refinement_engine import RefinementEngine
+from adk.platform.ui.console import safe_print
+from adk.platform.ai.llm_prompt_generator import generate_sd_prompt, generate_visual_identity
+from adk.platform.ai.refinement_engine import RefinementEngine
 
 class AnchorGenerator:
     def __init__(self):
         self.refinement_engine = RefinementEngine()
         try:
-            from aither_adk.paths import get_saga_config_dir, get_saga_subdir
+            from adk.platform.paths import get_saga_config_dir, get_saga_subdir
             self.personas_dir = get_saga_config_dir("personas")
             self.anchors_dir = get_saga_subdir("memory", "anchors")
         except ImportError:

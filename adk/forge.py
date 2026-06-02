@@ -240,6 +240,13 @@ class AgentForge:
         effort: int = 5,
     ) -> ForgeResult:
         """Delegate a task from one agent to another with context chaining."""
+        # GATED: cross-agent delegation is multi-agent orchestration (fleet) —
+        # a paid-tier capability. Single-agent dispatch() stays free.
+        try:
+            from adk.licensing import get_license_manager
+            get_license_manager().require("fleet", friendly="Agent delegation")
+        except ImportError:
+            pass
         context = f"[Delegated from {from_agent}] Complete this task and return the result."
         spec = ForgeSpec(
             agent_type=to_agent,

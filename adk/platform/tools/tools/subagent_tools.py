@@ -9,9 +9,9 @@ These tools integrate with the AitherForge service to spawn
 and manage sub-agents.
 
 Usage in an ADK agent:
-    from google.adk import Agent
-    from AitherOS.agents.common.tools.subagent_tools import subagent_tools
-    
+    from adk.agent import AitherAgent
+    from adk.platform.tools.tools.subagent_tools import subagent_tools
+
     agent = Agent(
         name="MyAgent",
         model="auto",
@@ -29,9 +29,9 @@ import httpx
 # Get forge URL from environment or use default
 FORGE_URL = os.getenv("AITHER_FORGE_URL", "http://localhost:8768")
 
-# Try to import FunctionTool from google.adk
+# FunctionTool (native adk.tools; google-free)
 try:
-    from google.adk.tools import FunctionTool
+    from adk.tools import FunctionTool
 except ImportError:
     # Fallback for standalone usage
     FunctionTool = lambda x: x

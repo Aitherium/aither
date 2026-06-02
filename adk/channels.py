@@ -37,6 +37,15 @@ class ChannelAdapter(ABC):
     """Base class for messaging platform adapters."""
 
     def __init__(self, token: str, on_message: MessageHandler | None = None) -> None:
+        # GATED: deploying agents to messaging platforms (Discord/Telegram/
+        # Slack/Webhook) is a paid-tier capability. Raises LicenseError unless
+        # entitled (or enforcement disabled / tier INTERNAL).
+        try:
+            from adk.licensing import get_license_manager
+            get_license_manager().require("channels", friendly="Channel adapters")
+        except ImportError:
+            pass
+
         self.token = token
         self.on_message = on_message
         self._running = False

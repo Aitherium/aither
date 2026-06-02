@@ -55,6 +55,7 @@ class AitherREPL:
         self._input_queue: asyncio.Queue = asyncio.Queue()  # pending user inputs
         self._shutdown = False
         self._thinking_active = False  # True while streaming think tokens
+        self._tokens_displayed = False  # True when token events have streamed content
 
         # Artifact tracking — persists across generations within session
         self._artifacts: List[dict] = []
@@ -328,7 +329,19 @@ class AitherREPL:
         elif event_type == "progress":
             msg = data.get("message", "")
             if msg:
-                print(f"  [{msg}]", file=sys.stderr, end="\r", flush=True)
+                print(f"\033[2K  [{msg}]", file=sys.stderr, end="\r", flush=True)
+        elif event_type == "token":
+            text = data.get("t", "")
+            if text and self.config.stream:
+                if self._thinking_active:
+                    print("\033[0m", flush=True)
+                    print("  ---", file=sys.stderr, flush=True)
+                    self._thinking_active = False
+                if not self._tokens_displayed:
+                    # Clear any residual progress line before first token
+                    print("\033[2K", end="\r", file=sys.stderr, flush=True)
+                    self._tokens_displayed = True
+                print(text, end="", flush=True)
         elif event_type == "steering":
             action = data.get("action", "")
             msg = data.get("message", "")
@@ -374,6 +387,7 @@ class AitherREPL:
         self._generating = True
         self._active_session = session_id
         self._thinking_active = False
+        self._tokens_displayed = False
 
         # ── /deep prefix: per-message cloud escalation ──
         _extra_kwargs: dict = {}
@@ -404,7 +418,7 @@ class AitherREPL:
             ):
                 if self._shutdown:
                     break
-                if self.config.stream:
+                if self.config.stream and not self._tokens_displayed:
                     # If thinking was streaming and answer tokens start,
                     # close the dim block first
                     if self._thinking_active:

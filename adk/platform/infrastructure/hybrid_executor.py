@@ -6,7 +6,7 @@ that integrate with the ResourceManager and TaskRouter for intelligent
 hybrid cloud/local execution.
 
 Usage:
-    from aither_adk.infrastructure.hybrid_executor import (
+    from adk.platform.infrastructure.hybrid_executor import (
         delegate_image_smart,
         delegate_text_smart,
         execute_hybrid
@@ -22,8 +22,8 @@ logger = logging.getLogger(__name__)
 
 # Import our new components
 try:
-    from aither_adk.infrastructure.resource_manager import TaskType, resource_manager
-    from aither_adk.infrastructure.task_router import ContentRating, get_router
+    from adk.platform.infrastructure.resource_manager import TaskType, resource_manager
+    from adk.platform.infrastructure.task_router import ContentRating, get_router
 except ImportError:
     # Handle relative imports when running as script
     from resource_manager import TaskType, resource_manager
@@ -78,7 +78,14 @@ class HybridExecutor:
     ) -> str:
         """Execute text generation on local Ollama"""
         try:
-            from AitherOS.AitherNode.async_llm import get_client
+            # Requires running AitherOS (MCP/gateway)
+            get_client = None
+
+            if get_client is None:
+                raise RuntimeError(
+                    "get_client not available - requires AitherOS MCP gateway or "
+                    "AitherNode async_llm service running"
+                )
 
             async with resource_manager.acquire_gpu(TaskType.LLM_LOCAL, timeout=120):
                 client = get_client()
@@ -178,8 +185,9 @@ class HybridExecutor:
     ) -> Dict[str, Any]:
         """Execute image refinement using local ComfyUI"""
         try:
-            from AitherOS.AitherNode.AitherCanvas import ComfyUIClient
-            from AitherOS.AitherNode.config import COMFYUI_SERVER_ADDRESS
+            from adk.platform.ai.comfyui_service import ComfyUIService as ComfyUIClient
+
+            COMFYUI_SERVER_ADDRESS = os.getenv("COMFYUI_SERVER_ADDRESS", "127.0.0.1:8188")
 
             # Wait for GPU resources
             async with resource_manager.acquire_gpu(TaskType.DIFFUSION_SDXL, timeout=300):
@@ -209,7 +217,14 @@ class HybridExecutor:
     ) -> Dict[str, Any]:
         """Execute animation generation using local ComfyUI"""
         try:
-            from AitherOS.AitherNode.tools.animation_tools import generate_animation
+            # Requires running AitherOS (MCP/gateway)
+            generate_animation = None
+
+            if generate_animation is None:
+                raise RuntimeError(
+                    "generate_animation not available - requires AitherOS MCP gateway or "
+                    "AitherNode animation_tools service running"
+                )
 
             # Wait for GPU resources (Animation takes longer)
             async with resource_manager.acquire_gpu(TaskType.DIFFUSION_FLUX, timeout=600):
@@ -238,10 +253,17 @@ class HybridExecutor:
     ) -> Dict[str, Any]:
         """Execute image generation on local ComfyUI"""
         try:
-            from AitherOS.AitherNode.AitherCanvas import generate_local
+            # Requires running AitherOS (MCP/gateway)
+            generate_local = None
 
             # Wait for GPU resources
             task_type = TaskType.DIFFUSION_SDXL if decision.model == "pony" else TaskType.DIFFUSION_FLUX
+
+            if generate_local is None:
+                raise RuntimeError(
+                    "generate_local not available - requires AitherOS MCP gateway or "
+                    "AitherNode AitherCanvas service running"
+                )
 
             async with resource_manager.acquire_gpu(task_type, timeout=300):
                 paths = await generate_local(
@@ -275,7 +297,7 @@ class HybridExecutor:
     ) -> Dict[str, Any]:
         """Execute image generation on cloud (Fal.ai)"""
         try:
-            from AitherOS.agents.common.tools.fal_tools import generate_image_with_fal
+            from adk.platform.tools.tools.fal_tools import generate_image_with_fal
 
             result = await generate_image_with_fal(
                 prompt,
@@ -338,7 +360,7 @@ class HybridExecutor:
         # 3. Send to mailbox if provided
         if mailbox_path:
             try:
-                from aither_adk.communication.mailbox import Mailbox
+                from adk.platform.communication.mailbox import Mailbox
                 mailbox = Mailbox(mailbox_path)
 
                 # Compose message
@@ -474,15 +496,17 @@ async def preflight_check() -> Dict[str, bool]:
 
     # Check Ollama
     try:
-        from AitherOS.AitherNode.async_llm import get_client
-        client = get_client()
-        results["ollama"] = await client.is_available()
+        # Requires running AitherOS (MCP/gateway)
+        get_client = None
+        if get_client is not None:
+            client = get_client()
+            results["ollama"] = await client.is_available()
     except Exception as exc:
         logger.debug(f"Ollama availability check failed: {exc}")
 
     # Check AitherCanvas (ComfyUI)
     try:
-        from AitherOS.agents.common.comfyui_service import ComfyUIService
+        from adk.platform.ai.comfyui_service import ComfyUIService
         results["aithercanvas"] = ComfyUIService.is_reachable()
     except Exception as exc:
         logger.debug(f"AitherCanvas reachability check failed: {exc}")

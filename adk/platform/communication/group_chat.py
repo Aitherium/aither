@@ -1,5 +1,5 @@
 import random
-from aither_adk.ui.console import safe_print
+from adk.platform.ui.console import safe_print
 
 class GroupChatManager:
     def __init__(self, groups):

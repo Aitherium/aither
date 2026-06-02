@@ -68,12 +68,13 @@
       "name": "Lyra Agent Pack",
       "type": "agent_pack",
       "version": "1.0.0",
-      "description": "Research, knowledge synthesis, benchmarks, and deep analysis",
+      "description": "Research, knowledge synthesis, benchmarks, and a compounding LLM-maintained wiki",
       "tier": "starter",
       "category": "research",
       "tags": [
         "research",
         "knowledge",
+        "wiki",
         "benchmarks",
         "analysis"
       ]
@@ -273,6 +274,84 @@
       "pricing": {
         "free_tier": true,
         "subscription_cents": 1400
+      }
+    },
+    {
+      "id": "lyra-wiki-service",
+      "name": "LyraWiki Knowledge Engine",
+      "type": "service_pack",
+      "version": "1.0.0",
+      "description": "Self-hosted, multi-tenant LLM wiki backend. Bundles Nemotron-Orchestrator-8B + the full memory stack (Mind, Nexus, Spirit, KnowledgeGraph) behind LyraWiki.",
+      "tier": "developer",
+      "category": "research",
+      "tags": [
+        "wiki",
+        "knowledge",
+        "rag",
+        "self-hosted",
+        "multi-tenant",
+        "nemotron",
+        "standalone"
+      ],
+      "pricing": {
+        "free_tier": false,
+        "subscription_cents": 2900
+      }
+    },
+    {
+      "id": "lyra-wiki",
+      "name": "LyraWiki \u2014 Knowledge Base Appliance",
+      "type": "bundle",
+      "version": "1.0.0",
+      "description": "Turnkey self-service knowledge base: Lyra agent + wiki tools + self-hosted backend, autonomously curated by Nemotron-Orchestrator-8B.",
+      "tier": "developer",
+      "category": "research",
+      "tags": [
+        "wiki",
+        "knowledge",
+        "appliance",
+        "self-service",
+        "nemotron",
+        "multi-tenant"
+      ]
+    },
+    {
+      "id": "lyra-wiki-tools",
+      "name": "LyraWiki Tools",
+      "type": "tool_pack",
+      "version": "1.0.0",
+      "description": "Wiki knowledge management: ingest, query, lint, consolidate, crystallize, decay reports, page history",
+      "tier": "developer",
+      "category": "research",
+      "tags": [
+        "wiki",
+        "knowledge",
+        "rag",
+        "ingest",
+        "query",
+        "curate"
+      ]
+    },
+    {
+      "id": "polls-pack",
+      "name": "Polls & Surveys",
+      "type": "tool_pack",
+      "version": "1.0.0",
+      "description": "Create polls/surveys, email them to subscribers with one-vote links, embed them in blog posts, and watch live results. Self-contained: MCP tools + admin panel + embeddable widget + email distribution.",
+      "tier": "developer",
+      "category": "business",
+      "tags": [
+        "polls",
+        "surveys",
+        "feedback",
+        "engagement",
+        "marketing",
+        "cms",
+        "newsletter"
+      ],
+      "pricing": {
+        "free_tier": false,
+        "subscription_cents": 900
       }
     },
     {

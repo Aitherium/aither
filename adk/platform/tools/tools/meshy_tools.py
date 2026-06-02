@@ -2,7 +2,7 @@ import os
 import requests
 import time
 import json
-from google.adk.tools import ToolContext
+from adk.tools import ToolContext
 
 MESHY_API_KEY = os.getenv("MESHY_API_KEY")
 BASE_URL = "https://api.meshy.ai/openapi"

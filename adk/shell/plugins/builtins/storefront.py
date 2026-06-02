@@ -131,7 +131,7 @@ class StorefrontPlugin(SlashCommand):
             "From your workspace directory:\n"
             "  docker compose up -d\n\n"
             "Or via AitherOS:\n"
-            "  docker compose -f docker-compose.yml -f docker-compose.aitheros.yml up -d"
+            "  .DEPLOYMENT/scripts/compose.sh aitheros -f docker-compose.yml up -d"
         )
 
     async def _products(self, args: List[str]) -> str:

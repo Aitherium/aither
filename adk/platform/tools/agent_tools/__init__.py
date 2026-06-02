@@ -73,7 +73,7 @@ Version: 2.0.0
 __version__ = "2.0.0"
 
 from typing import List, Optional
-from google.adk.tools import FunctionTool
+from adk.tools import FunctionTool
 
 # ============================================================================
 # TOOL SET DEFINITIONS

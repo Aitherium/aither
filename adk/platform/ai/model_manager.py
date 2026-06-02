@@ -22,10 +22,10 @@ from typing import Dict, List, Optional, Set
 from dataclasses import dataclass
 from enum import Enum, auto
 import time
-from aither_adk.ai.model_browser import ModelBrowser, ModelSearchResult
+from adk.platform.ai.model_browser import ModelBrowser, ModelSearchResult
 
 
-# Get URLs from services.yaml (SINGLE SOURCE OF TRUTH)
+# Get URLs from env/config (SINGLE SOURCE OF TRUTH)
 def _get_ollama_url():
     try:
         _adk_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
@@ -37,7 +37,7 @@ def _get_ollama_url():
     except ImportError:
         # Fallback: try direct import
         try:
-            from lib.core.AitherPorts import ollama_url
+            from adk.ports import ollama_url
             return ollama_url()
         except ImportError:
             raise ImportError("Cannot import AitherPorts. Ensure services.yaml is available.")
@@ -424,7 +424,7 @@ class DynamicModelManager:
         # 2. Check hardware
         available_vram = 16000 # Default assumption
         try:
-            from aither_adk.infrastructure.resource_manager import resource_manager
+            from adk.platform.infrastructure.resource_manager import resource_manager
             status = resource_manager.get_status()
             available_vram = status["vram_free_mb"]
         except ImportError:
@@ -559,7 +559,7 @@ class DynamicModelManager:
         # Get VRAM info from resource manager if available
         available_vram = 8000  # Default estimate
         try:
-            from aither_adk.infrastructure.resource_manager import resource_manager
+            from adk.platform.infrastructure.resource_manager import resource_manager
             rs = resource_manager.get_status()
             available_vram = rs["vram_free_mb"]
         except ImportError:
@@ -607,7 +607,7 @@ class DynamicModelManager:
         Will unload models if necessary.
         """
         try:
-            from aither_adk.infrastructure.resource_manager import resource_manager
+            from adk.platform.infrastructure.resource_manager import resource_manager
             status = resource_manager.get_status()
             free = status["vram_free_mb"]
             
@@ -857,7 +857,7 @@ async def smart_model_selection(prompt: str, task: str = "chat") -> ModelInfo:
     - "Hello" -> gemini-2.5-flash (fast cloud chat)
     - "Write me a nasty story" -> mistral-nemo (NSFW chat)
     """
-    from aither_adk.infrastructure.task_router import ContentClassifier, ContentRating
+    from adk.platform.infrastructure.task_router import ContentClassifier, ContentRating
     
     rating = ContentClassifier.classify(prompt)
     is_nsfw = rating == ContentRating.NSFW

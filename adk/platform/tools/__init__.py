@@ -5,10 +5,10 @@ Aither ADK - Tools Module
 Tool loading, MCP integration, and shared tool implementations.
 
 Import directly from submodules:
-    >>> from aither_adk.tools.tool_loader import aither_tools, remember, recall
-    >>> from aither_adk.tools.mcp_client_tools import mcp_server_tools
-    >>> from aither_adk.tools.awareness_tools import emit_sensation, get_affect_state
-    >>> from aither_adk.tools.reinforcement_tools import record_interaction_outcome
+    >>> from adk.platform.tools.tool_loader import aither_tools, remember, recall
+    >>> from adk.platform.tools.mcp_client_tools import mcp_server_tools
+    >>> from adk.platform.tools.awareness_tools import emit_sensation, get_affect_state
+    >>> from adk.platform.tools.reinforcement_tools import record_interaction_outcome
 
 Key Tool Categories:
 -------------------
@@ -23,7 +23,7 @@ Key Tool Categories:
 
 # Re-export awareness tools for convenience
 try:
-    from aither_adk.tools.awareness_tools import (
+    from adk.platform.tools.awareness_tools import (
         awareness_tools,
         emit_sensation,
         get_affect_state,
@@ -44,7 +44,7 @@ except ImportError:
 
 # Re-export reinforcement learning tools
 try:
-    from aither_adk.tools.reinforcement_tools import (
+    from adk.platform.tools.reinforcement_tools import (
         reinforcement_tools,
         record_interaction_outcome,
         submit_preference_pair,

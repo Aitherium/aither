@@ -2,6 +2,40 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [2.0.0] - 2026-06-02
+
+### Open-core boundary (BREAKING)
+
+This release draws a single, enforced free/paid line. The free tier stays
+genuinely useful (real agent, typed + graph + code memory, ReAct, ~essential
+tools); paid tiers unlock the *scale* capabilities via portal.aitherium.com.
+
+### Added
+- **`adk/licensing.py`** — the entitlement keystone. Resolves a tier
+  (COMMUNITY by default), verifies optional portal-signed `~/.aither/license.json`
+  (Ed25519), and answers `can_use_fleet/channels/cron/swarm/auto_neurons`,
+  `is_agent_licensed`, `max_effort`, etc. **Fail-closed**: no/invalid/expired
+  license → free tier; an unsigned license never grants premium.
+  `AITHER_TENANT_SLUG=aitherium` → unrestricted INTERNAL tier.
+- **Moat guard** (`scripts/check_moat_boundary.py`) wired into the publish
+  workflow — blocks any wheel that leaks the moat or drops the keystone.
+- Tests: `tests/test_licensing.py`, `tests/test_moat_boundary.py`.
+
+### Changed (gating — fail-closed)
+- Free tier effort is capped at 3 (reasoning effort 7–10 needs Professional).
+- Monthly token budget hard-block on the free tier (no silent overspend).
+- Gated behind a paid tier: fleet mode (`FleetConfig`), cross-agent delegation
+  (`AgentForge.delegate`), channel adapters, cron scheduler, proactive
+  auto-neurons, and `swarm`/`swarm_code` dispatch.
+
+### Removed
+- **`adk/nanogpt.py`** (on-device training IP) removed from the published SDK
+  and the public repo; relocated to the internal AitherOS moat. Excluded from
+  the wheel as defense-in-depth.
+- Pre-2.0 releases shipped this IP and ungated capabilities and are being
+  yanked (PyPI) / removed (GitHub releases). See `scripts/yank_leaky_releases.py`
+  and `scripts/purge_public_leaks.sh`.
+
 ## [1.20.0] - 2026-05-27
 
 ### Fixed

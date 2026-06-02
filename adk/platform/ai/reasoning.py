@@ -7,7 +7,7 @@ The reasoning client automatically checks if AitherReasoning (port 8093) is runn
 and gracefully degrades if it's not available.
 
 Usage:
-    from aither_adk.ai.reasoning import with_reasoning, get_reasoning_client, ThoughtType
+    from adk.platform.ai.reasoning import with_reasoning, get_reasoning_client, ThoughtType
     
     # In your agent's process loop:
     session = await with_reasoning("Aither", user_query)

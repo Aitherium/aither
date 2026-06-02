@@ -2,30 +2,25 @@ import argparse
 import logging
 import os
 
+import uuid
+
 from dotenv import load_dotenv
-from google.adk import Runner
-from google.adk.apps import App
-from google.adk.artifacts import InMemoryArtifactService
-from google.adk.auth.credential_service.in_memory_credential_service import (
-    InMemoryCredentialService,
-)
-from google.adk.sessions import InMemorySessionService
 from prompt_toolkit import PromptSession
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.key_binding import merge_key_bindings
 from prompt_toolkit.styles import Style as PromptStyle
 from rich.rule import Rule
 
-from aither_adk.ai.models import get_best_orchestration_model, get_fallback_model
-from aither_adk.ai.models import select_model as common_select_model
-from aither_adk.communication.mailbox import Mailbox
-from aither_adk.infrastructure.auth import configure_auth
-from aither_adk.infrastructure.profiling import profile
-from aither_adk.infrastructure.runner import process_turn
-from aither_adk.infrastructure.services import cleanup_clients
-from aither_adk.infrastructure.utils import configure_logging
-from aither_adk.ui.commands import SlashCommandCompleter, handle_command
-from aither_adk.ui.console import (
+from adk.platform.ai.models import get_best_orchestration_model, get_fallback_model
+from adk.platform.ai.models import select_model as common_select_model
+from adk.platform.communication.mailbox import Mailbox
+from adk.platform.infrastructure.auth import configure_auth
+from adk.platform.infrastructure.profiling import profile
+from adk.platform.infrastructure.runner import process_turn
+from adk.platform.infrastructure.services import cleanup_clients
+from adk.platform.infrastructure.utils import configure_logging
+from adk.platform.ui.commands import SlashCommandCompleter, handle_command
+from adk.platform.ui.console import (
     console,
     create_keybindings,
     print_banner,
@@ -144,22 +139,11 @@ async def run_agent_app(
                 context = result
 
         with console.status("[bold green]Starting Session...[/]", spinner="dots"):
-            session_service = InMemorySessionService()
-            artifact_service = InMemoryArtifactService()
-            credential_service = InMemoryCredentialService()
-
-            app = App(name=app_name, root_agent=agent)
-
-            runner = Runner(
-                app=app,
-                session_service=session_service,
-                artifact_service=artifact_service,
-                credential_service=credential_service
-            )
-
+            # Native runtime: the agent IS the runtime (AitherAgent). No google
+            # Runner/App/session-service — the agent manages its own session/memory.
+            runner = None
             user_id = "user"
-            session = await runner.session_service.create_session(app_name=app.name, user_id=user_id)
-            session_id = session.id
+            session_id = getattr(agent, "_session_id", None) or uuid.uuid4().hex[:12]
 
         if not args.prompt:
             console.print(f"[info]Session created: {session_id}[/]")
@@ -171,13 +155,13 @@ async def run_agent_app(
         memory_manager = context.get('memory_manager')
 
         async def process_turn_with_fallback(user_input):
-            nonlocal agent, app, runner, model_name
+            nonlocal agent, runner, model_name
             max_retries = 3
             current_try = 0
 
             while current_try < max_retries:
                 try:
-                    await profile(process_turn, name="process_turn")(runner, user_id, session_id, user_input, model_name, session_stats, root_agent=agent, debug_mode=debug_mode, memory_manager=memory_manager, toolbar_renderer=rich_toolbar_callback, mailbox=mailbox)
+                    await profile(process_turn, name="process_turn")(agent, user_id, session_id, user_input, model_name, session_stats, root_agent=agent, debug_mode=debug_mode, memory_manager=memory_manager, toolbar_renderer=rich_toolbar_callback, mailbox=mailbox)
                     break # Success
                 except Exception as e:
                     error_str = str(e)
@@ -188,18 +172,9 @@ async def run_agent_app(
                         if fallback_model:
                             safe_print(f"[bold yellow][SYNC] Auto-switching to fallback model: {fallback_model}[/]")
 
-                            # Re-initialize Agent and Runner with new model
+                            # Re-initialize the agent with the fallback model.
                             model_name = fallback_model
                             agent = create_agent_fn(model_name)
-                            app = App(name=app_name, root_agent=agent)
-
-                            # Re-create runner but KEEP the session service to preserve history
-                            runner = Runner(
-                                app=app,
-                                session_service=session_service,
-                                artifact_service=artifact_service,
-                                credential_service=credential_service
-                            )
 
                             current_try += 1
                             continue
@@ -268,13 +243,6 @@ async def run_agent_app(
                         # Recreate agent with new safety settings
                         with console.status("[bold green]Reinitializing agent with new safety settings...[/]", spinner="dots"):
                             agent = create_agent_fn(model_name)
-                            app = App(name=app_name, root_agent=agent)
-                            runner = Runner(
-                                app=app,
-                                session_service=session_service,
-                                artifact_service=artifact_service,
-                                credential_service=credential_service
-                            )
                         console.print("[green][DONE] Agent reinitialized with new safety settings[/]")
                         continue
 
@@ -283,7 +251,7 @@ async def run_agent_app(
                         try:
                             import requests
 
-                            from lib.core.AitherPorts import ollama_url as get_ollama_url
+                            from adk.ports import ollama_url as get_ollama_url
                             ollama_url = get_ollama_url()
                             ps_resp = requests.get(f"{ollama_url}/api/ps", timeout=5)
                             if ps_resp.status_code == 200:
@@ -312,7 +280,7 @@ async def run_agent_app(
                 config = None
 
                 try:
-                    from aither_adk.ai.safety_mode import (
+                    from adk.platform.ai.safety_mode import (
                         get_level_emoji,
                         get_level_name,
                         get_safety_manager,
@@ -332,7 +300,7 @@ async def run_agent_app(
                 # Bypasses LLM routing entirely for ~15 second generation
                 # ========================================================================
                 try:
-                    from aither_adk.infrastructure.local_router import get_local_router
+                    from adk.platform.infrastructure.local_router import get_local_router
                     local_router = get_local_router()
                     decision = local_router.route(effective_input)
 
@@ -344,7 +312,7 @@ async def run_agent_app(
 
                         try:
                             # Import fast generation function
-                            from aither_adk.infrastructure.fast_image import fast_generate_image
+                            from adk.platform.infrastructure.fast_image import fast_generate_image
 
                             # Call fast path directly - no LLM, no agent transfer
                             result = await fast_generate_image(effective_input, config)
@@ -373,7 +341,7 @@ async def run_agent_app(
 
                 # Normal routing path (slower, goes through LLM)
                 try:
-                    from aither_adk.infrastructure.local_router import get_local_router
+                    from adk.platform.infrastructure.local_router import get_local_router
                     local_router = get_local_router()
                     decision = local_router.route(effective_input)
 
@@ -395,7 +363,7 @@ async def run_agent_app(
                         # Handle MultiAgent routing (multiple @mentions for chat)
                         if decision.agent == "MultiAgent":
                             try:
-                                from aither_adk.communication.multi_agent_chat import (
+                                from adk.platform.communication.multi_agent_chat import (
                                     dispatch_multi_agent,
                                     get_mentioned_agents,
                                 )

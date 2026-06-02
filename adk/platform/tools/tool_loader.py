@@ -27,8 +27,8 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../.
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../../apps')))
 
 # Check service status FIRST (fast socket check, <10ms)
-# DO NOT import google.adk, google.cloud, or AitherNode here!
-from aither_adk.infrastructure.services import is_aithernode_running, get_service_status
+# DO NOT import google.adk or AitherNode here!
+from adk.platform.infrastructure.services import is_aithernode_running, get_service_status
 
 _AITHERNODE_RUNNING = is_aithernode_running()
 
@@ -39,7 +39,7 @@ _AITHERNODE_RUNNING = is_aithernode_running()
 # =============================================================================
 if _AITHERNODE_RUNNING:
     # Import ONLY lightweight HTTP client stubs - NO google.adk, NO AitherNode
-    from aither_adk.tools.mcp_client_tools import (
+    from adk.platform.tools.mcp_client_tools import (
         # Memory tools (stubs that call HTTP API)
         remember, recall, add_to_working_memory, get_current_context,
         clear_context, list_memory_entries,
@@ -69,7 +69,7 @@ if _AITHERNODE_RUNNING:
         civitai_tools, huggingface_tools, video_tools, animation_tools, dataset_tools,
     )
     
-    # Stub out aither_tools - these also import google.adk which is slow
+    # Stub out aither_tools - these import heavy optional deps
     # The actual PowerShell execution happens via run_script MCP tool
     aither_tools = []
     
@@ -88,7 +88,7 @@ if _AITHERNODE_RUNNING:
     # Personal assistant tools work locally (no MCP needed) - import them directly
     # These are lightweight and don't require heavy imports
     try:
-        from aither_adk.tools.tools.personal_assistant_tools import (
+        from adk.platform.tools.tools.personal_assistant_tools import (
             personal_assistant_tools, HAS_DDGS, HAS_CLIPBOARD,
             web_search, fetch_webpage_content, get_current_time,
             get_system_stats, get_weather,
@@ -112,10 +112,10 @@ else:
     os.environ["AITHERNODE_LAZY_LOAD"] = "1"
     
     # Import FunctionTool here (slow ~1.5s, but needed for slow path)
-    from google.adk.tools import FunctionTool
+    from adk.tools import FunctionTool
     
     # Import aither_tools (also slow, imports FunctionTool)
-    from aither_adk.tools.tools.aither_tools import aither_tools
+    from adk.platform.tools.tools.aither_tools import aither_tools
     
     # Initialize as empty first
     remember = recall = add_to_working_memory = get_current_context = clear_context = list_memory_entries = None
@@ -125,143 +125,41 @@ else:
     run_script = mcp_get_service_status = get_service_summary = None
     rbac_list_users = rbac_get_user = rbac_create_user = rbac_update_user = rbac_delete_user = rbac_list_groups = rbac_create_group = rbac_update_group = rbac_delete_group = rbac_add_user_to_group = rbac_remove_user_from_group = rbac_list_roles = rbac_create_role = rbac_delete_role = rbac_check_permission = rbac_get_user_permissions = rbac_summary = None
 
-    try:
-        from apps.AitherNode.tools.mcp.mcp_memory import remember, recall, add_to_working_memory, list_memory_entries
-        from apps.AitherNode.tools.mcp.mcp_context import get_current_context, clear_context
-    except ImportError as e:
-        print(f"Warning: Memory slow path: {e}")
-
-    try:
-        from apps.AitherNode.tools.mcp.mcp_vision import analyze_image_content, compare_images, ask_about_image, extract_text_from_image, get_vision_status, unload_vision_model
-        from apps.AitherNode.tools.mcp.mcp_generation import generate_image, refine_image, create_animation, list_workflows
-    except ImportError as e:
-        print(f"Warning: Vision slow path: {e}")
-
-    try:
-        from apps.AitherNode.tools.mcp.mcp_ollama import list_ollama_models, chat_ollama
-    except ImportError as e:
-        print(f"Warning: Ollama slow path: {e}")
-
-    try:
-        from apps.AitherNode.tools.mcp.mcp_persona import list_personas, get_persona_details, update_persona, generate_persona_profile_picture, upload_persona_profile_picture, remove_persona_profile_picture, generate_all_persona_profiles
-    except ImportError as e:
-        print(f"Warning: Persona slow path: {e}")
-
-    try:
-        from apps.AitherNode.tools.mcp.mcp_commands import run_script
-        from apps.AitherNode.tools.mcp.mcp_services import get_service_status as mcp_get_service_status, get_service_summary
-    except ImportError as e:
-        print(f"Warning: Infra slow path: {e}")
-
-    try:
-        from apps.AitherNode.tools.mcp.mcp_rbac import rbac_list_users, rbac_get_user, rbac_create_user, rbac_update_user, rbac_delete_user, rbac_list_groups, rbac_create_group, rbac_update_group, rbac_delete_group, rbac_add_user_to_group, rbac_remove_user_from_group, rbac_list_roles, rbac_create_role, rbac_delete_role, rbac_check_permission, rbac_get_user_permissions, rbac_summary
-    except ImportError as e:
-        print(f"Warning: RBAC slow path: {e}")
-    
-    # These imports are optional - stub out if not available
-    try:
-        from AitherOS.AitherNode.AitherCanvas import generate_local
-    except ImportError:
-        generate_local = None
-    
-    try:
-        from AitherOS.AitherNode.ollama_tools import ollama_tools
-    except ImportError:
-        ollama_tools = []
-    
-    try:
-        from AitherOS.AitherNode.vision_tools import get_vision_backend_status
-    except ImportError:
-        get_vision_backend_status = None
-    
-    try:
-        from AitherOS.AitherNode.local_llm import generate_local_response, is_ollama_available
-    except ImportError:
-        generate_local_response = None
-        is_ollama_available = lambda: False
-    
-    try:
-        from AitherOS.AitherNode.tools.civitai_tools import civitai_tools
-    except ImportError:
-        civitai_tools = []
-    
-    try:
-        from AitherOS.AitherNode.tools.huggingface_tools import huggingface_tools
-    except ImportError:
-        huggingface_tools = []
-    
-    try:
-        from AitherOS.AitherNode.tools.video_tools import video_tools
-    except ImportError:
-        video_tools = []
-    
-    try:
-        from AitherOS.AitherNode.tools.dataset_tools import dataset_tools
-    except ImportError:
-        dataset_tools = []
-    
-    try:
-        from AitherOS.AitherNode.tools.animation_tools import animation_tools
-    except ImportError:
-        animation_tools = []
-    
-    # Build MCP tools list from direct imports
-    mcp_server_tools = [
-        # Memory
-        FunctionTool(remember),
-        FunctionTool(recall),
-        FunctionTool(add_to_working_memory),
-        FunctionTool(get_current_context),
-        FunctionTool(clear_context),
-        FunctionTool(list_memory_entries),
-        # Vision
-        FunctionTool(analyze_image_content),
-        FunctionTool(compare_images),
-        FunctionTool(ask_about_image),
-        FunctionTool(extract_text_from_image),
-        FunctionTool(get_vision_status),
-        # Image Generation
-        FunctionTool(generate_image),
-        FunctionTool(refine_image),
-        FunctionTool(create_animation),
-        FunctionTool(list_workflows),
-        # Ollama
-        FunctionTool(list_ollama_models),
-        FunctionTool(chat_ollama),
-        # Personas
-        FunctionTool(list_personas),
-        FunctionTool(get_persona_details),
-        FunctionTool(update_persona),
-        FunctionTool(generate_persona_profile_picture),
-        # Infrastructure
-        FunctionTool(run_script),
-        FunctionTool(mcp_get_service_status),
-        FunctionTool(get_service_summary),
-        # RBAC
-        FunctionTool(rbac_list_users),
-        FunctionTool(rbac_get_user),
-        FunctionTool(rbac_check_permission),
-        FunctionTool(rbac_summary),
-    ]
+    # AitherNode-hosted tools (memory, vision, image-gen, ollama, persona,
+    # commands, services, RBAC, datasets, media) run inside a full AitherOS
+    # deployment. A standalone agent reaches them over MCP via mcp_client_tools
+    # when connected to a running AitherNode, so they are not imported in-process.
+    mcp_server_tools: list = []
+    generate_local = None
+    ollama_tools: list = []
+    get_vision_backend_status = None
+    generate_local_response = None
+    def is_ollama_available() -> bool:
+        return False
+    civitai_tools: list = []
+    huggingface_tools: list = []
+    video_tools: list = []
+    dataset_tools: list = []
+    animation_tools: list = []
 
 # =============================================================================
 # AGENT-SPECIFIC TOOLS - Only imported in SLOW PATH
 # These import google.cloud.aiplatform, google.adk, etc. which are slow
 # =============================================================================
 if not _AITHERNODE_RUNNING:
-    from aither_adk.tools.tools.google_genai_client import generate_google_image
-    from aither_adk.tools.tools.fal_tools import refine_image_with_fal, generate_image_with_fal, generate_video_with_fal
-    from aither_adk.tools.tools.meshy_tools import generate_3d_model_from_text, generate_3d_model_from_image
-    from aither_adk.tools.tools.narrative_tools import generate_narrative_response, continue_scene
-    from aither_adk.tools.tools.personal_assistant_tools import personal_assistant_tools, HAS_DDGS, HAS_CLIPBOARD
-    from aither_adk.tools.tools.infrastructure_tools import infrastructure_tools
+    from adk.platform.tools.tools.google_genai_client import generate_google_image
+    from adk.platform.tools.tools.fal_tools import refine_image_with_fal, generate_image_with_fal, generate_video_with_fal
+    from adk.platform.tools.tools.meshy_tools import generate_3d_model_from_text, generate_3d_model_from_image
+    from adk.platform.tools.tools.narrative_tools import generate_narrative_response, continue_scene
+    from adk.platform.tools.tools.personal_assistant_tools import personal_assistant_tools, HAS_DDGS, HAS_CLIPBOARD
+    from adk.platform.tools.tools.infrastructure_tools import infrastructure_tools
 
 # =============================================================================
 # AWARENESS TOOLS - Environment/Sensation/Temporal Awareness
 # These are lightweight HTTP calls - import in BOTH paths
 # =============================================================================
 try:
-    from aither_adk.tools.awareness_tools import (
+    from adk.platform.tools.awareness_tools import (
         awareness_tools,
         emit_sensation,
         get_affect_state,
@@ -292,7 +190,7 @@ except ImportError:
 # Lightweight HTTP calls to AitherFlow service (port 8142)
 # =============================================================================
 try:
-    from aither_adk.tools.flow_tools import (
+    from adk.platform.tools.flow_tools import (
         flow_tools,
         github_list_workflows,
         github_trigger_workflow,
@@ -363,7 +261,7 @@ except ImportError:
 # Connects agents to AitherHarvest/Judge/Trainer/Evolution
 # =============================================================================
 try:
-    from aither_adk.tools.reinforcement_tools import (
+    from adk.platform.tools.reinforcement_tools import (
         reinforcement_tools,
         record_interaction_outcome,
         submit_preference_pair,

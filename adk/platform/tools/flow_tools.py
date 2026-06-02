@@ -22,13 +22,13 @@ from typing import List
 
 import httpx
 
-# FLOW_URL from services.yaml
+# FLOW_URL from env/config
 
 
 try:
 
 
-    from lib.core.AitherPorts import get_service_url
+    from adk.ports import get_service_url
 
 
     FLOW_URL = get_service_url("AitherFlow")
@@ -37,7 +37,7 @@ try:
 except ImportError:
 
 
-    from lib.core.AitherPorts import get_port
+    from adk.ports import get_port
 
 
     FLOW_URL = f"http://localhost:{get_port('AitherFlow', 8165)}"

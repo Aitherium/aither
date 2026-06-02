@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "aither-adk"
-version = "1.24.0"
-description = "Build AI agent fleets. Any backend, local or cloud. Runtime backend switching, hybrid reasoning, effort-based routing, 17 bundled identities, knowledge graph memory."
+version = "2.0.0"
+description = "Build AI agents with real memory + faculties on any backend, local or cloud. Open-core: free local runtime with typed memory, knowledge graph, code graph and ReAct; paid tiers (portal.aitherium.com) unlock fleets, channels, reasoning and marketplace packs."
 readme = "README.md"
 license = {file = "LICENSE"}
 requires-python = ">=3.10"
@@ -100,12 +100,17 @@ adk-shell = "adk.shell.cli:entry"
 aither-py = "adk.shell.cli:entry"
 
 [tool.hatch.build]
-# Only ship the free-tier identity (aither.yaml) in the PyPI package.
-# All other identities are premium IP delivered via pack download after
-# subscription. This pattern excludes everything in identities/ EXCEPT
-# aither.yaml (the free-tier core agent).
+# Distribution-time moat boundary. These files exist in the source repo (the
+# internal AitherOS runtime uses them) but are NEVER shipped in the published
+# PyPI wheel. Same proven pattern used for premium identities.
+#
+#   - identities/*.yaml : only the free aither.yaml ships; the rest are
+#                         premium IP delivered via pack download after purchase.
+#   - nanogpt.py        : on-device training IP — competitors must not get a
+#                         turnkey trainer in the free SDK.
 exclude = [
     "adk/identities/*.yaml",
+    "adk/nanogpt.py",
 ]
 artifacts = [
     "adk/identities/aither.yaml",

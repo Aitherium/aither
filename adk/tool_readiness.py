@@ -49,12 +49,12 @@ def check_tool_readiness_adk(
     """
     mode = _get_deployment_mode()
 
-    # Try to use the full _tool_deps registry
+    # Use a tool-dependency registry if one is installed (optional add-on),
+    # otherwise fall back to the built-in heuristic.
     try:
-        from apps.AitherNode.tools.mcp._tool_deps import get_tool_deps
+        from adk.tool_deps import get_tool_deps
         deps = get_tool_deps(tool_name, module_name)
     except ImportError:
-        # _tool_deps not available — use heuristic
         return _heuristic_check(tool_name, module_name, mode)
 
     if mode not in deps.deployment_modes:
@@ -83,6 +83,11 @@ def check_tool_readiness_adk(
 # the full AitherNode tree).
 
 _KNOWN_STANDALONE = frozenset({
+    # Core ADK built-in tools — pure-local (file I/O, shell, python, web fetch).
+    # These are always safe standalone; an agent needs them to do real work.
+    "file_read", "file_write", "file_edit", "file_list", "file_search",
+    "shell_exec", "python_exec", "web_search", "web_fetch",
+    # MCP-style filesystem aliases
     "fs_read_file", "fs_write_file", "fs_list_directory", "fs_delete_file",
     "fs_create_directory", "fs_copy_file", "fs_move_file", "fs_file_exists",
     "git_status", "git_diff", "git_log", "git_add", "git_commit",
@@ -98,10 +103,24 @@ _KNOWN_STANDALONE_MODULES = frozenset({
 })
 
 
+# Tool modules that genuinely require a running AitherOS platform (HTTP calls
+# to platform services) and therefore cannot work standalone.
+_KNOWN_PLATFORM_ONLY_MODULES = frozenset({
+    "mcp_persona", "mcp_vision", "mcp_generation", "mcp_rbac",
+    "mcp_services", "mcp_training", "mcp_chaos", "mcp_deploy",
+})
+
+
 def _heuristic_check(
     tool_name: str, module_name: str, mode: str,
 ) -> ADKReadinessReport:
-    """Conservative heuristic when _tool_deps is unavailable."""
+    """Standalone-first heuristic when no dependency registry is installed.
+
+    Tools are assumed AVAILABLE unless known to require platform services.
+    This is the right default for the public ADK: an agent's built-in tools
+    and any user-provided custom tools must not be silently dropped just
+    because there's no dependency metadata for them.
+    """
     if mode == "platform":
         return ADKReadinessReport()
 
@@ -112,8 +131,12 @@ def _heuristic_check(
     if mod_key in _KNOWN_STANDALONE_MODULES:
         return ADKReadinessReport()
 
-    # Conservative: assume platform-only
-    return ADKReadinessReport(
-        broken=True,
-        reason=f"Tool '{tool_name}' assumed platform-only (no dependency info)",
-    )
+    # Drop only tools known to need a running platform.
+    if mod_key in _KNOWN_PLATFORM_ONLY_MODULES:
+        return ADKReadinessReport(
+            broken=True,
+            reason=f"Tool '{tool_name}' requires platform services ({mod_key})",
+        )
+
+    # Default: available. Custom/unknown local tools work standalone.
+    return ADKReadinessReport()

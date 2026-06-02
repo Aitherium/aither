@@ -11,13 +11,14 @@ import asyncio
 import time
 from typing import Dict, Any, List
 
-from aither_adk.ai.persona_image_system import PersonaImageSystem, VisualIdentity
-from aither_adk.ai.comfyui_service import ComfyUIService
-from AitherOS.AitherNode.AitherCanvas import ComfyUIClient
-from aither_adk.ui.console import safe_print
+from adk.platform.ai.persona_image_system import PersonaImageSystem, VisualIdentity
+from adk.platform.ai.comfyui_service import ComfyUIService
+# ComfyUIClient requires full AitherOS; use ComfyUIService for HTTP-only access
+ComfyUIClient = None
+from adk.platform.ui.console import safe_print
 
 try:
-    from aither_adk.paths import get_saga_config_dir
+    from adk.platform.paths import get_saga_config_dir
     PERSONAS_DIR = get_saga_config_dir("personas")
 except ImportError:
     PERSONAS_DIR = os.path.join(os.path.dirname(__file__), "..", "Saga", "config", "personas")
@@ -26,7 +27,8 @@ class AnchorAutomation:
     def __init__(self):
         self.system = PersonaImageSystem()
         self.comfy_url = ComfyUIService.get_base_url()
-        self.client = ComfyUIClient(self.comfy_url)
+        # ComfyUIClient only available with full AitherOS; use ComfyUIService for HTTP-only fallback
+        self.client = ComfyUIClient(self.comfy_url) if ComfyUIClient else ComfyUIService()
         
     async def initialize_all_personas(self, force_regenerate: bool = False):
         """
@@ -146,7 +148,7 @@ class AnchorAutomation:
                 # Save to temp (writable path for Docker)
                 filename = f"{prefix}_{int(time.time())}.png"
                 try:
-                    from aither_adk.paths import get_saga_subdir
+                    from adk.platform.paths import get_saga_subdir
                     temp_dir = get_saga_subdir("output", "temp", create=True)
                 except ImportError:
                     temp_dir = os.path.join(os.path.dirname(__file__), "..", "Saga", "output", "temp")

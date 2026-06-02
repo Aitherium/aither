@@ -3,9 +3,9 @@ import sys
 import subprocess
 import time
 import requests
-from aither_adk.ui.console import safe_print
+from adk.platform.ui.console import safe_print
 
-# Get Ollama URL from services.yaml (SINGLE SOURCE OF TRUTH)
+# Get Ollama URL from env/config (SINGLE SOURCE OF TRUTH)
 def _get_ollama_url():
     # Try environment variable first (simplest for Docker)
     ollama_url_env = os.environ.get("OLLAMA_URL")
@@ -28,7 +28,7 @@ def _get_ollama_url():
     
     # Attempt 2: lib.core path (common Docker layout)
     try:
-        from lib.core.AitherPorts import ollama_url
+        from adk.ports import ollama_url
         return ollama_url()
     except ImportError as e:
         import_attempts.append(f"lib.core.AitherPorts: {e}")

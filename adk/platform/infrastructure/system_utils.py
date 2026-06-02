@@ -2,7 +2,7 @@ import os
 import logging
 import subprocess
 import time
-from aither_adk.infrastructure.profiling import profile
+from adk.platform.infrastructure.profiling import profile
 
 logger = logging.getLogger(__name__)
 

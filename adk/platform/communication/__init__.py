@@ -11,12 +11,12 @@ Includes:
 - Group Chat: Multi-agent conversation management
 
 Import directly from submodules:
-    >>> from aither_adk.communication.mailbox import Mailbox
-    >>> from aither_adk.communication.group_chat import GroupChatManager
-    >>> from aither_adk.communication.aeon_client import AeonClient, aeon
-    >>> from aither_adk.communication.demiurge_client import DemiurgeClient, demiurge
-    >>> from aither_adk.communication.a2a_client import A2AClient, send_to_agent
-    >>> from aither_adk.communication.a2a_federation import FederatedA2AClient, federate_task
+    >>> from adk.platform.communication.mailbox import Mailbox
+    >>> from adk.platform.communication.group_chat import GroupChatManager
+    >>> from adk.platform.communication.aeon_client import AeonClient, aeon
+    >>> from adk.platform.communication.demiurge_client import DemiurgeClient, demiurge
+    >>> from adk.platform.communication.a2a_client import A2AClient, send_to_agent
+    >>> from adk.platform.communication.a2a_federation import FederatedA2AClient, federate_task
 """
 
 # Core agent clients - Aeon (formerly Council)

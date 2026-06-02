@@ -4,7 +4,7 @@ import json
 import subprocess
 import requests
 from typing import List, Optional
-from google.adk.tools import FunctionTool
+from adk.tools import FunctionTool
 
 # Try to import BeautifulSoup
 try:
@@ -176,14 +176,8 @@ def send_to_inbox(recipient: str, subject: str, content: str) -> str:
         content: The body of the message.
     """
     try:
-        # We need to access the global mailbox instance.
-        # Since tools are stateless functions, we might need to import it or rely on a singleton.
-        # For now, we'll try to import the mailbox from the main agent module if possible,
-        # or instantiate a new one pointing to the same file.
-        from AitherOS.agents.common.mailbox import Mailbox
-        # Assuming default path is used or we can find it.
-        # Ideally, the mailbox path should be consistent.
-        # Let's assume it's in the current working directory or a standard location.
+        # Import native ADK mailbox
+        from adk.platform.communication.mailbox import Mailbox
         mailbox = Mailbox() # Defaults to mailbox.json in CWD
         mailbox.send_message("Agent", recipient, subject, content)
         return f"Message sent to {recipient}'s inbox."

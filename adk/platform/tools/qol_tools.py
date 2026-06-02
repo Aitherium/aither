@@ -11,7 +11,7 @@ from typing import Dict, List, Optional
 
 # Storage paths (writable, avoids read-only FS in Docker)
 try:
-    from aither_adk.paths import get_saga_subdir
+    from adk.platform.paths import get_saga_subdir
     QOL_DIR = get_saga_subdir("data", "qol", create=True)
 except ImportError:
     QOL_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "Saga", "data", "qol")
@@ -130,7 +130,7 @@ class Calendar:
 
         # PUSH ACTIVITY: Agent created a calendar event
         try:
-            from lib.core.FluxEmitter import inject_agent_activity
+            from adk.events import inject_agent_activity
             # Try to get agent_id from context or use "aither" as default
             agent_id = "aither"  # Default - could be enhanced to detect calling agent
             inject_agent_activity(agent_id.lower(), {

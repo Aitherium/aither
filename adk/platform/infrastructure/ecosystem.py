@@ -10,7 +10,7 @@ and enhances them with capability metadata for agent context injection.
 
 Usage:
 ------
-    from aither_adk.infrastructure.ecosystem import (
+    from adk.platform.infrastructure.ecosystem import (
         get_ecosystem_context,
         inject_ecosystem_awareness,
         EcosystemClient
@@ -669,7 +669,7 @@ def _refresh_environment_cache(ctx: EnvironmentContext):
 
         # Personas from local config (fast)
         try:
-            from aither_adk.infrastructure.config_loader import load_personas
+            from adk.platform.infrastructure.config_loader import load_personas
             personas = load_personas()
             ctx.available_personas = list(personas.keys()) if personas else ["Aither"]
         except Exception:
@@ -1307,7 +1307,7 @@ def generate_tool_documentation() -> str:
     This is the authoritative reference for what tools are available
     and how to use them. Agents should reference this documentation.
     """
-    from aither_adk.tools.system_instructions import TOOL_INSTRUCTIONS
+    from adk.platform.tools.system_instructions import TOOL_INSTRUCTIONS
 
     # Base tool instructions
     docs = [TOOL_INSTRUCTIONS]
@@ -1412,7 +1412,7 @@ AitherOS/
 +-- AitherVeil/            # Next.js dashboard (port 3000)
 +-- AitherGenesis/         # Bootloader & test framework
 +-- aither_adk/            # Pip-installable runtime library
-+-- config/services.yaml   # SINGLE SOURCE OF TRUTH for all ports
++-- config/                # Service registry — ports, groups, dependencies
 +-- Library/               # Centralized data (Data/, Logs/, Output/, Training/)
 ```
 
@@ -1437,15 +1437,14 @@ AitherOS/
 
 **1. Service Communication:**
 - All services are FastAPI apps with `/health` endpoints
-- Services discover each other via `config/services.yaml`
+- Services discover each other via the service registry
 - Use `lib/AitherPorts.py`: `get_port("Mind")` -> 8088
 - Use `lib/AitherChronicle.py`: `log = get_logger("ServiceName")`
 
 **2. Service Bootstrap Pattern:**
 ```python
-import services._bootstrap  # noqa: F401 - ALWAYS FIRST (path setup)
 from fastapi import FastAPI
-from lib.AitherPorts import get_port
+from adk.ports import get_port
 
 PORT = get_port("ServiceName", default_port)
 app = FastAPI(title="AitherServiceName")
@@ -1472,7 +1471,7 @@ AitherNode exposes 24+ tool categories via MCP:
 `context`, `flow`, `training`, `chaos`, `rbac`, `commands`, `deploy`, etc.
 
 ### [FOLDER] Key Files to Know
-- **config/services.yaml** - Master service registry (ports, groups, dependencies)
+- **config/** - Master service registry (ports, groups, dependencies)
 - **paths.py** - Centralized path configuration (`Paths.DATA`, `Paths.LOGS`, etc.)
 - **lib/AitherPorts.py** - Port resolution (`get_port("Mind")`)
 - **lib/AitherChronicle.py** - Logging (`get_logger("ServiceName")`)

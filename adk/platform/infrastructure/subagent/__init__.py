@@ -44,8 +44,8 @@ Architecture:
                         +---------------------+
 
 Usage:
-    from AitherOS.agents.common.subagent import AitherForge, ScoutTask
-    
+    from adk.platform.infrastructure.subagent import AitherForge, ScoutTask
+
     forge = AitherForge()
     
     # Spawn scouts to research a topic

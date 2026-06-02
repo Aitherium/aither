@@ -124,7 +124,7 @@ class SmartTaskRouter:
         """Lazy load resource manager"""
         if self._resource_manager is None:
             try:
-                from AitherOS.agents.common.resource_manager import resource_manager
+                from adk.platform.infrastructure.resource_manager import resource_manager
                 self._resource_manager = resource_manager
             except ImportError:
                 pass
@@ -346,26 +346,26 @@ class SmartTaskRouter:
     ) -> Any:
         """
         Execute a task with automatic fallback.
-        
+
         Tries the primary backend, falls back to secondary on failure.
         """
         primary_func = local_func if decision.use_local else cloud_func
         fallback_func = cloud_func if decision.use_local else local_func
-        
+
         try:
             if decision.use_local and self.resource_manager:
                 # Acquire GPU resources for local
-                from AitherOS.agents.common.resource_manager import TaskType
+                from adk.platform.infrastructure.resource_manager import TaskType
                 task_type = TaskType.DIFFUSION_SDXL  # Default, could be more specific
-                
+
                 async with self.resource_manager.acquire_gpu(task_type, timeout=60):
                     return await primary_func(*args, **kwargs)
             else:
                 return await primary_func(*args, **kwargs)
-                
+
         except Exception as e:
             print(f"[TaskRouter] Primary ({decision.provider}) failed: {e}")
-            
+
             if decision.fallback_provider and fallback_func:
                 print(f"[TaskRouter] Trying fallback: {decision.fallback_provider}")
                 try:

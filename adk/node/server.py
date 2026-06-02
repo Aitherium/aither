@@ -181,7 +181,7 @@ def _build_mcp_app(mode: str, port: int):
         )
         sys.exit(1)
 
-    server = Server("aitheros-node")
+    server = Server("aither-node")
     proxy: Optional[ProxyMCPNode] = None
     local_tool_map: Dict[str, Any] = {}
 

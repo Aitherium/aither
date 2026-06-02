@@ -18,7 +18,7 @@ Security:
 - Rate limiting recommended for external calls
 
 Example Usage:
-    from aither_adk.communication.a2a_federation import (
+    from adk.platform.communication.a2a_federation import (
         FederatedA2AClient, discover_external_agent, federate_task
     )
     
@@ -507,7 +507,7 @@ class FederatedA2AClient:
         Returns:
             Registration response from the peer
         """
-        from lib.core.AitherPorts import get_service_url
+        from adk.ports import get_service_url
         our_url = get_service_url("A2A")
         
         try:

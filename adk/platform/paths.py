@@ -8,7 +8,7 @@ as the writable root, falling back to the source-relative Saga/ directory
 for local (non-Docker) development.
 
 Usage:
-    from aither_adk.paths import get_saga_data_dir, get_saga_subdir
+    from adk.platform.paths import get_saga_data_dir, get_saga_subdir
 
     # Returns writable path like /app/data/Saga/memory
     memory_dir = get_saga_subdir("memory")

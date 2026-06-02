@@ -8,7 +8,7 @@ from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.styles import Style
 from rich.text import Text
 
-from aither_adk.infrastructure.status_monitor import monitor
+from adk.platform.infrastructure.status_monitor import monitor
 
 logger = logging.getLogger(__name__)
 

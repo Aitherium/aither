@@ -161,3 +161,31 @@ def get_emitter() -> EventEmitter:
     if _instance is None:
         _instance = EventEmitter()
     return _instance
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Agent-activity helpers — standalone replacement for FluxEmitter's
+# inject_agent_activity / clear_agent_activity.  In a full AitherOS deployment
+# these drive the live dashboard; standalone they emit a local CUSTOM event and
+# are otherwise harmless no-ops.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def inject_agent_activity(agent: str, activity: Any = None, **extra) -> None:
+    """Record what an agent is currently doing (fire-and-forget, never raises)."""
+    try:
+        get_emitter().emit_sync(
+            EventType.CUSTOM, kind="agent_activity", agent=agent, activity=activity, **extra
+        )
+    except Exception:  # telemetry must never break the caller
+        pass
+
+
+def clear_agent_activity(agent: str, **extra) -> None:
+    """Clear an agent's current-activity marker (fire-and-forget, never raises)."""
+    try:
+        get_emitter().emit_sync(
+            EventType.CUSTOM, kind="agent_activity_clear", agent=agent, **extra
+        )
+    except Exception:
+        pass

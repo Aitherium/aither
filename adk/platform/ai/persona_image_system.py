@@ -20,7 +20,7 @@ from pathlib import Path
 
 # Base paths
 try:
-    from aither_adk.paths import get_saga_data_dir, get_saga_subdir
+    from adk.platform.paths import get_saga_data_dir, get_saga_subdir
     NARRATIVE_AGENT_DIR = get_saga_data_dir()
     ANCHORS_DIR = get_saga_subdir("memory", "anchors", create=True)
 except ImportError:
@@ -257,9 +257,14 @@ class PersonaImageSystem:
         if not image_path or not os.path.exists(image_path):
             return
 
-        try:
-            from AitherOS.AitherNode.vision_tools import analyze_with_ollama
+        # analyze_with_ollama requires a running AitherOS instance (use the gateway/MCP)
+        analyze_with_ollama = None
 
+        if analyze_with_ollama is None:
+            # Feature degraded: vision analysis unavailable in standalone mode
+            return
+
+        try:
             prompts = {
                 "face": """Analyze this character's face. Output ONLY comma-separated tags.
 
@@ -425,7 +430,12 @@ OUTPUT ONLY TAGS, NO SENTENCES."""
             )
 
             import asyncio
-            from AitherOS.AitherNode.AitherCanvas import generate_local
+            # generate_local requires a running AitherOS instance (use the gateway/MCP)
+            generate_local = None
+
+            if generate_local is None:
+                # Feature degraded: anchor auto-generation unavailable in standalone mode
+                return False
 
             try:
                 loop = asyncio.get_event_loop()
@@ -720,9 +730,14 @@ OUTPUT ONLY TAGS, NO SENTENCES."""
         Use vision model to analyze an existing image and build a prompt
         that preserves its details while applying requested modifications.
         """
-        try:
-            from AitherOS.AitherNode.vision_tools import analyze_with_ollama
+        # analyze_with_ollama requires a running AitherOS instance (use the gateway/MCP)
+        analyze_with_ollama = None
 
+        if analyze_with_ollama is None:
+            # Feature degraded: vision enhancement unavailable in standalone mode
+            return self.build_prompt(persona_name or "aither", modification_request)
+
+        try:
             extraction_prompt = """Analyze this image and output ONLY comma-separated tags.
 
 EXTRACT:

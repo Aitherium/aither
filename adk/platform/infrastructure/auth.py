@@ -2,7 +2,7 @@ import os
 import sys
 from rich.prompt import Prompt, Confirm
 from rich.panel import Panel
-from aither_adk.ui.console import console
+from adk.platform.ui.console import console
 
 def configure_auth():
     """Interactively configures API keys."""

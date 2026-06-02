@@ -23,12 +23,12 @@ logger = logging.getLogger(__name__)
 # Suppress unclosed resource warnings at exit (these are harmless)
 warnings.filterwarnings("ignore", category=ResourceWarning, message=".*unclosed.*")
 
-# Service URLs from services.yaml
+# Service URLs from env/config
 try:
-    from lib.core.AitherPorts import get_service_url
+    from adk.ports import get_service_url
     AITHERNODE_URL = get_service_url("Node")
 except ImportError:
-    from lib.core.AitherPorts import get_port
+    from adk.ports import get_port
     AITHERNODE_URL = f"http://localhost:{get_port('Node', 8090)}"
 
 # Sync HTTP client for tool calls (reused across calls)
@@ -342,7 +342,7 @@ def generate_local(prompt: str, model: str = "llama3") -> str:
     try:
         import httpx
 
-        from lib.core.AitherPorts import ollama_url
+        from adk.ports import ollama_url
         resp = httpx.post(
             f"{ollama_url()}/api/generate",
             json={"model": model, "prompt": prompt, "stream": False},
@@ -361,7 +361,7 @@ def generate_local_response(prompt: str, model: str = "llama3") -> str:
 def is_ollama_available() -> bool:
     """Check if Ollama is running."""
     try:
-        from lib.core.AitherPorts import ollama_url
+        from adk.ports import ollama_url
         resp = httpx.get(f"{ollama_url()}/api/tags", timeout=2.0)
         return resp.status_code == 200
     except (ImportError, httpx.HTTPError):
@@ -395,12 +395,12 @@ dataset_tools = []
 # CORTEX/NEURONS TOOLS - Parallel intelligence gathering
 # =============================================================================
 
-# Cortex URL from services.yaml
+# Cortex URL from env/config
 try:
-    from lib.core.AitherPorts import get_service_url
+    from adk.ports import get_service_url
     CORTEX_URL = get_service_url("Cortex")
 except ImportError:
-    from lib.core.AitherPorts import get_port
+    from adk.ports import get_port
     CORTEX_URL = f"http://localhost:{get_port('Cortex', 8139)}"
 
 def think_with_neurons(
@@ -498,7 +498,7 @@ _mcp_server_tools = None
 
 def _build_mcp_tools():
     """Build MCP tools list with FunctionTool wrappers (lazy)."""
-    from google.adk.tools import FunctionTool
+    from adk.tools import FunctionTool
     return [
         # Essential real-time
         FunctionTool(get_current_time),

@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 # Paths — use paths.py for Docker-safe writable directory resolution
 try:
-    from aither_adk.paths import get_saga_data_dir, get_saga_subdir
+    from adk.platform.paths import get_saga_data_dir, get_saga_subdir
     NARRATIVE_AGENT_DIR = get_saga_data_dir()
     CACHE_DIR = get_saga_subdir("memory", "image_cache", create=True)
 except ImportError:
@@ -376,7 +376,12 @@ class SpeculativeGenerator:
             # Generate using ComfyUI
             import asyncio
 
-            from AitherOS.AitherNode.AitherCanvas import generate_local
+            # generate_local requires a running AitherOS instance (use the gateway/MCP)
+            generate_local = None
+
+            if generate_local is None:
+                # Feature degraded: speculative generation requires AitherOS (use portal-kit UI instead)
+                return
 
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)

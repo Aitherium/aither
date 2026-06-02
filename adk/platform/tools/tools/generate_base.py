@@ -9,7 +9,8 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 # Add repo root to path to allow importing AitherNode
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../../')))
 
-from AitherOS.AitherNode.AitherCanvas import generate_local
+# Local ComfyUI generation requires a running AitherOS instance (not available in standalone ADK)
+generate_local = None  # standalone: local ComfyUI generation unavailable
 from .google_genai_client import generate_google_image
 
 def main():

@@ -119,12 +119,12 @@ def info():
     table.add_column("Description")
 
     modules = [
-        ("ai", "aither_adk.ai", "LLM providers, models, safety"),
-        ("communication", "aither_adk.communication", "Inter-agent messaging"),
-        ("infrastructure", "aither_adk.infrastructure", "Auth, config, services"),
-        ("memory", "aither_adk.memory", "Memory management"),
-        ("tools", "aither_adk.tools", "Tool loader, MCP integration"),
-        ("ui", "aither_adk.ui", "Console, CLI, commands"),
+        ("ai", "adk.platform.ai", "LLM providers, models, safety"),
+        ("communication", "adk.platform.communication", "Inter-agent messaging"),
+        ("infrastructure", "adk.platform.infrastructure", "Auth, config, services"),
+        ("memory", "adk.platform.memory", "Memory management"),
+        ("tools", "adk.platform.tools", "Tool loader, MCP integration"),
+        ("ui", "adk.platform.ui", "Console, CLI, commands"),
     ]
 
     for name, path, desc in modules:
@@ -149,12 +149,12 @@ def check():
 
     # Check submodules - use direct submodule imports
     submodules = [
-        ("aither_adk.ai", "from aither_adk.ai.ollama import OllamaLlm"),
-        ("aither_adk.communication", "from aither_adk.communication.mailbox import Mailbox"),
-        ("aither_adk.infrastructure", "from aither_adk.infrastructure.utils import configure_logging"),
-        ("aither_adk.memory", "from aither_adk.memory.memory import MemoryManager"),
-        ("aither_adk.tools", "from aither_adk.tools.tool_loader import aither_tools"),
-        ("aither_adk.ui", "from aither_adk.ui.console import console"),
+        ("adk.platform.ai", "from adk.platform.ai.ollama import preload_model"),
+        ("adk.platform.communication", "from adk.platform.communication.mailbox import Mailbox"),
+        ("adk.platform.infrastructure", "from adk.platform.infrastructure.utils import configure_logging"),
+        ("adk.platform.memory", "from adk.platform.memory.memory import MemoryManager"),
+        ("adk.platform.tools", "from adk.platform.tools.tool_loader import aither_tools"),
+        ("adk.platform.ui", "from adk.platform.ui.console import console"),
     ]
 
     for module, test_import in submodules:
@@ -1486,14 +1486,14 @@ def docs_api():
     ))
 
     api_docs = """
-[bold]aither_adk.ai[/]
+[bold]adk.platform.ai[/]
   OllamaLlm          - Local LLM provider (Ollama)
   AitherLlm          - Unified LLM gateway
   get_available_models() - List available models
   get_safety_settings()  - Get Gemini safety settings
   SafetyLevel        - Safety level enum (HIGH, MEDIUM, LOW)
 
-[bold]aither_adk.infrastructure[/]
+[bold]adk.platform.infrastructure[/]
   configure_logging()    - Setup logging
   configure_auth()       - Setup API keys
   load_personas()        - Load persona configs
@@ -1501,25 +1501,25 @@ def docs_api():
   is_aithernode_running() - Check if AitherNode is up
   process_turn()         - Run conversation turn
 
-[bold]aither_adk.communication[/]
+[bold]adk.platform.communication[/]
   Mailbox            - Inter-agent messaging
   GroupChatManager   - Multi-agent conversations
   CouncilClient      - Council API client
   A2AClient          - A2A protocol client
 
-[bold]aither_adk.memory[/]
+[bold]adk.platform.memory[/]
   MemoryManager      - Conversation memory
   MemorySystem       - Multi-layer memory
   GameEngine         - RPG game state
 
-[bold]aither_adk.tools[/]
+[bold]adk.platform.tools[/]
   aither_tools       - PowerShell automation tools
   mcp_server_tools   - MCP protocol tools
   remember()         - Store to memory
   recall()           - Retrieve from memory
   generate_image()   - Image generation
 
-[bold]aither_adk.ui[/]
+[bold]adk.platform.ui[/]
   console            - Rich console instance
   safe_print()       - Safe console output
   print_banner()     - Print agent banner
@@ -2365,7 +2365,7 @@ def dev_safety(
         else:
             # Show current level
             try:
-                from aither_adk.ai.safety_mode import (
+                from adk.platform.ai.safety_mode import (
                     get_current_level,
                     get_level_emoji,
                     get_level_name,

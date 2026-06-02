@@ -1,7 +1,7 @@
 import os
 import asyncio
 from typing import List, Optional, Any
-from aither_adk.ui.console import safe_print
+from adk.platform.ui.console import safe_print
 
 
 class ScenePrompter:

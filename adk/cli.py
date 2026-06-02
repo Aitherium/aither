@@ -224,7 +224,7 @@ def cmd_create_app(args):
         print()
         print("Next: connect to AitherOS backend for inference:")
         print(f"  cd {output}")
-        print(f"  docker compose -f docker-compose.yml -f docker-compose.aitheros.yml up -d")
+        print(f"  .DEPLOYMENT/scripts/compose.sh aitheros -f docker-compose.yml up -d")
         print()
         print("Or standalone (local LLM):")
         print(f"  cd {output}")

@@ -32,11 +32,9 @@ _aitherllm_available_cache: dict = {"available": None, "timestamp": 0}
 
 # Import NVIDIA provider constants
 try:
-    from aither_adk.infrastructure.nvidia import (
+    from adk.platform.infrastructure.nvidia import (
         NVIDIA_MODELS,
         NVIDIA_ORCHESTRATOR_MODEL,
-        NvidiaLlm,
-        OrchestratorLlm,
         is_nvidia_available,
     )
     NVIDIA_AVAILABLE = True
@@ -323,7 +321,7 @@ def _get_cached_ollama_models() -> list:
 
     try:
         # FROM services.yaml (SINGLE SOURCE OF TRUTH)
-        from lib.core.AitherPorts import ollama_url as get_ollama_url
+        from adk.ports import ollama_url as get_ollama_url
         ollama_url = get_ollama_url()
         resp = requests.get(f"{ollama_url}/api/tags", timeout=1)
         if resp.status_code == 200:

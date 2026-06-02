@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 # Ollama endpoint - FROM services.yaml (SINGLE SOURCE OF TRUTH)
 try:
-    from lib.core.AitherPorts import ollama_url
+    from adk.ports import ollama_url
     OLLAMA_URL = ollama_url()
 except ImportError:
     OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")

@@ -33,7 +33,20 @@ def _isolate_env(monkeypatch):
     Also patches load_saved_config so the default path (~/.aither/config.yaml)
     returns empty dict, preventing credential bleed from the dev machine.
     Tests that pass an explicit path still get the real function.
+
+    The functionality suite runs as the unrestricted INTERNAL tier so that
+    feature tests (fleet, channels, cron, swarm, auto-neurons) are not blocked
+    by the open-core license gates. The dedicated licensing/moat tests override
+    this via their own (module-level, later-running) fixtures to exercise the
+    free COMMUNITY tier and fail-closed behavior.
     """
     for var in _ISOLATION_VARS:
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr("adk.config.load_saved_config", _isolated_load_saved_config)
+
+    monkeypatch.setenv("AITHER_TENANT_SLUG", "aitherium")
+    try:
+        from adk.licensing import reset_license_manager
+        reset_license_manager()
+    except Exception:
+        pass

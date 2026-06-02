@@ -10,7 +10,7 @@ This module integrates with the central service registry (services.psd1)
 for consistent port definitions across the entire ecosystem.
 
 Usage:
-    from aither_adk.infrastructure.services import get_services, is_aithernode_running
+    from adk.platform.infrastructure.services import get_services, is_aithernode_running
 
     services = get_services()
     if services.aithernode:

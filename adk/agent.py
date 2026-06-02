@@ -139,6 +139,17 @@ class AitherAgent:
         # License gate: verify agent is licensed and custom agents are allowed
         self._check_agent_license(load_packs)
 
+        # Resolve the entitlement manager once (free COMMUNITY tier by default).
+        # Used below to cap effort, fence off auto-neurons/swarm, and apply the
+        # free-tier monthly token limit. Non-fatal — defaults to unrestricted if
+        # the licensing module is somehow unavailable.
+        self._license = None
+        try:
+            from adk.licensing import get_license_manager
+            self._license = get_license_manager()
+        except Exception:
+            pass
+
         # LLM — auto-detect Elysium if no local backend and API key present
         self.llm = llm or LLMRouter(config=self.config)
         self._elysium_connected = False
@@ -161,6 +172,17 @@ class AitherAgent:
 
         # Metering (per-agent token & cost tracking)
         self.meter = get_meter(self.name)
+
+        # Apply the licensed monthly token ceiling (free tier = 100k/mo; paid
+        # tiers = unlimited). Enforced as a hard block in chat() before the LLM
+        # call. Skipped when enforcement is disabled or tier is unlimited.
+        try:
+            if self._license is not None and self._license._enforced():
+                _cap = int(self._license.license.entitlements.monthly_token_limit)
+                if _cap > 0:
+                    self.meter._quota.monthly_limit = _cap
+        except Exception:
+            pass
 
         # Session
         self._session_id = str(uuid.uuid4())[:8]
@@ -207,13 +229,28 @@ class AitherAgent:
         except Exception:
             pass
 
-        # Neuron auto-fire (context gathering before LLM) — non-fatal
+        # Typed-activation memory — authority-ranked recall + decision
+        # constraints + supersession over the local KV memory. Opt-out via
+        # AITHER_TYPED_MEMORY=false. Non-fatal.
+        self._typed = None
+        if os.getenv("AITHER_TYPED_MEMORY", "true").lower() not in ("false", "0", "no"):
+            try:
+                from adk.typed_memory import TypedMemory
+                self._typed = TypedMemory(self.memory)
+            except Exception:
+                pass
+
+        # Neuron auto-fire (context gathering before LLM) — non-fatal.
+        # GATED: proactive context gathering is a paid-tier capability. Free
+        # (COMMUNITY) agents call tools explicitly instead of pre-firing them.
         self._auto_neurons = None
-        try:
-            from adk.neurons import AutoNeuronFire
-            self._auto_neurons = AutoNeuronFire(agent=self)
-        except Exception:
-            pass
+        _auto_neurons_ok = self._license is None or self._license.can_use_auto_neurons()
+        if _auto_neurons_ok:
+            try:
+                from adk.neurons import AutoNeuronFire
+                self._auto_neurons = AutoNeuronFire(agent=self)
+            except Exception:
+                pass
 
         # Strata unified storage — lazy init via property
         self._strata = None
@@ -276,14 +313,23 @@ class AitherAgent:
     def _check_agent_license(self, load_packs: bool) -> None:
         """Verify this agent identity is licensed and custom agents are allowed.
 
-        Raises RuntimeError if:
+        The public ADK is open: an agent of any name can be built standalone.
+        Licensing/premium-pack entitlements are enforced server-side by the
+        gateway/platform, not at local agent creation. This local gate is
+        therefore OPT-IN — it activates only when ``AITHER_LICENSE_ENFORCE`` is
+        explicitly set (which hosted/premium builds do).
+
+        When enforced, raises RuntimeError if:
         - The agent identity requires a pack subscription the user doesn't have
         - load_packs=True but the license doesn't allow custom agent creation
         """
+        if os.environ.get("AITHER_LICENSE_ENFORCE", "").lower() not in ("1", "true", "yes"):
+            return
+
         try:
-            from lib.licensing.LicenseManager import get_license_manager
+            from adk.licensing import get_license_manager
         except ImportError:
-            return  # LicenseManager not available (standalone/dev mode)
+            return
 
         lm = get_license_manager()
 
@@ -392,20 +438,11 @@ class AitherAgent:
             from pathlib import Path as _P
 
             try:
-                from lib.core.ToolPackLoader import get_tool_pack_loader
+                from adk.tool_pack_loader import get_tool_pack_loader
             except ImportError:
-                _adk_root = _P(__file__).resolve().parent
-                _loader_path = _adk_root / "tool_pack_loader.py"
-                if _loader_path.exists():
-                    import importlib.util
-                    spec = importlib.util.spec_from_file_location(
-                        "adk.tool_pack_loader", _loader_path,
-                    )
-                    mod = importlib.util.module_from_spec(spec)
-                    spec.loader.exec_module(mod)
-                    get_tool_pack_loader = mod.get_tool_pack_loader
-                else:
-                    return
+                # Tool-pack loading is an optional add-on. Standalone agents
+                # without the pack loader simply run with their built-in tools.
+                return
 
             extra = [_P(packs_dir)] if packs_dir else []
             loader = get_tool_pack_loader(extra_dirs=extra)
@@ -590,6 +627,20 @@ class AitherAgent:
             except Exception:
                 pass
 
+        # Inject typed-memory: active decisions/corrections + authority-ranked
+        # recall (non-fatal). Constraints go last so they sit closest to the user
+        # turn the model reads.
+        if self._typed:
+            try:
+                recalled = await self._typed.context_block(message, limit=5)
+                if recalled:
+                    messages.insert(1, Message(role="system", content=recalled))
+                constraints = await self._typed.constraints_block()
+                if constraints:
+                    messages.insert(1, Message(role="system", content=constraints))
+            except Exception:
+                pass
+
         # Auto-fire neurons for additional context (non-fatal)
         if self._auto_neurons:
             try:
@@ -615,7 +666,39 @@ class AitherAgent:
         _top_p = kwargs.pop("top_p", None)
         _repetition_penalty = kwargs.pop("repetition_penalty", None)
         _effort = kwargs.pop("effort", None)
+        # License effort cap: free (COMMUNITY) tier is capped at effort 3 (small
+        # models only). Reasoning effort (7-10) unlocks at the Professional tier.
+        # Hitting this cap is the organic pull toward an upgrade.
+        if self._license is not None:
+            _effort, _capped = self._license.clamp_effort(_effort)
+            if _capped:
+                logger.info(
+                    "Effort capped to %s for agent '%s' (tier=%s). "
+                    "Higher reasoning effort requires a paid tier: %s",
+                    _effort, self.name, self._license.license.tier.value,
+                    "portal.aitherium.com/portal/marketplace/packs",
+                )
         _effort_int = _effort if isinstance(_effort, int) else 5
+
+        # Token quota hard-block: refuse the LLM call when the free-tier monthly
+        # budget is exhausted, rather than silently overspending. Returns a clear
+        # upgrade message (mirrors the safety-block contract — no exception).
+        try:
+            from adk.metering import QuotaAction
+            if self.meter.can_spend(estimated_tokens=0) == QuotaAction.HARD_LIMIT:
+                _tier = self._license.license.tier.value if self._license else "community"
+                return AgentResponse(
+                    content=(
+                        "You've reached your monthly token limit on the "
+                        f"{_tier} tier. Upgrade for higher limits and reasoning "
+                        "models at portal.aitherium.com/portal/marketplace/packs"
+                    ),
+                    session_id=sid,
+                    finish_reason="quota_exceeded",
+                )
+        except Exception:
+            pass
+
         loop_guard = LoopGuard(
             warn_threshold=2,
             block_threshold=4,
@@ -1134,8 +1217,20 @@ class AitherAgent:
         return await self.chat(task_prompt, **kwargs)
 
     async def remember(self, key: str, value: str, category: str = "general"):
-        """Store a value in the agent's persistent memory."""
-        await self.memory.remember(key, value, category=category)
+        """Store a value in the agent's persistent memory.
+
+        When typed memory is enabled, the entry is tagged with an inferred role
+        (decision/correction/preference/…) so it participates in authority-ranked
+        recall and decision constraints — while remaining retrievable by key.
+        """
+        metadata = None
+        if self._typed is not None:
+            try:
+                from adk.typed_memory import make_metadata
+                metadata = make_metadata(value, category=category)
+            except Exception:
+                metadata = None
+        await self.memory.remember(key, value, category=category, metadata=metadata)
 
     async def recall(self, key: str) -> str | None:
         """Retrieve a value from the agent's persistent memory."""
@@ -1233,6 +1328,17 @@ class AitherAgent:
         Returns:
             Dict with status, plan, code, tests, artifacts
         """
+        # GATED: swarm-coding dispatch is a paid-tier capability (it drives the
+        # Genesis multi-agent engine). Free agents get a clear upgrade prompt.
+        if self._license is not None and not self._license.can_use_swarm():
+            return {
+                "status": "failed",
+                "error": (
+                    "Swarm coding requires a Professional tier. Upgrade at "
+                    "portal.aitherium.com/portal/marketplace/packs"
+                ),
+            }
+
         import httpx
 
         genesis_url = os.environ.get("AITHER_GENESIS_URL", "http://localhost:8001")

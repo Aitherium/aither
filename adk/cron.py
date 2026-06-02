@@ -125,6 +125,15 @@ class CronScheduler:
     """
 
     def __init__(self, data_dir: Path | None = None) -> None:
+        # GATED: autonomous scheduled (unattended) execution is a paid-tier
+        # capability. Raises LicenseError unless entitled (or enforcement
+        # disabled / tier INTERNAL).
+        try:
+            from adk.licensing import get_license_manager
+            get_license_manager().require("cron", friendly="Autonomous scheduling")
+        except ImportError:
+            pass
+
         self._jobs: dict[str, CronJob] = {}
         self._data_dir = data_dir or Path.home() / ".aither"
         self._task: asyncio.Task[None] | None = None

@@ -71,7 +71,7 @@ class RouteDecision:
 
 # Import routing manager for dynamic configuration
 try:
-    from aither_adk.infrastructure.routing_manager import RoutingManager, get_routing_manager
+    from adk.platform.infrastructure.routing_manager import RoutingManager, get_routing_manager
     HAS_ROUTING_MANAGER = True
 except ImportError:
     HAS_ROUTING_MANAGER = False

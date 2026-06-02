@@ -30,7 +30,7 @@ import os
 import json
 from typing import Dict, List, Optional, Any
 from datetime import datetime
-from google.adk.tools import FunctionTool
+from adk.tools import FunctionTool
 
 # Paths
 PERSONA_CONFIG_DIR = os.path.join(

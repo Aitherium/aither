@@ -120,6 +120,51 @@ def get_global_registry() -> ToolRegistry:
     return _global_registry
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Native FunctionTool / ToolContext
+# Standalone replacements for google.adk.tools.{FunctionTool, ToolContext} so the
+# kit never *requires* google-adk. Platform modules import these via a guarded
+# fallback (google's classes when google-adk is installed, these otherwise).
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class FunctionTool:
+    """Wrap a plain function as a tool object (mirrors the minimal surface of
+    ``google.adk.tools.FunctionTool``: ``.func``, ``.name``, callable)."""
+
+    def __init__(self, func: Callable):
+        self.func = func
+        self.name = getattr(func, "name", None) or getattr(func, "__name__", "tool")
+        self.__name__ = self.name
+        doc = getattr(func, "__doc__", "") or ""
+        self.description = doc.strip().split("\n")[0] if doc else f"Tool: {self.name}"
+        self.is_long_running = False
+
+    def __call__(self, *args, **kwargs):
+        return self.func(*args, **kwargs)
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return f"FunctionTool({self.name})"
+
+
+class ToolContext:
+    """Minimal stand-in for ``google.adk.tools.ToolContext``.
+
+    google-adk passes a rich per-call context (state + artifact service) to
+    tools. Standalone, tools that accept ``tool_context`` still import and run;
+    artifact persistence is a no-op unless a real context is supplied.
+    """
+
+    def __init__(self, state: dict | None = None, **_kw):
+        self.state: dict = state if state is not None else {}
+
+    async def save_artifact(self, *_args, **_kwargs):  # pragma: no cover
+        return None
+
+    async def load_artifact(self, *_args, **_kwargs):  # pragma: no cover
+        return None
+
+
 def _extract_parameters(fn: Callable) -> dict:
     """Extract JSON Schema parameters from function signature and type hints."""
     sig = inspect.signature(fn)

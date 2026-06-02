@@ -451,7 +451,7 @@ def resolve_artifact_context(artifact_ids: List[str]) -> str:
         return ""
 
     try:
-        from aither_adk.communication.mailbox import get_artifact_store
+        from adk.platform.communication.mailbox import get_artifact_store
         store = get_artifact_store()
 
         context_parts = []

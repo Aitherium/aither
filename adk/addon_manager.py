@@ -185,6 +185,8 @@ class AddonManager:
 
         if addon_type == "docker":
             instance = await self._start_docker(manifest, instance, config)
+        elif addon_type in ("quadlet", "podman"):
+            instance = await self._start_quadlet(manifest, instance, config)
         elif addon_type == "external":
             # External: just record the endpoint
             endpoint = (config or {}).get("endpoint", "")
@@ -218,12 +220,19 @@ class AddonManager:
             log.info("Addon %s not found in state", addon_id)
             return
 
-        if state.get("addon_type") == "docker" and state.get("container_id"):
+        addon_type = state.get("addon_type")
+        if addon_type == "docker" and state.get("container_id"):
             try:
                 from adk.addon_docker import stop_container
                 stop_container(state["container_id"])
             except Exception as e:
                 log.warning("Failed to stop container for %s: %s", addon_id, e)
+        elif addon_type in ("quadlet", "podman"):
+            try:
+                from adk.addon_quadlet import stop_quadlet
+                stop_quadlet(addon_id)
+            except Exception as e:
+                log.warning("Failed to stop quadlet unit for %s: %s", addon_id, e)
 
         del self._state[addon_id]
         self._persist()
@@ -370,6 +379,42 @@ class AddonManager:
             instance.error_message = str(e)
             log.error("Failed to start %s via compose: %s", addon_id, e)
 
+        return instance
+
+    # -- Quadlet/Podman helpers ---------------------------------------------
+
+    async def _start_quadlet(
+        self,
+        manifest: Dict[str, Any],
+        instance: AddonInstance,
+        config: Optional[Dict[str, Any]] = None,
+    ) -> AddonInstance:
+        """Start an addon as a rootless Podman Quadlet systemd unit.
+
+        Writes ~/.config/containers/systemd/<unit>.container, daemon-reloads,
+        and ``systemctl --user start`` it. The addon becomes a first-class
+        service the agent manages with systemctl.
+        """
+        addon_id = manifest["id"]
+        if not manifest.get("image"):
+            instance.status = "error"
+            instance.error_message = f"No image defined for addon {addon_id}"
+            return instance
+        # Allow per-enable env overrides to flow into the unit.
+        if config and config.get("env"):
+            merged = dict(manifest.get("env_defaults", {}) or {})
+            merged.update(config["env"])
+            manifest = {**manifest, "env_defaults": merged}
+        try:
+            from adk.addon_quadlet import start_quadlet
+            result = start_quadlet(manifest)
+            instance.container_id = result["service"]
+            instance.endpoint = result["endpoint"]
+            instance.status = "starting"
+        except Exception as e:  # noqa: BLE001
+            instance.status = "error"
+            instance.error_message = str(e)
+            log.error("Failed to start %s via quadlet: %s", addon_id, e)
         return instance
 
     async def _check_health(

@@ -130,9 +130,9 @@ class GPUMonitor:
         """Unload all Ollama and ComfyUI models to free VRAM"""
         print("[ResourceManager]  Attempting to unload all models to free VRAM...")
         
-        # 1. Unload Ollama (URL from services.yaml)
+        # 1. Unload Ollama (URL from env/config)
         try:
-            from lib.core.AitherPorts import ollama_url
+            from adk.ports import ollama_url
             base_url = ollama_url().rstrip("/")
             if "/api" in base_url:
                 base_url = base_url.replace("/api", "")

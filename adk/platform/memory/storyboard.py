@@ -12,10 +12,10 @@ from typing import Dict, List, Optional, Tuple
 
 from PIL import Image, ImageDraw, ImageFont
 
-from aither_adk.ai.comfyui_service import ComfyUIService
-from aither_adk.ai.llm_prompt_generator import generate_comic_script, generate_sd_prompt
-from aither_adk.ai.persona_image_system import PersonaImageSystem
-from aither_adk.ui.console import safe_print
+from adk.platform.ai.comfyui_service import ComfyUIService
+from adk.platform.ai.llm_prompt_generator import generate_comic_script, generate_sd_prompt
+from adk.platform.ai.persona_image_system import PersonaImageSystem
+from adk.platform.ui.console import safe_print
 
 # Constants
 PAGE_WIDTH = 1024
@@ -48,7 +48,7 @@ class StoryboardEngine:
 
         # Ensure output directory (writable, avoids read-only FS in Docker)
         try:
-            from aither_adk.paths import get_saga_subdir
+            from adk.platform.paths import get_saga_subdir
             self.output_dir = get_saga_subdir("output", "comics", create=True)
         except ImportError:
             self.output_dir = os.path.join(os.path.dirname(__file__), "..", "Saga", "output", "comics")
@@ -153,10 +153,10 @@ class StoryboardEngine:
         # However, constructing the workflow JSON manually is painful.
         # Let's try to use the 'AitherNode' client if we can import it.
 
-        try:
-            from AitherOS.AitherNode.AitherCanvas import ComfyUIClient
-            ComfyUIClient(self.comfy_url)
+        # ComfyUIClient requires full AitherOS; use ComfyUIService for HTTP-only access
+        ComfyUIClient = None
 
+        try:
             # We need a workflow. Let's assume a standard txt2img workflow exists.
             # For simplicity in this MVP, we'll use a simplified API call or just return a placeholder if offline.
 

@@ -9,9 +9,9 @@ import os
 # Add parent directory to path to allow importing common modules
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
-from aither_adk.ui.console import safe_print
+from adk.platform.ui.console import safe_print
 from rich.panel import Panel
-from google.adk.tools import ToolContext
+from adk.tools import ToolContext
 from typing import Optional
 
 def generate_narrative_response(

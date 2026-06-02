@@ -2,7 +2,7 @@ import logging
 import os
 import sys
 
-from aither_adk.ui.console import safe_print
+from adk.platform.ui.console import safe_print
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +47,7 @@ def _sync_safety_with_service(level: str) -> bool:
 
     # 1. Set via direct module (always works, local state)
     try:
-        from aither_adk.ai.safety_mode import set_safety_level
+        from adk.platform.ai.safety_mode import set_safety_level
         set_safety_level(level)
         synced = True
     except ImportError:

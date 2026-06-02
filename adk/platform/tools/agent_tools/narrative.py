@@ -22,7 +22,7 @@ Version: 2.0.0
 
 import os
 from typing import Dict, List, Optional, Any
-from google.adk.tools import FunctionTool
+from adk.tools import FunctionTool
 
 # Persona configuration path
 PERSONA_CONFIG_DIR = os.path.join(

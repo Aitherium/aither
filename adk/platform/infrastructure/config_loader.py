@@ -1,7 +1,7 @@
 import os
 import yaml
 import base64
-from aither_adk.ui.console import safe_print
+from adk.platform.ui.console import safe_print
 
 def load_yaml_config(path):
     """Loads a YAML configuration file."""

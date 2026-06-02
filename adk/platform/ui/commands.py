@@ -3,13 +3,12 @@ import os
 import sys
 
 import yaml
-from google.genai import types
 from prompt_toolkit.completion import Completer, Completion
 from rich.panel import Panel
 
-from aither_adk.infrastructure.profiling import Profiler, profile
-from aither_adk.infrastructure.runner import add_attachment, process_turn
-from aither_adk.ui.console import console, print_banner, safe_print
+from adk.platform.infrastructure.profiling import Profiler, profile
+from adk.platform.infrastructure.runner import add_attachment, process_turn
+from adk.platform.ui.console import console, print_banner, safe_print
 
 logger = logging.getLogger(__name__)
 
@@ -195,7 +194,7 @@ Format the report clearly with headings and bullet points if necessary.
 """
             model_name = getattr(agent, "model", "gemini-2.0-flash-exp")
 
-            await process_turn(runner, "user", session_id, prompt, model_name, session_stats, root_agent=agent, debug_mode=False, memory_manager=memory_manager, mailbox=mailbox)
+            await process_turn(agent, "user", session_id, prompt, model_name, session_stats, root_agent=agent, debug_mode=False, memory_manager=memory_manager, mailbox=mailbox)
 
             # Capture response and send to inbox
             if mailbox and session_stats.get("last_response"):
@@ -368,7 +367,7 @@ Format the report clearly with headings and bullet points if necessary.
         message = " ".join(message_parts)
 
         try:
-            from aither_adk.communication.multi_agent_chat import dispatch_multi_agent
+            from adk.platform.communication.multi_agent_chat import dispatch_multi_agent
 
             # Find mailbox path
             mailbox_path = os.path.join(
@@ -645,7 +644,7 @@ Format the report clearly with headings and bullet points if necessary.
     elif cmd == "/council":
         # Council group chat via AitherCouncil API
         try:
-            from aither_adk.communication.council_client import (
+            from adk.platform.communication.council_client import (
                 ResponseDepth,
                 council,
                 format_tool_status,
@@ -1290,7 +1289,7 @@ Format the report clearly with headings and bullet points if necessary.
     elif cmd == "/a2a":
         # Google A2A Protocol - Agent-to-Agent Communication
         try:
-            from aither_adk.communication.a2a_client import (
+            from adk.platform.communication.a2a_client import (
                 A2AClient,
                 discover_agents,
                 send_to_agent,
@@ -1529,7 +1528,7 @@ Format the report clearly with headings and bullet points if necessary.
         try:
             from rich.table import Table
 
-            from aither_adk.ui.ui import KEYBOARD_SHORTCUTS
+            from adk.platform.ui.ui import KEYBOARD_SHORTCUTS
 
             safe_print("\n[bold cyan][KB]  Keyboard Shortcuts[/]\n")
 
@@ -1638,7 +1637,7 @@ Format the report clearly with headings and bullet points if necessary.
     elif cmd == "/route":
         # Agent routing configuration
         try:
-            from aither_adk.infrastructure.routing_manager import get_routing_manager
+            from adk.platform.infrastructure.routing_manager import get_routing_manager
 
             manager = get_routing_manager()
 
@@ -1732,7 +1731,7 @@ Format the report clearly with headings and bullet points if necessary.
     elif cmd == "/reasoning":
         # Toggle reasoning trace visibility
         try:
-            from aither_adk.infrastructure.runner import get_show_reasoning, set_show_reasoning
+            from adk.platform.infrastructure.runner import get_show_reasoning, set_show_reasoning
             current = get_show_reasoning()
             set_show_reasoning(not current)
             new_state = not current
@@ -1750,7 +1749,7 @@ Format the report clearly with headings and bullet points if necessary.
         # With 'on'/'off': explicit set
         # With 'show': alias for on, 'hide': alias for off
         try:
-            from aither_adk.infrastructure.utils import get_show_thinking, set_show_thinking
+            from adk.platform.infrastructure.utils import get_show_thinking, set_show_thinking
 
             if not args:
                 # Toggle
@@ -1842,7 +1841,7 @@ Format the report clearly with headings and bullet points if necessary.
     elif cmd == "/safety" or cmd == "/mode":
         # Safety mode control
         try:
-            from aither_adk.ai.safety_mode import (
+            from adk.platform.ai.safety_mode import (
                 OVERRIDE_PREFIXES,
                 SafetyLevel,
                 get_level_emoji,
@@ -2000,7 +1999,7 @@ Format the report clearly with headings and bullet points if necessary.
         safe_print("[dim]Hint: /think is now /thinking[/]")
         # Fall through to show current status
         try:
-            from aither_adk.infrastructure.utils import get_show_thinking
+            from adk.platform.infrastructure.utils import get_show_thinking
             current = get_show_thinking()
             safe_print(f"[info]Thinking display: [bold]{'ON' if current else 'OFF'}[/][/]")
             safe_print("[dim]Use /thinking [on|off] to change.[/]")
@@ -2011,7 +2010,7 @@ Format the report clearly with headings and bullet points if necessary.
     elif cmd == "/notebook":
         """Notebook - store and search notes."""
         try:
-            from aither_adk.tools.qol_tools import get_notebook
+            from adk.platform.tools.qol_tools import get_notebook
             notebook = get_notebook()
 
             if not args:
@@ -2092,7 +2091,7 @@ Format the report clearly with headings and bullet points if necessary.
     elif cmd == "/calendar":
         """Calendar - manage events and reminders."""
         try:
-            from aither_adk.tools.qol_tools import get_calendar
+            from adk.platform.tools.qol_tools import get_calendar
             calendar = get_calendar()
 
             if not args:
@@ -2160,7 +2159,7 @@ Format the report clearly with headings and bullet points if necessary.
     elif cmd == "/timer":
         """Timer - countdown timers."""
         try:
-            from aither_adk.tools.qol_tools import get_timer_manager
+            from adk.platform.tools.qol_tools import get_timer_manager
             timer_mgr = get_timer_manager()
 
             if not args:
@@ -2208,7 +2207,7 @@ Format the report clearly with headings and bullet points if necessary.
     elif cmd == "/stopwatch":
         """Stopwatch - track elapsed time."""
         try:
-            from aither_adk.tools.qol_tools import get_stopwatch_manager
+            from adk.platform.tools.qol_tools import get_stopwatch_manager
             sw_mgr = get_stopwatch_manager()
 
             if not args:
@@ -2254,7 +2253,7 @@ Format the report clearly with headings and bullet points if necessary.
     elif cmd == "/alarm":
         """Alarm - set alarms."""
         try:
-            from aither_adk.tools.qol_tools import get_alarm_manager
+            from adk.platform.tools.qol_tools import get_alarm_manager
             alarm_mgr = get_alarm_manager()
 
             if not args:
@@ -2322,7 +2321,7 @@ Format the report clearly with headings and bullet points if necessary.
 
     elif cmd == "/resources":
         try:
-            from aither_adk.infrastructure.resource_manager import resource_manager
+            from adk.platform.infrastructure.resource_manager import resource_manager
 
             # Get resource manager instance (singleton)
             rm = resource_manager
@@ -2390,12 +2389,15 @@ Format the report clearly with headings and bullet points if necessary.
                 # Set default model
                 new_default = args[1]
                 try:
-                    import AitherOS.agents.Saga.agent as saga_agent
+                    # Saga agent requires a running AitherOS instance (not available in standalone ADK)
+                    saga_agent = None
 
                     # Check if it's in the available models list
                     if new_default in models or new_default.startswith('ollama/'):
-                        # Update the defaults
-                        if new_default.startswith('ollama/'):
+                        # Update the defaults (local fallback since Saga unavailable)
+                        if saga_agent is None:
+                            safe_print("[dim]Note: Saga agent module not available in standalone mode. Using local model settings.[/]")
+                        elif new_default.startswith('ollama/'):
                             saga_agent.LOCAL_MODEL_NAME = new_default.replace('ollama/', '')
                         elif not new_default.startswith(('gemini', 'gpt', 'claude')):
                             saga_agent.LOCAL_MODEL_NAME = new_default
@@ -2406,7 +2408,7 @@ Format the report clearly with headings and bullet points if necessary.
                         # Also update current agent model and toolbar
                         agent.model = new_default
                         try:
-                            from aither_adk.ui.ui import update_current_model
+                            from adk.platform.ui.ui import update_current_model
                             update_current_model(new_default)
                         except ImportError:
                             pass
@@ -2447,9 +2449,14 @@ Format the report clearly with headings and bullet points if necessary.
 
         # Default model info
         try:
-            import AitherOS.agents.Saga.agent as saga_agent
-            default_model = saga_agent.LOCAL_MODEL_NAME if saga_agent.USE_LOCAL_MODELS else "auto"
-            use_local = saga_agent.USE_LOCAL_MODELS
+            # Saga agent requires a running AitherOS instance (not available in standalone ADK)
+            saga_agent = None
+            if saga_agent is None:
+                default_model = "auto"
+                use_local = False
+            else:
+                default_model = saga_agent.LOCAL_MODEL_NAME if saga_agent.USE_LOCAL_MODELS else "auto"
+                use_local = saga_agent.USE_LOCAL_MODELS
             settings_lines.append(f"[bold]Default Model:[/bold] {default_model} ({'local' if use_local else 'cloud'})")
         except Exception as exc:
             logger.debug(f"Default model info retrieval failed: {exc}")
@@ -2458,7 +2465,7 @@ Format the report clearly with headings and bullet points if necessary.
 
         # Safety Mode (with emoji and details)
         try:
-            from aither_adk.ai.safety_mode import (
+            from adk.platform.ai.safety_mode import (
                 get_level_emoji,
                 get_level_name,
                 get_safety_manager,
@@ -2505,7 +2512,7 @@ Format the report clearly with headings and bullet points if necessary.
 
         # QOL Status
         try:
-            from aither_adk.tools.qol_tools import (
+            from adk.platform.tools.qol_tools import (
                 get_alarm_manager,
                 get_calendar,
                 get_notebook,
@@ -2606,7 +2613,7 @@ Format the report clearly with headings and bullet points if necessary.
         # If not in models list, check if it's a local Ollama model
         if not matched_model:
             try:
-                from aither_adk.ai.models import is_local_model
+                from adk.platform.ai.models import is_local_model
                 # If it looks like a local model (mistral, llama, etc.) or has :tag suffix
                 if is_local_model(new_model) or ':' in new_model:
                     # Add ollama/ prefix if not already present
@@ -2622,7 +2629,7 @@ Format the report clearly with headings and bullet points if necessary.
         # Even if matched from the models list, local models need ollama/ prefix
         if matched_model and not matched_model.startswith(('gemini', 'gpt-', 'claude', 'o1-', 'o3-', 'ollama/', 'aither/')):
             try:
-                from aither_adk.ai.models import is_local_model
+                from adk.platform.ai.models import is_local_model
                 if is_local_model(matched_model):
                     matched_model = f"ollama/{matched_model}"
                     safe_print(f"[dim]Added provider prefix: {matched_model}[/]")
@@ -2635,15 +2642,16 @@ Format the report clearly with headings and bullet points if necessary.
 
             # Update the toolbar to show the new model
             try:
-                from aither_adk.ui.ui import update_current_model
+                from adk.platform.ui.ui import update_current_model
                 update_current_model(matched_model)
             except ImportError:
                 pass
 
             # Also update the module-level LOCAL_MODEL_NAME for the aither() tool
             # so it uses the correct model for chat/roleplay
-            try:
-                import AitherOS.agents.Saga.agent as saga_agent
+            # Saga agent requires a running AitherOS instance (not available in standalone ADK)
+            saga_agent = None
+            if saga_agent is not None:
                 # Check if this is a local Ollama model (not gemini/gpt)
                 if not matched_model.startswith(('gemini', 'gpt', 'claude', 'ollama/')):
                     saga_agent.LOCAL_MODEL_NAME = matched_model
@@ -2653,8 +2661,8 @@ Format the report clearly with headings and bullet points if necessary.
                     saga_agent.USE_LOCAL_MODELS = True
                 else:
                     saga_agent.USE_LOCAL_MODELS = False
-            except (ImportError, AttributeError):
-                pass  # Module not available
+            else:
+                safe_print("[dim]Saga agent module not available in standalone mode.[/]")
 
             print_banner(matched_model)
         else:
@@ -2696,7 +2704,7 @@ Format the report clearly with headings and bullet points if necessary.
             elif path.endswith(".txt"): mime_type = "text/plain"
             elif path.endswith(".pdf"): mime_type = "application/pdf"
 
-            add_attachment(types.Part.from_bytes(data=data, mime_type=mime_type))
+            add_attachment({"data": data, "mime_type": mime_type})
             safe_print(f"[green]Attached '{path}' ({len(data)} bytes). It will be sent with your next message.[/]")
         except Exception as e:
             safe_print(f"[red]Failed to attach file: {e}[/]")
@@ -2754,7 +2762,7 @@ Format the report clearly with headings and bullet points if necessary.
     elif cmd == "/vram":
         # Show GPU VRAM status
         try:
-            from aither_adk.infrastructure.resource_manager import resource_manager
+            from adk.platform.infrastructure.resource_manager import resource_manager
             resource_manager.print_status()
         except ImportError:
             safe_print("[warning]Resource manager not available. Install pynvml.[/]")
@@ -2765,7 +2773,7 @@ Format the report clearly with headings and bullet points if necessary.
         try:
             import requests
 
-            from lib.core.AitherPorts import ollama_url as get_ollama_url
+            from adk.ports import ollama_url as get_ollama_url
             ollama_url = get_ollama_url()
 
             safe_print("\n" + "="*50)
@@ -2804,7 +2812,7 @@ Format the report clearly with headings and bullet points if necessary.
     elif cmd == "/unload":
         # Unload models using ResourceManager
         try:
-            from aither_adk.infrastructure.resource_manager import resource_manager
+            from adk.platform.infrastructure.resource_manager import resource_manager
             resource_manager.unload_all_models()
             safe_print("[green][DONE] Unloaded all models (Ollama & ComfyUI)[/]")
         except Exception as e:
@@ -2822,7 +2830,7 @@ Format the report clearly with headings and bullet points if necessary.
         try:
             import requests
 
-            from lib.core.AitherPorts import ollama_url as get_ollama_url
+            from adk.ports import ollama_url as get_ollama_url
             ollama_url = get_ollama_url()
             model = args[0]
 
@@ -2859,7 +2867,7 @@ Format the report clearly with headings and bullet points if necessary.
         if len(args) == 1:
             target = args[0]
             try:
-                from aither_adk.memory.anchor_generator import AnchorGenerator
+                from adk.platform.memory.anchor_generator import AnchorGenerator
                 generator = AnchorGenerator()
 
                 if target.lower() == "all":
@@ -2879,7 +2887,7 @@ Format the report clearly with headings and bullet points if necessary.
             return
 
         try:
-            from aither_adk.ai.persona_image_system import set_persona_anchor
+            from adk.platform.ai.persona_image_system import set_persona_anchor
             persona_name = args[0]
             anchor_type = args[1]
             image_path = " ".join(args[2:])
@@ -2911,7 +2919,7 @@ Format the report clearly with headings and bullet points if necessary.
             return
 
         try:
-            from aither_adk.ai.persona_image_system import get_persona_image_system
+            from adk.platform.ai.persona_image_system import get_persona_image_system
             system = get_persona_image_system()
             persona_name = args[0].lower()
 
@@ -2955,7 +2963,7 @@ Format the report clearly with headings and bullet points if necessary.
         # Set or show current scene context
         # Usage: /scene [location] [lighting]
         try:
-            from aither_adk.ai.persona_image_system import (
+            from adk.platform.ai.persona_image_system import (
                 get_persona_image_system,
                 set_scene_context,
             )
@@ -3019,7 +3027,7 @@ Format the report clearly with headings and bullet points if necessary.
                 persona_name = args[0][1:]  # Remove @
                 request = " ".join(args[1:])
 
-            from aither_adk.ai.persona_image_system import generate_persona_prompt
+            from adk.platform.ai.persona_image_system import generate_persona_prompt
 
             safe_print(f"[dim]Building prompt for {persona_name}...[/]")
             result = generate_persona_prompt(persona_name, request)
@@ -3072,7 +3080,7 @@ Format the report clearly with headings and bullet points if necessary.
             # This is a bit hacky, need a better way to track last generated image
             # For now, let's look in Saga/output/refinements
             try:
-                from aither_adk.paths import get_saga_subdir
+                from adk.platform.paths import get_saga_subdir
                 base_dir = get_saga_subdir("output", "refinements")
             except ImportError:
                 base_dir = os.path.join(os.path.dirname(__file__), "..", "Saga", "output", "refinements")
@@ -3092,7 +3100,7 @@ Format the report clearly with headings and bullet points if necessary.
             return
 
         try:
-            from aither_adk.ai.refinement_engine import RefinementEngine
+            from adk.platform.ai.refinement_engine import RefinementEngine
             engine = RefinementEngine()
 
             result_path = await engine.refine_existing_image(path, instruction)
@@ -3123,7 +3131,7 @@ Format the report clearly with headings and bullet points if necessary.
         safe_print(f"[cyan][ART] Starting comic generation for: {topic}[/]")
 
         try:
-            from aither_adk.memory.storyboard import StoryboardEngine
+            from adk.platform.memory.storyboard import StoryboardEngine
             engine = StoryboardEngine()
             # Use current persona if available
             persona_name = "aither"
@@ -3155,7 +3163,7 @@ Format the report clearly with headings and bullet points if necessary.
         # Memory system commands
         # Usage: /memory [show|add|clear] [world|system|persona] [content]
         try:
-            from aither_adk.memory.memory_system import get_memory_system
+            from adk.platform.memory.memory_system import get_memory_system
             mem = get_memory_system()
 
             if not args:
@@ -3191,7 +3199,7 @@ Format the report clearly with headings and bullet points if necessary.
                     # Add LIVE runtime state (not from static memory)
                     safe_print("\n[bold]Runtime State (Live):[/]")
                     try:
-                        from aither_adk.ai.safety_mode import (
+                        from adk.platform.ai.safety_mode import (
                             get_level_emoji,
                             get_level_name,
                             get_safety_manager,
@@ -3256,7 +3264,7 @@ Format the report clearly with headings and bullet points if necessary.
         # Initialize all personas from YAML files
         # Usage: /init-personas [--generate-anchors]
         try:
-            from aither_adk.ai.persona_image_system import get_persona_image_system
+            from adk.platform.ai.persona_image_system import get_persona_image_system
             system = get_persona_image_system()
 
             auto_gen = "--generate-anchors" in args or "-g" in args

@@ -1409,6 +1409,10 @@ def cmd_setup(args) -> int:
             status = green("fits") if fits else red("too big")
             print(f"  {bold(tid):<20} {workers_str:<35} ~{vram_need:.0f}GB {status:<18} ~{dl:.0f}GB")
         print()
+        if 5 <= vram_gb <= 12:
+            print(f"  {dim('Have a Mac or cluster? Try:')} {cyan('adk deploy grid')} "
+                  f"{dim('(multi-node distributed inference)')}")
+            print()
         info(f"Recommended: {bold(recommended)}")
         tier_id = ask("Select tier", default=recommended, choices=list(TIERS.keys()))
 

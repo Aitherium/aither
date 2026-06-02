@@ -3,12 +3,13 @@ import time
 import logging
 
 # Import the actual data fetching functions
-from aither_adk.infrastructure.system_utils import get_system_load, get_git_status
+from adk.platform.infrastructure.system_utils import get_system_load, get_git_status
 
 # We need to handle the import of vision_tools carefully as it might not be available
-try:
-    from AitherOS.AitherNode.vision_tools import get_vision_backend_status
-except ImportError:
+# Requires running AitherOS (MCP/gateway)
+get_vision_backend_status = None
+
+if get_vision_backend_status is None:
     def get_vision_backend_status(): return "Unknown"
 
 class StatusMonitor:

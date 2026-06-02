@@ -178,8 +178,16 @@ def __getattr__(name):
         from adk.graph_memory import GraphMemory
         return GraphMemory
     if name == "NanoGPT":
-        from adk.nanogpt import NanoGPT
-        return NanoGPT
+        # On-device training (NanoGPT) is proprietary IP and is NOT shipped in
+        # the published open SDK. It lives in the internal AitherOS runtime.
+        try:
+            from adk.nanogpt import NanoGPT
+            return NanoGPT
+        except ImportError as exc:
+            raise ImportError(
+                "NanoGPT (on-device training) is not available in the open "
+                "aither-adk SDK. It is part of the internal AitherOS runtime."
+            ) from exc
     if name == "NeuronPool":
         from adk.neurons import NeuronPool
         return NeuronPool

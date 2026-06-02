@@ -12,7 +12,7 @@ Features:
 - Artifact storage and retrieval
 
 Usage:
-    from aither_adk.communication.demiurge_client import DemiurgeClient, demiurge
+    from adk.platform.communication.demiurge_client import DemiurgeClient, demiurge
     
     # Quick intent request
     response = await demiurge.intent("analyze the authentication flow")

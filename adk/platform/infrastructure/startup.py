@@ -1,11 +1,11 @@
 import os
-from aither_adk.memory.memory import MemoryManager
-from aither_adk.infrastructure.tasks import TaskManager
-from aither_adk.ai.ollama_service import OllamaService
-from aither_adk.ai.comfyui_service import ComfyUIService
-from aither_adk.ui.console import safe_print
-from aither_adk.infrastructure.dependencies import check_and_report_dependencies
-from aither_adk.infrastructure.services import get_service_status, is_aithernode_running, is_ollama_running, is_comfyui_running
+from adk.platform.memory.memory import MemoryManager
+from adk.platform.infrastructure.tasks import TaskManager
+from adk.platform.ai.ollama_service import OllamaService
+from adk.platform.ai.comfyui_service import ComfyUIService
+from adk.platform.ui.console import safe_print
+from adk.platform.infrastructure.dependencies import check_and_report_dependencies
+from adk.platform.infrastructure.services import get_service_status, is_aithernode_running, is_ollama_running, is_comfyui_running
 
 def common_on_startup(agent, agent_root_dir, use_local_models=False):
     """
@@ -82,7 +82,7 @@ def common_on_startup(agent, agent_root_dir, use_local_models=False):
         
         # Ensure the configured local model is available
         if hasattr(agent, 'model') and agent.model:
-             from aither_adk.ai.models import is_local_model
+             from adk.platform.ai.models import is_local_model
              if is_local_model(agent.model):
                  OllamaService.ensure_model(agent.model)
     elif services.ollama:

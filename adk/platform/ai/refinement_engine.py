@@ -13,12 +13,16 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
-from AitherOS.AitherNode.AitherCanvas import ComfyUIClient
-from AitherOS.AitherNode.vision_tools import analyze_with_ollama, unload_vision_model
+# Optional in-process AitherNode Canvas/vision tools (present only inside a full
+# AitherOS install). Standalone agents use the public ComfyUIService below.
+# In standalone mode (aither-adk without full AitherOS), these features degrade gracefully.
+ComfyUIClient = None  # AitherOS integration requires full monorepo
+analyze_with_ollama = None  # Vision analysis requires running AitherOS instance
+unload_vision_model = None  # Vision model management requires running AitherOS instance
 
-from aither_adk.ai.comfyui_service import ComfyUIService
-from aither_adk.ai.llm_prompt_generator import generate_sd_prompt
-from aither_adk.ui.console import safe_print
+from adk.platform.ai.comfyui_service import ComfyUIService
+from adk.platform.ai.llm_prompt_generator import generate_sd_prompt
+from adk.platform.ui.console import safe_print
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +37,8 @@ class RefinementResult:
 class RefinementEngine:
     def __init__(self):
         self.comfy_url = ComfyUIService.get_base_url()
-        self.client = ComfyUIClient(self.comfy_url)
+        # ComfyUIClient only available with full AitherOS; use ComfyUIService for HTTP-only fallback
+        self.client = ComfyUIClient(self.comfy_url) if ComfyUIClient else ComfyUIService()
         self.output_dir = os.path.join(os.path.dirname(__file__), "..", "Saga", "output", "refinements")
         os.makedirs(self.output_dir, exist_ok=True)
 
@@ -64,7 +69,8 @@ class RefinementEngine:
             critique = await self._critique_image(current_image, user_request)
 
             # Explicitly unload vision model to free VRAM for ComfyUI
-            unload_vision_model()
+            if unload_vision_model:
+                unload_vision_model()
 
             if not critique:
                 safe_print("[warning][WARN] Vision analysis failed, stopping refinement.[/]")

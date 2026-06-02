@@ -29,7 +29,7 @@ import json
 import httpx
 from typing import Any, Dict, List, Optional
 
-from google.adk.tools import FunctionTool
+from adk.tools import FunctionTool
 
 # MCP Server configuration
 MCP_BASE_URL = os.environ.get("AITHERNODE_URL", "http://localhost:8080")

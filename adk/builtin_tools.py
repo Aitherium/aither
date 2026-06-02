@@ -254,6 +254,12 @@ _SAFE_BUILTINS = {
         "min", "next", "oct", "ord", "pow", "print", "range", "repr",
         "reversed", "round", "set", "slice", "sorted", "str", "sum",
         "tuple", "type", "zip",
+        # Exception types — code legitimately raises/catches these
+        "Exception", "BaseException", "ValueError", "TypeError", "KeyError",
+        "IndexError", "AttributeError", "RuntimeError", "NameError",
+        "ZeroDivisionError", "ArithmeticError", "LookupError", "StopIteration",
+        "AssertionError", "NotImplementedError", "OSError", "FileNotFoundError",
+        "ImportError", "OverflowError",
     )
     if (hasattr(__builtins__, k) if isinstance(__builtins__, type) else k in __builtins__)
 }
@@ -261,7 +267,7 @@ _SAFE_BUILTINS = {
 _ALLOWED_MODULES = {
     "math", "json", "re", "datetime", "collections", "itertools",
     "functools", "string", "textwrap", "statistics", "random",
-    "pathlib", "csv", "io", "base64", "hashlib", "urllib.parse",
+    "pathlib", "csv", "io", "base64", "hashlib", "urllib.parse", "sys",
 }
 
 
@@ -874,6 +880,20 @@ def swarm_code(problem: str, mode: str = "forge", effort: int = 8) -> str:
         effort: Effort level 1-10 (affects model selection)
     """
     import json as _json
+    # GATED: swarm coding drives the Genesis multi-agent engine — a paid-tier
+    # capability. Free agents get a clear upgrade prompt instead of a dispatch.
+    try:
+        from adk.licensing import get_license_manager
+        if not get_license_manager().can_use_swarm():
+            return _json.dumps({
+                "status": "failed",
+                "error": (
+                    "Swarm coding requires a Professional tier. Upgrade at "
+                    "portal.aitherium.com/portal/marketplace/packs"
+                ),
+            })
+    except ImportError:
+        pass
     genesis_url = os.environ.get("AITHER_GENESIS_URL", "http://localhost:8001")
     try:
         import httpx
@@ -1705,7 +1725,10 @@ def register_builtin_tools(
     _init_workspace_tools()  # lazily populate workspace category
 
     if categories is None and auto:
-        categories = IDENTITY_DEFAULTS.get(agent.name, ["file_io", "web", "workspace"])
+        # Unknown identities get a minimal, fully-local default. "workspace"
+        # tools call a workspace-intelligence service and aren't useful to an
+        # unknown standalone agent, so they're opt-in per named identity only.
+        categories = IDENTITY_DEFAULTS.get(agent.name, ["file_io", "web"])
 
     if categories is None:
         categories = list(TOOL_CATEGORIES.keys())
@@ -1749,24 +1772,13 @@ def register_tool_packs(
     try:
         from pathlib import Path as _P
 
-        # Try AitherOS canonical path first
+        # Tool-pack loading is an optional add-on (adk.tool_pack_loader).
+        # Standalone agents without it run with their built-in tools.
         try:
-            from lib.core.ToolPackLoader import get_tool_pack_loader
+            from adk.tool_pack_loader import get_tool_pack_loader
         except ImportError:
-            # Standalone ADK — look for a vendored copy
-            _adk_root = _P(__file__).resolve().parent
-            _loader_path = _adk_root / "tool_pack_loader.py"
-            if _loader_path.exists():
-                import importlib.util
-                spec = importlib.util.spec_from_file_location(
-                    "adk.tool_pack_loader", _loader_path,
-                )
-                mod = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(mod)
-                get_tool_pack_loader = mod.get_tool_pack_loader
-            else:
-                logger.debug("ToolPackLoader not available")
-                return 0
+            logger.debug("Tool-pack loader not installed; skipping pack load")
+            return 0
 
         extra = [_P(packs_dir)] if packs_dir else []
         loader = get_tool_pack_loader(extra_dirs=extra)

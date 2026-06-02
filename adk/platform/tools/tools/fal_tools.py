@@ -4,8 +4,7 @@ import pathlib
 import time
 import base64
 import requests
-from google.adk.tools import ToolContext
-from google.genai import types
+from adk.tools import ToolContext
 # from config_manager import OUTPUT_DIR # Removed dependency
 
 # Default output directory
@@ -96,7 +95,7 @@ async def generate_image_with_fal(prompt: str, tool_context: ToolContext, image_
         # Save to artifact service
         await tool_context.save_artifact(
             filename,
-            types.Part.from_bytes(data=image_bytes, mime_type="image/png"),
+            {"data": image_bytes, "mime_type": "image/png"},
         )
 
         return {
@@ -199,7 +198,7 @@ async def refine_image_with_fal(image_path: str, prompt: str, tool_context: Tool
         # Save to artifact service
         await tool_context.save_artifact(
             filename,
-            types.Part.from_bytes(data=image_bytes, mime_type="image/png"),
+            {"data": image_bytes, "mime_type": "image/png"},
         )
 
         return {
@@ -304,7 +303,7 @@ async def generate_video_with_fal(prompt: str, tool_context: ToolContext, image_
         # Save to artifact service
         await tool_context.save_artifact(
             filename,
-            types.Part.from_bytes(data=video_bytes, mime_type="video/mp4"),
+            {"data": video_bytes, "mime_type": "video/mp4"},
         )
 
         return {

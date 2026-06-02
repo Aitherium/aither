@@ -35,7 +35,7 @@ Key Concepts:
 
 Usage:
 ------
-    from aither_adk.tools.reinforcement_tools import (
+    from adk.platform.tools.reinforcement_tools import (
         record_interaction_outcome,
         submit_preference_pair,
         capture_reasoning_trace,

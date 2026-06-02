@@ -12,18 +12,11 @@ from enum import Enum
 # ============================================================================
 
 # CONSOLIDATION: Use unified Artifact base class
-try:
-    from lib.models.artifact import (
-        Artifact as BaseArtifact,
-        ArtifactType as UnifiedArtifactType,
-        MailboxArtifact,
-    )
-    _UNIFIED_ARTIFACT_AVAILABLE = True
-except ImportError:
-    _UNIFIED_ARTIFACT_AVAILABLE = False
-    BaseArtifact = None
-    UnifiedArtifactType = None
-    MailboxArtifact = None
+# Unified artifact model not available in standalone ADK; use native implementations below
+_UNIFIED_ARTIFACT_AVAILABLE = False
+BaseArtifact = None
+UnifiedArtifactType = None
+MailboxArtifact = None
 
 # Backward compatibility: Keep ArtifactType enum for ADK
 class ArtifactType(Enum):
@@ -38,50 +31,22 @@ class ArtifactType(Enum):
     MEMORY = "memory"    # Reference to a memory entry
 
 
-if _UNIFIED_ARTIFACT_AVAILABLE:
-    @dataclass
-    class Artifact(MailboxArtifact):
-        """
-        Represents a referenceable artifact in the mailbox system.
-        
-        CONSOLIDATION: Now inherits from lib.models.artifact.MailboxArtifact
-        to use the unified artifact model across AitherOS.
-        
-        Artifacts can be images, files, code snippets, links, or message references.
-        """
-        def __post_init__(self):
-            super().__post_init__()
-            # Map ADK ArtifactType to unified ArtifactType if needed
-            if hasattr(self, 'type') and isinstance(self.type, ArtifactType):
-                type_map = {
-                    ArtifactType.IMAGE: UnifiedArtifactType.IMAGE,
-                    ArtifactType.VIDEO: UnifiedArtifactType.VIDEO,
-                    ArtifactType.AUDIO: UnifiedArtifactType.AUDIO,
-                    ArtifactType.CODE: UnifiedArtifactType.CODE,
-                    ArtifactType.FILE: UnifiedArtifactType.FILE,
-                    ArtifactType.LINK: UnifiedArtifactType.OTHER,  # No LINK in unified
-                    ArtifactType.MESSAGE: UnifiedArtifactType.OTHER,
-                    ArtifactType.MEMORY: UnifiedArtifactType.OTHER,
-                }
-                self.artifact_type = type_map.get(self.type, UnifiedArtifactType.UNKNOWN)
-else:
-    # Fallback if unified artifact not available (shouldn't happen in normal operation)
-    @dataclass
-    class Artifact:
-        """
-        Represents a referenceable artifact in the mailbox system.
-        Artifacts can be images, files, code snippets, links, or message references.
-        """
-        id: str
-        type: ArtifactType
-        name: str
-        path: Optional[str] = None  # File path for images/files
-        content: Optional[str] = None  # Content for code/text
-        url: Optional[str] = None  # URL for links
-        metadata: Optional[Dict[str, Any]] = None  # Additional metadata
-        created_at: Optional[str] = None
-        created_by: Optional[str] = None  # Which agent created this
-    
+@dataclass
+class Artifact:
+    """
+    Represents a referenceable artifact in the mailbox system.
+    Artifacts can be images, files, code snippets, links, or message references.
+    """
+    id: str
+    type: ArtifactType
+    name: str
+    path: Optional[str] = None  # File path for images/files
+    content: Optional[str] = None  # Content for code/text
+    url: Optional[str] = None  # URL for links
+    metadata: Optional[Dict[str, Any]] = None  # Additional metadata
+    created_at: Optional[str] = None
+    created_by: Optional[str] = None  # Which agent created this
+
     def to_dict(self) -> Dict:
         """Convert to dictionary for JSON serialization."""
         return {
@@ -411,7 +376,7 @@ class Mailbox:
         
         # PUSH ACTIVITY: Agent is sending a message
         try:
-            from lib.core.FluxEmitter import inject_agent_activity
+            from adk.events import inject_agent_activity
             inject_agent_activity(sender.lower(), {
                 "state": "communicating",
                 "task": f"Sending message to {recipient}: {subject[:50]}...",

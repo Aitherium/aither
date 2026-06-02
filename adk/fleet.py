@@ -59,6 +59,15 @@ class FleetConfig:
         registry: AgentRegistry | None = None,
         forge: AgentForge | None = None,
     ):
+        # GATED: multi-agent fleet orchestration is a paid-tier capability.
+        # Free (COMMUNITY) runtimes are single-agent. Raises LicenseError unless
+        # entitled (or enforcement is disabled / tier is INTERNAL).
+        try:
+            from adk.licensing import get_license_manager
+            get_license_manager().require("fleet", friendly="Fleet mode")
+        except ImportError:
+            pass
+
         self.name = name
         self.orchestrator_name = orchestrator
         self.agents = agents or []

@@ -1,8 +1,8 @@
 """
-AitherOS Common Agent Tools
-============================
+ADK Common Agent Tools
+======================
 
-Shared tools for all Google ADK agents in the AitherOS ecosystem.
+Shared tools for all Google ADK agents.
 
 Tool Categories:
     - aither_tools: AitherZero automation integration
@@ -11,8 +11,8 @@ Tool Categories:
     - subagent_tools: Sub-agent spawning and research
 
 Usage:
-    from AitherOS.agents.common.tools import aither_tools, subagent_tools
-    
+    from adk.platform.tools.tools import aither_tools, subagent_tools
+
     agent = Agent(
         name="MyAgent",
         model="auto",
@@ -60,7 +60,7 @@ except ImportError:
 try:
     from .mcp_client import list_mcp_servers, list_mcp_tools, call_mcp_tool
 except ImportError:
-    pass
+    list_mcp_servers = list_mcp_tools = call_mcp_tool = None
 
 # Combined tool collections
 all_aither_tools = aither_tools + infrastructure_tools + narrative_tools + subagent_tools

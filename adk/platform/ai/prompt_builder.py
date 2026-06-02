@@ -267,7 +267,7 @@ def build_image_prompt(
     """
     if use_persona_system:
         try:
-            from aither_adk.ai.persona_image_system import generate_persona_prompt
+            from adk.platform.ai.persona_image_system import generate_persona_prompt
 
             persona = character_name or "aither"
             result = generate_persona_prompt(persona, user_request)
