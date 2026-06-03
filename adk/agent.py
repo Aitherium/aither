@@ -11,6 +11,7 @@ import time
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
+from typing import Callable
 
 from adk.config import Config
 from adk.identity import Identity, load_identity
@@ -1212,6 +1213,7 @@ class AitherAgent:
         history: list[dict] | None = None,
         max_steps: int = 6,
         session_id: str | None = None,
+        steering: "Callable[[], list[str]] | None" = None,
     ) -> AgentResponse:
         """Streaming, tool-using ReAct loop.
 
@@ -1272,6 +1274,18 @@ class AitherAgent:
         answer = ""
         tools_made: list[str] = []
         for _step in range(max_steps):
+            # Chat-as-steering (Layer 2): drain messages the user sent WHILE this
+            # loop is running and inject them so it REDIRECTS mid-flight, instead of
+            # the user waiting for a fresh agentic loop. ``steering()`` is supplied
+            # by a ReasoningSession (adk.reasoning_session); default None = no-op.
+            if steering is not None:
+                try:
+                    for _sm in (steering() or []):
+                        if _sm:
+                            msgs.append(Message(role="user", content=f"[Steering] {_sm}"))
+                            await _emit({"type": "steering", "text": str(_sm)})
+                except Exception:  # noqa: BLE001
+                    pass
             full = ""
             buf = ""
             phase = "scan"  # scan | thinking | answer | action
@@ -1382,6 +1396,149 @@ class AitherAgent:
             tool_calls_made=tools_made,
             latency_ms=round((time.perf_counter() - _t0) * 1000, 1),
             finish_reason="stop",
+        )
+
+    async def classify_intent(self, message: str, history: list[dict] | None = None):
+        """Canonical LLM intent routing (``adk.intent``).
+
+        Decides intent / effort / whether the agentic tool-loop is warranted, via
+        a SINGLE fast effort-2 call on this agent's own LLM (keyword fallback if
+        the LLM is unavailable). This is the ONE shared classifier — Genesis,
+        portal-kit and every ADK agent route through here instead of each
+        carrying a divergent keyword classifier.
+        """
+        from adk.intent import classify_intent as _classify
+
+        async def _complete(messages: list) -> str:
+            msgs = [Message(role=m["role"], content=m["content"]) for m in messages]
+            # Fast lane: append /no_think to the last user turn so routing is ~0.5s.
+            for _mm in reversed(msgs):
+                if _mm.role == "user":
+                    _mm.content = (str(_mm.content) + " /no_think").strip()
+                    break
+            resp = await self.llm.chat(msgs, effort=2)
+            return getattr(resp, "content", "") or ""
+
+        tool_hint = ""
+        try:
+            tool_hint = ", ".join(td.name for td in self._tools.list_tools())[:600]
+        except Exception:  # noqa: BLE001
+            pass
+        return await _classify(message, llm_complete=_complete, tool_hint=tool_hint, history=history)
+
+    async def stream_respond(
+        self,
+        message: str,
+        on_event,
+        history: list[dict] | None = None,
+        session_id: str | None = None,
+    ) -> AgentResponse:
+        """Instant-response → background-enrich → auto-continue (``adk.responder``).
+
+        Streams a fast first-pass answer IMMEDIATELY (no dead air), runs the full
+        grounded ReAct loop (:meth:`stream_react`) CONCURRENTLY, and
+        auto-continues the turn with a refinement segment only when the grounded
+        answer materially adds value (tools used / content diverged). Trivial
+        chat (the intent router says non-agentic, low effort) skips the grounded
+        pass entirely. This is the canonical instant-response capability — Genesis
+        chat and portal-kit delegate here so the behaviour is identical
+        everywhere instead of each reimplementing it.
+        """
+        from adk import responder as _responder
+
+        sid = session_id or self._session_id
+        decision = await self.classify_intent(message, history=history)
+
+        async def _first_pass():
+            # If the grounded loop will run (agentic) or the answer needs data we
+            # don't have (requires_grounding), the REAL answer comes from the
+            # background — so the first pass is a DETERMINISTIC honest ack: instant,
+            # never fabricates, no <think> delay. A direct LLM answer here would
+            # either fabricate or contradict what the loop then does.
+            if getattr(decision, "requires_grounding", False) or getattr(decision, "agentic", False):
+                lab = getattr(decision, "grounding_label", "") or ""
+                yield (f"Let me check {lab} for you…" if lab
+                       else "On it — let me work through that for you…")
+                return
+            base = (self.system_prompt or "").rstrip() or f"You are {self.name}, a helpful assistant."
+            sysmsg = base + (
+                "\n\nAnswer the user directly and concisely RIGHT NOW from what you "
+                "genuinely know. If deeper work is warranted it is ALREADY running in "
+                "the background and will continue your answer. Never fabricate specifics "
+                "(names, dates, numbers, data) you don't actually have."
+            )
+            msgs = [Message(role="system", content=sysmsg)]
+            for h in (history or [])[-6:]:
+                if isinstance(h, dict) and h.get("role") in ("user", "assistant") and h.get("content"):
+                    msgs.append(Message(role=h["role"], content=str(h["content"])[:2000]))
+            # Fast lane: append /no_think so the orchestrator skips its <think>
+            # phase (~0.5s vs ~5s) and never exhausts its budget mid-reasoning.
+            msgs.append(Message(role="user", content=message + " /no_think"))
+            # Strip <think> on the fly so the fast first pass shows only the answer.
+            in_think = False
+            pending = ""
+            async for chunk in self.llm.chat_stream(msgs):
+                txt = getattr(chunk, "content", "") or ""
+                if not txt:
+                    continue
+                pending += txt
+                out = ""
+                while pending:
+                    if not in_think:
+                        i = pending.find("<think>")
+                        if i == -1:
+                            if len(pending) > 7:
+                                out += pending[:-7]
+                                pending = pending[-7:]
+                            break
+                        out += pending[:i]
+                        pending = pending[i + 7:]
+                        in_think = True
+                    else:
+                        j = pending.find("</think>")
+                        if j == -1:
+                            pending = pending[-8:] if len(pending) > 8 else pending
+                            break
+                        pending = pending[j + 8:]
+                        in_think = False
+                if out:
+                    yield out
+            if pending and not in_think:
+                yield pending
+
+        async def _direct() -> str:
+            base = (self.system_prompt or "").rstrip() or f"You are {self.name}."
+            msgs = [Message(role="system", content=base),
+                    Message(role="user", content=message + " /no_think")]
+            resp = await self.llm.chat(msgs, effort=2)
+            return strip_internal_tags(getattr(resp, "content", "") or "")
+
+        async def _enrich(on_enrich_event) -> dict:
+            # Trivial, no-grounding chat → the honest first pass stands.
+            if (not getattr(decision, "requires_grounding", False)
+                    and not decision.agentic and decision.effort <= 3):
+                return {"answer": "", "used_tools": False, "artifacts": []}
+            steps = 4 if decision.effort <= 5 else (8 if decision.effort <= 7 else 12)
+            resp = await self.stream_react(
+                message, on_event=on_enrich_event, history=history,
+                max_steps=steps, session_id=sid,
+            )
+            return {
+                "answer": (getattr(resp, "content", "") or "").strip(),
+                "used_tools": bool(getattr(resp, "tool_calls_made", None)),
+                "artifacts": getattr(resp, "artifacts", None) or [],
+            }
+
+        result = await _responder.respond(
+            message=message, on_event=on_event,
+            first_pass_stream=_first_pass, enrich=_enrich, direct_answer=_direct,
+            agent=self.name,
+        )
+        return AgentResponse(
+            content=result.get("answer", "") or "",
+            session_id=sid,
+            finish_reason="stop",
+            effort_level=decision.effort,
         )
 
     async def run(self, task: str, **kwargs) -> AgentResponse:
