@@ -24,7 +24,7 @@ from typing import Optional
 import click
 
 from adk.shell.config import save_default_config, load_config, AitherConfig
-from adk.shell.shell import run_repl
+from adk.shell.repl import run_repl
 from adk.shell.commands import execute_command, CommandError
 from adk.shell.genesis_client import GenesisClient, GenesisError
 from adk.shell.crash_reporter import install_crash_reporter, set_current_command
