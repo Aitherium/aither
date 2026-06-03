@@ -13,6 +13,7 @@ import json
 import os
 import re
 import sys
+import time
 from pathlib import Path
 
 from adk.config import load_saved_config, save_saved_config
@@ -3056,6 +3057,62 @@ def cmd_grid(args) -> int:
         asyncio.run(_pull())
         return 0
 
+    elif sub == "enroll":
+        ttl = max(60, min(int(getattr(args, "ttl", 1.0) * 3600), 86400))
+        body = {"ttl_seconds": ttl, "label": getattr(args, "label", ""), "tenant": getattr(args, "tenant", "")}
+        ok, data = _grid_mesh_request("POST", "/nodes/enroll-token", body=body, need_key=True)
+        if not ok:
+            print(f"  {data}")
+            return 1
+        tok = data.get("enroll_token", "")
+        install = data.get("install") or f'AITHER_NODE_TOKEN={tok} sh -c "$(curl -fsSL https://cluster.aitherium.com/install.sh)"'
+        tslug = getattr(args, "tenant", "")
+        print()
+        print(f"  Enrollment token minted (expires in {ttl // 60} min, single-use)"
+              + (f", tenant={tslug}" if tslug else ""))
+        print("\n  Run this on the target node:")
+        print(f"    {install}")
+        print("\n  It registers through the tunnel, installs a reboot-safe service, and starts heartbeating.")
+        print()
+        return 0
+
+    elif sub == "ls":
+        ok, data = _grid_mesh_request("GET", "/nodes")
+        if not ok:
+            print(f"  {data}")
+            return 1
+        nodes = data.get("nodes", [])
+        if not nodes:
+            print("  No mesh nodes registered.")
+            return 0
+        print()
+        print("  Mesh Nodes")
+        print("  " + "=" * 55)
+        for n in nodes:
+            hw = n.get("hardware") or {}
+            dot = "online " if n.get("status") == "online" else "offline"
+            gpu = hw.get("gpu") or "—"
+            mem = hw.get("memory_gb")
+            mem_s = f"{round(mem)}GB" if isinstance(mem, (int, float)) else "—"
+            ctr = len(n.get("services") or n.get("containers") or [])
+            tenant = n.get("tenant") or (n.get("labels") or {}).get("tenant") or ""
+            name = n.get("name") or n.get("node_id") or "?"
+            line = f"  [{dot}] {name:18s} {str(gpu):14s} {mem_s:>6s}  {ctr} ctr"
+            if tenant:
+                line += f"  tenant={tenant}"
+            print(line)
+        print()
+        return 0
+
+    elif sub == "deregister":
+        node_id = args.node_id
+        ok, data = _grid_mesh_request("DELETE", f"/nodes/{node_id}", need_key=True)
+        if not ok:
+            print(f"  {data}")
+            return 1
+        print(f"  Removed {data.get('name') or node_id} ({data.get('remaining', '?')} remaining)")
+        return 0
+
     else:
         print()
         print("  adk grid — Manage distributed inference nodes")
@@ -3070,11 +3127,57 @@ def cmd_grid(args) -> int:
         print("    adk grid sync                Push config to your Aitherium workspace")
         print("    adk grid pull                Pull config from workspace (new machine)")
         print()
+        print("  Mesh registry (enrolled nodes via the gateway tunnel):")
+        print("    adk grid ls                  List enrolled mesh nodes")
+        print("    adk grid enroll [--tenant]   Mint a token to onboard a remote node")
+        print("    adk grid deregister <id>     Remove a node from the registry")
+        print()
         print("  Setup:")
         print("    adk deploy grid              Deploy vLLM + configure grid")
         print("    adk login                    Auth for cloud sync")
         print()
         return 0
+
+
+def _grid_mesh_request(method: str, path: str, body: dict | None = None, need_key: bool = False):
+    """Call the AitherGateway node registry through the public Cloudflare tunnel.
+
+    GET /nodes is open; minting/removing are internal-key gated (need_key=True,
+    sourced from AITHER_INTERNAL_SECRET/AITHER_MASTER_KEY). Returns (ok, data|msg).
+    Uses a browser UA — Cloudflare 403s the default python-urllib agent.
+    """
+    import json as _json
+    import os as _os
+    import ssl as _ssl
+    import urllib.request as _ur
+
+    gateway = (_os.environ.get("AITHER_NODE_GATEWAY_URL")
+               or _os.environ.get("AITHER_PUBLIC_CLUSTER_URL")
+               or "https://cluster.aitherium.com").rstrip("/")
+    headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; AitherADK/1.0)",
+        "Content-Type": "application/json",
+    }
+    if need_key:
+        key = (_os.environ.get("AITHER_INTERNAL_SECRET") or _os.environ.get("AITHER_MASTER_KEY") or "").strip()
+        if not key:
+            return False, "Admin key required: set AITHER_INTERNAL_SECRET to mint or remove nodes."
+        headers["X-API-Key"] = key
+    data = _json.dumps(body).encode() if body is not None else None
+    req = _ur.Request(f"{gateway}{path}", data=data, method=method, headers=headers)
+    ctx = _ssl.create_default_context()
+    if gateway.startswith("https://aitheros-") or "localhost" in gateway or "127.0.0.1" in gateway:
+        ctx.check_hostname = False
+        ctx.verify_mode = _ssl.CERT_NONE
+    try:
+        with _ur.urlopen(req, context=ctx, timeout=15) as resp:
+            return True, _json.loads(resp.read().decode() or "{}")
+    except _ur.HTTPError as e:  # noqa: PERF203
+        if e.code == 404:
+            return False, f"Not found: {path.rsplit('/', 1)[-1]}"
+        return False, f"Gateway returned {e.code}"
+    except Exception as e:  # noqa: BLE001
+        return False, f"Gateway unreachable: {str(e)[:120]}"
 
 
 def _grid_test_node(host: str, port: int) -> bool:
@@ -6251,6 +6354,14 @@ def _register_commands(sub):
     grid_test_p.add_argument("host", nargs="?", help="Specific host to test (default: all)")
     grid_sub.add_parser("sync", help="Sync grid config to your Aitherium workspace (requires login)")
     grid_sub.add_parser("pull", help="Pull grid config from your Aitherium workspace")
+    # Mesh registry (the platform's enrolled nodes, via the AitherGateway tunnel)
+    grid_enroll_p = grid_sub.add_parser("enroll", help="Mint a single-use token to onboard a remote machine as a mesh node")
+    grid_enroll_p.add_argument("--ttl", type=float, default=1.0, help="Token lifetime in hours (default 1, max 24)")
+    grid_enroll_p.add_argument("--tenant", default="", help="Attribute the node to a tenant slug")
+    grid_enroll_p.add_argument("--label", default="", help="Human label for the node")
+    grid_sub.add_parser("ls", help="List enrolled mesh nodes (GPU, memory, containers, status)")
+    grid_rm_mesh_p = grid_sub.add_parser("deregister", help="Remove an enrolled mesh node from the registry")
+    grid_rm_mesh_p.add_argument("node_id", help="Node id or name to deregister")
 
     # adk routing — per-intent model routing
     routing_p = sub.add_parser("routing", help="Manage per-intent model routing (which model handles which task)")
