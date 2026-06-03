@@ -35,7 +35,6 @@ from pathlib import Path
 from typing import Any
 
 from adk.core.logging import get_logger
-from lib.core.AitherPorts import get_service_url
 
 _log = get_logger("aither_adk.auth")
 
@@ -48,7 +47,7 @@ DEFAULT_CLIENT_ID = "aither-cli"
 # Same root profile aithershell uses — keeps the two tools in lock-step.
 ROOT_PROFILE: dict[str, Any] = {
     "endpoint": "local",
-    "genesis_url": f"{get_service_url('Genesis')}",
+    "genesis_url": os.environ.get("AITHER_GENESIS_URL", "http://localhost:8001"),
     "token_type": "local",
     "access_token": "aither_root_local",
     "expires_at": "",

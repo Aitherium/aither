@@ -16,7 +16,7 @@ from typing import Iterator
 class Capability(str, Enum):
     """Canonical capability tokens.
 
-    Mirrors AitherOS ``config/capabilities.yaml`` shape so agents drop in
+    Mirrors the AitherOS capability-token taxonomy so agents drop in
     without remapping. Add to this enum, not ad-hoc strings.
     """
 
