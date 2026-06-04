@@ -2,6 +2,26 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [2.5.0] - 2026-06-04
+
+### Continual learning — agents that learn from runs and reuse memory
+
+Agents now improve the second time they do a task instead of starting from scratch.
+
+### Added
+- **Recall-before**: `AitherAgent.chat()` searches the local `SkillStore` and injects the
+  top matching learned skills as a system block, so the model reuses proven procedures.
+- **Learn-after**: `_learn_after()` runs after each response — reinforces (`success_count++`)
+  any skills that were recalled+reused, and extracts + saves a NEW skill from successful
+  multi-tool runs via `SkillExtractor`. Wired at both `chat()` return paths.
+- Gated by `AITHER_SKILLS` (default on). The previously-unused `SkillStore`/`SkillExtractor`
+  are now connected to the run loop.
+
+### Notes
+- Pairs with the platform-side LearnedProcedure substrate (recipes → scored procedures →
+  skills/tools/A2A/packs → MCTS priors → evolution). The SDK shares memory via the Spirit
+  bridge when configured.
+
 ## [2.0.0] - 2026-06-02
 
 ### Open-core boundary (BREAKING)
