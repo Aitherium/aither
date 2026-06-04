@@ -242,6 +242,17 @@ class AitherAgent:
             except Exception:
                 pass
 
+        # Continual-learning skills — recall relevant skills BEFORE acting, extract +
+        # save a skill AFTER a successful multi-tool run. Opt-out via AITHER_SKILLS=false.
+        self._skills = None
+        if os.getenv("AITHER_SKILLS", "true").lower() not in ("false", "0", "no"):
+            try:
+                from adk.skills import SkillExtractor, SkillStore
+                self._skills = SkillStore()
+                self._skill_extractor = SkillExtractor()
+            except Exception:
+                self._skills = None
+
         # Neuron auto-fire (context gathering before LLM) — non-fatal.
         # GATED: proactive context gathering is a paid-tier capability. Free
         # (COMMUNITY) agents call tools explicitly instead of pre-firing them.
@@ -553,6 +564,30 @@ class AitherAgent:
             return decorator(fn)
         return decorator
 
+    async def _learn_after(self, message: str, content: str, tool_calls_made: list) -> None:
+        """Continual learning after a run: reinforce skills we reused (success_count++),
+        and extract+save a NEW skill from a successful multi-tool run. Non-fatal."""
+        if not self._skills:
+            return
+        try:
+            for s in getattr(self, "_recalled_skills", None) or []:
+                s.touch()
+                self._skills.save(s)            # reused → reinforce
+            self._recalled_skills = []
+            tools = [t for t in (tool_calls_made or []) if "[" not in t]
+            if len(tools) >= 2:                 # a real multi-step procedure
+                skill = self._skill_extractor.extract_from_session(
+                    messages=[
+                        {"role": "user", "content": message},
+                        {"role": "assistant", "content": content,
+                         "tool_calls": [{"name": t} for t in tools]},
+                    ],
+                    tools_called=tools)
+                if skill:
+                    self._skills.save(skill)
+        except Exception:
+            pass
+
     async def chat(
         self,
         message: str,
@@ -640,6 +675,20 @@ class AitherAgent:
                 constraints = await self._typed.constraints_block()
                 if constraints:
                     messages.insert(1, Message(role="system", content=constraints))
+            except Exception:
+                pass
+
+        # Recall relevant learned skills BEFORE acting — inject the top matches so the
+        # model reuses proven procedures instead of re-deriving them (non-fatal).
+        if self._skills:
+            try:
+                matches = self._skills.search(message, k=3)
+                if matches:
+                    block = "[LEARNED SKILLS — proven procedures you can reuse]\n" + "\n".join(
+                        f"- {s.name}: {s.description} (used {s.success_count}×; tools: "
+                        f"{', '.join(s.tools_used[:6])})" for s in matches)
+                    messages.insert(1, Message(role="system", content=block))
+                    self._recalled_skills = matches  # for success bump after the run
             except Exception:
                 pass
 
@@ -924,6 +973,7 @@ class AitherAgent:
                         ])
                     except Exception:
                         pass
+                await self._learn_after(message, content, tool_calls_made)
                 return AgentResponse(
                     content=content,
                     model=resp.model,
@@ -1085,6 +1135,7 @@ class AitherAgent:
                 ])
             except Exception:
                 pass
+        await self._learn_after(message, content, tool_calls_made)
         return AgentResponse(
             content=content,
             model=final.model,
