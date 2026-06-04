@@ -35,6 +35,8 @@ import asyncio
 import difflib
 from typing import Any, AsyncIterator, Awaitable, Callable, Optional
 
+from adk.grounding import ground_system_prompt
+
 
 # ── Refinement decision (shared so Genesis/portal-kit/ADK agree) ─────────────
 
@@ -289,7 +291,7 @@ async def stream_chat(
     decision = await classify()
     grounding = bool(getattr(decision, "requires_grounding", False))
     agentic = bool(getattr(decision, "agentic", False))
-    effort = int(getattr(decision, "effort", 1) or 1)
+    depth = (getattr(decision, "reasoning_depth", "") or "").strip().lower()
     label = (getattr(decision, "grounding_label", "") or "").strip()
 
     def _nothink(msgs: list) -> list:
@@ -307,7 +309,7 @@ async def stream_chat(
                    else "On it — let me work through that for you…")
             return
         base = (persona or f"You are {name}, a helpful assistant.").rstrip()
-        sysmsg = base + (
+        sysmsg = ground_system_prompt(base) + (
             "\n\nAnswer the user directly and concisely RIGHT NOW from what you "
             "genuinely know. Never fabricate specifics (names, dates, numbers, data) "
             "you don't actually have."
@@ -323,14 +325,21 @@ async def stream_chat(
 
     async def _direct() -> str:
         base = (persona or f"You are {name}.").rstrip()
-        msgs = [{"role": "system", "content": base}, {"role": "user", "content": message}]
+        msgs = [{"role": "system", "content": ground_system_prompt(base)},
+                {"role": "user", "content": message}]
         from re import sub as _sub
         txt = await oneshot(_nothink(msgs), 512)
         return _sub(r"<think>.*?</think>", "", txt or "", flags=16).strip()  # 16 = DOTALL
 
     async def _enrich(on_ev: OnEvent) -> dict:
-        # Trivial, no-grounding chat → the honest first pass stands.
-        if not grounding and not agentic and effort <= 3:
+        # Run the grounded/agentic lane on SEMANTIC NEED, never on an effort
+        # threshold. It runs whenever the turn needs tools (agentic), external
+        # data (requires_grounding), or real reasoning (reasoning_depth beyond
+        # skip/gate). Only genuinely trivial chat — no grounding, no tools, no
+        # reasoning — lets the (already system-state-grounded) first pass stand.
+        # Effort scales the loop (step budget), it does NOT gate whether it runs.
+        _trivial = (not grounding and not agentic and depth in ("", "skip", "gate"))
+        if _trivial:
             return {"answer": "", "used_tools": False, "artifacts": []}
         res = await run_grounded(decision, on_ev) or {}
         return {"answer": str(res.get("answer", "") or "").strip(),

@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from adk.config import Config
+from adk.grounding import ground_system_prompt
 from adk.identity import Identity, load_identity
 from adk.llm import DegenerationDetector, LLMRouter, Message, LLMResponse, strip_internal_tags
 from adk.loop_guard import LoopGuard, LoopAction
@@ -1461,7 +1462,7 @@ class AitherAgent:
                        else "On it — let me work through that for you…")
                 return
             base = (self.system_prompt or "").rstrip() or f"You are {self.name}, a helpful assistant."
-            sysmsg = base + (
+            sysmsg = ground_system_prompt(base) + (
                 "\n\nAnswer the user directly and concisely RIGHT NOW from what you "
                 "genuinely know. If deeper work is warranted it is ALREADY running in "
                 "the background and will continue your answer. Never fabricate specifics "
@@ -1508,15 +1509,20 @@ class AitherAgent:
 
         async def _direct() -> str:
             base = (self.system_prompt or "").rstrip() or f"You are {self.name}."
-            msgs = [Message(role="system", content=base),
+            msgs = [Message(role="system", content=ground_system_prompt(base)),
                     Message(role="user", content=message + " /no_think")]
             resp = await self.llm.chat(msgs, effort=2)
             return strip_internal_tags(getattr(resp, "content", "") or "")
 
         async def _enrich(on_enrich_event) -> dict:
-            # Trivial, no-grounding chat → the honest first pass stands.
+            # Run the grounded/agentic lane on SEMANTIC NEED, not an effort
+            # threshold: it fires whenever the turn needs tools (agentic), external
+            # data (requires_grounding), or real reasoning (reasoning_depth beyond
+            # skip/gate). Only genuinely trivial chat lets the (system-state-grounded)
+            # first pass stand. Effort SCALES the step budget below — it never gates.
+            _depth = (getattr(decision, "reasoning_depth", "") or "").strip().lower()
             if (not getattr(decision, "requires_grounding", False)
-                    and not decision.agentic and decision.effort <= 3):
+                    and not decision.agentic and _depth in ("", "skip", "gate")):
                 return {"answer": "", "used_tools": False, "artifacts": []}
             steps = 4 if decision.effort <= 5 else (8 if decision.effort <= 7 else 12)
             resp = await self.stream_react(
