@@ -2,6 +2,24 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [2.6.2] - 2026-06-04
+
+### Fixes
+- **DeepSeek (and strict OpenAI-compatible backends) 400'd on long tool
+  conversations.** The ReAct loop legitimately injects mid-conversation
+  `system` steering messages (the "[DIMINISHING RETURNS]" hint after several
+  low-output tool iterations, loop-guard nudges). OpenAI tolerates a non-leading
+  `system` message; DeepSeek rejects it with a 400. Long research runs
+  (many `fetch_url` calls) reliably tripped this. Fix: non-leading `system`
+  messages are demoted to `user` at the OpenAI-compatible provider boundary
+  (`_demote_nonleading_system`) — steering intent preserved, payload valid on
+  every backend; leading system prompt(s) untouched.
+- **Opaque HTTP errors.** `resp.raise_for_status()` discarded the provider's
+  response body, so a 400/422 surfaced as a bare `Client error '400 Bad
+  Request'` with no cause. `_ensure_ok` now includes the provider's actual
+  message (e.g. `context_length_exceeded`, `Invalid 'messages'`) in the raised
+  error, for both `chat` and `chat_stream`.
+
 ## [2.6.1] - 2026-06-04
 
 ### Fixes
