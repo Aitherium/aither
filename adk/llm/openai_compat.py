@@ -13,6 +13,52 @@ logger = logging.getLogger("adk.llm.openai")
 
 _MAX_RETRIES = 3
 
+
+def _ensure_ok(resp: "httpx.Response") -> None:
+    """Raise on a 4xx/5xx, but INCLUDE the provider's response body in the message.
+
+    ``resp.raise_for_status()`` discards the body, so an OpenAI-compatible 400
+    ("This model's maximum context length is …", "Invalid 'messages': …") becomes
+    an opaque ``Client error '400 Bad Request'`` with no cause. We re-raise the
+    same ``httpx.HTTPStatusError`` type (so existing ``except`` blocks keep
+    working) enriched with what the provider actually said.
+    """
+    if resp.status_code < 400:
+        return
+    body = ""
+    try:
+        body = (resp.text or "").strip()
+    except Exception:  # noqa: BLE001 - never let error-reporting mask the real error
+        body = ""
+    msg = f"{resp.status_code} {resp.reason_phrase} for {resp.request.url}"
+    if body:
+        msg += f"\nProvider response: {body[:1200]}"
+    raise httpx.HTTPStatusError(msg, request=resp.request, response=resp)
+
+
+def _demote_nonleading_system(dicts: list[dict]) -> list[dict]:
+    """Demote any ``system`` message that appears AFTER the conversation has
+    started to ``user``.
+
+    OpenAI tolerates system messages anywhere, but DeepSeek (and several other
+    OpenAI-compatible backends, e.g. vLLM with strict templates) reject a
+    non-leading ``system`` message with a 400 — the cause is opaque without the
+    body. Agent ReAct loops legitimately inject mid-conversation ``system``
+    steering nudges (diminishing-returns hints, loop-guard warnings); demoting
+    them to ``user`` keeps the steering intent while producing a payload that is
+    valid on every backend. Leading system message(s) are left untouched.
+    """
+    out: list[dict] = []
+    started = False
+    for m in dicts:
+        if m.get("role") == "system":
+            if started:
+                m = {**m, "role": "user"}
+        else:
+            started = True
+        out.append(m)
+    return out
+
 from .base import (
     LLMProvider,
     LLMResponse,
@@ -63,7 +109,7 @@ class OpenAIProvider(LLMProvider):
         model = model or self.default_model
         payload: dict = {
             "model": model,
-            "messages": messages_to_dicts(messages),
+            "messages": _demote_nonleading_system(messages_to_dicts(messages)),
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
@@ -140,7 +186,7 @@ class OpenAIProvider(LLMProvider):
         model = model or self.default_model
         payload: dict = {
             "model": model,
-            "messages": messages_to_dicts(messages),
+            "messages": _demote_nonleading_system(messages_to_dicts(messages)),
             "temperature": temperature,
             "max_tokens": max_tokens,
             "stream": True,
@@ -158,7 +204,9 @@ class OpenAIProvider(LLMProvider):
             async with client.stream(
                 "POST", f"{self.base_url}/chat/completions", json=payload
             ) as resp:
-                resp.raise_for_status()
+                if resp.status_code >= 400:
+                    await resp.aread()  # body isn't loaded in stream mode until read
+                    _ensure_ok(resp)
                 async for line in resp.aiter_lines():
                     line = line.strip()
                     if not line or not line.startswith("data: "):
@@ -183,7 +231,7 @@ class OpenAIProvider(LLMProvider):
         for attempt in range(1, _MAX_RETRIES + 1):
             resp = await client.post(url, json=payload)
             if resp.status_code != 429:
-                resp.raise_for_status()
+                _ensure_ok(resp)
                 return resp
             # 429 — read retry-after and wait
             retry_after = resp.headers.get("retry-after", "")
@@ -199,7 +247,7 @@ class OpenAIProvider(LLMProvider):
             await asyncio.sleep(wait)
         # Final attempt — let it raise if still 429
         resp = await client.post(url, json=payload)
-        resp.raise_for_status()
+        _ensure_ok(resp)
         return resp
 
     async def list_models(self) -> list[str]:

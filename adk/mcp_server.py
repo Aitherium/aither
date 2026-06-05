@@ -37,6 +37,20 @@ from typing import Any
 
 from adk.tools import ToolRegistry
 
+# FastAPI symbols are imported at MODULE level (not inside ``mount()``) so that,
+# under ``from __future__ import annotations``, FastAPI can resolve the
+# ``request: Request`` handler annotation against this module's globals. A local
+# import leaves the string annotation unresolvable → FastAPI treats ``request``
+# as a required query param → HTTP 422 on every /mcp call. Guarded because
+# fastapi only ships with the ``[node]`` / server extra; ``.mount()`` is the
+# only thing that needs it.
+try:
+    from fastapi import Request
+    from fastapi.responses import JSONResponse
+except ImportError:  # pragma: no cover - fastapi optional until .mount() is used
+    Request = None  # type: ignore[assignment,misc]
+    JSONResponse = None  # type: ignore[assignment,misc]
+
 logger = logging.getLogger("adk.mcp_server")
 
 # JSON-RPC 2.0 error codes
@@ -230,8 +244,10 @@ class MCPServer:
         Adds ``POST /mcp`` (or custom path) that handles JSON-RPC 2.0.
         Auth is enforced when AITHER_MCP_KEY or AITHER_SERVER_API_KEY is set.
         """
-        from fastapi import Request
-        from fastapi.responses import JSONResponse
+        if Request is None:  # fastapi not installed
+            raise RuntimeError(
+                "MCPServer.mount() requires fastapi — install aither-adk[node]"
+            )
 
         @app.post(path)
         async def _mcp_endpoint(request: Request):

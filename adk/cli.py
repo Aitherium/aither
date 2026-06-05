@@ -155,6 +155,42 @@ def cmd_init(args):
     return 0
 
 
+def cmd_new(args):
+    """Scaffold a complete project from a bundled template — e.g. `adk new deep-research`.
+
+    Templates live in adk/templates/<name>/ and are copied verbatim. Unlike `adk init`
+    (a minimal stub), these are full, runnable apps (a pack + a server + a web UI).
+    """
+    import shutil
+
+    templates_dir = Path(__file__).resolve().parent / "templates"
+    src = templates_dir / args.template
+    if not src.is_dir() or not any(src.iterdir()):
+        available = sorted(
+            p.name for p in templates_dir.iterdir()
+            if p.is_dir() and (p / "serve.py").exists()
+        ) if templates_dir.is_dir() else []
+        print(f"Unknown template '{args.template}'.")
+        if available:
+            print(f"Available templates: {', '.join(available)}")
+        return 1
+
+    target = Path(args.directory or args.template)
+    if target.exists() and any(target.iterdir()):
+        print(f"Error: {target} already exists and is not empty.")
+        return 1
+
+    shutil.copytree(src, target, dirs_exist_ok=True,
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    print(f"Created '{args.template}' at {target}/")
+    print()
+    print("Next steps:")
+    print(f"  cd {target}")
+    print("  pip install -r requirements.txt")
+    print("  python serve.py        # opens a browser; paste your LLM key in the UI")
+    return 0
+
+
 def cmd_create_app(args):
     """Scaffold a full portal-kit workspace app using WorkspaceRuntime template."""
     import subprocess as _sp
@@ -5986,6 +6022,11 @@ def _register_commands(sub):
     init_p.add_argument("name", nargs="?", default="my-agent", help="Project/agent name")
     init_p.add_argument("-d", "--directory", help="Target directory (default: ./<name>)")
 
+    # aither new <template> — scaffold a full template app (e.g. deep-research)
+    new_p = sub.add_parser("new", help="Scaffold a full template app (e.g. deep-research)")
+    new_p.add_argument("template", help="Template name, e.g. deep-research")
+    new_p.add_argument("-d", "--directory", help="Target directory (default: ./<template>)")
+
     # aither run
     run_p = sub.add_parser("run", help="Start the agent server")
     run_p.add_argument("-i", "--identity", help="Agent identity")
@@ -6147,6 +6188,14 @@ def _register_commands(sub):
     d_full.add_argument("--tag", default="latest", help="Docker image tag (default: latest)")
     d_full.add_argument("--api-key", help="AITHER_API_KEY (or set env var)")
     d_full.add_argument("--dry-run", action="store_true", help="Show what would happen")
+
+    # aither deploy fleet-refresh
+    d_fleet = deploy_sub.add_parser(
+        "fleet-refresh",
+        help="Rebuild all lib-baking Python images + safe rolling recreate of the running fleet")
+    d_fleet.add_argument("--build-only", action="store_true", help="Rebuild images only")
+    d_fleet.add_argument("--recreate-only", action="store_true", help="Recreate from existing images")
+    d_fleet.add_argument("--dry-run", action="store_true", help="Print the target list, do nothing")
 
     # aither deploy addons
     d_addons = deploy_sub.add_parser("addons", help="Deploy self-hosted addon services")
@@ -6723,6 +6772,8 @@ def main():
         sys.exit(cmd_start(args))
     elif args.command == "init":
         sys.exit(cmd_init(args))
+    elif args.command == "new":
+        sys.exit(cmd_new(args))
     elif args.command == "run":
         cmd_run(args)
     elif args.command == "register":

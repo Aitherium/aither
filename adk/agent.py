@@ -176,10 +176,21 @@ class AitherAgent:
         self.meter = get_meter(self.name)
 
         # Apply the licensed monthly token ceiling (free tier = 100k/mo; paid
-        # tiers = unlimited). Enforced as a hard block in chat() before the LLM
-        # call. Skipped when enforcement is disabled or tier is unlimited.
+        # tiers = unlimited). This cap only makes sense for the METERED Aitherium
+        # gateway/cloud — a BYO-key / self-hosted agent pays for its OWN inference,
+        # so capping it there would wrongly brick the user's own key after ~100k
+        # tokens. Only apply the cap when the agent is wired to the gateway
+        # (aither_api_key set). BYO providers (Anthropic/OpenAI/DeepSeek/Ollama
+        # keys, vLLM, etc.) are never community-capped.
         try:
-            if self._license is not None and self._license._enforced():
+            # The cap is tied to the agent's INFERENCE backend, not a saved key:
+            # only the Aitherium gateway is metered. A BYO provider
+            # (anthropic/openai/deepseek/ollama/vllm/…) is the user's own spend and
+            # must never be community-capped. Deferred/unknown also defaults to
+            # uncapped (err toward not bricking the user).
+            on_metered_gateway = getattr(self.llm, "provider_name", "") == "gateway"
+            if (on_metered_gateway and self._license is not None
+                    and self._license._enforced()):
                 _cap = int(self._license.license.entitlements.monthly_token_limit)
                 if _cap > 0:
                     self.meter._quota.monthly_limit = _cap
@@ -652,14 +663,23 @@ class AitherAgent:
                     messages.append(Message(role=h["role"], content=h["content"]))
             messages.append(Message(role="user", content=message))
 
-        # Inject graph memory context (non-fatal)
+        # Inject graph memory context (non-fatal). Retrieve enough, and untruncated
+        # enough, that recall stays reliable under a noisy long session — and tell the
+        # model to ground in it and NOT fabricate. (Top-3 truncated to 200 chars was
+        # too thin: under noise it surfaced PARTIAL facts and weaker models then
+        # invented the missing fields.)
         if self._graph:
             try:
-                relevant = await self._graph.search(message, limit=3)
+                relevant = await self._graph.search(message, limit=6)
                 if relevant:
-                    graph_lines = [f"- {n.label}: {n.content[:200]}" for n in relevant if n.content]
+                    graph_lines = [f"- {n.label}: {n.content[:500]}" for n in relevant if n.content]
                     if graph_lines:
-                        graph_context = "[MEMORY GRAPH]\n" + "\n".join(graph_lines)
+                        graph_context = (
+                            "[MEMORY GRAPH] Facts you already know (authoritative). "
+                            "Answer from these; if a requested detail is NOT present "
+                            "here, say you don't have it on record — never invent "
+                            "names, numbers, or dates.\n" + "\n".join(graph_lines)
+                        )
                         messages.insert(1, Message(role="system", content=graph_context))
             except Exception:
                 pass
@@ -1257,6 +1277,64 @@ class AitherAgent:
                 )
             except Exception:
                 pass
+
+    async def stream_chat(
+        self,
+        message: str,
+        on_event=None,
+        session_id: str | None = None,
+        token_delay: float = 0.0,
+        **kwargs,
+    ) -> AgentResponse:
+        """Reliable streaming chat — the streaming sibling of :meth:`chat`.
+
+        Runs the NATIVE function-calling loop (``chat()``, which decides when it has
+        enough and answers on its own — no text ACTION/FINAL protocol to over-run),
+        emits live ``tool`` / ``tool_result`` events while tools execute, then streams
+        the final answer as ``token`` events. Returns the full :class:`AgentResponse`.
+
+        Prefer this over :meth:`stream_react` for streaming UIs: native tool calling
+        is far more reliable at concluding than the text protocol. ``token_delay`` > 0
+        paces tokens for a visible typing effect. ``on_event`` may be sync or async::
+
+            {"type": "tool", "name": ..., "args": ...}
+            {"type": "tool_result", "name": ..., "result": ...}
+            {"type": "token", "text": ...}
+            {"type": "done"}
+        """
+        async def _emit(ev: dict) -> None:
+            if on_event is None:
+                return
+            try:
+                r = on_event(ev)
+                if asyncio.iscoroutine(r):
+                    await r
+            except Exception:
+                pass
+
+        # Surface tool activity from the native (non-streaming) loop.
+        orig_execute = self._tools.execute
+
+        async def _traced(name, arguments):
+            await _emit({"type": "tool", "name": name, "args": arguments})
+            result = await orig_execute(name, arguments)
+            await _emit({"type": "tool_result", "name": name, "result": str(result)[:1500]})
+            return result
+
+        self._tools.execute = _traced
+        try:
+            resp = await self.chat(message, session_id=session_id, **kwargs)
+        finally:
+            self._tools.execute = orig_execute
+
+        # Stream the final answer token-by-token (word-chunked).
+        content = resp.content or ""
+        for chunk in (re.findall(r"\S+\s*", content) or ([content] if content else [])):
+            await _emit({"type": "token", "text": chunk})
+            if token_delay:
+                await asyncio.sleep(token_delay)
+        await _emit({"type": "done"})
+        return resp
 
     async def stream_react(
         self,

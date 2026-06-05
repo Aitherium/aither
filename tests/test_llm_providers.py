@@ -397,3 +397,59 @@ class TestLLMRouter:
         router = LLMRouter()
         provider = await router.get_provider()
         assert router.provider_name == "openai"
+
+
+# ─── Non-leading system demotion (DeepSeek 400 fix) ───
+
+class TestDemoteNonLeadingSystem:
+    def _demote(self, dicts):
+        from adk.llm.openai_compat import _demote_nonleading_system
+        return _demote_nonleading_system(dicts)
+
+    def test_leading_system_kept(self):
+        out = self._demote([{"role": "system", "content": "sys"},
+                            {"role": "user", "content": "hi"}])
+        assert out[0]["role"] == "system"
+
+    def test_consecutive_leading_systems_kept(self):
+        out = self._demote([{"role": "system", "content": "a"},
+                            {"role": "system", "content": "b"},
+                            {"role": "user", "content": "hi"}])
+        assert [m["role"] for m in out] == ["system", "system", "user"]
+
+    def test_midconversation_system_demoted_to_user(self):
+        # the exact shape that 400'd DeepSeek: a mid-loop steering nudge
+        out = self._demote([
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "q"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "t1"}]},
+            {"role": "tool", "content": "r", "tool_call_id": "t1"},
+            {"role": "system", "content": "[DIMINISHING RETURNS] ..."},
+        ])
+        assert out[-1]["role"] == "user"
+        assert "[DIMINISHING RETURNS]" in out[-1]["content"]
+        assert out[0]["role"] == "system"  # leading prompt untouched
+
+    def test_does_not_mutate_input(self):
+        src = [{"role": "system", "content": "sys"}, {"role": "user", "content": "q"},
+               {"role": "system", "content": "mid"}]
+        self._demote(src)
+        assert src[2]["role"] == "system"  # original unchanged
+
+
+class TestEnsureOkSurfacesBody:
+    def test_400_includes_provider_body(self):
+        from adk.llm.openai_compat import _ensure_ok
+        req = httpx.Request("POST", "https://api.deepseek.com/v1/chat/completions")
+        resp = httpx.Response(
+            400, request=req,
+            json={"error": {"message": "This model's maximum context length is 65536 tokens"}},
+        )
+        with pytest.raises(httpx.HTTPStatusError) as ei:
+            _ensure_ok(resp)
+        assert "maximum context length" in str(ei.value)
+
+    def test_2xx_does_not_raise(self):
+        from adk.llm.openai_compat import _ensure_ok
+        req = httpx.Request("POST", "https://x/v1/chat/completions")
+        _ensure_ok(httpx.Response(200, request=req, json={"ok": True}))
