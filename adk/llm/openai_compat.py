@@ -12,6 +12,10 @@ import httpx
 logger = logging.getLogger("adk.llm.openai")
 
 _MAX_RETRIES = 3
+# Transient statuses worth retrying: rate limit (429), Anthropic "overloaded"
+# (529), and gateway/server blips (500/502/503/504, 408). A single upstream
+# hiccup shouldn't kill a whole research run.
+_RETRYABLE_STATUS = frozenset({408, 429, 500, 502, 503, 504, 529})
 
 
 def _ensure_ok(resp: "httpx.Response") -> None:
@@ -227,27 +231,29 @@ class OpenAIProvider(LLMProvider):
     async def _post_with_retry(
         self, client: httpx.AsyncClient, url: str, payload: dict
     ) -> httpx.Response:
-        """POST with retry on 429 (rate limit). Reads Retry-After header."""
+        """POST with retry on transient errors (429 + 5xx). Honors Retry-After,
+        else exponential backoff. Surfaces the provider body on the final failure.
+        """
+        resp = None
         for attempt in range(1, _MAX_RETRIES + 1):
             resp = await client.post(url, json=payload)
-            if resp.status_code != 429:
-                _ensure_ok(resp)
+            if resp.status_code not in _RETRYABLE_STATUS:
+                _ensure_ok(resp)   # 2xx returns; non-retryable 4xx raises with body
                 return resp
-            # 429 — read retry-after and wait
+            if attempt == _MAX_RETRIES:
+                break  # exhausted — fall through and raise with body
             retry_after = resp.headers.get("retry-after", "")
             try:
-                wait = int(retry_after) if retry_after else 5
+                wait = int(retry_after) if retry_after else min(2 ** attempt, 30)
             except (ValueError, TypeError):
-                wait = 5
+                wait = min(2 ** attempt, 30)
             wait = min(wait, 120)  # cap at 2 minutes
             logger.warning(
-                "Rate limited (429). Waiting %ds before retry (%d/%d)...",
-                wait, attempt, _MAX_RETRIES,
+                "Transient %s from %s — retrying in %ds (%d/%d)...",
+                resp.status_code, url, wait, attempt, _MAX_RETRIES,
             )
             await asyncio.sleep(wait)
-        # Final attempt — let it raise if still 429
-        resp = await client.post(url, json=payload)
-        _ensure_ok(resp)
+        _ensure_ok(resp)   # all retries exhausted — raise with the provider's body
         return resp
 
     async def list_models(self) -> list[str]:

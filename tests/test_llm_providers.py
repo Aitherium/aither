@@ -453,3 +453,72 @@ class TestEnsureOkSurfacesBody:
         from adk.llm.openai_compat import _ensure_ok
         req = httpx.Request("POST", "https://x/v1/chat/completions")
         _ensure_ok(httpx.Response(200, request=req, json={"ok": True}))
+
+
+# ─── Transient-error retry (502/503/429/529) ───
+
+class TestTransientRetry:
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_openai_retries_502_then_succeeds(self):
+        route = respx.post("https://api.test/v1/chat/completions").mock(side_effect=[
+            httpx.Response(502, text="bad gateway"),
+            httpx.Response(200, json={
+                "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+                "usage": {"total_tokens": 3, "prompt_tokens": 2, "completion_tokens": 1},
+                "model": "m"}),
+        ])
+        p = OpenAIProvider(base_url="https://api.test/v1", api_key="sk", default_model="m")
+        with patch("adk.llm.openai_compat.asyncio.sleep", new_callable=AsyncMock):
+            resp = await p.chat([Message(role="user", content="hi")])
+        assert resp.content == "ok"
+        assert route.call_count == 2
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_openai_exhausts_and_raises_with_body(self):
+        respx.post("https://api.test/v1/chat/completions").mock(
+            return_value=httpx.Response(503, text="overloaded detail"))
+        p = OpenAIProvider(base_url="https://api.test/v1", api_key="sk", default_model="m")
+        with patch("adk.llm.openai_compat.asyncio.sleep", new_callable=AsyncMock):
+            with pytest.raises(httpx.HTTPStatusError) as ei:
+                await p.chat([Message(role="user", content="hi")])
+        assert "overloaded detail" in str(ei.value)
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_openai_400_not_retried(self):
+        route = respx.post("https://api.test/v1/chat/completions").mock(
+            return_value=httpx.Response(400, text="bad request"))
+        p = OpenAIProvider(base_url="https://api.test/v1", api_key="sk", default_model="m")
+        with patch("adk.llm.openai_compat.asyncio.sleep", new_callable=AsyncMock):
+            with pytest.raises(httpx.HTTPStatusError):
+                await p.chat([Message(role="user", content="hi")])
+        assert route.call_count == 1  # 4xx is not transient → no retry
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_anthropic_retries_502_then_succeeds(self):
+        route = respx.post("https://api.anthropic.com/v1/messages").mock(side_effect=[
+            httpx.Response(502, text="bad gateway"),
+            httpx.Response(200, json={
+                "content": [{"type": "text", "text": "ok"}],
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+                "model": "claude", "stop_reason": "end_turn"}),
+        ])
+        p = AnthropicProvider(api_key="sk", default_model="claude")
+        with patch("adk.llm.anthropic.asyncio.sleep", new_callable=AsyncMock):
+            resp = await p.chat([Message(role="user", content="hi")])
+        assert resp.content == "ok"
+        assert route.call_count == 2
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_anthropic_exhausts_and_raises_with_body(self):
+        respx.post("https://api.anthropic.com/v1/messages").mock(
+            return_value=httpx.Response(529, text="overloaded"))
+        p = AnthropicProvider(api_key="sk", default_model="claude")
+        with patch("adk.llm.anthropic.asyncio.sleep", new_callable=AsyncMock):
+            with pytest.raises(httpx.HTTPStatusError) as ei:
+                await p.chat([Message(role="user", content="hi")])
+        assert "overloaded" in str(ei.value)

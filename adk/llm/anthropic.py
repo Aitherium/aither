@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from typing import AsyncIterator
 
 import httpx
@@ -14,6 +16,58 @@ from .base import (
     ToolCall,
     _timer,
 )
+
+logger = logging.getLogger("adk.llm.anthropic")
+
+_MAX_RETRIES = 3
+# Transient statuses worth retrying: rate limit (429), Anthropic "overloaded"
+# (529), and gateway/server blips (500/502/503/504, 408). Anthropic 502s are
+# common transient gateway hiccups — a single one shouldn't kill a run.
+_RETRYABLE_STATUS = frozenset({408, 429, 500, 502, 503, 504, 529})
+
+
+def _ensure_ok(resp: httpx.Response) -> None:
+    """Raise on 4xx/5xx but INCLUDE the provider's body (e.g. the overloaded /
+    invalid-request message) — ``raise_for_status()`` discards it."""
+    if resp.status_code < 400:
+        return
+    body = ""
+    try:
+        body = (resp.text or "").strip()
+    except Exception:  # noqa: BLE001
+        body = ""
+    msg = f"{resp.status_code} {resp.reason_phrase} for {resp.request.url}"
+    if body:
+        msg += f"\nProvider response: {body[:1200]}"
+    raise httpx.HTTPStatusError(msg, request=resp.request, response=resp)
+
+
+async def _post_with_retry(
+    client: httpx.AsyncClient, url: str, payload: dict
+) -> httpx.Response:
+    """POST with retry on transient errors (429 + 5xx). Honors Retry-After else
+    exponential backoff; surfaces the provider body on the final failure."""
+    resp = None
+    for attempt in range(1, _MAX_RETRIES + 1):
+        resp = await client.post(url, json=payload)
+        if resp.status_code not in _RETRYABLE_STATUS:
+            _ensure_ok(resp)
+            return resp
+        if attempt == _MAX_RETRIES:
+            break
+        retry_after = resp.headers.get("retry-after", "")
+        try:
+            wait = int(retry_after) if retry_after else min(2 ** attempt, 30)
+        except (ValueError, TypeError):
+            wait = min(2 ** attempt, 30)
+        wait = min(wait, 120)
+        logger.warning(
+            "Transient %s from %s — retrying in %ds (%d/%d)...",
+            resp.status_code, url, wait, attempt, _MAX_RETRIES,
+        )
+        await asyncio.sleep(wait)
+    _ensure_ok(resp)
+    return resp
 
 # Anthropic models that are always available
 _ANTHROPIC_MODELS = [
@@ -108,8 +162,7 @@ class AnthropicProvider(LLMProvider):
 
         start = _timer()
         async with self._client() as client:
-            resp = await client.post(f"{self._base_url}/v1/messages", json=payload)
-            resp.raise_for_status()
+            resp = await _post_with_retry(client, f"{self._base_url}/v1/messages", payload)
             data = resp.json()
 
         latency = _timer() - start
@@ -164,25 +217,38 @@ class AnthropicProvider(LLMProvider):
             payload["system"] = system
 
         async with self._client() as client:
-            async with client.stream(
-                "POST", f"{self._base_url}/v1/messages", json=payload
-            ) as resp:
-                resp.raise_for_status()
-                async for line in resp.aiter_lines():
-                    line = line.strip()
-                    if not line or not line.startswith("data: "):
-                        continue
-                    import json
-                    data = json.loads(line[6:])
-                    event_type = data.get("type", "")
-                    if event_type == "content_block_delta":
-                        delta = data.get("delta", {})
-                        yield StreamChunk(
-                            content=delta.get("text", ""),
-                            model=model,
+            for attempt in range(1, _MAX_RETRIES + 1):
+                async with client.stream(
+                    "POST", f"{self._base_url}/v1/messages", json=payload
+                ) as resp:
+                    if resp.status_code in _RETRYABLE_STATUS and attempt < _MAX_RETRIES:
+                        await resp.aread()  # body not loaded in stream mode until read
+                        wait = min(2 ** attempt, 30)
+                        logger.warning(
+                            "Transient %s on Anthropic stream — retrying in %ds (%d/%d)...",
+                            resp.status_code, wait, attempt, _MAX_RETRIES,
                         )
-                    elif event_type == "message_stop":
-                        yield StreamChunk(done=True, model=model)
+                        await asyncio.sleep(wait)
+                        continue
+                    if resp.status_code >= 400:
+                        await resp.aread()
+                        _ensure_ok(resp)
+                    async for line in resp.aiter_lines():
+                        line = line.strip()
+                        if not line or not line.startswith("data: "):
+                            continue
+                        import json
+                        data = json.loads(line[6:])
+                        event_type = data.get("type", "")
+                        if event_type == "content_block_delta":
+                            delta = data.get("delta", {})
+                            yield StreamChunk(
+                                content=delta.get("text", ""),
+                                model=model,
+                            )
+                        elif event_type == "message_stop":
+                            yield StreamChunk(done=True, model=model)
+                    return
 
     async def list_models(self) -> list[str]:
         return list(_ANTHROPIC_MODELS)
