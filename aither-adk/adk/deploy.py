@@ -3293,6 +3293,30 @@ def deploy_grid(
 # CLI entry point
 # ===========================================================================
 
+def deploy_fleet_refresh(args) -> int:
+    """`aither/adk deploy fleet-refresh` — rebuild all lib-baking Python service
+    images from current source and safe rolling-recreate the running fleet onto
+    them. Thin wrapper over the canonical repo script (run from inside a checkout).
+    """
+    cwd = Path.cwd()
+    script = None
+    for d in (cwd, *cwd.parents):
+        candidate = d / ".DEPLOYMENT" / "scripts" / "fleet-refresh.sh"
+        if candidate.exists():
+            script = candidate
+            break
+    if script is None:
+        print("ERROR: .DEPLOYMENT/scripts/fleet-refresh.sh not found — run from inside an AitherOS repo.")
+        return 1
+    flags = []
+    for name in ("build_only", "recreate_only", "dry_run"):
+        if getattr(args, name, False):
+            flags.append("--" + name.replace("_", "-"))
+    print(f">>> deploy fleet-refresh -> {script} {' '.join(flags)}")
+    import subprocess
+    return subprocess.call(["bash", str(script), *flags], cwd=str(script.parents[2]))
+
+
 def cmd_deploy_component(args) -> int:
     """Main entry point for `aither deploy <component>`.
 
@@ -3316,6 +3340,7 @@ def cmd_deploy_component(args) -> int:
         print(f"    {bold('node --genesis')}  Full node (Genesis + Redis + PostgreSQL + 14 services)")
         print(f"    {bold('core')}       Core services (Node, Pulse, Watch, Genesis, Veil)")
         print(f"    {bold('full')}       Full AitherOS stack (~31 containers)")
+        print(f"    {bold('fleet-refresh')} Rebuild all lib-baking Python images + safe rolling recreate")
         print(f"    {bold('addons')}     Self-hosted addon services (Qdrant, RAG, etc.)")
         print(f"    {bold('grid')}    Grid distributed (GPU + Mac + cluster)")
         print(f"    {bold('connect')}    AitherConnect browser extension")
@@ -3337,6 +3362,9 @@ def cmd_deploy_component(args) -> int:
         print(f"    {dim('aither deploy stop all')}")
         print()
         return 1
+
+    if component == "fleet-refresh":
+        return deploy_fleet_refresh(args)
 
     if component == "sovereign":
         # --list-apps: show available app templates

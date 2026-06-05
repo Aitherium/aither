@@ -2,6 +2,32 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [2.6.0] - 2026-06-04
+
+### Streaming + scaffolding
+- **`AitherAgent.stream_chat`** — reliable streaming sibling of `chat()`: native
+  tool-calling loop (concludes on its own, unlike the text-protocol `stream_react`)
+  that emits live `tool`/`tool_result` events and streams the answer as `token`
+  events. `token_delay` paces tokens for a typing effect.
+- **`adk new <template>`** — scaffold a full, runnable template app. Ships the
+  `deep-research` template (a cited web-research agent: pack + server + web UI):
+  `adk new deep-research`.
+
+### Fixes
+- **BYO-key no longer community-capped.** The free-tier monthly token cap now applies
+  only to the metered Aitherium gateway backend, never to a user's own provider key
+  (Anthropic/OpenAI/DeepSeek/Ollama/vLLM). Previously it could brick a self-hosted
+  agent after ~100k tokens on the user's own key.
+- **Stronger, grounded memory recall.** `chat()` now injects the top-6 knowledge-graph
+  hits (untruncated) with a hard no-fabrication instruction — was top-3 truncated to
+  200 chars, which surfaced partial facts and let weaker models invent the rest.
+- **Tool-arg coercion.** `ToolRegistry.execute` coerces LLM-supplied args toward each
+  parameter's annotated type, so a tool no longer crashes when a model passes a list
+  or string where an int/float/bool was expected.
+
+### Docs
+- New `docs/AGENT_DEV_GUIDE.md` — the golden path for building agents/packs.
+
 ## [2.5.0] - 2026-06-04
 
 ### Continual learning — agents that learn from runs and reuse memory

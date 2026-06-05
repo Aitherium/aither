@@ -14,6 +14,10 @@ adk init my-agent && cd my-agent && python agent.py
 
 Try it now at [chat.aitherium.com](https://chat.aitherium.com) — free, unlimited, no sign-up.
 
+> **Building a real agent or pack?** Read **[docs/AGENT_DEV_GUIDE.md](docs/AGENT_DEV_GUIDE.md)** —
+> the opinionated golden path (`agent.chat()` is the agent; author a pack; never-forget RAG
+> memory; BYO-key; the gotcha checklist). It saves you from re-learning the hard way.
+
 ### The Sovereign Loop vs the Genesis Orchestrated Loop — when to use which
 
 `aither-adk` runs the **Sovereign Loop**: a self-hosted ReAct agent (`AitherAgent.chat()`) that

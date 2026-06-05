@@ -73,6 +73,12 @@ class ToolRegistry:
             return json.dumps({"error": f"Unknown tool: {name}"})
 
         try:
+            # Coerce LLM-supplied args toward each parameter's annotated type. Models
+            # routinely pass a scalar wrapped in a list/str (e.g. limit=["5"]) which
+            # would otherwise crash the tool (int() of a list). Conservative: only
+            # touches int/float/bool/str params.
+            if isinstance(arguments, dict):
+                arguments = _coerce_arguments(td.fn, arguments)
             if td.is_async:
                 result = await td.fn(**arguments)
             else:
@@ -163,6 +169,59 @@ class ToolContext:
 
     async def load_artifact(self, *_args, **_kwargs):  # pragma: no cover
         return None
+
+
+def _coerce_arguments(fn: Callable, arguments: dict) -> dict:
+    """Coerce LLM-supplied args toward each parameter's annotated type.
+
+    LLMs frequently pass an int as a list or string (``limit=["5"]``,
+    ``angles="3 angles"``); calling the tool then raises ``int() ... not 'list'``
+    mid-loop. This conservatively coerces int/float/bool/str params and leaves
+    everything else untouched. Never raises — returns the args as-is on any problem.
+    """
+    try:
+        hints = getattr(fn, "__annotations__", {}) or {}
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return arguments
+    out = dict(arguments)
+    for pname, value in list(out.items()):
+        if pname in params:
+            out[pname] = _coerce_value(value, hints.get(pname))
+    return out
+
+
+def _coerce_value(value, hint):
+    """Best-effort coerce a single value toward an int/float/bool/str hint."""
+    if hint not in (int, float, bool, str) or value is None:
+        return value
+    if isinstance(value, hint) and not (hint is int and isinstance(value, bool)):
+        return value
+    # Models often wrap a scalar in a list/tuple, e.g. limit=["5"] or angles=["a","b"].
+    if isinstance(value, (list, tuple, set)):
+        seq = list(value)
+        if hint in (int, float):
+            value = seq[0] if len(seq) == 1 else len(seq)  # one→that number; many→count
+        else:
+            value = seq[0] if len(seq) == 1 else " ".join(map(str, seq))
+    try:
+        if hint is str:
+            return str(value)
+        if hint is bool:
+            if isinstance(value, str):
+                return value.strip().lower() in ("1", "true", "yes", "y", "on")
+            return bool(value)
+        if hint is int:
+            if isinstance(value, str):
+                import re as _re
+                m = _re.search(r"-?\d+", value)
+                return int(m.group()) if m else value
+            return int(value)
+        if hint is float:
+            return float(value)
+    except (TypeError, ValueError):
+        return value
+    return value
 
 
 def _extract_parameters(fn: Callable) -> dict:
