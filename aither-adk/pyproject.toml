@@ -1,0 +1,136 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "aither-adk"
+version = "2.6.3"
+description = "Build AI agents with real memory + faculties on any backend, local or cloud. Open-core: free local runtime with typed memory, knowledge graph, code graph and ReAct; paid tiers (portal.aitherium.com) unlock fleets, channels, reasoning and marketplace packs."
+readme = "README.md"
+license = {file = "LICENSE"}
+requires-python = ">=3.10"
+authors = [
+    { name = "Aitherium", email = "hello@aitherium.com" },
+]
+keywords = ["ai", "agents", "llm", "aither", "ollama", "openai", "anthropic", "vllm", "fleet", "multi-agent"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: Other/Proprietary License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "httpx>=0.25.0",
+    "pyyaml>=6.0",
+    "pydantic>=2.0",
+    "fastapi>=0.104.0",
+    "uvicorn[standard]>=0.24.0",
+    "jinja2>=3.1.0",
+    "aiosqlite>=0.19.0",
+]
+
+[project.optional-dependencies]
+anthropic = ["anthropic>=0.18.0"]
+openai = ["openai>=1.0.0"]
+graphs = [
+    "numpy>=1.24.0",
+]
+embedding = [
+    "sentence-transformers>=2.3.0",
+    "torch>=2.0.0",
+]
+node = ["mcp>=1.0", "starlette>=0.36"]
+sync = ["watchdog>=3.0.0"]
+federation = ["cryptography>=41.0.0"]
+addons = ["docker>=7.0"]
+workspace = [
+    "aither-adk[platform]",
+]
+shell = [
+    "rich>=13.0",
+    "click>=8.0",
+    "argcomplete>=3.0",
+]
+telegram = ["python-telegram-bot>=21.0"]
+discord = ["discord.py>=2.3"]
+slack = ["slack-bolt>=1.18"]
+channels = [
+    "aither-adk[telegram,discord,slack]",
+]
+all = [
+    "aither-adk[graphs,embedding,channels,federation,sync,addons,node,shell]",
+    "anthropic>=0.18.0",
+    "openai>=1.0.0",
+]
+platform = [
+    # Internal platform toolkit dependencies (merged from aither-platform)
+    "pydantic>=2.0.0",
+    "aiohttp>=3.8.0",
+    "requests>=2.28.0",
+    "typer>=0.9.0",
+    "rich>=13.0.0",
+    "jinja2>=3.1.0",
+    "prompt_toolkit>=3.0.0",
+    "python-dotenv>=1.0.0",
+    "psutil>=5.9.0",
+]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-timeout>=2.2.0",
+    "respx>=0.20.0",
+]
+
+[project.urls]
+Homepage = "https://aitherium.com"
+Repository = "https://github.com/Aitherium/aither"
+Documentation = "https://github.com/Aitherium/aither#readme"
+
+[project.scripts]
+adk = "adk.cli:main"
+adk-py = "adk.cli:main"
+adk-serve = "adk.server:main"
+adk-workspace = "adk.server:main_workspace"
+adk-bug = "adk.bugreport:main"
+adk-shell = "adk.shell.cli:entry"
+aither-py = "adk.shell.cli:entry"
+
+[tool.hatch.build]
+# Distribution-time moat boundary. These files exist in the source repo (the
+# internal AitherOS runtime uses them) but are NEVER shipped in the published
+# PyPI wheel. Same proven pattern used for premium identities.
+#
+#   - identities/*.yaml : only the free aither.yaml ships; the rest are
+#                         premium IP delivered via pack download after purchase.
+#   - nanogpt.py        : on-device training IP — competitors must not get a
+#                         turnkey trainer in the free SDK.
+exclude = [
+    "adk/identities/*.yaml",
+    "adk/nanogpt.py",
+]
+artifacts = [
+    "adk/identities/aither.yaml",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["adk"]
+[tool.hatch.build.targets.wheel.force-include]
+"docker-compose.adk-vllm.yml" = "adk/docker-compose.adk-vllm.yml"
+"agent.yaml" = "adk/workspace-agent.yaml"
+
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+filterwarnings = [
+    # IRC event handlers use ensure_future for async broadcast — harmless in tests
+    "ignore:coroutine 'IRCServer._broadcast_to_channel' was never awaited:RuntimeWarning",
+    "ignore:coroutine 'IRCServer._send_to_nick' was never awaited:RuntimeWarning",
+    # CPython unittest.mock bug: AsyncMock child creation creates unawaited coroutines
+    # https://github.com/python/cpython/issues/100226
+    "ignore:coroutine 'AsyncMockMixin._execute_mock_call' was never awaited:RuntimeWarning",
+]
