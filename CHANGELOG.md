@@ -2,6 +2,19 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [2.6.1] - 2026-06-04
+
+### Fixes
+- **`MCPServer.mount()` returned HTTP 422 for every `/mcp` call.** Under
+  `from __future__ import annotations` the route handler's `request: Request`
+  annotation is a string that FastAPI resolves against the *module* globals, but
+  `Request` was imported locally inside `mount()` — so FastAPI couldn't resolve
+  it and treated `request` as a required query param. The MCP server endpoint
+  (`initialize`, `tools/list`, `tools/call`) was unusable when mounted. FastAPI
+  symbols are now imported at module level (guarded; the `[node]` extra still
+  gates actual use). Any agent's tools can now be exposed as a working MCP
+  server with `MCPServer(...).mount(app)`.
+
 ## [2.6.0] - 2026-06-04
 
 ### Streaming + scaffolding
