@@ -1009,7 +1009,17 @@ class AitherAgent:
                     cache_status=resp.cache_status,
                 )
 
-            # Execute tool calls with loop guard checks
+            # Execute tool calls with loop guard checks.
+            #
+            # CRITICAL message-structure invariant: an assistant message that
+            # declares tool_calls MUST be immediately followed by EXACTLY one
+            # `tool` result per tool_call_id, CONTIGUOUSLY, with no other role
+            # interleaved. OpenAI tolerates an interleaved system/user message
+            # here; DeepSeek and strict vLLM chat templates reject it with a 400
+            # ("insufficient tool messages following tool_calls message"). So
+            # loop-guard nudges are NEVER inserted between tool results — the
+            # per-call guidance is folded into that call's own tool result, and
+            # any standalone steering is deferred to AFTER the whole batch.
             messages.append(Message(
                 role="assistant",
                 content=resp.content or "",
@@ -1019,18 +1029,20 @@ class AitherAgent:
                 ],
             ))
 
+            _deferred_nudges: list[str] = []
             for tc in resp.tool_calls:
                 verdict = loop_guard.check(tc.name, tc.arguments)
 
                 if verdict.action == LoopAction.CIRCUIT_BREAK:
                     logger.warning("Loop guard CIRCUIT BREAK: %s", verdict.reason)
-                    messages.append(Message(role="system", content=verdict.nudge_message))
                     tool_calls_made.append(f"{tc.name}[circuit_break]")
                     messages.append(Message(
                         role="tool",
-                        content=json.dumps({"error": "circuit_break", "message": verdict.reason}),
+                        content=json.dumps({"error": "circuit_break", "message": verdict.reason,
+                                            "guidance": verdict.nudge_message}),
                         tool_call_id=tc.id,
                     ))
+                    _deferred_nudges.append(verdict.nudge_message)
                     # Fire metrics + Pulse alert
                     get_metrics().record_loop_guard_break()
                     _fire_pulse_loop_break(self.name, tc.name, loop_guard.stats.total_checks)
@@ -1038,18 +1050,18 @@ class AitherAgent:
 
                 if verdict.action == LoopAction.BLOCK:
                     logger.info("Loop guard BLOCKED: %s", verdict.reason)
-                    messages.append(Message(role="system", content=verdict.nudge_message))
                     tool_calls_made.append(f"{tc.name}[blocked]")
                     messages.append(Message(
                         role="tool",
-                        content=json.dumps({"error": "blocked_duplicate", "message": verdict.reason}),
+                        content=json.dumps({"error": "blocked_duplicate", "message": verdict.reason,
+                                            "guidance": verdict.nudge_message}),
                         tool_call_id=tc.id,
                     ))
                     continue
 
                 if verdict.action == LoopAction.WARN:
                     logger.debug("Loop guard WARN: %s", verdict.reason)
-                    messages.append(Message(role="system", content=verdict.nudge_message))
+                    _deferred_nudges.append(verdict.nudge_message)
 
                 # ALLOW or WARN — execute the tool
                 tool_calls_made.append(tc.name)
@@ -1107,6 +1119,18 @@ class AitherAgent:
                     role="tool",
                     content=result,
                     tool_call_id=tc.id,
+                ))
+
+            # Every tool_call in this assistant turn now has its matching `tool`
+            # result appended contiguously. Emit any loop-guard steering AFTER
+            # the whole block as a single message — keeping it out of the
+            # assistant→tool_results pairing that every backend (strictly,
+            # DeepSeek) requires. dict.fromkeys() de-dupes repeated nudges while
+            # preserving order.
+            if _deferred_nudges:
+                messages.append(Message(
+                    role="system",
+                    content="\n".join(dict.fromkeys(_deferred_nudges)),
                 ))
 
         # Exhausted tool loops — return last response

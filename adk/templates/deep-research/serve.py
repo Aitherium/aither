@@ -427,20 +427,31 @@ def create_app():
 
             asyncio.create_task(run())
             yield sse("ledger", ledger.snapshot())
+            _sources_sent = 0
             while True:
                 ev = await q.get()
                 if ev is sentinel:
                     break
                 t = ev.get("type", "event")
+                # Live sources: flush the moment the agent registers new ones so
+                # the panel fills WHILE it searches (matching the UI copy), not
+                # only at the very end. This also means a turn that fails partway
+                # still shows everything gathered up to the failure.
+                if len(session.sources) != _sources_sent:
+                    _sources_sent = len(session.sources)
+                    yield sse("sources", {"sources": session.sources})
                 if t == "_done":
                     yield sse("answer", {"content": ev.get("content", ""),
                                          "tools": ev.get("tools", [])})
-                    yield sse("sources", {"sources": session.sources})
                     yield sse("ledger", ledger.snapshot())
                     continue
                 yield sse(t, ev)
                 if t in ("tool", "tool_result"):
                     yield sse("ledger", ledger.snapshot())
+            # Always flush the final sources + ledger, even on a failed/partial
+            # turn — session.sources holds the real work done regardless of how
+            # the turn ended, so the panel never goes blank after a crash.
+            yield sse("sources", {"sources": session.sources})
             yield sse("complete", {"ledger": ledger.snapshot()})
 
         return StreamingResponse(

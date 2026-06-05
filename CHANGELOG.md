@@ -2,6 +2,24 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [2.6.4] - 2026-06-05
+
+### Fixes
+- **Loop-guard nudges corrupted the message history → DeepSeek 400 mid-run.**
+  When the ReAct loop emitted multiple tool calls in one assistant turn and the
+  loop guard fired a WARN/BLOCK/CIRCUIT_BREAK on one of them, it spliced a
+  standalone `system` nudge message *between* the tool results. DeepSeek (and
+  strict vLLM chat templates) require an assistant `tool_calls` message to be
+  followed by exactly one `tool` result per `tool_call_id`, contiguously — so the
+  interleaved message produced `400 … insufficient tool messages following
+  tool_calls message` and aborted the turn (this is reliably hit after crossing
+  the 15-call circuit-break threshold, where every subsequent call WARNs).
+  Per-call guidance is now folded into that call's own `tool` result, and any
+  standalone steering is deferred to a single message AFTER the whole batch —
+  preserving the `tool_calls`↔`tool_results` pairing every backend requires.
+  Regression test: `deep-research-agent/tests/test_msg_structure.py`
+  (loopguard-flood scenario).
+
 ## [2.6.3] - 2026-06-04
 
 ### Fixes
