@@ -21,6 +21,12 @@ Environment overrides:
 - ``AITHERIDENTITY_URL``   — identity service URL (default uses base URL)
 - ``AITHER_OIDC_CLIENT_ID`` — OAuth client_id (default ``aither-cli``)
 - ``AITHERIUM_API_KEY``    — short-circuit: skip the file store entirely
+
+Principal authority (G23):
+
+- **Principal** — the caller's identity (subject_id, principal_class, role, clearance).
+- **AuthContext** — wraps a Principal and evaluates authorization (can(action, ...)).
+- **PrincipalResolver(ABC)** — abstract resolver for channel-specific identity verification.
 """
 
 from __future__ import annotations
@@ -29,6 +35,7 @@ import asyncio
 import json
 import os
 import stat
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -37,6 +44,165 @@ from typing import Any
 from adk.core.logging import get_logger
 
 _log = get_logger("aither_adk.auth")
+
+# ---------------------------------------------------------------------------
+# Principal Authority (G23)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Principal:
+    """Caller's identity and authority metadata.
+
+    Attributes:
+        subject_id: Unique caller identifier (user ID, customer ID, agent ID, etc.).
+        principal_class: Type of principal ("customer", "supplier", "employee", "ceo",
+                        "agent", "system", etc.).
+        role: Optional role name (e.g., "admin", "viewer", "editor").
+        clearance: Numeric clearance level (0 = no special clearance, higher = more trust).
+        allowed_action_types: Frozenset of action classes this principal can perform
+                             (empty = no action types allowed unless verified via context).
+                             Use "*" for wildcard (all action types).
+        channel: Channel/platform this principal came from (e.g., "telegram", "slack").
+        verified: Whether this principal's identity has been cryptographically verified.
+    """
+    subject_id: str
+    principal_class: str
+    role: str = ""
+    clearance: int = 0
+    allowed_action_types: frozenset[str] = field(default_factory=frozenset)
+    channel: str = ""
+    verified: bool = False
+
+
+class AuthContext:
+    """Authorization context wrapping a Principal and policy enforcement.
+
+    Evaluates whether a principal can perform actions based on clearance,
+    action class, and verification status. Default-deny for unverified principals.
+    """
+
+    def __init__(self, principal: Principal) -> None:
+        self.principal = principal
+
+    def can(
+        self,
+        action: str,
+        *,
+        required_clearance: int = 0,
+        action_class: str = "",
+    ) -> bool:
+        """Evaluate whether the principal is authorized for an action.
+
+        Args:
+            action: The action name (currently unused; reserved for future ACL policy).
+            required_clearance: Minimum clearance level required (default 0).
+            action_class: Action class category (e.g., "write", "delete", "admin").
+                         If empty, no action class restriction applies.
+
+        Returns:
+            True if the principal is authorized; False otherwise (default-deny).
+
+        Rules:
+        - If principal is unverified and action requires clearance (required_clearance > 0)
+          or has an action_class, deny.
+        - If principal is verified:
+          - Clearance must satisfy: principal.clearance >= required_clearance
+          - Action class must match: action_class == "" (no restriction) OR
+            action_class in principal.allowed_action_types OR
+            "*" in principal.allowed_action_types
+        """
+        if not self.principal.verified:
+            # Unverified principals can only do truly public things (no clearance/class reqs)
+            return required_clearance == 0 and action_class == ""
+
+        # Verified principal: clearance + action class
+        if required_clearance > 0 and self.principal.clearance < required_clearance:
+            return False
+
+        if action_class:
+            if (action_class not in self.principal.allowed_action_types
+                and "*" not in self.principal.allowed_action_types):
+                return False
+
+        return True
+
+    @classmethod
+    def anonymous(cls) -> AuthContext:
+        """Create an unverified, anonymous principal with no authority."""
+        return cls(Principal(
+            subject_id="anon",
+            principal_class="anonymous",
+            verified=False,
+        ))
+
+    @classmethod
+    def system(cls) -> AuthContext:
+        """Create a fully trusted system principal (internal/trusted calls)."""
+        return cls(Principal(
+            subject_id="system",
+            principal_class="system",
+            role="admin",
+            clearance=999,
+            allowed_action_types=frozenset(["*"]),
+            verified=True,
+        ))
+
+
+class PrincipalResolver(ABC):
+    """Abstract base for resolving a raw identity into a verified Principal.
+
+    Implementations verify channel-specific signatures/proofs and return a Principal
+    with appropriate clearance, role, and verified flag set.
+
+    Example implementations:
+    - TelegramResolver — verify Telegram WebApp initData signature
+    - SlackResolver — verify Slack request signature
+    - DirectResolver — consume pre-signed JWT or HMAC-signed claims
+    """
+
+    @abstractmethod
+    async def resolve(
+        self,
+        channel: str,
+        raw_identity: dict,
+        signature: str | None = None,
+    ) -> Principal:
+        """Resolve and verify a caller's identity.
+
+        Args:
+            channel: Platform/channel identifier ("telegram", "slack", "api", etc.).
+            raw_identity: Unverified claims dict (user_id, username, etc.).
+            signature: Optional cryptographic signature for verification (HMAC, JWT, etc.).
+
+        Returns:
+            A Principal with verified=True if identity checks pass,
+            or verified=False if checks fail (graceful degradation).
+        """
+        ...
+
+
+class DenyAllResolver(PrincipalResolver):
+    """Default resolver: always returns unverified anonymous principal.
+
+    Used when no app-level resolver is configured. Concrete resolvers
+    (e.g., TelegramResolver, SlackResolver) are provided by the app layer.
+    """
+
+    async def resolve(
+        self,
+        channel: str,
+        raw_identity: dict,
+        signature: str | None = None,
+    ) -> Principal:
+        """Return an unverified principal (default-deny)."""
+        return Principal(
+            subject_id=raw_identity.get("user_id", "unknown"),
+            principal_class="unknown",
+            channel=channel,
+            verified=False,
+        )
+
 
 AUTH_FILE = Path.home() / ".aither" / "auth.json"
 AUTH_VERSION = 1

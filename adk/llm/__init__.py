@@ -19,6 +19,8 @@ from .base import (
 if TYPE_CHECKING:
     from adk.config import Config
 
+    from .cache import ResponseCache
+
 logger = logging.getLogger("adk.llm")
 
 __all__ = [
@@ -108,11 +110,16 @@ class LLMRouter:
         api_key: str | None = None,
         model: str | None = None,
         config: Config | None = None,
+        response_cache: "ResponseCache | None" = None,
     ):
         self._provider_name: str = ""
         self._provider: LLMProvider | None = None
         self._model = model
         self._config = config
+        # OQ16 lever 2 — opt-in response cache. OFF unless a ResponseCache is passed
+        # here AND a call sets cacheable=True; default behavior is unchanged. Skipping
+        # the LLM for an identical request changes determinism, so it must be opted into.
+        self._response_cache = response_cache
         # Dual-mode: local provider for low effort, remote for high effort
         self._local_provider: LLMProvider | None = None
         self._remote_provider: LLMProvider | None = None
@@ -183,6 +190,12 @@ class LLMRouter:
                 api_key=api_key or "",
                 default_model=self._model or "claude-sonnet-4-6",
             )
+        elif name == "gemini":
+            from .gemini import GeminiProvider
+            return GeminiProvider(
+                api_key=api_key or "",
+                default_model=self._model or "gemini-2.0-flash",
+            )
         elif name == "picolm":
             from .picolm import PicoLMProvider
             return PicoLMProvider(
@@ -192,7 +205,7 @@ class LLMRouter:
         else:
             raise ValueError(
                 f"Unknown provider: {name}. "
-                "Use 'gateway', 'ollama', 'openai', 'anthropic', 'deepseek', "
+                "Use 'gateway', 'ollama', 'openai', 'anthropic', 'gemini', 'deepseek', "
                 "'groq', 'together', 'vllm', 'lmstudio', 'llamacpp', or 'picolm'."
             )
 
@@ -837,6 +850,23 @@ class LLMRouter:
         - effort 4+: remote desktop provider (large models, GPU)
         Falls back to local if remote is unreachable.
         """
+        # OQ16 lever 2 — opt-in response cache. Only active when a ResponseCache was
+        # attached AND this call passes cacheable=True. We recurse once with cacheable
+        # popped so the cached thunk runs the normal routing below exactly as before.
+        if self._response_cache is not None and kwargs.pop("cacheable", False):
+            from .cache import cache_key
+            key = cache_key(
+                model or self._model or "", messages,
+                kwargs.get("tools"), kwargs.get("temperature", 0.7),
+            )
+            return await self._response_cache.get_or_call(
+                key,
+                lambda: self.chat(
+                    messages, model=model, effort=effort, tool_choice=tool_choice,
+                    top_p=top_p, repetition_penalty=repetition_penalty, **kwargs,
+                ),
+            )
+
         provider = await self.get_provider()
         if effort is not None:
             effort = int(effort)

@@ -610,6 +610,16 @@ class AitherAgent:
         sid = session_id or self._session_id
         _chat_start = time.perf_counter()
 
+        # Default-on prompt caching: the system prompt + tool schema form a stable
+        # prefix reused across every ReAct iteration (and every turn/user), so
+        # caching it is a near-pure win. Providers that don't bill a prompt cache
+        # treat this as a no-op; callers can override with cache=False.
+        kwargs.setdefault("cache", True)
+
+        # Principal-authority context (G23). Popped so it never leaks into the
+        # LLM call; threaded into tool execution below. None → unchanged behavior.
+        _auth = kwargs.pop("auth", None)
+
         # Emit chat start event
         if self._events:
             try:
@@ -1074,7 +1084,16 @@ class AitherAgent:
                     except Exception:
                         pass
                 _tool_start = time.perf_counter()
-                result = await self._tools.execute(tc.name, tc.arguments)
+                # Principal-authority gate (G23): when the caller supplied an
+                # AuthContext, enforce it at the tool boundary so a forbidden
+                # tool call is blocked regardless of what the LLM emitted. When
+                # absent (auth=None) the call is identical to before — preserved
+                # as a separate path so app-side execute wrappers that take only
+                # (name, args) are unaffected.
+                if _auth is not None:
+                    result = await self._tools.execute(tc.name, tc.arguments, auth=_auth)
+                else:
+                    result = await self._tools.execute(tc.name, tc.arguments)
                 _tool_ms = (time.perf_counter() - _tool_start) * 1000
                 get_metrics().record_tool_call(tool=tc.name, latency_ms=_tool_ms)
                 # B.3 introspection — record what we did so self_* tools can read it.

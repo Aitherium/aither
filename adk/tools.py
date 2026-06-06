@@ -6,7 +6,10 @@ import inspect
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
+
+if TYPE_CHECKING:
+    from adk.auth import AuthContext
 
 logger = logging.getLogger("adk.tools")
 
@@ -19,6 +22,8 @@ class ToolDef:
     parameters: dict  # JSON Schema
     fn: Callable
     is_async: bool = False
+    required_clearance: int = 0  # Minimum clearance level required to execute
+    action_class: str = ""  # Action class (e.g., "write", "delete", "admin")
 
 
 class ToolRegistry:
@@ -27,8 +32,23 @@ class ToolRegistry:
     def __init__(self):
         self._tools: dict[str, ToolDef] = {}
 
-    def register(self, fn: Callable, name: str | None = None, description: str | None = None) -> ToolDef:
-        """Register a function as a tool."""
+    def register(
+        self,
+        fn: Callable,
+        name: str | None = None,
+        description: str | None = None,
+        required_clearance: int = 0,
+        action_class: str = "",
+    ) -> ToolDef:
+        """Register a function as a tool.
+
+        Args:
+            fn: The function to register.
+            name: Tool name (defaults to function name).
+            description: Tool description (defaults to docstring first line).
+            required_clearance: Minimum clearance level required (default 0, no restriction).
+            action_class: Action class category (e.g., "write", "delete"). Empty = no restriction.
+        """
         tool_name = name or fn.__name__
         tool_desc = description or fn.__doc__ or f"Tool: {tool_name}"
         tool_desc = tool_desc.strip().split("\n")[0]  # First line only
@@ -42,6 +62,8 @@ class ToolRegistry:
             parameters=params,
             fn=fn,
             is_async=is_async,
+            required_clearance=required_clearance,
+            action_class=action_class,
         )
         self._tools[tool_name] = td
         return td
@@ -66,11 +88,41 @@ class ToolRegistry:
             })
         return result
 
-    async def execute(self, name: str, arguments: dict) -> str:
-        """Execute a tool by name with given arguments. Returns result as string."""
+    async def execute(self, name: str, arguments: dict, auth: AuthContext | None = None) -> str:
+        """Execute a tool by name with given arguments. Returns result as string.
+
+        Args:
+            name: Tool name.
+            arguments: Arguments dict for the tool.
+            auth: Optional AuthContext for authorization. If provided and the principal
+                 is not authorized, returns a forbidden error without executing the tool.
+                 If None (default), all tools execute normally (backward compatible).
+
+        Returns:
+            JSON string with tool result or error dict.
+        """
         td = self._tools.get(name)
         if not td:
             return json.dumps({"error": f"Unknown tool: {name}"})
+
+        # Authorization check: if auth is provided, enforce it
+        if auth is not None:
+            if not auth.can(
+                name,
+                required_clearance=td.required_clearance,
+                action_class=td.action_class,
+            ):
+                logger.warning(
+                    f"Forbidden tool call: {name} by {auth.principal.subject_id} "
+                    f"(clearance={auth.principal.clearance}, "
+                    f"required={td.required_clearance}, "
+                    f"verified={auth.principal.verified})"
+                )
+                return json.dumps({
+                    "error": "forbidden",
+                    "tool": name,
+                    "reason": "principal not authorized",
+                })
 
         try:
             # Coerce LLM-supplied args toward each parameter's annotated type. Models

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "aither-adk"
-version = "2.6.4"
+version = "2.7.0"
 description = "Build AI agents with real memory + faculties on any backend, local or cloud. Open-core: free local runtime with typed memory, knowledge graph, code graph and ReAct; paid tiers (portal.aitherium.com) unlock fleets, channels, reasoning and marketplace packs."
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -61,8 +61,18 @@ slack = ["slack-bolt>=1.18"]
 channels = [
     "aither-adk[telegram,discord,slack]",
 ]
+voice-local = [
+    "faster-whisper>=0.10.0",
+    "piper-tts>=1.1.0",
+]
+voice-cloud = [
+    "openai>=1.0.0",
+    "deepgram-sdk>=3.0",
+    "elevenlabs>=0.2",
+]
+voice = ["aither-adk[voice-local,voice-cloud]"]
 all = [
-    "aither-adk[graphs,embedding,channels,federation,sync,addons,node,shell]",
+    "aither-adk[graphs,embedding,channels,federation,sync,addons,node,shell,voice]",
     "anthropic>=0.18.0",
     "openai>=1.0.0",
 ]

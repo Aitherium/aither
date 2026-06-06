@@ -9,15 +9,75 @@ from typing import AsyncIterator
 import httpx
 
 from .base import (
+    BatchRequest,
     LLMProvider,
     LLMResponse,
     Message,
+    ProviderCapabilities,
     StreamChunk,
     ToolCall,
     _timer,
 )
 
 logger = logging.getLogger("adk.llm.anthropic")
+
+_EPHEMERAL = {"type": "ephemeral"}
+
+
+def _apply_prompt_cache(payload: dict) -> None:
+    """Insert Anthropic ``cache_control`` breakpoints over the stable prefix.
+
+    A breakpoint in the ``system`` block caches everything before it in the
+    canonical order (tools → system), so one mark covers the agent's whole
+    reusable prefix. We also mark the last tool defensively (well within the
+    4-breakpoint limit). Mutates ``payload`` in place; safe to call when the
+    prefix is below the cacheable minimum — the API simply won't cache it.
+    """
+    system = payload.get("system")
+    if isinstance(system, str) and system:
+        payload["system"] = [{"type": "text", "text": system, "cache_control": _EPHEMERAL}]
+    tools = payload.get("tools")
+    if tools:
+        # Copy so we never mutate the caller's shared tool dicts across turns.
+        tools = [dict(t) for t in tools]
+        tools[-1]["cache_control"] = _EPHEMERAL
+        payload["tools"] = tools
+
+
+def _build_request_payload(
+    messages: list[Message],
+    model: str,
+    system: str | None,
+    tools: list[dict] | None,
+    temperature: float,
+    max_tokens: int,
+    cache: bool,
+) -> dict:
+    """Build a single request payload for Anthropic API."""
+    payload: dict = {
+        "model": model,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+    }
+    if system:
+        payload["system"] = system
+    if tools:
+        # Convert to Anthropic tool format
+        anthropic_tools = []
+        for t in tools:
+            fn = t.get("function", t)
+            anthropic_tools.append({
+                "name": fn.get("name", ""),
+                "description": fn.get("description", ""),
+                "input_schema": fn.get("parameters", {}),
+            })
+        payload["tools"] = anthropic_tools
+
+    if cache:
+        _apply_prompt_cache(payload)
+
+    return payload
 
 _MAX_RETRIES = 3
 # Transient statuses worth retrying: rate limit (429), Anthropic "overloaded"
@@ -101,6 +161,10 @@ class AnthropicProvider(LLMProvider):
     def _client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(timeout=self._timeout, headers=self._headers())
 
+    def capabilities(self) -> ProviderCapabilities:
+        # Explicit cache breakpoints; batch API supported.
+        return ProviderCapabilities(prompt_cache="explicit", batch=True)
+
     def _convert_messages(self, messages: list[Message]) -> tuple[str, list[dict]]:
         """Split system message from conversation messages for Anthropic format."""
         system = ""
@@ -122,6 +186,7 @@ class AnthropicProvider(LLMProvider):
         tool_choice: str | dict | None = None,
         top_p: float | None = None,
         repetition_penalty: float | None = None,
+        cache: bool = False,
         **kwargs,
     ) -> LLMResponse:
         model = model or self.default_model
@@ -160,6 +225,9 @@ class AnthropicProvider(LLMProvider):
                 elif isinstance(tool_choice, dict):
                     payload["tool_choice"] = tool_choice
 
+        if cache:
+            _apply_prompt_cache(payload)
+
         start = _timer()
         async with self._client() as client:
             resp = await _post_with_retry(client, f"{self._base_url}/v1/messages", payload)
@@ -180,6 +248,11 @@ class AnthropicProvider(LLMProvider):
                     arguments=block.get("input", {}),
                 ))
 
+        # Normalize Anthropic's cache accounting onto the shared fields. Note
+        # input_tokens already EXCLUDES cache reads/writes, so tokens_used stays
+        # the billed-at-full-rate count; the cache_* fields are the savings.
+        cache_read = usage.get("cache_read_input_tokens", 0)
+        cache_write = usage.get("cache_creation_input_tokens", 0)
         return LLMResponse(
             content="\n".join(content_parts),
             model=data.get("model", model),
@@ -189,6 +262,9 @@ class AnthropicProvider(LLMProvider):
             latency_ms=latency,
             tool_calls=tool_calls,
             finish_reason=data.get("stop_reason", "end_turn"),
+            cache_status="hit" if cache_read else ("write" if cache_write else ""),
+            cache_read_tokens=cache_read,
+            cache_write_tokens=cache_write,
         )
 
     async def chat_stream(
@@ -201,6 +277,7 @@ class AnthropicProvider(LLMProvider):
         tool_choice: str | dict | None = None,
         top_p: float | None = None,
         repetition_penalty: float | None = None,
+        cache: bool = False,
         **kwargs,
     ) -> AsyncIterator[StreamChunk]:
         model = model or self.default_model
@@ -215,6 +292,8 @@ class AnthropicProvider(LLMProvider):
         }
         if system:
             payload["system"] = system
+        if cache:
+            _apply_prompt_cache(payload)
 
         async with self._client() as client:
             for attempt in range(1, _MAX_RETRIES + 1):
@@ -252,3 +331,106 @@ class AnthropicProvider(LLMProvider):
 
     async def list_models(self) -> list[str]:
         return list(_ANTHROPIC_MODELS)
+
+    async def submit_batch(self, requests: list[BatchRequest]) -> str:
+        """Submit a batch of requests to Anthropic Message Batches API."""
+        batch_requests = []
+        for req in requests:
+            system, conv_messages = self._convert_messages(req.messages)
+            payload = _build_request_payload(
+                messages=conv_messages,
+                model=req.model or self.default_model,
+                system=system,
+                tools=req.tools,
+                temperature=req.temperature,
+                max_tokens=req.max_tokens,
+                cache=req.cache,
+            )
+            batch_requests.append({
+                "custom_id": req.custom_id,
+                "params": payload,
+            })
+
+        batch_payload = {"requests": batch_requests}
+        async with self._client() as client:
+            resp = await _post_with_retry(
+                client,
+                f"{self._base_url}/v1/messages/batches",
+                batch_payload,
+            )
+            data = resp.json()
+        return data.get("id", "")
+
+    async def poll_batch(self, batch_id: str) -> str:
+        """Poll status of a batch."""
+        async with self._client() as client:
+            resp = await client.get(
+                f"{self._base_url}/v1/messages/batches/{batch_id}",
+                headers=self._headers(),
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        return data.get("processing_status", "unknown")
+
+    async def fetch_batch_results(self, batch_id: str) -> list[LLMResponse]:
+        """Fetch results of a completed batch."""
+        async with self._client() as client:
+            # Get batch metadata to find results URL
+            resp = await client.get(
+                f"{self._base_url}/v1/messages/batches/{batch_id}",
+                headers=self._headers(),
+            )
+            resp.raise_for_status()
+            batch_data = resp.json()
+
+            results_url = batch_data.get("results_url")
+            if not results_url:
+                return []
+
+            # Fetch results from the results URL
+            resp = await client.get(results_url, headers=self._headers())
+            resp.raise_for_status()
+
+        # Parse JSONL results
+        results: dict[str, LLMResponse] = {}
+        for line in resp.text.strip().split("\n"):
+            if not line.strip():
+                continue
+            import json
+            item = json.loads(line)
+            custom_id = item.get("custom_id", "")
+            result = item.get("result", {})
+            message = result.get("message", {})
+            usage = message.get("usage", {})
+
+            content_parts = []
+            tool_calls = []
+            for block in message.get("content", []):
+                if block.get("type") == "text":
+                    content_parts.append(block["text"])
+                elif block.get("type") == "tool_use":
+                    tool_calls.append(ToolCall(
+                        id=block["id"],
+                        name=block["name"],
+                        arguments=block.get("input", {}),
+                    ))
+
+            cache_read = usage.get("cache_read_input_tokens", 0)
+            cache_write = usage.get("cache_creation_input_tokens", 0)
+            resp_obj = LLMResponse(
+                content="\n".join(content_parts),
+                model=message.get("model", ""),
+                tokens_used=usage.get("input_tokens", 0) + usage.get("output_tokens", 0),
+                prompt_tokens=usage.get("input_tokens", 0),
+                completion_tokens=usage.get("output_tokens", 0),
+                tool_calls=tool_calls,
+                finish_reason=message.get("stop_reason", "end_turn"),
+                cache_status="hit" if cache_read else ("write" if cache_write else ""),
+                cache_read_tokens=cache_read,
+                cache_write_tokens=cache_write,
+            )
+            results[custom_id] = resp_obj
+
+        # Return results in the order of custom_ids from the batch request
+        # For now, return in the order we received them (sorted by custom_id)
+        return [results[cid] for cid in sorted(results.keys()) if cid in results]

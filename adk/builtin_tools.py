@@ -1685,6 +1685,7 @@ TOOL_CATEGORIES: dict = {
     # "self" is registered via register_self_tools(agent) (closures over agent state),
     # not a flat function list — see register_builtin_tools below.
     "self": [],
+    "voice": [],  # populated lazily by _init_voice_tools()
 }
 
 # Default categories for common identity profiles
@@ -1694,15 +1695,32 @@ IDENTITY_DEFAULTS = {
     "demiurge": ["file_io", "shell", "python", "web", "git", "code", "repowise", "swarm", "graph", "workspace", "safety", "self"],
     "atlas": ["file_io", "web", "secrets", "code", "graph", "workspace", "safety", "self"],
     "aither": ["file_io", "shell", "python", "web", "secrets", "creative", "git", "code", "repowise", "swarm", "graph", "workspace", "safety", "self"],
-    "lyra": ["file_io", "web", "graph", "workspace", "safety", "self"],
+    "lyra": ["file_io", "web", "graph", "workspace", "voice", "safety", "self"],
     "hydra": ["file_io", "shell", "python", "git", "code", "repowise", "graph", "workspace", "safety", "self"],
     "prometheus": ["file_io", "shell", "secrets", "git", "workspace", "safety", "self"],
     "apollo": ["file_io", "shell", "python", "code", "repowise", "graph", "workspace", "safety", "self"],
     "athena": ["file_io", "web", "secrets", "code", "graph", "workspace", "safety", "self"],
     "scribe": ["file_io", "web", "code", "repowise", "graph", "workspace", "safety", "self"],
-    "iris": ["file_io", "web", "creative", "workspace", "safety", "self"],
-    "muse": ["file_io", "web", "creative", "workspace", "safety", "self"],
+    "iris": ["file_io", "web", "creative", "workspace", "voice", "safety", "self"],
+    "muse": ["file_io", "web", "creative", "workspace", "voice", "safety", "self"],
 }
+
+
+def _init_voice_tools():
+    """Lazily populate the voice category.
+
+    Voice tools are optional (require voice-local or voice-cloud extras).
+    This function is called once at tool registration time.
+    """
+    if TOOL_CATEGORIES.get("voice"):
+        return  # Already initialized
+    try:
+        from adk.builtin_tools_voice import hear, say, analyze_voice_emotion
+        TOOL_CATEGORIES["voice"] = [hear, say, analyze_voice_emotion]
+        logger.info("Voice tools initialized (hear, say, analyze_voice_emotion)")
+    except ImportError:
+        logger.debug("Voice tools not available; voice category remains empty")
+        TOOL_CATEGORIES["voice"] = []
 
 
 def register_builtin_tools(
@@ -1723,6 +1741,7 @@ def register_builtin_tools(
     """
     _init_graph_tools()  # lazily populate graph category
     _init_workspace_tools()  # lazily populate workspace category
+    _init_voice_tools()  # lazily populate voice category
 
     if categories is None and auto:
         # Unknown identities get a minimal, fully-local default. "workspace"

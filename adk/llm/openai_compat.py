@@ -64,14 +64,31 @@ def _demote_nonleading_system(dicts: list[dict]) -> list[dict]:
     return out
 
 from .base import (
+    BatchRequest,
     LLMProvider,
     LLMResponse,
     Message,
+    ProviderCapabilities,
     StreamChunk,
     ToolCall,
     _timer,
     messages_to_dicts,
 )
+
+
+def _read_cached_tokens(usage: dict) -> int:
+    """Pull the cached-prompt-token count out of an OpenAI-compatible usage block.
+
+    OpenAI nests it as ``prompt_tokens_details.cached_tokens``; DeepSeek reports
+    ``prompt_cache_hit_tokens`` at the top level. Both are automatic server-side
+    caches — we don't request them, we just surface the savings to the meter.
+    """
+    details = usage.get("prompt_tokens_details") or {}
+    return int(
+        details.get("cached_tokens", 0)
+        or usage.get("prompt_cache_hit_tokens", 0)
+        or 0
+    )
 
 
 class OpenAIProvider(LLMProvider):
@@ -98,6 +115,12 @@ class OpenAIProvider(LLMProvider):
     def _client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(timeout=self._timeout, headers=self._headers())
 
+    def capabilities(self) -> ProviderCapabilities:
+        # OpenAI/DeepSeek/Together cache stable prefixes automatically (no request
+        # flag); local OpenAI-compatible engines (vLLM/LM Studio) just report 0.
+        # Batch API is supported (cloud providers); local engines gracefully fall back.
+        return ProviderCapabilities(prompt_cache="automatic", batch=True)
+
     async def chat(
         self,
         messages: list[Message],
@@ -108,8 +131,11 @@ class OpenAIProvider(LLMProvider):
         tool_choice: str | dict | None = None,
         top_p: float | None = None,
         repetition_penalty: float | None = None,
+        cache: bool = False,
         **kwargs,
     ) -> LLMResponse:
+        # `cache` is a no-op on the request for this family (prompt caching is
+        # automatic server-side); we still surface cache reads in the response.
         model = model or self.default_model
         payload: dict = {
             "model": model,
@@ -164,6 +190,7 @@ class OpenAIProvider(LLMProvider):
             if fallback_calls:
                 tool_calls = fallback_calls
 
+        cache_read = _read_cached_tokens(usage)
         return LLMResponse(
             content=content,
             model=data.get("model", model),
@@ -172,6 +199,8 @@ class OpenAIProvider(LLMProvider):
             completion_tokens=usage.get("completion_tokens", 0),
             latency_ms=latency,
             tool_calls=tool_calls,
+            cache_status="hit" if cache_read else "",
+            cache_read_tokens=cache_read,
             finish_reason=choice.get("finish_reason", "stop"),
         )
 
@@ -276,3 +305,144 @@ class OpenAIProvider(LLMProvider):
                 return resp.status_code == 200
         except Exception:
             return False
+
+    async def submit_batch(self, requests: list[BatchRequest]) -> str:
+        """Submit a batch of requests to OpenAI /v1/batches API.
+
+        Local OpenAI-compatible engines (vLLM, LM Studio) don't have /v1/batches
+        endpoint — they raise NotImplementedError on 404, allowing batch_runner
+        to fall back to concurrent chat().
+        """
+        # Build JSONL payload: one request per line
+        lines = []
+        for req in requests:
+            request_obj = {
+                "custom_id": req.custom_id,
+                "method": "POST",
+                "url": "/v1/chat/completions",
+                "body": {
+                    "model": req.model or self.default_model,
+                    "messages": _demote_nonleading_system(messages_to_dicts(req.messages)),
+                    "temperature": req.temperature,
+                    "max_tokens": req.max_tokens,
+                }
+            }
+            if req.tools:
+                request_obj["body"]["tools"] = req.tools
+            lines.append(json.dumps(request_obj))
+
+        jsonl_content = "\n".join(lines)
+
+        # Upload JSONL file
+        async with self._client() as client:
+            resp = await client.post(
+                f"{self.base_url}/files",
+                files={"file": ("batch.jsonl", jsonl_content, "application/json")},
+            )
+            _ensure_ok(resp)
+            file_data = resp.json()
+            file_id = file_data.get("id", "")
+
+            # Create batch
+            batch_payload = {
+                "input_file_id": file_id,
+                "endpoint": "/v1/chat/completions",
+                "completion_window": "24h",
+            }
+            resp = await self._post_with_retry(
+                client, f"{self.base_url}/batches", batch_payload
+            )
+            batch_data = resp.json()
+
+        return batch_data.get("id", "")
+
+    async def poll_batch(self, batch_id: str) -> str:
+        """Poll status of a batch."""
+        async with self._client() as client:
+            resp = await client.get(
+                f"{self.base_url}/batches/{batch_id}",
+                headers=self._headers(),
+            )
+            if resp.status_code == 404:
+                raise NotImplementedError("Batch endpoint not found (local engine?)")
+            resp.raise_for_status()
+            data = resp.json()
+        return data.get("status", "unknown")
+
+    async def fetch_batch_results(self, batch_id: str) -> list[LLMResponse]:
+        """Fetch results of a completed batch."""
+        async with self._client() as client:
+            resp = await client.get(
+                f"{self.base_url}/batches/{batch_id}",
+                headers=self._headers(),
+            )
+            if resp.status_code == 404:
+                raise NotImplementedError("Batch endpoint not found (local engine?)")
+            resp.raise_for_status()
+            batch_data = resp.json()
+
+            output_file_id = batch_data.get("output_file_id")
+            if not output_file_id:
+                return []
+
+            # Download output file
+            resp = await client.get(
+                f"{self.base_url}/files/{output_file_id}/content",
+                headers=self._headers(),
+            )
+            resp.raise_for_status()
+
+        # Parse JSONL results
+        results: dict[str, LLMResponse] = {}
+        for line in resp.text.strip().split("\n"):
+            if not line.strip():
+                continue
+            item = json.loads(line)
+            custom_id = item.get("custom_id", "")
+            result = item.get("result", {})
+            body = result.get("body", {})
+
+            # Handle error responses
+            if "error" in body:
+                results[custom_id] = LLMResponse(
+                    content="",
+                    finish_reason="error",
+                )
+                continue
+
+            choice = (body.get("choices", [{}]) or [{}])[0]
+            msg = choice.get("message", {})
+            usage = body.get("usage", {})
+
+            tool_calls = []
+            for tc in msg.get("tool_calls", []):
+                fn = tc.get("function", {})
+                args = fn.get("arguments", "{}")
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args)
+                    except json.JSONDecodeError:
+                        args = {}
+                tool_calls.append(ToolCall(
+                    id=tc.get("id", ""),
+                    name=fn.get("name", ""),
+                    arguments=args,
+                ))
+
+            content = msg.get("content", "") or ""
+            cache_read = _read_cached_tokens(usage)
+            resp_obj = LLMResponse(
+                content=content,
+                model=body.get("model", ""),
+                tokens_used=usage.get("total_tokens", 0),
+                prompt_tokens=usage.get("prompt_tokens", 0),
+                completion_tokens=usage.get("completion_tokens", 0),
+                tool_calls=tool_calls,
+                cache_status="hit" if cache_read else "",
+                cache_read_tokens=cache_read,
+                finish_reason=choice.get("finish_reason", "stop"),
+            )
+            results[custom_id] = resp_obj
+
+        # Return results in sorted order by custom_id
+        return [results[cid] for cid in sorted(results.keys()) if cid in results]

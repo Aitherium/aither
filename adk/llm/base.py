@@ -46,6 +46,50 @@ class LLMResponse:
     finish_reason: str = "stop"
     effort_level: int = 0
     cache_status: str = ""
+    # Normalized prompt-cache accounting (provider-agnostic). Each provider maps
+    # its own usage schema onto these so the "tokens saved" meter never has to
+    # know which backend served the turn: Anthropic cache_read/creation_input,
+    # OpenAI prompt_tokens_details.cached_tokens, DeepSeek prompt_cache_hit_tokens.
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+
+
+@dataclass
+class BatchRequest:
+    """A single request in a batch submission.
+
+    custom_id is used to correlate results with input requests.
+    """
+    custom_id: str
+    messages: list[Message]
+    model: str | None = None
+    max_tokens: int = 4096
+    temperature: float = 0.7
+    tools: list[dict] | None = None
+    cache: bool = False
+
+
+@dataclass(frozen=True)
+class ProviderCapabilities:
+    """What cost-optimization levers a provider supports.
+
+    Agent/router code branches on these capabilities, never on a provider name,
+    so a new backend is wired by declaring caps + mapping its usage fields.
+
+    prompt_cache:
+        "explicit"  — caller must mark cache breakpoints (Anthropic cache_control,
+                      Gemini cachedContents). The adapter inserts them on cache=True.
+        "automatic" — provider caches stable prefixes itself (OpenAI, DeepSeek);
+                      cache=True is a no-op on the request, but the adapter still
+                      reads the provider's cache-usage fields into LLMResponse.
+        "none"      — no billed prompt cache (local engines do KV/prefix reuse for
+                      latency only). cache=True is a harmless no-op.
+    batch:
+        True if the provider exposes an async batch API (Anthropic Message Batches,
+        OpenAI /v1/batches). When False, batch_runner falls back to concurrent chat().
+    """
+    prompt_cache: str = "none"   # "explicit" | "automatic" | "none"
+    batch: bool = False
 
 
 @dataclass
@@ -312,6 +356,14 @@ def llm_retry(
 class LLMProvider(ABC):
     """Abstract base class for LLM providers."""
 
+    def capabilities(self) -> ProviderCapabilities:
+        """Cost-optimization levers this provider supports.
+
+        Default is the conservative ``none`` profile so existing/local providers
+        keep working untouched; caching/batching adapters override this.
+        """
+        return ProviderCapabilities()
+
     @abstractmethod
     async def chat(
         self,
@@ -323,9 +375,16 @@ class LLMProvider(ABC):
         tool_choice: str | dict | None = None,
         top_p: float | None = None,
         repetition_penalty: float | None = None,
+        cache: bool = False,
         **kwargs,
     ) -> LLMResponse:
-        """Send messages and get a response."""
+        """Send messages and get a response.
+
+        ``cache=True`` signals that the leading system + tools form a stable,
+        reusable prefix worth prompt-caching. Adapters realize it per their
+        ``capabilities().prompt_cache`` style; it is always safe (no-op where
+        unsupported).
+        """
         ...
 
     async def chat_stream(
@@ -338,13 +397,14 @@ class LLMProvider(ABC):
         tool_choice: str | dict | None = None,
         top_p: float | None = None,
         repetition_penalty: float | None = None,
+        cache: bool = False,
         **kwargs,
     ) -> AsyncIterator[StreamChunk]:
         """Stream a chat response. Default implementation wraps chat()."""
         resp = await self.chat(
             messages, model, temperature, max_tokens, tools,
             tool_choice=tool_choice, top_p=top_p,
-            repetition_penalty=repetition_penalty, **kwargs,
+            repetition_penalty=repetition_penalty, cache=cache, **kwargs,
         )
         yield StreamChunk(content=resp.content, done=True, model=resp.model)
 
@@ -360,6 +420,29 @@ class LLMProvider(ABC):
             return len(models) > 0
         except Exception:
             return False
+
+    async def submit_batch(self, requests: list[BatchRequest]) -> str:
+        """Submit a batch of requests. Returns a provider batch id.
+
+        Default implementation raises NotImplementedError. Override in subclasses
+        that support batching (set batch=True in capabilities()).
+        """
+        raise NotImplementedError("batch not supported")
+
+    async def poll_batch(self, batch_id: str) -> str:
+        """Poll the status of a submitted batch.
+
+        Returns a status string: "in_progress", "completed", "failed", or similar.
+        Default raises NotImplementedError.
+        """
+        raise NotImplementedError("batch not supported")
+
+    async def fetch_batch_results(self, batch_id: str) -> list[LLMResponse]:
+        """Fetch results of a completed batch, ordered by custom_id.
+
+        Default raises NotImplementedError.
+        """
+        raise NotImplementedError("batch not supported")
 
 
 def _timer() -> float:

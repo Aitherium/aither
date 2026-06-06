@@ -2,6 +2,29 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [2.7.0] - 2026-06-05
+
+### Added — provider-agnostic LLM cost levers (at the `LLMProvider` ABC)
+- **Prompt caching.** New `ProviderCapabilities` (`prompt_cache: explicit|automatic|none`, `batch`) and
+  normalized `LLMResponse.cache_read_tokens`/`cache_write_tokens`, so the "tokens saved" meter never
+  depends on which backend served the turn. Anthropic inserts `cache_control` breakpoints over the stable
+  system+tools prefix; OpenAI/DeepSeek caching is automatic and their `cached_tokens` are now surfaced
+  (previously discarded). Default-on in `AitherAgent.chat`; override with `cache=False`.
+- **ResponseCache** (`adk/llm/cache.py`) — exact-match response cache with a pluggable backend, wired into
+  `LLMRouter` as an opt-in (`LLMRouter(response_cache=…)` + per-call `cacheable=True`). OFF by default — no
+  determinism change unless opted in.
+- **Gemini provider** (`adk/llm/gemini.py`) with explicit `cachedContents` caching; registered in the router.
+- **Async batch runner** (`adk/llm/batch_runner.py`) — `run_batch()` over the Anthropic Message Batches /
+  OpenAI Batch APIs (~50% off) with a transparent fallback to concurrent `chat()` where unsupported.
+- **Graph-RAG retriever interface** (`adk/graph_retriever.py`).
+
+### Added — principal authority (prompt-injection defense enforced outside the model)
+- `adk/auth.py`: `Principal` / `AuthContext` / `PrincipalResolver` (+ deny-all default).
+- `ToolRegistry.execute(name, args, auth=…)` — a default-deny authorization gate at the tool boundary, so a
+  forbidden tool call is blocked regardless of what the LLM emits. `ToolDef` gains `required_clearance` /
+  `action_class`. Threaded through `AitherAgent.chat`; `auth=None` is fully backward-compatible.
+- `adk/channel_auth.py`: Telegram webhook-secret + CEO-id checks and HMAC-signed approvals.
+
 ## [2.6.4] - 2026-06-05
 
 ### Fixes
