@@ -107,7 +107,6 @@ adk-serve = "adk.server:main"
 adk-workspace = "adk.server:main_workspace"
 adk-bug = "adk.bugreport:main"
 adk-shell = "adk.shell.cli:entry"
-aither-py = "adk.shell.cli:entry"
 
 [tool.hatch.build]
 # Distribution-time moat boundary. These files exist in the source repo (the

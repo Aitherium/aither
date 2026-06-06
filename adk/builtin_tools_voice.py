@@ -77,6 +77,35 @@ def _get_voice_client() -> object:
     return _voice_client
 
 
+def _audio_bytes(result) -> bytes:
+    """Normalize a synthesize() return (SynthesisResult OR raw bytes) to bytes.
+
+    The real VoiceClient returns a SynthesisResult dataclass; MockVoiceClient
+    returns raw bytes. This bridges both so the tools don't care which is active.
+    """
+    if isinstance(result, (bytes, bytearray)):
+        return bytes(result)
+    data = getattr(result, "audio_data", None)
+    return bytes(data) if data else b""
+
+
+def _emotion_to_dict(result) -> dict:
+    """Normalize an analyze_emotion() return (EmotionResult OR dict) to a dict."""
+    if isinstance(result, dict):
+        return result
+    out = {
+        "emotion": getattr(result, "emotion", "") or "unknown",
+        "intensity": getattr(result, "intensity", 0.0),
+        # Real EmotionResult has no 'confidence'; intensity is the closest proxy.
+        "confidence": getattr(result, "intensity", 0.0),
+        "sensation": getattr(result, "sensation", ""),
+    }
+    err = getattr(result, "error", "")
+    if err:
+        out["error"] = err
+    return out
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Tool Functions (registered via builtin_tools.TOOL_CATEGORIES['voice'])
 # ─────────────────────────────────────────────────────────────────────────────
@@ -108,6 +137,11 @@ async def hear(path: str, language: str = "") -> str:
 async def say(text: str, voice_id: str = "nova") -> bytes:
     """Synthesize text to speech audio using local or cloud TTS.
 
+    Programmatic helper that returns raw audio BYTES — convenient for code that
+    pipes audio to a channel. NOTE: this is NOT the LLM-facing tool; tools must
+    return a string (see ``say_to_file``), or the bytes get JSON-stringified into
+    the model's context. Registered tool = ``say_to_file``.
+
     Args:
         text: Text to speak.
         voice_id: Voice name ('nova' default, or 'shimmer', 'echo', etc. on OpenAI).
@@ -121,12 +155,51 @@ async def say(text: str, voice_id: str = "nova") -> bytes:
     """
     client = _get_voice_client()
     try:
-        audio = await client.synthesize(text, voice=voice_id)
+        result = await client.synthesize(text, voice=voice_id)
+        audio = _audio_bytes(result)
         logger.debug("say('%s...') -> %d bytes", text[:30], len(audio))
         return audio
     except Exception as e:
         logger.error("say() failed: %s", e)
         return json.dumps({"error": f"synthesis failed: {str(e)}"}).encode("utf-8")
+
+
+async def say_to_file(text: str, output_path: str = "", voice_id: str = "nova") -> str:
+    """Synthesize speech to an audio FILE and return its path (LLM-facing tool).
+
+    Use this instead of `say` inside an agent's ReAct loop: it returns a short
+    JSON string (path + byte count) rather than raw audio bytes, so the model's
+    context never fills with binary.
+
+    Args:
+        text: Text to speak.
+        output_path: Where to write the audio. Omit for an auto temp .wav file.
+        voice_id: Voice name ('nova' default, or 'shimmer', 'echo', etc.).
+
+    Returns:
+        JSON string: {"audio_path": "...", "bytes": N, "voice": "..."} or {"error": ...}.
+    """
+    if not text.strip():
+        return json.dumps({"error": "text must not be empty"})
+    client = _get_voice_client()
+    try:
+        if not output_path:
+            import tempfile
+            tmp = tempfile.NamedTemporaryFile(prefix="adk_say_", suffix=".wav", delete=False)
+            tmp.close()
+            output_path = tmp.name
+        result = await client.synthesize(text, voice=voice_id, output_path=output_path)
+        audio = _audio_bytes(result)
+        path = getattr(result, "audio_path", "") or output_path
+        # If the backend returned bytes but didn't write a file, persist them here.
+        if audio and not (path and Path(path).exists()):
+            Path(output_path).write_bytes(audio)
+            path = output_path
+        logger.debug("say_to_file('%s...') -> %s (%d bytes)", text[:30], path, len(audio))
+        return json.dumps({"audio_path": path, "bytes": len(audio), "voice": voice_id})
+    except Exception as e:
+        logger.error("say_to_file() failed: %s", e)
+        return json.dumps({"error": f"synthesis failed: {str(e)}"})
 
 
 async def analyze_voice_emotion(path: str) -> dict:
@@ -141,8 +214,9 @@ async def analyze_voice_emotion(path: str) -> dict:
     client = _get_voice_client()
     try:
         result = await client.analyze_emotion(path)
-        logger.debug("analyze_voice_emotion('%s') -> %s", Path(path).name, result.get("emotion"))
-        return result
+        emo = _emotion_to_dict(result)
+        logger.debug("analyze_voice_emotion('%s') -> %s", Path(path).name, emo.get("emotion"))
+        return emo
     except Exception as e:
         logger.error("analyze_voice_emotion() failed: %s", e)
         return {"emotion": "unknown", "confidence": 0.0, "error": str(e)}

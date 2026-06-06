@@ -85,6 +85,8 @@ __all__ = [
     "PlatformIdentity",
     # Voice
     "VoiceClient",
+    "VoiceAgent",
+    "get_voice_backend",
     "TranscriptionResult",
     "SynthesisResult",
     "EmotionResult",
@@ -295,6 +297,12 @@ def __getattr__(name):
     if name == "VoiceClient":
         from adk.voice import VoiceClient
         return VoiceClient
+    if name == "VoiceAgent":
+        from adk.voice_agent import VoiceAgent
+        return VoiceAgent
+    if name == "get_voice_backend":
+        from adk.voice import get_voice_backend
+        return get_voice_backend
     if name == "TranscriptionResult":
         from adk.voice import TranscriptionResult
         return TranscriptionResult
