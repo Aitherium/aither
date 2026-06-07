@@ -4087,6 +4087,14 @@ def entry():
     except ImportError:
         pass
 
+    # License entitlement gate (logs tier, wires metering quotas; never blocks unless
+    # AITHER_LICENSE_REQUIRE=1). The free tier stays genuinely useful.
+    try:
+        from adk.license_startup import gate_startup
+        gate_startup(product="shell")
+    except Exception as _lic_exc:  # gate must never crash the shell
+        logger.debug(f"license gate skipped: {_lic_exc}")
+
     try:
         cli()
     except KeyboardInterrupt:

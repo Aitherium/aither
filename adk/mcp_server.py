@@ -29,6 +29,7 @@ Usage:
 
 from __future__ import annotations
 
+import hmac
 import json
 import logging
 import time
@@ -115,6 +116,14 @@ class MCPServer:
                 )
         else:
             self._require_auth = require_auth
+
+        # License entitlement gate (logs tier, wires metering quotas; never blocks unless
+        # AITHER_LICENSE_REQUIRE=1).
+        try:
+            from adk.license_startup import gate_startup
+            gate_startup(product="mcp")
+        except Exception as _lic_exc:
+            logger.debug("license gate skipped: %s", _lic_exc)
 
     @property
     def registry(self) -> ToolRegistry:
@@ -234,7 +243,7 @@ class MCPServer:
         if not auth_header.startswith("Bearer "):
             return "Missing or invalid Authorization header"
         token = auth_header[7:]
-        if token != self._mcp_key:
+        if not hmac.compare_digest(token, self._mcp_key):
             return "Invalid MCP API key"
         return None
 

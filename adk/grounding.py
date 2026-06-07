@@ -92,7 +92,13 @@ def ground_system_prompt(base: str) -> str:
     The block goes FIRST so the model treats it as authoritative ground truth,
     with an explicit instruction to answer time/date questions from it directly
     (no refusal, no guessing).
+
+    Opt-out: set ``AITHER_GROUND_SYSTEM_STATE=0`` to disable system-state grounding entirely
+    (the agent then has no real clock and must guess) — used to run a deliberately ungrounded
+    baseline.
     """
+    if os.environ.get("AITHER_GROUND_SYSTEM_STATE", "1").strip().lower() not in ("1", "true", "yes", "on"):
+        return base
     state = current_system_state()
     if not state:
         return base
