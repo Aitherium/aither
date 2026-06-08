@@ -106,6 +106,10 @@ class ChatRelay:
         self._ws_connections: dict[str, Any] = {}  # nick -> WebSocket
         self._handlers: dict[str, list[Callable]] = {}  # event -> [callbacks]
         self._mention_handlers: dict[str, Callable] = {}  # agent_nick -> handler
+        # Outbound relay subscribers: name -> handler(msg). Called on every post()
+        # so an external integration (e.g. a channel gateway) can relay a room
+        # message back out to its origin channel. Fire-and-forget; never blocks post().
+        self._outbound_handlers: dict[str, Callable] = {}
 
         # Setup
         self._init_db()
@@ -138,6 +142,14 @@ class ChatRelay:
             );
             CREATE INDEX IF NOT EXISTS idx_msg_channel ON messages(channel, timestamp);
             CREATE INDEX IF NOT EXISTS idx_msg_thread ON messages(thread_id);
+            CREATE TABLE IF NOT EXISTS reactions (
+                msg_id      TEXT NOT NULL,
+                emoji       TEXT NOT NULL,
+                nick        TEXT NOT NULL,
+                timestamp   REAL NOT NULL,
+                PRIMARY KEY (msg_id, emoji, nick)
+            );
+            CREATE INDEX IF NOT EXISTS idx_react_msg ON reactions(msg_id);
         """)
         db.close()
 
@@ -277,6 +289,20 @@ class ChatRelay:
         if mention_handler:
             self._mention_handlers[nick.lower()] = mention_handler
 
+    def register_outbound_handler(self, name: str, handler: Callable) -> None:
+        """Register an outbound relay subscriber.
+
+        ``handler`` is called as ``handler(msg: ChatMessage)`` on every ``post()``
+        (and federated/action posts). It may be sync or async. Use this to relay
+        room messages back out to an external channel (e.g. Telegram/WhatsApp).
+        The handler decides whether a given message should be relayed; the relay
+        itself never inspects message intent.
+        """
+        self._outbound_handlers[name] = handler
+
+    def unregister_outbound_handler(self, name: str) -> None:
+        self._outbound_handlers.pop(name, None)
+
     # ── Messaging ────────────────────────────────────────────────────
 
     def post(self, channel: str, nick: str, content: str,
@@ -298,6 +324,9 @@ class ChatRelay:
 
         # Check for @mentions
         self._check_mentions(msg)
+
+        # Relay outward to any external subscribers (e.g. channel gateways)
+        self._dispatch_outbound(msg)
 
         # Emit event
         self._emit_sync("message", msg.to_dict())
@@ -358,7 +387,16 @@ class ChatRelay:
                     "ORDER BY timestamp DESC LIMIT ?",
                     (channel, limit),
                 ).fetchall()
-            return [dict(r) for r in reversed(rows)]
+            out = [dict(r) for r in reversed(rows)]
+            # attach reactions so chips re-render on reload (one extra query per message)
+            for m in out:
+                rx = {}
+                for rr in db.execute("SELECT emoji, nick FROM reactions WHERE msg_id=? ORDER BY timestamp",
+                                     (m.get("msg_id"),)):
+                    rx.setdefault(rr["emoji"], []).append(rr["nick"])
+                if rx:
+                    m["reactions"] = rx
+            return out
         finally:
             db.close()
 
@@ -584,6 +622,61 @@ class ChatRelay:
         finally:
             db.close()
 
+    def clear_channel(self, channel: str) -> int:
+        """Delete all stored messages for a channel (e.g. a demo reset). Returns rows removed.
+        In-memory channel/user state is left intact; only the message log is cleared."""
+        db = self._get_db()
+        try:
+            cur = db.execute("DELETE FROM messages WHERE channel = ?", (channel,))
+            db.execute("DELETE FROM reactions")   # reactions are demo-scoped; clear them too
+            db.commit()
+            return cur.rowcount
+        finally:
+            db.close()
+
+    # ── Reactions ────────────────────────────────────────────────────
+    # Lightweight per-message emoji reactions. Sync (DB only); callers broadcast the update
+    # over their WS channel. A reaction can carry a signal to an agent (e.g. ✅ = approve).
+
+    def add_reaction(self, msg_id: str, emoji: str, nick: str) -> None:
+        db = self._get_db()
+        try:
+            db.execute("INSERT OR IGNORE INTO reactions (msg_id, emoji, nick, timestamp) "
+                       "VALUES (?, ?, ?, ?)", (msg_id, emoji, nick, time.time()))
+            db.commit()
+        finally:
+            db.close()
+
+    def remove_reaction(self, msg_id: str, emoji: str, nick: str) -> None:
+        db = self._get_db()
+        try:
+            db.execute("DELETE FROM reactions WHERE msg_id=? AND emoji=? AND nick=?",
+                       (msg_id, emoji, nick))
+            db.commit()
+        finally:
+            db.close()
+
+    def reactions_for(self, msg_id: str) -> dict[str, list[str]]:
+        """Return {emoji: [nicks]} for a message (for rendering counts + who reacted)."""
+        db = self._get_db()
+        try:
+            out: dict[str, list[str]] = {}
+            for row in db.execute("SELECT emoji, nick FROM reactions WHERE msg_id=? "
+                                  "ORDER BY timestamp", (msg_id,)):
+                out.setdefault(row["emoji"], []).append(row["nick"])
+            return out
+        finally:
+            db.close()
+
+    def message_channel(self, msg_id: str) -> str:
+        """Channel a message was posted in (so a reaction update can be fanned to it)."""
+        db = self._get_db()
+        try:
+            r = db.execute("SELECT channel FROM messages WHERE msg_id=?", (msg_id,)).fetchone()
+            return r["channel"] if r else ""
+        finally:
+            db.close()
+
     def _check_mentions(self, msg: ChatMessage):
         content_lower = msg.content.lower()
         for agent_nick, handler in self._mention_handlers.items():
@@ -594,6 +687,20 @@ class ChatRelay:
                         asyncio.ensure_future(result)
                 except Exception as e:
                     logger.debug("Mention handler error for @%s: %s", agent_nick, e)
+
+    def _dispatch_outbound(self, msg: ChatMessage):
+        """Fan a posted message to outbound relay subscribers (fire-and-forget).
+
+        Each subscriber is isolated: an error in one never blocks the post or the
+        others. Handlers may be sync or async (coroutines are scheduled).
+        """
+        for name, handler in list(self._outbound_handlers.items()):
+            try:
+                result = handler(msg)
+                if asyncio.iscoroutine(result):
+                    asyncio.ensure_future(result)
+            except Exception as e:
+                logger.debug("Outbound handler error (%s): %s", name, e)
 
     def _rename_user(self, old_nick: str, new_nick: str):
         user = self._users.pop(old_nick, None)

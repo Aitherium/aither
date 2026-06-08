@@ -17,6 +17,12 @@ from adk.config import Config
 from adk.grounding import ground_system_prompt
 from adk.identity import Identity, load_identity
 from adk.llm import DegenerationDetector, LLMRouter, Message, LLMResponse, strip_internal_tags
+from adk.llm.advisor import (
+    AdvisorConfig,
+    advisor_brevity_line,
+    steering_system_block,
+    strip_advisor_blocks,
+)
 from adk.loop_guard import LoopGuard, LoopAction
 from adk.memory import Memory
 from adk.metering import AgentMeter, QuotaAction, get_meter
@@ -94,6 +100,11 @@ class AgentResponse:
     finish_reason: str = "stop"
     effort_level: int = 0
     cache_status: str = ""
+    # Advisor-tool usage (Opus sub-inference), summed across this turn's ReAct
+    # loop so callers can meter the advisor apart from the executor.
+    advisor_calls: int = 0
+    advisor_input_tokens: int = 0
+    advisor_output_tokens: int = 0
 
 
 class AitherAgent:
@@ -620,6 +631,15 @@ class AitherAgent:
         # LLM call; threaded into tool execution below. None → unchanged behavior.
         _auth = kwargs.pop("auth", None)
 
+        # Advisor tool (beta): a fast executor consults a stronger Opus advisor
+        # mid-generation. Popped + normalized here, threaded explicitly to each
+        # llm.chat() below. None / disabled → every branch is a no-op.
+        _advisor = AdvisorConfig.coerce(kwargs.pop("advisor", None))
+        _advisor_on = bool(_advisor and _advisor.enabled)
+        _advisor_calls_used = 0
+        _advisor_in_total = 0
+        _advisor_out_total = 0
+
         # Emit chat start event
         if self._events:
             try:
@@ -730,6 +750,19 @@ class AitherAgent:
                     messages.insert(1, Message(role="system", content=neuron_context))
             except Exception:
                 pass
+
+        # Advisor steering: prepend timing+treatment guidance (so the executor
+        # consults the advisor at the right moments) and append a brevity request
+        # to the user turn (so the advisor stays focused). Mutating the in-list
+        # Message only affects what the LLM sees — memory/graph store the original
+        # `message` below.
+        if _advisor_on and _advisor.system_steering:
+            messages.insert(1, Message(role="system", content=steering_system_block(_advisor)))
+            for _um in reversed(messages):
+                if _um.role == "user":
+                    _um.content = (_um.content or "") + "\n\n" + advisor_brevity_line(
+                        _advisor.brevity_words)
+                    break
 
         # Store user message (in-memory + persistent JSON)
         await self.memory.add_message(sid, "user", message)
@@ -849,10 +882,25 @@ class AitherAgent:
                 logger.debug("[REACT] Injecting %d synthetic tool results for orphaned calls", len(_orphan_patches))
                 messages.extend(_orphan_patches)
 
+            # Advisor conversation cap (client-side): once exhausted, drop the
+            # tool AND strip advisor blocks from history together — the API 400s
+            # if advisor_tool_result blocks remain while the tool is gone.
+            if (_advisor_on and _advisor.conversation_cap
+                    and _advisor_calls_used >= _advisor.conversation_cap):
+                _advisor_on = False
+                for _cm in messages:
+                    if _cm.content_blocks:
+                        _cm.content_blocks = strip_advisor_blocks(_cm.content_blocks)
+                logger.info(
+                    "[ADVISOR] conversation cap (%d) reached — advisor disabled for this turn",
+                    _advisor.conversation_cap,
+                )
+
             resp = await self.llm.chat(
                 messages, tools=tools_schema, effort=_effort,
                 tool_choice=_tool_choice, top_p=_top_p,
-                repetition_penalty=_repetition_penalty, **kwargs,
+                repetition_penalty=_repetition_penalty,
+                advisor=(_advisor if _advisor_on else None), **kwargs,
             )
 
             # ── Gap 3: max_output_tokens escalation ──
@@ -871,7 +919,8 @@ class AitherAgent:
                 resp = await self.llm.chat(
                     messages, tools=tools_schema, effort=_effort,
                     tool_choice=_tool_choice, top_p=_top_p,
-                    repetition_penalty=_repetition_penalty, **_escalation_kwargs,
+                    repetition_penalty=_repetition_penalty,
+                    advisor=(_advisor if _advisor_on else None), **_escalation_kwargs,
                 )
                 # If still truncated, try one more time with 3x
                 if resp.finish_reason == "length":
@@ -884,8 +933,16 @@ class AitherAgent:
                     resp = await self.llm.chat(
                         messages, tools=tools_schema, effort=_effort,
                         tool_choice=_tool_choice, top_p=_top_p,
-                        repetition_penalty=_repetition_penalty, **_escalation_kwargs,
+                        repetition_penalty=_repetition_penalty,
+                        advisor=(_advisor if _advisor_on else None), **_escalation_kwargs,
                     )
+
+            # Accumulate advisor usage for this iteration (Opus sub-inference,
+            # metered apart from the executor). resp is now settled for the turn.
+            if _advisor_on:
+                _advisor_calls_used += resp.advisor_calls
+                _advisor_in_total += resp.advisor_input_tokens
+                _advisor_out_total += resp.advisor_output_tokens
 
             # ── Gap H: Diminishing returns detection ──
             _iter_tokens = resp.completion_tokens or len((resp.content or "").split())
@@ -1017,6 +1074,9 @@ class AitherAgent:
                     finish_reason=resp.finish_reason,
                     effort_level=resp.effort_level,
                     cache_status=resp.cache_status,
+                    advisor_calls=_advisor_calls_used,
+                    advisor_input_tokens=_advisor_in_total,
+                    advisor_output_tokens=_advisor_out_total,
                 )
 
             # Execute tool calls with loop guard checks.
@@ -1030,6 +1090,11 @@ class AitherAgent:
             # loop-guard nudges are NEVER inserted between tool results — the
             # per-call guidance is folded into that call's own tool result, and
             # any standalone steering is deferred to AFTER the whole batch.
+            # When the advisor is active, carry the raw native assistant content
+            # (text + tool_use + advisor blocks) so the next iteration round-trips
+            # the advisor_tool_result verbatim (the API 400s on orphaned blocks).
+            # tool_calls stays set for the loop's own bookkeeping; content_blocks
+            # (when present) is what the Anthropic provider actually sends.
             messages.append(Message(
                 role="assistant",
                 content=resp.content or "",
@@ -1037,6 +1102,7 @@ class AitherAgent:
                     {"id": tc.id, "type": "function", "function": {"name": tc.name, "arguments": json.dumps(tc.arguments)}}
                     for tc in resp.tool_calls
                 ],
+                content_blocks=(resp.raw_content_blocks or None),
             ))
 
             _deferred_nudges: list[str] = []

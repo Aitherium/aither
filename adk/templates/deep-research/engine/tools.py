@@ -21,6 +21,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 
@@ -73,6 +74,34 @@ def _as_int(v, default: int) -> int:
         m = re.search(r"-?\d+", v)
         return int(m.group()) if m else default
     return default
+
+
+_PRIVATE_HOST = re.compile(
+    r"^(localhost|0\.0\.0\.0|127\.|10\.|192\.168\.|169\.254\.|::1|"
+    r"172\.(1[6-9]|2\d|3[01])\.)|(\.internal|\.local)$", re.IGNORECASE)
+
+
+def _safe_public_url(url: str) -> bool:
+    """Allow only public http(s) URLs (block localhost/private/link-local hosts)."""
+    try:
+        p = urlsplit(url)
+    except ValueError:
+        return False
+    host = (p.hostname or "").lower()
+    return p.scheme in ("http", "https") and bool(host) and not _PRIVATE_HOST.search(host)
+
+
+def _sitemap_locs(xml_text: str) -> list[str]:
+    """Extract <loc> URLs from a sitemap or sitemap index (regex — robust enough)."""
+    return re.findall(r"<loc>\s*([^<\s]+)\s*</loc>", xml_text)
+
+
+def _kb_rel_path(url: str) -> str:
+    """Map a URL to a safe relative .md path mirroring its tree."""
+    path = urlsplit(url).path.strip("/") or "index"
+    path = re.sub(r"\.(html?|md)$", "", path, flags=re.I)
+    segs = [re.sub(r"[^A-Za-z0-9._-]+", "-", s).strip("-") or "_" for s in path.split("/")]
+    return "/".join(segs) + ".md"
 
 
 def build_research_tools(session: ResearchSession) -> list[Callable]:
@@ -152,6 +181,121 @@ def build_research_tools(session: ResearchSession) -> list[Callable]:
         ledger.note_page_read()
         return json.dumps({"url": url, "text": text[:max_chars], "cached": False,
                            "length": len(text)})
+
+    async def mirror_website(base_url: str, max_pages: int = 25) -> str:
+        """Mirror a whole docs/site into a local markdown knowledge base and cite it.
+
+        Discovers pages under the URL (sitemap.xml + llms.txt, scoped to the same
+        host + path prefix), downloads each as markdown (Mintlify ".md"-suffix when
+        available, else HTML stripped to text), writes them under the artifacts dir,
+        builds an INDEX.md, and registers every page as a citable source.
+
+        Use this INSTEAD of many `fetch_url` calls when you need a whole docs site.
+
+        base_url: root URL to mirror (e.g. "https://platform.claude.com/docs/en/api/")
+        max_pages: safety cap on pages to mirror (default 25)
+        """
+        base_url = str(base_url).strip()
+        max_pages = max(1, min(_as_int(max_pages, 25), 200))
+        if not _safe_public_url(base_url):
+            return json.dumps({"error": "URL blocked (must be a public http/https site)",
+                               "base_url": base_url})
+
+        parts = urlsplit(base_url)
+        origin = f"{parts.scheme}://{parts.netloc}"
+        prefix = parts.path.rstrip("/")
+        domain = parts.netloc.replace(":", "_")
+        out_dir = session.artifacts_dir / "mirrors" / domain
+        ledger.note_search()
+
+        headers = {"User-Agent": "Mozilla/5.0 (compatible; DeepResearchAgent/1.0)"}
+        urls: list[str] = []
+        try:
+            async with httpx.AsyncClient(timeout=20.0, follow_redirects=True,
+                                         max_redirects=5) as client:
+                # 1) discover via sitemap + llms.txt
+                for disc in (urljoin(origin, "/sitemap.xml"), urljoin(origin, "/llms.txt")):
+                    try:
+                        r = await client.get(disc, headers=headers)
+                        if r.status_code != 200 or not r.text:
+                            continue
+                        if disc.endswith(".xml"):
+                            urls += _sitemap_locs(r.text)
+                        else:
+                            urls += [u[:-3] if u.endswith(".md") else u
+                                     for u in re.findall(r"https?://[^\s)\]]+", r.text)]
+                    except httpx.HTTPError:
+                        continue
+                # scope to same host + path prefix; dedupe; cap
+                seen: set[str] = set()
+                scoped: list[str] = []
+                for u in [base_url, *urls]:
+                    pu = urlsplit(u)
+                    norm = f"{pu.scheme}://{pu.netloc}{pu.path}"
+                    if pu.netloc != parts.netloc or not pu.path.startswith(prefix or "/"):
+                        continue
+                    if re.search(r"\.(png|jpe?g|gif|svg|ico|css|js|pdf|zip|woff2?)$", norm, re.I):
+                        continue
+                    if norm in seen or not _safe_public_url(norm):
+                        continue
+                    seen.add(norm)
+                    scoped.append(norm)
+                    if len(scoped) >= max_pages:
+                        break
+
+                # 2) download each as markdown (.md-suffix first, else HTML->text)
+                pages: list[dict] = []
+                for u in scoped:
+                    md, title, src = "", u.rsplit("/", 1)[-1], "html"
+                    try:
+                        if not u.endswith(".md"):
+                            rm = await client.get(u + ".md", headers=headers)
+                            body = rm.text if rm.status_code == 200 else ""
+                            if body and not body.lstrip()[:64].lower().startswith(
+                                    ("<!doctype", "<html", "<?xml")):
+                                md, src = body.strip(), "markdown"
+                        if not md:
+                            rp = await client.get(u, headers=headers)
+                            if rp.status_code == 200:
+                                md = _strip_html(rp.text)
+                                tm = re.search(r"<title[^>]*>([^<]+)</title>", rp.text, re.I)
+                                if tm:
+                                    title = tm.group(1).strip()
+                    except httpx.HTTPError:
+                        continue
+                    if not md:
+                        continue
+                    for line in md.splitlines():
+                        if line.startswith("# "):
+                            title = line[2:].strip()
+                            break
+                    dest = out_dir / _kb_rel_path(u)
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    dest.write_text(f"---\nurl: {u}\ntitle: {title}\n---\n\n{md}\n",
+                                    encoding="utf-8")
+                    n = session.cite(title, u)
+                    ledger.note_page_read()
+                    pages.append({"url": u, "title": title, "file": _kb_rel_path(u),
+                                  "source": src, "cite": n})
+        except Exception as exc:  # noqa: BLE001
+            return json.dumps({"error": str(exc), "base_url": base_url})
+
+        if not pages:
+            return json.dumps({"error": "no pages mirrored", "base_url": base_url,
+                               "discovered": len(scoped)})
+        # 3) INDEX.md
+        idx = [f"# Mirror: {domain}", "", f"Source: {base_url}",
+               f"Pages: {len(pages)}", "", "## Pages", ""]
+        idx += [f"- [{p['title']}]({p['file']}) — [{p['cite']}]" for p in pages]
+        (out_dir / "INDEX.md").write_text("\n".join(idx) + "\n", encoding="utf-8")
+
+        return json.dumps({
+            "success": True, "base_url": base_url,
+            "pages_discovered": len(scoped), "pages_mirrored": len(pages),
+            "output_dir": str(out_dir), "index_file": str(out_dir / "INDEX.md"),
+            "sources_registered": len(pages),
+            "note": "All pages are now citable with [n]; see INDEX.md for the list.",
+        })
 
     async def save_finding(claim: str, source_url: str = "", topic: str = "") -> str:
         """Store a verified fact + its source in the knowledge graph for reuse.
@@ -318,7 +462,7 @@ def build_research_tools(session: ResearchSession) -> list[Callable]:
                            "path": str(path), "file": path.name})
 
     return [
-        web_search, deep_research, fetch_url, save_finding, recall,
+        web_search, deep_research, fetch_url, mirror_website, save_finding, recall,
         knowledge_graph, generate_markdown, generate_pdf, generate_docx,
     ]
 

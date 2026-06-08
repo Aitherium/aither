@@ -77,6 +77,7 @@ tools:
   - web_search          # DuckDuckGo (AitherSearch lineage), no API key
   - deep_research       # multi-query sweep + dedup
   - fetch_url           # read a page's text
+  - mirror_website      # mirror a whole docs/site into a local markdown KB + cite it
   - save_finding        # write a fact + source into the knowledge graph
   - recall              # semantic recall from memory + graph (saves tokens)
   - knowledge_graph     # inspect what's been learned this session

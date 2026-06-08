@@ -70,7 +70,13 @@ def current_system_state() -> str:
 
     Prefers the in-process Genesis source of truth; falls back to a local
     timezone-aware compute. Returns "" only if no clock is readable at all.
+
+    Set ``AITHER_SYSTEM_STATE_LOCAL=1`` to ALWAYS use the live local clock and skip the
+    monorepo Genesis source — needed for a standalone deploy that imports inside the monorepo
+    but is NOT running Genesis (Genesis returns a cached/stale block there).
     """
+    if os.environ.get("AITHER_SYSTEM_STATE_LOCAL", "").strip().lower() in ("1", "true", "yes", "on"):
+        return _local_system_state()
     try:
         # Optional richer source when running INSIDE the monorepo. Imported
         # dynamically so the public SDK (where this module is absent) degrades to

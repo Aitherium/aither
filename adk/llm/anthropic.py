@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from typing import AsyncIterator
 
 import httpx
 
+from .advisor import ADVISOR_BETA, ADVISOR_TOOL_NAME, AdvisorConfig
 from .base import (
     BatchRequest,
     LLMProvider,
@@ -40,7 +42,12 @@ def _apply_prompt_cache(payload: dict) -> None:
     if tools:
         # Copy so we never mutate the caller's shared tool dicts across turns.
         tools = [dict(t) for t in tools]
-        tools[-1]["cache_control"] = _EPHEMERAL
+        # Mark the last NON-advisor tool. The advisor tool carries its own
+        # ``caching`` field and must not receive a cache_control breakpoint.
+        for t in reversed(tools):
+            if not t.get("__no_cache_control"):
+                t["cache_control"] = _EPHEMERAL
+                break
         payload["tools"] = tools
 
 
@@ -131,6 +138,7 @@ async def _post_with_retry(
 
 # Anthropic models that are always available
 _ANTHROPIC_MODELS = [
+    "claude-opus-4-8",
     "claude-opus-4-6",
     "claude-sonnet-4-6",
     "claude-haiku-4-5-20251001",
@@ -151,29 +159,86 @@ class AnthropicProvider(LLMProvider):
         self._timeout = timeout
         self._base_url = "https://api.anthropic.com"
 
-    def _headers(self) -> dict[str, str]:
-        return {
+    def _headers(self, use_advisor: bool = False) -> dict[str, str]:
+        headers = {
             "Content-Type": "application/json",
             "x-api-key": self.api_key,
             "anthropic-version": "2023-06-01",
         }
+        if use_advisor:
+            headers["anthropic-beta"] = ADVISOR_BETA
+        return headers
 
-    def _client(self) -> httpx.AsyncClient:
-        return httpx.AsyncClient(timeout=self._timeout, headers=self._headers())
+    def _client(self, use_advisor: bool = False) -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            timeout=self._timeout, headers=self._headers(use_advisor)
+        )
 
     def capabilities(self) -> ProviderCapabilities:
         # Explicit cache breakpoints; batch API supported.
         return ProviderCapabilities(prompt_cache="explicit", batch=True)
 
     def _convert_messages(self, messages: list[Message]) -> tuple[str, list[dict]]:
-        """Split system message from conversation messages for Anthropic format."""
+        """Split the system message out and convert the rest to Anthropic shape.
+
+        Plain text messages stay ``{role, content-string}`` — byte-identical to
+        before. Messages with tool semantics are converted to **native** Anthropic
+        content blocks (the previous string flattening emitted ``role:"tool"``,
+        which the API rejects):
+
+        * ``content_blocks`` set      → emitted verbatim (advisor/tool round-trip)
+        * ``tool_call_id`` set        → ``user`` role + ``tool_result`` block
+        * assistant + ``tool_calls``  → text block + ``tool_use`` blocks
+        """
         system = ""
-        converted = []
+        converted: list[dict] = []
         for m in messages:
             if m.role == "system":
                 system = m.content
-            else:
-                converted.append({"role": m.role, "content": m.content})
+                continue
+
+            # 1) Caller-supplied native blocks win (advisor + tool_use round-trip).
+            if m.content_blocks:
+                converted.append({"role": m.role, "content": m.content_blocks})
+                continue
+
+            # 2) Tool result → native tool_result under the user role.
+            if m.tool_call_id:
+                converted.append({
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": m.tool_call_id,
+                        "content": m.content or "",
+                    }],
+                })
+                continue
+
+            # 3) Assistant tool calls → text + native tool_use blocks.
+            if m.role == "assistant" and m.tool_calls:
+                blocks: list[dict] = []
+                if m.content:
+                    blocks.append({"type": "text", "text": m.content})
+                for tc in m.tool_calls:
+                    fn = tc.get("function", tc) if isinstance(tc, dict) else {}
+                    raw_args = fn.get("arguments", {})
+                    if isinstance(raw_args, str):
+                        try:
+                            raw_args = json.loads(raw_args)
+                        except (ValueError, json.JSONDecodeError):
+                            raw_args = {}
+                    tc_id = tc.get("id", "") if isinstance(tc, dict) else ""
+                    blocks.append({
+                        "type": "tool_use",
+                        "id": tc_id,
+                        "name": fn.get("name", ""),
+                        "input": raw_args if isinstance(raw_args, dict) else {},
+                    })
+                converted.append({"role": m.role, "content": blocks})
+                continue
+
+            # 4) Plain text — unchanged.
+            converted.append({"role": m.role, "content": m.content})
         return system, converted
 
     async def chat(
@@ -190,6 +255,16 @@ class AnthropicProvider(LLMProvider):
         **kwargs,
     ) -> LLMResponse:
         model = model or self.default_model
+        # Advisor tool (beta): a server-side consult of a stronger model mid-turn.
+        # Off / absent → every branch below is a no-op and the request is identical.
+        advisor = AdvisorConfig.coerce(kwargs.pop("advisor", None))
+        use_advisor = bool(advisor and advisor.enabled)
+        if use_advisor:
+            from .advisor import validate_pair
+            warn = validate_pair(model, advisor.advisor_model)
+            if warn:
+                logger.warning("[ADVISOR] %s", warn)
+
         system, conv_messages = self._convert_messages(messages)
 
         payload: dict = {
@@ -204,8 +279,8 @@ class AnthropicProvider(LLMProvider):
             payload["top_p"] = top_p
         # Anthropic doesn't have repetition_penalty — skip silently
 
+        anthropic_tools: list[dict] = []
         if tools:
-            anthropic_tools = []
             for t in tools:
                 fn = t.get("function", t)
                 anthropic_tools.append({
@@ -213,6 +288,12 @@ class AnthropicProvider(LLMProvider):
                     "description": fn.get("description", ""),
                     "input_schema": fn.get("parameters", {}),
                 })
+        if use_advisor:
+            # The advisor is a server tool; it can ride alongside function tools
+            # or be the only tool. Carries a __no_cache_control marker (stripped
+            # below) so the prompt-cache breakpoint skips it.
+            anthropic_tools.append(advisor.tool_dict())
+        if anthropic_tools:
             payload["tools"] = anthropic_tools
             # Map tool_choice for Anthropic format
             if tool_choice is not None:
@@ -228,8 +309,16 @@ class AnthropicProvider(LLMProvider):
         if cache:
             _apply_prompt_cache(payload)
 
+        # Strip internal markers (e.g. the advisor tool's __no_cache_control) so
+        # they never reach the wire. Runs whether or not caching was applied.
+        if payload.get("tools"):
+            payload["tools"] = [
+                {k: v for k, v in t.items() if k != "__no_cache_control"}
+                for t in payload["tools"]
+            ]
+
         start = _timer()
-        async with self._client() as client:
+        async with self._client(use_advisor=use_advisor) as client:
             resp = await _post_with_retry(client, f"{self._base_url}/v1/messages", payload)
             data = resp.json()
 
@@ -238,15 +327,47 @@ class AnthropicProvider(LLMProvider):
 
         content_parts = []
         tool_calls = []
-        for block in data.get("content", []):
-            if block["type"] == "text":
-                content_parts.append(block["text"])
-            elif block["type"] == "tool_use":
+        advisor_calls = 0
+        advisor_text = ""
+        advisor_stop_reason = ""
+        advisor_error = ""
+        raw_blocks = data.get("content", []) or []
+        for block in raw_blocks:
+            btype = block.get("type")
+            if btype == "text":
+                content_parts.append(block.get("text", ""))
+            elif btype == "tool_use":
                 tool_calls.append(ToolCall(
                     id=block["id"],
                     name=block["name"],
                     arguments=block.get("input", {}),
                 ))
+            elif btype == "server_tool_use":
+                if block.get("name") == ADVISOR_TOOL_NAME:
+                    advisor_calls += 1
+            elif btype == "advisor_tool_result":
+                result = block.get("content", {})
+                if isinstance(result, dict):
+                    rtype = result.get("type")
+                    if rtype == "advisor_result" or "text" in result:
+                        advisor_text = result.get("text", "")
+                        advisor_stop_reason = result.get("stop_reason", "") or advisor_stop_reason
+                    elif rtype == "advisor_redacted_result" or "encrypted_content" in result:
+                        advisor_stop_reason = result.get("stop_reason", "") or advisor_stop_reason
+                    elif rtype == "advisor_tool_result_error" or "error_code" in result:
+                        advisor_error = result.get("error_code", "unknown")
+                        logger.warning("[ADVISOR] advisor call failed: %s", advisor_error)
+            # Unknown block types are skipped — forward-safe.
+
+        # Advisor sub-inference tokens are billed at the advisor (Opus) rate, so
+        # they're summed apart from the executor's tokens. Top-level usage already
+        # excludes them (output = executor iterations; input/cache = first only).
+        advisor_in = 0
+        advisor_out = 0
+        for it in usage.get("iterations", []) or []:
+            if it.get("type") == "advisor_message":
+                advisor_in += it.get("input_tokens", 0)
+                advisor_out += it.get("output_tokens", 0)
 
         # Normalize Anthropic's cache accounting onto the shared fields. Note
         # input_tokens already EXCLUDES cache reads/writes, so tokens_used stays
@@ -265,6 +386,13 @@ class AnthropicProvider(LLMProvider):
             cache_status="hit" if cache_read else ("write" if cache_write else ""),
             cache_read_tokens=cache_read,
             cache_write_tokens=cache_write,
+            advisor_calls=advisor_calls,
+            advisor_text=advisor_text,
+            advisor_input_tokens=advisor_in,
+            advisor_output_tokens=advisor_out,
+            advisor_stop_reason=advisor_stop_reason,
+            advisor_error=advisor_error,
+            raw_content_blocks=list(raw_blocks) if use_advisor else [],
         )
 
     async def chat_stream(

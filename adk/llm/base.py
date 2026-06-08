@@ -23,6 +23,11 @@ class Message:
     name: str | None = None
     tool_call_id: str | None = None
     tool_calls: list | None = None
+    # Optional native-Anthropic content blocks. When set, the Anthropic provider
+    # emits these verbatim instead of the string ``content`` — used to round-trip
+    # advisor (server_tool_use + advisor_tool_result) blocks, which can't be
+    # reconstructed from the normalized fields. None → unchanged string path.
+    content_blocks: list[dict] | None = None
 
 
 @dataclass
@@ -52,6 +57,18 @@ class LLMResponse:
     # OpenAI prompt_tokens_details.cached_tokens, DeepSeek prompt_cache_hit_tokens.
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
+    # Advisor-tool accounting (Anthropic ``advisor-tool-2026-03-01``). The advisor
+    # is a separate sub-inference billed at the advisor model's (Opus) rates, so
+    # its tokens are tracked apart from the executor's tokens_used above.
+    advisor_calls: int = 0
+    advisor_text: str = ""
+    advisor_input_tokens: int = 0
+    advisor_output_tokens: int = 0
+    advisor_stop_reason: str = ""        # "end_turn" | "max_tokens" (only when capped)
+    advisor_error: str = ""              # error_code from advisor_tool_result_error, if any
+    # Raw native assistant content blocks (text + tool_use + advisor blocks) for
+    # verbatim round-trip across a ReAct loop. Populated only when advisor is on.
+    raw_content_blocks: list[dict] = field(default_factory=list)
 
 
 @dataclass

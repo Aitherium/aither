@@ -198,6 +198,61 @@ class TestMessaging:
         assert len(received) == 1
 
 
+# ── Outbound Relay Handlers ──────────────────────────────────────────────
+
+
+class TestOutboundHandlers:
+    def test_outbound_handler_invoked(self, tmp_path):
+        chat = ChatRelay(data_dir=tmp_path)
+        received = []
+        chat.register_outbound_handler("relay", lambda msg: received.append(msg))
+        chat.join("#general", "alice")
+        chat.post("#general", "alice", "hello")
+        assert len(received) == 1
+        assert received[0].content == "hello"
+
+    def test_outbound_handler_error_nonfatal(self, tmp_path):
+        chat = ChatRelay(data_dir=tmp_path)
+        chat.register_outbound_handler("boom", lambda msg: 1 / 0)
+        chat.join("#general", "alice")
+        # Must not raise and must still return the posted message
+        msg = chat.post("#general", "alice", "hello")
+        assert msg is not None
+
+    def test_multiple_handlers_isolated(self, tmp_path):
+        chat = ChatRelay(data_dir=tmp_path)
+        received = []
+        chat.register_outbound_handler("boom", lambda msg: 1 / 0)
+        chat.register_outbound_handler("ok", lambda msg: received.append(msg))
+        chat.join("#general", "alice")
+        chat.post("#general", "alice", "hello")
+        # The failing handler does not prevent the healthy one
+        assert len(received) == 1
+
+    def test_unregister_outbound_handler(self, tmp_path):
+        chat = ChatRelay(data_dir=tmp_path)
+        received = []
+        chat.register_outbound_handler("relay", lambda msg: received.append(msg))
+        chat.unregister_outbound_handler("relay")
+        chat.join("#general", "alice")
+        chat.post("#general", "alice", "hello")
+        assert received == []
+
+    @pytest.mark.asyncio
+    async def test_async_outbound_handler(self, tmp_path):
+        chat = ChatRelay(data_dir=tmp_path)
+        received = []
+
+        async def handler(msg):
+            received.append(msg)
+
+        chat.register_outbound_handler("relay", handler)
+        chat.join("#general", "alice")
+        chat.post("#general", "alice", "hello")
+        await asyncio.sleep(0)  # let the scheduled coroutine run
+        assert len(received) == 1
+
+
 # ── IRC Commands ─────────────────────────────────────────────────────────
 
 
