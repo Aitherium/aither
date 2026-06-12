@@ -1686,6 +1686,7 @@ TOOL_CATEGORIES: dict = {
     # not a flat function list — see register_builtin_tools below.
     "self": [],
     "voice": [],  # populated lazily by _init_voice_tools()
+    "formbridge": [],  # populated lazily by _init_formbridge_tools()
 }
 
 # Default categories for common identity profiles
@@ -1725,6 +1726,33 @@ def _init_voice_tools():
         TOOL_CATEGORIES["voice"] = []
 
 
+def _init_formbridge_tools():
+    """Lazily populate the formbridge category (local form automation).
+
+    Redacting-by-construction tools — results carry field NAMES/counts/job
+    ids, never captured values (see adk/formbridge/tools.py).
+    """
+    if TOOL_CATEGORIES.get("formbridge"):
+        return  # Already initialized
+    try:
+        from adk.formbridge.tools import (
+            formbridge_fill_form,
+            formbridge_list_patients,
+            formbridge_pack_health,
+            formbridge_purge,
+        )
+        TOOL_CATEGORIES["formbridge"] = [
+            formbridge_list_patients,
+            formbridge_fill_form,
+            formbridge_pack_health,
+            formbridge_purge,
+        ]
+        logger.info("FormBridge tools initialized (list/fill/health/purge)")
+    except ImportError:
+        logger.debug("FormBridge tools not available; category remains empty")
+        TOOL_CATEGORIES["formbridge"] = []
+
+
 def register_builtin_tools(
     agent: AitherAgent,
     categories: list[str] | None = None,
@@ -1744,6 +1772,7 @@ def register_builtin_tools(
     _init_graph_tools()  # lazily populate graph category
     _init_workspace_tools()  # lazily populate workspace category
     _init_voice_tools()  # lazily populate voice category
+    _init_formbridge_tools()  # lazily populate formbridge category
 
     if categories is None and auto:
         # Unknown identities get a minimal, fully-local default. "workspace"

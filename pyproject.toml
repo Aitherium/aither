@@ -44,6 +44,7 @@ embedding = [
     "torch>=2.0.0",
 ]
 node = ["mcp>=1.0", "starlette>=0.36"]
+pdf = ["pypdf>=4.0"]
 sync = ["watchdog>=3.0.0"]
 federation = ["cryptography>=41.0.0"]
 addons = ["docker>=7.0"]
@@ -72,7 +73,7 @@ voice-cloud = [
 ]
 voice = ["aither-adk[voice-local,voice-cloud]"]
 all = [
-    "aither-adk[graphs,embedding,channels,federation,sync,addons,node,shell,voice]",
+    "aither-adk[graphs,embedding,channels,federation,sync,addons,node,shell,voice,pdf]",
     "anthropic>=0.18.0",
     "openai>=1.0.0",
 ]

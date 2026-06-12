@@ -65,6 +65,11 @@ class ConversationStore:
 
     Each session is stored as a separate JSON file for easy inspection
     and backup. An LRU cache keeps hot sessions in memory.
+
+    Optional cloud sync:
+        After each save, if a sync_hook is registered, it is called to push
+        the session to a remote portal/gateway. The sync hook is async and
+        runs in the background (fire-and-forget).
     """
 
     def __init__(self, data_dir: str | Path | None = None):
@@ -73,6 +78,7 @@ class ConversationStore:
         self._dir = Path(data_dir)
         self._dir.mkdir(parents=True, exist_ok=True)
         self._cache: OrderedDict[str, Conversation] = OrderedDict()
+        self._sync_hook = None  # Optional async callable for cloud sync
 
     def _path(self, session_id: str) -> Path:
         # Sanitize session_id for filesystem
@@ -98,8 +104,19 @@ class ConversationStore:
             logger.warning("Failed to load conversation %s: %s", session_id, e)
             return None
 
+    def set_sync_hook(self, hook) -> None:
+        """
+        Register an async callable to be invoked after each save.
+
+        The hook will be called with:
+            await hook(session_id, agent_name, messages, created_at, updated_at, metadata)
+
+        If the hook raises an exception, it is logged but does NOT block save.
+        """
+        self._sync_hook = hook
+
     def _save(self, conv: Conversation) -> None:
-        """Save a conversation to disk."""
+        """Save a conversation to disk and trigger optional sync hook."""
         path = self._path(conv.session_id)
         try:
             data = {
@@ -113,6 +130,35 @@ class ConversationStore:
             path.write_text(json.dumps(data, indent=2), encoding="utf-8")
         except Exception as e:
             logger.error("Failed to save conversation %s: %s", conv.session_id, e)
+
+        # Fire-and-forget async sync hook (if registered)
+        if self._sync_hook:
+            try:
+                # Use asyncio.create_task if running in an event loop
+                import asyncio
+                try:
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(
+                        self._sync_hook(
+                            conv.session_id,
+                            conv.agent_name,
+                            conv.messages,
+                            conv.created_at,
+                            conv.updated_at,
+                            conv.metadata,
+                        )
+                    )
+                except RuntimeError:
+                    # No event loop running — can't call async hook
+                    logger.debug(
+                        "No event loop to invoke sync hook for session %s — skipping",
+                        conv.session_id
+                    )
+            except Exception as e:
+                logger.debug(
+                    "Sync hook for session %s raised exception (non-fatal): %s",
+                    conv.session_id, e
+                )
 
     def _touch_cache(self, session_id: str, conv: Conversation) -> None:
         """Add/move to front of LRU cache."""

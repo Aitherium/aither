@@ -14,12 +14,14 @@ This module provides:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
 import socket
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -245,6 +247,30 @@ class ProcessSupervisor:
 
         logger.info("Process shutdown complete")
 
+    async def _enroll_fleet_async(self) -> None:
+        """Enroll node into fleet (async wrapper for supervise loop).
+
+        Attempts enrollment after services are up. Failures are logged but
+        do not interrupt supervision.
+        """
+        try:
+            from adk.fleet_enroll import enroll_on_boot
+
+            result = await enroll_on_boot()
+            if result.get("enrolled"):
+                logger.info(
+                    "Node enrolled: %s (agents=%d)",
+                    result.get("node_id"),
+                    result.get("agents_upserted", 0),
+                )
+            else:
+                reason = result.get("reason", result.get("error", "unknown"))
+                logger.info("Node enrollment skipped: %s", reason)
+        except ImportError:
+            logger.debug("fleet_enroll module not available (may be offline)")
+        except Exception as e:
+            logger.warning("Fleet enrollment error: %s", e)
+
     def supervise(
         self,
         specs: list[ProcessSpec],
@@ -274,6 +300,22 @@ class ProcessSupervisor:
                 sys.exit(1)
 
         logger.info("All processes started, entering supervision loop (interval=%ds)", interval)
+
+        # Enroll into fleet (best-effort). Run in a daemon thread with a
+        # PERSISTENT event loop: enrollment schedules a background heartbeat
+        # task, and a bare asyncio.run() would close the loop the moment
+        # enrollment returns — killing the heartbeat so the node goes stale
+        # after ~60s. run_forever() keeps the loop (and heartbeat) alive.
+        def _fleet_enroll_bg():
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                loop.run_until_complete(self._enroll_fleet_async())
+                loop.run_forever()
+            except Exception as e:
+                logger.debug("Fleet enrollment thread ended: %s", e)
+
+        threading.Thread(target=_fleet_enroll_bg, daemon=True, name="fleet-enroll").start()
         try:
             while True:
                 for spec in specs:
