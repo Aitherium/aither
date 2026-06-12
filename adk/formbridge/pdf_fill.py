@@ -34,9 +34,21 @@ def _require_pypdf() -> None:
 
 def output_dir() -> Path:
     d = os.getenv("AITHER_FORMBRIDGE_OUTPUT", "").strip()
-    path = Path(d) if d else Path.home() / "Documents" / "FormBridge"
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+    candidates = [Path(d)] if d else []
+    # Documents may be a redirected known folder that doesn't exist at its
+    # literal path (OneDrive/roaming profiles) — fall back under ~/.aither.
+    candidates += [
+        Path.home() / "Documents" / "FormBridge",
+        Path.home() / ".aither" / "formbridge" / "output",
+    ]
+    last_err: Exception | None = None
+    for path in candidates:
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+            return path
+        except OSError as e:
+            last_err = e
+    raise MappingError(f"No writable FormBridge output directory: {last_err}")
 
 
 def list_template_fields(template: Path | str) -> list[str]:
@@ -100,11 +112,18 @@ def fill_pdf(
         if text_values:
             writer.update_page_form_field_values(page, text_values)
         if checkbox_values:
-            # update_page_form_field_values handles checkboxes when handed
-            # NameObjects; build them per page.
-            writer.update_page_form_field_values(
-                page, {k: NameObject(v) for k, v in checkbox_values.items()}
-            )
+            # Set checkbox /V + /AS directly on the widget annotations:
+            # update_page_form_field_values requires an /AP appearance dict
+            # (KeyError on minimal forms), while direct state-setting works on
+            # any AcroForm — viewers draw the check glyph from /AS.
+            annots = page.get("/Annots") or []
+            for annot in annots:
+                obj = annot.get_object()
+                name = obj.get("/T")
+                if name and str(name) in checkbox_values:
+                    state = NameObject(checkbox_values[str(name)])
+                    obj[NameObject("/V")] = state
+                    obj[NameObject("/AS")] = state
 
     # NeedAppearances so viewers regenerate field appearance streams —
     # without it many viewers show filled fields as blank until clicked.

@@ -1758,13 +1758,14 @@ def create_app(
             return JSONResponse({"error": "Python not found"}, status_code=500)
 
     # ── FormBridge (local form automation; routes are loopback-guarded) ──
-    try:
-        from adk.formbridge.routes import create_formbridge_router
+    if os.getenv("AITHER_FORMBRIDGE_ROUTES", "1").lower() not in ("0", "false"):
+        try:
+            from adk.formbridge.routes import create_formbridge_router
 
-        app.include_router(create_formbridge_router())
-        logger.info("FormBridge routes mounted (/formbridge/*)")
-    except ImportError as e:
-        logger.debug("FormBridge routes not available: %s", e)
+            app.include_router(create_formbridge_router())
+            logger.info("FormBridge routes mounted (/formbridge/*)")
+        except ImportError as e:
+            logger.debug("FormBridge routes not available: %s", e)
 
     return app
 
