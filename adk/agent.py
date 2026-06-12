@@ -186,25 +186,37 @@ class AitherAgent:
         # Metering (per-agent token & cost tracking)
         self.meter = get_meter(self.name)
 
-        # Apply the licensed monthly token ceiling (free tier = 100k/mo; paid
-        # tiers = unlimited). This cap only makes sense for the METERED Aitherium
-        # gateway/cloud — a BYO-key / self-hosted agent pays for its OWN inference,
-        # so capping it there would wrongly brick the user's own key after ~100k
-        # tokens. Only apply the cap when the agent is wired to the gateway
-        # (aither_api_key set). BYO providers (Anthropic/OpenAI/DeepSeek/Ollama
-        # keys, vLLM, etc.) are never community-capped.
+        # Apply the licensed monthly token ceiling — BUT ONLY to Aitherium-proxied
+        # inference (our metered gateway). BYO keys (anthropic/openai/deepseek) and
+        # local backends (ollama/vllm/localhost) are NEVER capped because the user
+        # pays for their own inference. This is the critical fix for the consumer
+        # launch: community tier cap (100k/mo) applies ONLY to our gateway, not to
+        # self-hosted or user-supplied API keys.
         try:
-            # The cap is tied to the agent's INFERENCE backend, not a saved key:
-            # only the Aitherium gateway is metered. A BYO provider
-            # (anthropic/openai/deepseek/ollama/vllm/…) is the user's own spend and
-            # must never be community-capped. Deferred/unknown also defaults to
-            # uncapped (err toward not bricking the user).
             on_metered_gateway = getattr(self.llm, "provider_name", "") == "gateway"
+            on_byo_provider = getattr(self.llm, "provider_name", "") in (
+                "anthropic", "openai", "deepseek"
+            )
+            on_local_backend = getattr(self.llm, "provider_name", "") in (
+                "ollama", "vllm", "local"
+            )
+
+            # Mark the meter with backend type so enforcement knows the provenance
+            self.meter._backend_type = getattr(self.llm, "provider_name", "unknown")
+
             if (on_metered_gateway and self._license is not None
                     and self._license._enforced()):
                 _cap = int(self._license.license.entitlements.monthly_token_limit)
                 if _cap > 0:
                     self.meter._quota.monthly_limit = _cap
+            elif on_byo_provider or on_local_backend:
+                self.meter._quota.monthly_limit = 0
+                self.meter._quota.daily_limit = 0
+                logger.debug(
+                    "Agent '%s' using %s backend — all token caps disabled "
+                    "(user pays their own inference)",
+                    self.name, self.meter._backend_type,
+                )
         except Exception:
             pass
 
@@ -795,18 +807,32 @@ class AitherAgent:
         _effort_int = _effort if isinstance(_effort, int) else 5
 
         # Token quota hard-block: refuse the LLM call when the free-tier monthly
-        # budget is exhausted, rather than silently overspending. Returns a clear
-        # upgrade message (mirrors the safety-block contract — no exception).
+        # budget is exhausted, rather than silently overspending. Returns a clear,
+        # actionable error message specific to the backend. Never blocks BYO or local
+        # backends (they bypass the quota check entirely).
         try:
             from adk.metering import QuotaAction
             if self.meter.can_spend(estimated_tokens=0) == QuotaAction.HARD_LIMIT:
+                _backend = self.meter._backend_type
                 _tier = self._license.license.tier.value if self._license else "community"
+
+                if _backend == "gateway":
+                    msg = (
+                        f"You've reached your monthly token limit on the {_tier} tier "
+                        "(100k tokens/month on Aitherium's cloud). "
+                        "Options:\n"
+                        "1. Upgrade to a paid tier: https://aitherium.com/buy\n"
+                        "2. Use local Ollama/vLLM (free): aither config llm\n"
+                        "3. Use your own API key (Anthropic/OpenAI/DeepSeek): aither config llm"
+                    )
+                else:
+                    msg = (
+                        f"Token quota error (backend: {_backend}). "
+                        "This should not happen on BYO or local backends (they are never capped). "
+                        "Check logs for details: https://aitherium.com/help"
+                    )
                 return AgentResponse(
-                    content=(
-                        "You've reached your monthly token limit on the "
-                        f"{_tier} tier. Upgrade for higher limits and reasoning "
-                        "models at portal.aitherium.com/portal/marketplace/packs"
-                    ),
+                    content=msg,
                     session_id=sid,
                     finish_reason="quota_exceeded",
                 )

@@ -124,6 +124,11 @@ class AgentMeter:
 
     Tracks usage in a local SQLite database. Can optionally report
     to AitherOS ACTA billing service for centralized tracking.
+
+    The _backend_type attribute (set by agent.py) indicates the LLM provenance:
+      - "gateway": Aitherium metered cloud (cap applies)
+      - "anthropic", "openai", "deepseek": BYO API keys (no cap)
+      - "ollama", "vllm", "local": local/self-hosted (no cap)
     """
 
     def __init__(
@@ -136,6 +141,8 @@ class AgentMeter:
         self._agent = agent_name
         self._quota = quota or QuotaConfig()
         self._acta_url = acta_url
+        self._backend_type = "unknown"
+        self._warned_80pct = False
 
         if db_path is None:
             data_dir = Path.home() / ".aither" / "metering"
@@ -219,7 +226,8 @@ class AgentMeter:
     def can_spend(self, estimated_tokens: int = 0) -> QuotaAction:
         """Check if the agent can spend more tokens.
 
-        Returns the appropriate quota action based on current usage.
+        Returns the appropriate quota action based on current usage. Also emits
+        a one-time warning at 80% of monthly cap (if enforced on this backend).
         """
         now = time.time()
         hour_ago = now - 3600
@@ -253,7 +261,7 @@ class AgentMeter:
                 if daily >= self._quota.daily_limit * self._quota.soft_limit_pct:
                     return QuotaAction.WARN
 
-            # Monthly usage
+            # Monthly usage (with 80% warning for gateway-backed agents)
             if self._quota.monthly_limit > 0:
                 row = conn.execute(
                     "SELECT COALESCE(SUM(tokens_total), 0) FROM usage "
@@ -264,6 +272,15 @@ class AgentMeter:
                 if monthly >= self._quota.monthly_limit:
                     return QuotaAction.HARD_LIMIT
                 if monthly >= self._quota.monthly_limit * self._quota.soft_limit_pct:
+                    if not self._warned_80pct and self._backend_type == "gateway":
+                        pct = int(100.0 * monthly / self._quota.monthly_limit)
+                        logger.warning(
+                            "Agent '%s' at %d%% of monthly token cap (%d / %d tokens). "
+                            "Upgrade to a paid tier or use a local/BYO backend: "
+                            "https://aitherium.com/buy",
+                            self._agent, pct, monthly, self._quota.monthly_limit,
+                        )
+                        self._warned_80pct = True
                     return QuotaAction.WARN
 
             # Cost limit

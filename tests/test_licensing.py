@@ -114,3 +114,102 @@ def test_unsigned_license_falls_back_to_free(monkeypatch, tmp_path):
 def test_missing_crypto_or_placeholder_key_rejects_signatures():
     """With the placeholder public key, no signature can verify."""
     assert lic._verify_signature(b"anything", "00" * 64) is False
+
+
+# ── sovereign tier (consumer launch) ───────────────────────────────────────
+
+def test_sovereign_tier_exists():
+    """Sovereign tier is defined and ranked above enterprise."""
+    assert Tier.SOVEREIGN in Tier.__members__.values()
+    assert lic._TIER_RANK[Tier.SOVEREIGN] == 5
+    assert lic._TIER_RANK[Tier.SOVEREIGN] > lic._TIER_RANK[Tier.ENTERPRISE]
+
+
+def test_sovereign_entitlements_full():
+    """Sovereign tier unlocks everything (like INTERNAL)."""
+    ent = lic.Entitlements.for_tier(Tier.SOVEREIGN)
+    assert "*" in ent.named_agents
+    assert ent.max_effort == 10
+    assert ent.fleet is True
+    assert ent.channels is True
+    assert ent.auto_neurons is True
+    assert ent.cron is True
+    assert ent.swarm is True
+    assert ent.custom_agents is True
+    assert ent.packs is True
+    assert ent.monthly_token_limit == 0  # unlimited
+
+
+def test_sovereign_never_expires(monkeypatch, tmp_path):
+    """Sovereign licenses ignore expiry — perpetual by definition."""
+    payload = {
+        "tier": "sovereign",
+        "tenant_id": "test",
+        "issued_at": 1000000000,
+        "expires_at": 1000000001,  # already expired in wall time
+    }
+    # Generate a valid signature with cryptography (ed25519)
+    try:
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        import os
+        priv = Ed25519PrivateKey.generate()
+        pub = priv.public_key()
+        pub_hex = pub.public_bytes_raw().hex()
+        payload_bytes = json.dumps(payload).encode()
+        sig_bytes = priv.sign(payload_bytes)
+        sig_hex = sig_bytes.hex()
+
+        envelope = {
+            "payload": base64.b64encode(payload_bytes).decode(),
+            "signature": sig_hex,
+        }
+        lf = tmp_path / "license.json"
+        lf.write_text(json.dumps(envelope), encoding="utf-8")
+        monkeypatch.setenv("AITHER_LICENSE_FILE", str(lf))
+        monkeypatch.setenv("AITHER_LICENSE_PUBLIC_KEY", pub_hex)
+        reset_license_manager()
+
+        lm = get_license_manager()
+        assert lm.license.tier is Tier.SOVEREIGN
+        assert lm.license.is_expired is False  # despite expiry being in past
+    except ImportError:
+        pytest.skip("cryptography not installed")
+
+
+def test_sovereign_via_signed_envelope(monkeypatch, tmp_path):
+    """A correctly signed sovereign license resolves to SOVEREIGN tier."""
+    try:
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        priv = Ed25519PrivateKey.generate()
+        pub = priv.public_key()
+        pub_hex = pub.public_bytes_raw().hex()
+
+        payload = {
+            "tier": "sovereign",
+            "tenant_id": "consumer-001",
+            "entitlements": {"named_agents": ["*"], "monthly_token_limit": 0},
+            "issued_at": int(__import__("time").time()),
+            "expires_at": 0,
+        }
+        payload_bytes = json.dumps(payload).encode()
+        sig_bytes = priv.sign(payload_bytes)
+        sig_hex = sig_bytes.hex()
+
+        envelope = {
+            "payload": base64.b64encode(payload_bytes).decode(),
+            "signature": sig_hex,
+        }
+        lf = tmp_path / "license.json"
+        lf.write_text(json.dumps(envelope), encoding="utf-8")
+        monkeypatch.setenv("AITHER_LICENSE_FILE", str(lf))
+        monkeypatch.setenv("AITHER_LICENSE_PUBLIC_KEY", pub_hex)
+        reset_license_manager()
+
+        lm = get_license_manager()
+        assert lm.license.tier is Tier.SOVEREIGN
+        assert lm.is_agent_licensed("any-agent-name") is True
+        assert lm.max_effort() == 10
+        lm.require("fleet")  # must not raise
+        lm.require("swarm")  # must not raise
+    except ImportError:
+        pytest.skip("cryptography not installed")

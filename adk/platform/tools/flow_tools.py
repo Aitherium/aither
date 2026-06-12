@@ -1079,8 +1079,63 @@ def github_update_workflow_file(filename: str, content: str) -> str:
 
 
 # =============================================================================
-# REPOSITORY INFO
+# REPOSITORY MANAGEMENT
 # =============================================================================
+
+def github_create_repo(
+    name: str,
+    description: str = "",
+    org: str = "Aitherium",
+    private: bool = False,
+    homepage: str = ""
+) -> str:
+    """
+    Create a new GitHub repository.
+
+    Creates a repository in the specified organization or user account.
+    Returns repository metadata including clone URL and default branch.
+    Idempotent: if the repo already exists, returns ok:true with "existed": true.
+
+    Args:
+        name: Repository name (e.g., "jgames")
+        description: Repository description (optional)
+        org: Organization name (default: "Aitherium"). If empty, creates in user account.
+        private: True for private repo, False for public (default: False)
+        homepage: Repository homepage URL (optional)
+
+    Returns:
+        JSON with repo details:
+        {
+            "ok": true,
+            "full_name": "Aitherium/jgames",
+            "html_url": "https://github.com/Aitherium/jgames",
+            "clone_url": "https://github.com/Aitherium/jgames.git",
+            "default_branch": "main",
+            "existed": false
+        }
+        or on error:
+        {
+            "ok": false,
+            "error": "Repository already exists" or other error message
+        }
+
+    Example:
+        github_create_repo(
+            "jgames",
+            "Game development framework",
+            org="Aitherium",
+            private=False,
+            homepage="https://github.com/Aitherium/jgames"
+        )
+    """
+    return _flow_request("POST", "/repos/create", {
+        "repo_name": name,
+        "description": description,
+        "organization": org,
+        "visibility": "private" if private else "public",
+        "homepage": homepage
+    })
+
 
 def github_get_repo_info() -> str:
     """
@@ -1188,6 +1243,8 @@ flow_tools = [
     github_list_workflows_on_disk,
     github_get_workflow_file,
     github_update_workflow_file,
+    # Repo Management
+    github_create_repo,
     # Repo Info
     github_get_repo_info,
     github_get_rate_limit,
@@ -1264,6 +1321,8 @@ __all__ = [
     "github_list_workflows_on_disk",
     "github_get_workflow_file",
     "github_update_workflow_file",
+    # Repo Management
+    "github_create_repo",
     # Repo Info
     "github_get_repo_info",
     "github_get_rate_limit",

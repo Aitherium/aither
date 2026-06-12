@@ -71,6 +71,7 @@ class Tier(str, Enum):
     BUILDER = "builder"          # + cron, all tools, skill/tool packs
     PROFESSIONAL = "professional"  # + reasoning effort, swarm, custom agents
     ENTERPRISE = "enterprise"     # + everything, federation, governance
+    SOVEREIGN = "sovereign"       # perpetual, all agents, unlimited tokens ($1000)
     INTERNAL = "internal"        # Aitherium dogfood — unrestricted
 
 
@@ -80,6 +81,7 @@ _TIER_RANK = {
     Tier.BUILDER: 2,
     Tier.PROFESSIONAL: 3,
     Tier.ENTERPRISE: 4,
+    Tier.SOVEREIGN: 5,
     Tier.INTERNAL: 99,
 }
 
@@ -105,7 +107,7 @@ class Entitlements:
     @classmethod
     def for_tier(cls, tier: Tier) -> "Entitlements":
         rank = _TIER_RANK[tier]
-        if tier is Tier.INTERNAL:
+        if tier is Tier.INTERNAL or tier is Tier.SOVEREIGN:
             return cls(
                 named_agents=["*"], max_effort=10, fleet=True, channels=True,
                 auto_neurons=True, cron=True, swarm=True, custom_agents=True,
@@ -139,6 +141,8 @@ class License:
 
     @property
     def is_expired(self) -> bool:
+        if self.tier is Tier.SOVEREIGN:
+            return False
         return bool(self.expires_at) and time.time() > self.expires_at
 
 

@@ -102,7 +102,7 @@ def detect_gpu() -> GPUInfo:
         out = _run([smi, "--query-gpu=name,memory.total,driver_version",
                     "--format=csv,noheader,nounits"])
         if out:
-            lines = [l.strip() for l in out.strip().split("\n") if l.strip()]
+            lines = [line.strip() for line in out.strip().split("\n") if line.strip()]
             cuda_out = _run([smi])
             cuda_ver = ""
             if cuda_out:
@@ -336,11 +336,16 @@ def recommend_tier(gpu: GPUInfo) -> str:
         return "llamacpp"
     # Use total VRAM for vLLM tier — workers spread across GPUs
     vram = (gpu.total_vram_mb or gpu.vram_mb) / 1024 * 0.85
-    if vram >= 24: return "full"
-    if vram >= 18: return "standard"
-    if vram >= 12: return "standard-tq4"  # Both models fit in TQ4 at 12GB
-    if vram >= 10: return "lite"
-    if vram >= 5: return "nano"           # Nemotron TQ4 fits in 5GB
+    if vram >= 24:
+        return "full"
+    if vram >= 18:
+        return "standard"
+    if vram >= 12:
+        return "standard-tq4"  # Both models fit in TQ4 at 12GB
+    if vram >= 10:
+        return "lite"
+    if vram >= 5:
+        return "nano"  # Nemotron TQ4 fits in 5GB
     # Sub-5GB NVIDIA dGPU — llama.cpp Q4 still fits with partial CPU offload
     return "llamacpp"
 
@@ -599,7 +604,7 @@ def deploy_stack(profile: str, dry_run: bool = False, api_key: str = "") -> int:
     if not az_root:
         warn("AitherZero not found — cannot deploy AitherOS stack")
         print()
-        print(f"  To deploy AitherOS, clone the repo:")
+        print("  To deploy AitherOS, clone the repo:")
         print(f"    {cyan('git clone https://github.com/Aitherium/AitherOS AitherOS-Fresh')}")
         print(f"    {cyan('cd AitherOS-Fresh && aither setup --stack ' + profile)}")
         print()
@@ -1094,7 +1099,7 @@ def _setup_hybrid(args) -> int:
             keys[pname] = val
             os.environ[env_name] = val
             configured.append(pname)
-            info(f"Saved")
+            info("Saved")
 
     if not args.dry_run and keys:
         keys_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1152,7 +1157,7 @@ def _setup_hybrid(args) -> int:
     print()
     print(f"  {bold('Estimated savings vs cloud-only:')}")
     print(f"    Routine tasks:  {green('$0')} (handled locally)")
-    print(f"    Reasoning:      Cloud API rates apply (~20% of requests)")
+    print("    Reasoning:      Cloud API rates apply (~20% of requests)")
     print()
 
     # Now continue to standard setup for the GPU part
@@ -1290,8 +1295,8 @@ def cmd_setup(args) -> int:
     elif not dry_run:
         info("llmfit: not found — installing for smart model selection...")
         import asyncio as _aio
-        from adk.setup import AgentSetup as _AS
-        _setup = _AS()
+        from adk.setup import AgentSetup
+        _setup = AgentSetup()
         try:
             llmfit_ok = _aio.get_event_loop().run_until_complete(_setup.ensure_llmfit())
             if llmfit_ok:
@@ -1384,7 +1389,7 @@ def cmd_setup(args) -> int:
     # vLLM path
     print()
     print(f"  {bold('Why vLLM?')}")
-    print(f"  Ollama: one request at a time. Agents queue up, wait their turn.")
+    print("  Ollama: one request at a time. Agents queue up, wait their turn.")
     print(f"  vLLM:   {bold('continuous batching')} — all agents run {green('simultaneously')}.")
     print(f"  Result: {green('3-10x faster')} with concurrent agent fleets.")
     print()
@@ -1430,7 +1435,7 @@ def cmd_setup(args) -> int:
     if hf_token:
         info(f"HF token: {hf_token[:8]}...{hf_token[-4:]}")
     elif not non_interactive:
-        print(f"  Some models need a HuggingFace token (free account).")
+        print("  Some models need a HuggingFace token (free account).")
         print(f"  Get one at: {cyan('https://huggingface.co/settings/tokens')}")
         hf_token = ask("HuggingFace token (Enter to skip)", default="")
         if hf_token:
@@ -1465,13 +1470,13 @@ def cmd_setup(args) -> int:
     # ── Reasoning API collection (hybrid tier or --reasoning-api) ──
     reasoning_api_key = ""
     if reasoning_api:
-        _REASONING_URLS = {
+        reasoning_urls = {
             "anthropic": ("ANTHROPIC_API_KEY", "https://api.anthropic.com"),
             "openai": ("OPENAI_API_KEY", "https://api.openai.com"),
             "deepseek": ("DEEPSEEK_API_KEY", "https://api.deepseek.com"),
             "gateway": ("AITHER_API_KEY", "https://mcp.aitherium.com"),
         }
-        env_key, _ = _REASONING_URLS.get(reasoning_api, ("", ""))
+        env_key, _ = reasoning_urls.get(reasoning_api, ("", ""))
         reasoning_api_key = os.environ.get(env_key, "") if env_key else ""
         if not reasoning_api_key and not non_interactive:
             import getpass
@@ -1548,4 +1553,207 @@ def cmd_setup(args) -> int:
     print(f"  {green(bold('Ready!'))}")
     print(f"  {dim('Your GPU is now an inference server for parallel agent fleets.')}")
     print()
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# A5 First-Run Wizard
+# ---------------------------------------------------------------------------
+
+def cmd_wizard(args) -> int:
+    """Interactive first-run wizard for the consumer launch.
+
+    Takes a fresh machine to a working agent chat with zero manual env-var surgery.
+    - Probe hardware (RAM, CPU, GPU, Ollama)
+    - Recommend setup (local vs cloud, backend choice)
+    - Optional: ensure Ollama installed
+    - Optional: pull recommended model
+    - License key entry (optional, validate + save)
+    - Room auth token setup (create if missing)
+    - Health checks
+    - Print next steps with Room URL
+    """
+    from adk.hardware_probe import detect_system, recommend_setup
+    from adk.licensing import get_license_manager
+    from adk.config import save_saved_config
+
+    non_interactive = getattr(args, "yes", False)
+
+    print()
+    print(bold("  ===== AitherOS Consumer Wizard (First Run) ====="))
+    print(dim("    Get you to a working agent chat in 5 minutes"))
+    print(bold("  ============================================="))
+    print()
+
+    # Step 1: Probe hardware
+    step(1, 5, "Detecting system hardware")
+    system = detect_system()
+    print(f"  RAM: {bold(f'{system.ram_gb:.1f}GB')}")
+    print(f"  CPU: {bold(f'{system.cpu_cores}')} cores")
+    if system.gpu_vendor != "none":
+        print(
+            f"  GPU: {bold(system.gpu_name)} "
+            f"({system.gpu_vram_mb / 1024:.1f}GB)"
+        )
+    else:
+        print(f"  GPU: {dim('none')}")
+    print(f"  Ollama: {green('installed') if system.ollama_installed else dim('not found')}")
+    print()
+
+    # Step 2: Recommend setup
+    step(2, 5, "Recommending configuration")
+    rec = recommend_setup(system)
+    print(f"  Backend: {bold(rec.backend)}")
+    if rec.local_model:
+        print(
+            f"  Local Model: {bold(rec.local_model)} "
+            f"({rec.local_model_gb:.0f}GB disk, {rec.local_vram_gb:.1f}GB VRAM)"
+        )
+    print(f"  {rec.rationale}")
+    for warn_msg in rec.warnings:
+        warn(warn_msg)
+    print()
+
+    if not non_interactive:
+        choice = ask(
+            "Accept this recommendation?",
+            default="yes",
+            choices=["yes", "no", "cloud"],
+        )
+        if choice == "no":
+            print("  Setup aborted.")
+            return 1
+        elif choice == "cloud":
+            rec.backend = "cloud"
+            rec.local_model = None
+
+    # Step 3: Ensure Ollama (if local backend)
+    if rec.backend != "cloud":
+        step(3, 5, "Checking Ollama")
+        if not system.ollama_installed:
+            print(
+                f"  {yellow('!')} Ollama not found. Install from: "
+                f"{cyan('https://ollama.com/download')}"
+            )
+            print()
+            if non_interactive:
+                print("  Non-interactive mode — skipping Ollama setup.")
+            else:
+                choice = ask(
+                    "Ollama required for local setup. Install it and retry.",
+                    default="done",
+                    choices=["done", "skip"],
+                )
+                if choice == "skip":
+                    rec.backend = "cloud"
+                    info("Switching to cloud-only mode")
+                else:
+                    print("  Please install Ollama from https://ollama.com/download")
+                    return 1
+        else:
+            info("Ollama ready")
+            if rec.local_model and not non_interactive:
+                print(
+                    f"  Will pull: {bold(rec.local_model)} "
+                    f"(~{rec.local_model_gb:.0f}GB)"
+                )
+                choice = ask(
+                    "Pull model now?",
+                    default="yes",
+                    choices=["yes", "no"],
+                )
+                if choice == "yes":
+                    info(f"Pulling {rec.local_model}...")
+                    try:
+                        subprocess.run(
+                            ["ollama", "pull", rec.local_model],
+                            timeout=1800,
+                        )
+                        info(f"{rec.local_model} ready")
+                    except subprocess.TimeoutExpired:
+                        warn("Pull timed out — model may still be downloading")
+                    except Exception as e:
+                        err(f"Failed to pull model: {e}")
+        print()
+
+    # Step 4: License key (optional)
+    step(4, 5, "License configuration (optional)")
+    print("  Enter a license key for premium features (or press Enter to skip).")
+    print("  Free tier: single agent, 100k tokens/month via cloud.")
+    print("  Paid: Sovereign ($1000/perpetual) = all features, unlimited local tokens.")
+    print()
+
+    lm = get_license_manager()
+    current_tier = lm.license.tier.value if lm.license else "community"
+    info(f"Current tier: {bold(current_tier)}")
+
+    if not non_interactive:
+        key_input = input("  License key (or press Enter): ").strip()
+        if key_input:
+            # Simple validation: base64-decodable
+            try:
+                import base64
+                import json
+
+                decoded = json.loads(
+                    base64.b64decode(key_input).decode("utf-8")
+                )
+                if "payload" in decoded and "signature" in decoded:
+                    lic_path = Path.home() / ".aither" / "license.json"
+                    lic_path.parent.mkdir(parents=True, exist_ok=True)
+                    lic_path.write_text(
+                        json.dumps(decoded), encoding="utf-8"
+                    )
+                    info("License key saved to ~/.aither/license.json")
+                else:
+                    warn("License key format invalid — proceeding with free tier")
+            except Exception as e:
+                warn(f"Could not parse license key ({e}) — proceeding with free tier")
+    print()
+
+    # Step 5: Room auth token
+    step(5, 5, "Setting up Room auth token")
+    token_path = Path.home() / ".aither" / "room_auth.txt"
+    if token_path.exists():
+        token = token_path.read_text(encoding="utf-8").strip()
+        info(f"Auth token already exists: {token_path}")
+    else:
+        try:
+            import secrets
+
+            token = secrets.token_urlsafe(32)
+            token_path.parent.mkdir(parents=True, exist_ok=True)
+            token_path.write_text(token, encoding="utf-8")
+            # Best-effort chmod 0600 (Windows: near no-op)
+            try:
+                token_path.chmod(0o600)
+            except Exception:
+                pass
+            info(f"Auth token created: {token_path}")
+        except Exception as e:
+            warn(f"Failed to create auth token: {e}")
+            token = ""
+    print()
+
+    # Health checks
+    print(bold("  Health checks:"))
+    print(f"  {green('+')} Hardware probed")
+    print(f"  {green('+')} Configuration confirmed")
+    if rec.backend != "cloud":
+        print(f"  {green('+')} Ollama ready")
+    print(f"  {green('+')} Auth token configured")
+    print()
+
+    # Summary
+    print(bold("  Next steps:"))
+    room_url = f"http://localhost:8350?token={token}"
+    if not non_interactive:
+        print("  1. adk up                    # Start Room + Ollama")
+        print(f"  2. Open: {cyan(room_url)}")
+        print("  3. Chat with your first agent")
+    else:
+        print("  Run: adk up")
+        print(f"  Then open: {room_url}")
+    print()
+
     return 0

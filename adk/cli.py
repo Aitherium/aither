@@ -120,16 +120,16 @@ def cmd_init(args):
     )
 
     print(f"Created AitherADK project at {target}/")
-    print(f"  agent.py   — Your agent definition")
-    print(f"  config.yaml — Configuration")
-    print(f"  tools.py   — Custom tools")
+    print("  agent.py   — Your agent definition")
+    print("  config.yaml — Configuration")
+    print("  tools.py   — Custom tools")
     print()
-    print(f"Next steps:")
+    print("Next steps:")
     print(f"  cd {target}")
-    print(f"  adk run              # Start the server")
-    print(f"  python agent.py      # Run directly")
+    print("  adk run              # Start the server")
+    print("  python agent.py      # Run directly")
     print()
-    print(f"Using an AI agent? Run `adk agent-prompt` for a copy-paste setup guide.")
+    print("Using an AI agent? Run `adk agent-prompt` for a copy-paste setup guide.")
 
     # OpenClaw detection — prompt integration if detected
     openclaw_dir = Path.home() / ".openclaw"
@@ -149,8 +149,8 @@ def cmd_init(args):
         )
         if not aither_integrated:
             print()
-            print(f"  OpenClaw detected! Connect it to AitherOS agents:")
-            print(f"  aither integrate openclaw")
+            print("  OpenClaw detected! Connect it to AitherOS agents:")
+            print("  aither integrate openclaw")
 
     return 0
 
@@ -261,11 +261,11 @@ def cmd_create_app(args):
         print()
         print("Next: connect to AitherOS backend for inference:")
         print(f"  cd {output}")
-        print(f"  .DEPLOYMENT/scripts/compose.sh aitheros -f docker-compose.yml up -d")
+        print("  .DEPLOYMENT/scripts/compose.sh aitheros -f docker-compose.yml up -d")
         print()
         print("Or standalone (local LLM):")
         print(f"  cd {output}")
-        print(f"  docker compose up -d")
+        print("  docker compose up -d")
     return result.returncode
 
 
@@ -377,8 +377,8 @@ def cmd_workspace(args):
             print()
             print("Next steps:")
             print(f"  unzip {output}")
-            print(f"  cd aitheros-devws-*/")
-            print(f"  docker compose up -d")
+            print("  cd aitheros-devws-*/")
+            print("  docker compose up -d")
             return 0
         except urllib.error.HTTPError as e:
             print(f"Error ({e.code}): {e.reason}")
@@ -460,6 +460,85 @@ def cmd_run(args):
     server_main()
 
 
+def cmd_up(args):
+    """Start the consumer stack (Room + Ollama) as native processes.
+
+    Supervises AitherRoom (:8350) and Ollama (:11434) as foreground processes
+    with health checks, crash restarts, and graceful shutdown on Ctrl+C.
+    """
+    from adk.process_supervisor import ProcessSpec, ProcessSupervisor, resolve_room_launch_target
+
+    supervisor = ProcessSupervisor()
+
+    # Gather specs
+    specs = []
+
+    # Room service (if launch target resolvable)
+    # Resolution order: env var → installed package → repo checkout → binary
+    room_target = resolve_room_launch_target()
+    if room_target:
+        # Determine if target is a binary or a Python module
+        target_path = Path(room_target)
+        if target_path.exists() and target_path.is_file():
+            # Binary: run directly
+            room_spec = ProcessSpec(
+                name="AitherRoom",
+                argv=[str(target_path)],
+                port=8350,
+                health_url="http://127.0.0.1:8350/health",
+                description="Company agent room service (binary)",
+            )
+        else:
+            # Python module: run via uvicorn
+            room_spec = ProcessSpec(
+                name="AitherRoom",
+                argv=[
+                    sys.executable,
+                    "-m",
+                    "uvicorn",
+                    room_target,
+                    "--host",
+                    "127.0.0.1",
+                    "--port",
+                    "8350",
+                ],
+                port=8350,
+                health_url="http://127.0.0.1:8350/health",
+                description="Company agent room service (Python)",
+            )
+        specs.append(room_spec)
+    else:
+        print("Warning: AitherRoom not found — Room service will not start.")
+        print("Tried: 1) cached in ~/.aither/bin/, 2) download from GitHub,")
+        print("       3) bundled in adk/room_binaries/<platform>/.")
+        print(
+            "Ensure CI populates bundled binaries or set "
+            "AITHER_ROOM_LAUNCH_TARGET to a dev module path."
+        )
+
+    # Ollama (if installed)
+    if os.path.exists(os.path.expanduser("~/.ollama")):
+        ollama_spec = ProcessSpec(
+            name="Ollama",
+            argv=["ollama", "serve"],
+            port=11434,
+            health_url="http://127.0.0.1:11434/api/tags",
+            description="Local model serving",
+        )
+        specs.append(ollama_spec)
+
+    if not specs:
+        print("Error: No services available to start.")
+        print("Ensure Ollama is installed and Room is available.")
+        return 1
+
+    # Start supervision
+    print()
+    print("Starting AitherOS consumer stack...")
+    print()
+    supervisor.supervise(specs, interval=10)
+
+
 def cmd_register(args):
     """Register a new Aitherium account."""
     import asyncio
@@ -496,11 +575,11 @@ def cmd_register(args):
 
         if api_key:
             save_saved_config({"api_key": api_key, "email": email})
-            print(f"  API key saved to ~/.aither/config.json")
+            print("  API key saved to ~/.aither/config.json")
 
         print()
         print(f"  Account created (user_id: {user_id}).")
-        print(f"  Check your email to verify, then run: aither connect")
+        print("  Check your email to verify, then run: aither connect")
         return 0
 
     return asyncio.run(_register())
@@ -632,7 +711,7 @@ def _device_flow_login(identity_url: str, client_name: str = "adk") -> dict:
     print(f"  Your code: {user_code}")
     print()
     print(f"  Opening browser to: {verification_uri}")
-    print(f"  (If it doesn't open, visit the URL manually and enter the code)")
+    print("  (If it doesn't open, visit the URL manually and enter the code)")
     print()
 
     try:
@@ -640,7 +719,7 @@ def _device_flow_login(identity_url: str, client_name: str = "adk") -> dict:
     except OSError:
         pass  # Browser open is best-effort
 
-    print(f"  Waiting for approval", end="", flush=True)
+    print("  Waiting for approval", end="", flush=True)
 
     # Step 3: Poll for token
     deadline = time.time() + expires_in
@@ -803,7 +882,7 @@ def cmd_whoami(args) -> int:
         if len(api_key) > 16:
             print(f"  API key:   {api_key[:12]}...{api_key[-4:]}")
         else:
-            print(f"  API key:   (set)")
+            print("  API key:   (set)")
     if tenant_id:
         print(f"  Tenant:    {tenant_id}")
     if backend:
@@ -911,7 +990,6 @@ def cmd_connect(args):
             api_key = saved.get("api_key", "")
 
         gateway_ok = False
-        inference_ok = False
         models_available = []
         balance_info = {}
 
@@ -925,7 +1003,6 @@ def cmd_connect(args):
                 }) as client:
                     resp = await client.get("https://mcp.aitherium.com/health")
                     if resp.status_code == 200:
-                        inference_ok = True
                         print("  [OK] Inference gateway: mcp.aitherium.com")
             except Exception:
                 print("  [!!] Inference gateway: unreachable")
@@ -995,12 +1072,10 @@ def cmd_connect(args):
         print("  ─────────")
 
         # Local AitherNode
-        node_ok = False
         try:
             async with httpx.AsyncClient(timeout=3.0) as client:
                 resp = await client.get("http://localhost:8080/health")
                 if resp.status_code == 200:
-                    node_ok = True
                     data = resp.json()
                     mode = data.get("mode", "unknown")
                     print(f"  [OK] AitherNode (local): port 8080, mode={mode}")
@@ -1185,7 +1260,7 @@ def cmd_aeon(args):
         print(f"\n  Aeon Group Chat — [{preset}] {names}")
         print(f"  Session: {session.session_id}")
         print(f"  Rounds: {rounds} | Synthesize: {synthesize}")
-        print(f"  Type 'quit' to exit, 'reset' to start a new session.\n")
+        print("  Type 'quit' to exit, 'reset' to start a new session.\n")
 
         while True:
             try:
@@ -1384,7 +1459,7 @@ def _onboard_agent(agent_name: str, tenant_slug: str, args) -> int:
             ts = tenant_slug
 
         if not api_key:
-            print(f"  No API key. Run 'adk login' first.")
+            print("  No API key. Run 'adk login' first.")
             return 1
 
         print()
@@ -1393,14 +1468,14 @@ def _onboard_agent(agent_name: str, tenant_slug: str, args) -> int:
         print()
 
         # 1. Check if agent is running
-        agent_url = f"http://localhost:8080"
+        agent_url = "http://localhost:8080"
         from adk.agent_registry import get_local_agent
         local_entry = get_local_agent(agent_name)
         if local_entry:
             agent_url = local_entry.get("url", agent_url)
             print(f"  [OK] Found in local registry: {agent_url}")
         else:
-            print(f"  [..] Not in local registry, checking localhost:8080...")
+            print("  [..] Not in local registry, checking localhost:8080...")
 
         import httpx
         try:
@@ -1448,8 +1523,8 @@ def _onboard_agent(agent_name: str, tenant_slug: str, args) -> int:
             if result.get("error"):
                 print(f"  [!!] Portal registration failed: {result}")
             else:
-                print(f"  [OK] Registered with portal fleet")
-        except Exception as e:
+                print("  [OK] Registered with portal fleet")
+        except Exception:
             # Fallback: direct HTTP
             try:
                 async with httpx.AsyncClient(timeout=15) as client:
@@ -1464,13 +1539,13 @@ def _onboard_agent(agent_name: str, tenant_slug: str, args) -> int:
                         },
                         headers={"Authorization": f"Bearer {api_key}"},
                     )
-                print(f"  [OK] Registered with portal fleet (direct)")
+                print("  [OK] Registered with portal fleet (direct)")
             except Exception as e2:
                 print(f"  [!!] Portal registration failed: {e2}")
 
         # 4. Print fleet URL
         print()
-        print(f"  Fleet dashboard: https://portal.aitherium.com/portal/fleet")
+        print("  Fleet dashboard: https://portal.aitherium.com/portal/fleet")
         if instance_id:
             print(f"  Instance ID:     {instance_id}")
         print()
@@ -1486,7 +1561,6 @@ def cmd_onboard(args):
 
     agent_name = getattr(args, 'agent', None) or ''
     tenant_slug = getattr(args, 'tenant', None) or os.environ.get('AITHER_TENANT_SLUG', '')
-    non_interactive = getattr(args, 'non_interactive', False) or os.environ.get('CI') == 'true'
 
     # ── Agent fleet registration mode ─────────────────────────────────
     if agent_name:
@@ -1601,7 +1675,7 @@ def cmd_onboard(args):
                 capture_output=True, text=True, timeout=5,
             )
             if result.returncode == 0 and result.stdout.strip():
-                lines = [l.strip() for l in result.stdout.strip().splitlines() if l.strip()]
+                lines = [line.strip() for line in result.stdout.strip().splitlines() if line.strip()]
                 if len(lines) > 1:
                     # Multi-GPU: show all, highlight best
                     best_vram = 0
@@ -1633,27 +1707,27 @@ def cmd_onboard(args):
 
         if not api_key:
             print(f"  {step_num}. Register for Aitherium (free)")
-            print(f"     -> aither register")
+            print("     -> aither register")
             step_num += 1
 
         if not ollama_bin and not gpu_name:
             print(f"  {step_num}. Set up inference backend")
-            print(f"     -> Install Ollama: https://ollama.com")
-            print(f"     -> Or use cloud: aither register")
+            print("     -> Install Ollama: https://ollama.com")
+            print("     -> Or use cloud: aither register")
             step_num += 1
 
         if openclaw_detected and not aither_integrated:
             print(f"  {step_num}. Connect OpenClaw to AitherOS agent fleet")
-            print(f"     -> aither integrate openclaw")
+            print("     -> aither integrate openclaw")
             step_num += 1
 
         print(f"  {step_num}. Create your first agent")
-        print(f"     -> aither init my-agent && cd my-agent && aither run")
+        print("     -> aither init my-agent && cd my-agent && aither run")
         step_num += 1
 
         if api_key:
             print(f"  {step_num}. Publish to Elysium marketplace (optional)")
-            print(f"     -> aither publish")
+            print("     -> aither publish")
             step_num += 1
 
         # ── 3. Auto-configure IDE MCP servers ────────────────
@@ -1728,10 +1802,10 @@ def cmd_onboard(args):
                     if "aitheros" not in existing.get("mcpServers", {}):
                         existing.setdefault("mcpServers", {})["aitheros"] = cursor_config["mcpServers"]["aitheros"]
                         cursor_mcp.write_text(_json.dumps(existing, indent=2), encoding="utf-8")
-                        print(f"  [OK] Cursor — AitherOS MCP added")
+                        print("  [OK] Cursor — AitherOS MCP added")
                         mcp_configured.append("cursor")
                     else:
-                        print(f"  [OK] Cursor — AitherOS MCP already configured")
+                        print("  [OK] Cursor — AitherOS MCP already configured")
                         mcp_configured.append("cursor")
                 else:
                     cursor_mcp.write_text(_json.dumps(cursor_config, indent=2), encoding="utf-8")
@@ -1754,12 +1828,12 @@ def cmd_onboard(args):
                         "disabled": False,
                     }
                     oc_config_path.write_text(_json.dumps(oc_config, indent=2), encoding="utf-8")
-                    print(f"  [OK] OpenClaw — AitherOS MCP added")
+                    print("  [OK] OpenClaw — AitherOS MCP added")
                     mcp_configured.append("openclaw")
             except Exception as e:
                 print(f"  [!!] OpenClaw — failed to integrate: {e}")
         elif openclaw_detected and aither_integrated:
-            print(f"  [OK] OpenClaw — already integrated")
+            print("  [OK] OpenClaw — already integrated")
             mcp_configured.append("openclaw")
 
         # VS Code — write to .vscode/mcp.json in current dir
@@ -1773,7 +1847,7 @@ def cmd_onboard(args):
                             "aitheros": {"url": f"{mcp_url}/sse"}
                         }
                     }, indent=2), encoding="utf-8")
-                    print(f"  [OK] VS Code — MCP configured in .vscode/mcp.json")
+                    print("  [OK] VS Code — MCP configured in .vscode/mcp.json")
                     mcp_configured.append("vscode")
                 except Exception:
                     pass
@@ -1839,7 +1913,7 @@ def cmd_integrate(args):
         return 0
     else:
         print(f"  Unknown integration target: {target}")
-        print(f"  Run 'aither integrate list' to see available integrations")
+        print("  Run 'aither integrate list' to see available integrations")
         return 1
 
 
@@ -2243,7 +2317,7 @@ def cmd_publish(args):
         print("  " + "=" * 50)
         print(f"  PUBLISHED: {agent_name}")
         print(f"  Marketplace: https://aitherium.com/marketplace/{agent_name}")
-        print(f"  Status: pending_review")
+        print("  Status: pending_review")
         print()
         print("  Your agent will be reviewed and listed within 24 hours.")
         print()
@@ -2350,7 +2424,7 @@ def cmd_backend(args):
             cfg = Config.from_env()
             router = LLMRouter(config=cfg)
             try:
-                provider = await router.get_provider()
+                await router.get_provider()
                 print(f"Provider: {router.provider_name}")
                 resp = await router.chat(
                     [{"role": "user", "content": "Say 'hello' in one word."}],
@@ -2441,7 +2515,7 @@ def _test_provider_key(provider: str, key: str) -> tuple:
                 "https://api.anthropic.com/v1/messages",
                 data=payload, headers=headers, method="POST",
             )
-            with urllib.request.urlopen(req, timeout=15) as resp:
+            with urllib.request.urlopen(req, timeout=15):
                 return True, "Key valid"
         except urllib.error.HTTPError as e:
             if e.code == 401:
@@ -2455,7 +2529,7 @@ def _test_provider_key(provider: str, key: str) -> tuple:
         headers["Authorization"] = f"Bearer {key}"
         try:
             req = urllib.request.Request(test_url, headers=headers)
-            with urllib.request.urlopen(req, timeout=15) as resp:
+            with urllib.request.urlopen(req, timeout=15):
                 return True, "Key valid"
         except urllib.error.HTTPError as e:
             if e.code == 401:
@@ -2545,7 +2619,7 @@ def cmd_keys(args):
 
         # Try to push to vault
         if _push_key_to_vault(provider, key):
-            print(f"  Synced to AitherSecrets vault")
+            print("  Synced to AitherSecrets vault")
         return 0
 
     elif sub == "list":
@@ -2630,7 +2704,7 @@ def cmd_keys(args):
                 icon = "+" if ok else "x"
                 print(f"    [{icon}] {msg}")
                 if _push_key_to_vault(pname, val):
-                    print(f"    Synced to vault")
+                    print("    Synced to vault")
 
         if changed:
             _save_provider_keys(keys)
@@ -2893,11 +2967,11 @@ def cmd_grid(args) -> int:
         username = saved.get("username", "")
         if api_key:
             print(f"  Auth:     {username or 'logged in'} (tenant: {tenant or 'default'})")
-            print(f"  Sync:     adk grid sync → portal.aitherium.com")
+            print("  Sync:     adk grid sync → portal.aitherium.com")
         else:
             print("  Account:  none (everything works locally without one)")
-            print(f"  Optional: adk login → free account, enables config sync across machines")
-            print(f"            https://portal.aitherium.com/signup")
+            print("  Optional: adk login → free account, enables config sync across machines")
+            print("            https://portal.aitherium.com/signup")
 
         # Health check all nodes
         print()
@@ -2948,8 +3022,8 @@ def cmd_grid(args) -> int:
         # Quick health check
         _grid_test_node(host, port)
 
-        print(f"\n  Config saved to ~/.aither/config.json")
-        print(f"  Sync to cloud: adk grid sync")
+        print("\n  Config saved to ~/.aither/config.json")
+        print("  Sync to cloud: adk grid sync")
         return 0
 
     elif sub == "remove":
@@ -3030,7 +3104,7 @@ def cmd_grid(args) -> int:
             )
             if ok:
                 print(f"  Grid config synced to workspace (tenant: {tenant or 'default'})")
-                print(f"  Pull on another machine: adk grid pull")
+                print("  Pull on another machine: adk grid pull")
             else:
                 # Fallback: try direct gateway API
                 try:
@@ -3043,7 +3117,7 @@ def cmd_grid(args) -> int:
                             headers={"Authorization": f"Bearer {api_key}"},
                         )
                         if resp.status_code in (200, 201):
-                            print(f"  Grid config synced via gateway")
+                            print("  Grid config synced via gateway")
                             return
                 except Exception:
                     pass
@@ -3472,7 +3546,7 @@ def _check_for_updates() -> None:
 
         if latest and current and latest != current:
             print(f"\n  Update available: aither-adk {current} -> {latest}")
-            print(f"  Run: pip install --upgrade aither-adk\n")
+            print("  Run: pip install --upgrade aither-adk\n")
 
         marker.parent.mkdir(parents=True, exist_ok=True)
         marker.write_text(str(now), encoding="utf-8")
@@ -3543,7 +3617,7 @@ def cmd_costs(args):
 
             by_provider = result.get("by_provider", {})
             if by_provider:
-                print(f"\n  By Provider:")
+                print("\n  By Provider:")
                 for prov, cost in by_provider.items():
                     print(f"    {prov:15s} ${cost:.4f}")
 
@@ -3577,8 +3651,8 @@ def _show_local_costs(mode: str, period: str):
             break
 
     if not log_path:
-        print(f"\n  No cost data found (Genesis not running, no local cost log)")
-        print(f"  Costs are tracked when cloud providers are used via AitherOS")
+        print("\n  No cost data found (Genesis not running, no local cost log)")
+        print("  Costs are tracked when cloud providers are used via AitherOS")
         return
 
     total = 0.0
@@ -3645,7 +3719,7 @@ def cmd_tools(args):
                 from adk.mcp import MCPBridge
                 bridge = MCPBridge(api_key=api_key)
                 mcp_tools = await bridge.list_tools()
-                print(f"\nMCP Tools (cloud)")
+                print("\nMCP Tools (cloud)")
                 print("=" * 50)
                 for t in sorted(mcp_tools, key=lambda x: x.get("name", ""))[:20]:
                     name = t.get("name", "?")
@@ -3655,7 +3729,7 @@ def cmd_tools(args):
                     print(f"  {name:30s} {desc}{marker}")
                 print(f"\n  Total: {len(mcp_tools)} MCP tools")
                 if getattr(args, "upgrade", False):
-                    print(f"\n  Upgrade at: https://portal.aitherium.com/pricing")
+                    print("\n  Upgrade at: https://portal.aitherium.com/pricing")
             except Exception as e:
                 print(f"\n  MCP: not available ({e})")
         else:
@@ -3956,7 +4030,7 @@ def cmd_quickstart(args):
     saved = load_saved_config()
     if saved.get("setup_backend"):
         print(f"  Already configured: {saved.get('setup_backend')} backend")
-        print(f"  Run 'adk doctor' to check health, or 'adk start' to begin.")
+        print("  Run 'adk doctor' to check health, or 'adk start' to begin.")
         print()
         return 0
 
@@ -4047,7 +4121,7 @@ def cmd_quickstart(args):
             preset = "balanced"
 
         print(f"  Auto-selected preset: {preset}")
-        print(f"  (Change later with: adk routing preset <budget|balanced|quality>)")
+        print("  (Change later with: adk routing preset <budget|balanced|quality>)")
 
         # Apply preset
         class RoutingArgs:
@@ -4066,18 +4140,18 @@ def cmd_quickstart(args):
         print()
         print("  Step 2.5: Cloud Memory")
         print("  " + "-" * 38)
-        _GATEWAY_URL = "https://gateway.aitherium.com"
+        gateway_url = "https://gateway.aitherium.com"
         try:
             import httpx as _httpx
             _mem_resp = _httpx.post(
-                f"{_GATEWAY_URL}/v1/memory/teach",
+                f"{gateway_url}/v1/memory/teach",
                 json={"content": "adk_quickstart_test", "category": "system"},
                 timeout=5.0,
             )
             if _mem_resp.status_code in (200, 201):
                 print("  Cloud memory: connected")
                 save_saved_config({
-                    "spirit_url": _GATEWAY_URL,
+                    "spirit_url": gateway_url,
                     "spirit_teach_path": "/v1/memory/teach",
                     "spirit_recall_path": "/v1/memory/recall",
                 })
@@ -4287,18 +4361,18 @@ def cmd_start(args):
 
     # ── Banner ──────────────────────────────────────────────────────
     print()
-    print(f"  AitherADK")
-    print(f"  =========")
+    print("  AitherADK")
+    print("  =========")
     print()
 
     # ── Step 1: Detect project ──────────────────────────────────────
-    _SKIP = {".git", "__pycache__", "node_modules", ".venv", "venv",
-             ".tox", "dist", "build", ".mypy_cache", "site-packages"}
+    skip_dirs = {".git", "__pycache__", "node_modules", ".venv", "venv",
+                 ".tox", "dist", "build", ".mypy_cache", "site-packages"}
 
     def _count_files(root, ext):
         count = 0
         for dirpath, dirnames, filenames in os.walk(root):
-            dirnames[:] = [d for d in dirnames if d not in _SKIP]
+            dirnames[:] = [d for d in dirnames if d not in skip_dirs]
             count += sum(1 for f in filenames if f.endswith(ext))
             if count > 5000:
                 break  # Good enough
@@ -4309,7 +4383,6 @@ def cmd_start(args):
     js_count = _count_files(target, ".js")
 
     # Count all file types for a richer picture
-    all_count = sum(1 for _ in os.scandir(target) if _.is_file())
     md_count = _count_files(target, ".md")
     txt_count = _count_files(target, ".txt")
     json_count = _count_files(target, ".json")
@@ -4357,9 +4430,9 @@ def cmd_start(args):
         elapsed = _time.perf_counter() - t0
         print(f" {stats['total_chunks']:,} chunks in {elapsed:.1f}s")
     elif total_files > 0:
-        print(f"  Code index: Skipped (no Python files -- code search works with Python)")
+        print("  Code index: Skipped (no Python files -- code search works with Python)")
     else:
-        print(f"  Code index: Skipped (empty directory)")
+        print("  Code index: Skipped (empty directory)")
 
     # ── Step 4: Set up memory ───────────────────────────────────────
     # Suppress noisy warnings for casual use
@@ -4679,7 +4752,7 @@ def cmd_index(args):
         print(f"  Avg complexity:   {metrics['avg_complexity']}")
         print(f"  Test functions:   {metrics['test_functions']:,}")
         if metrics.get("top_complex_files"):
-            print(f"  Most complex:")
+            print("  Most complex:")
             for name, cx in metrics["top_complex_files"][:5]:
                 print(f"    {name}: {cx}")
 
@@ -4695,7 +4768,7 @@ def cmd_index(args):
     print("Done! Use in your agent:")
     print()
     print("    from adk.faculties import CodeGraph")
-    print(f"    cg = CodeGraph()")
+    print("    cg = CodeGraph()")
     print(f"    await cg.index_codebase(\"{target}\")")
     print("    agent.set_code_graph(cg)")
     return 0
@@ -4723,7 +4796,7 @@ def _connect_elysium(args):
             print(f"  [!!] Connection failed: {result.get('error', 'unknown')}")
             return 1
 
-        print(f"  [OK] Genesis reachable")
+        print("  [OK] Genesis reachable")
 
         if result.get("token"):
             print(f"  [OK] Node token: {result['token'][:16]}...")
@@ -4731,12 +4804,12 @@ def _connect_elysium(args):
         if result.get("mesh_joined"):
             print(f"  [OK] Mesh joined (node: {result.get('node_id', 'unknown')[:16]})")
         else:
-            print(f"  [--] Mesh join: skipped or failed")
+            print("  [--] Mesh join: skipped or failed")
 
         if result.get("wireguard"):
-            print(f"  [OK] WireGuard tunnel active")
+            print("  [OK] WireGuard tunnel active")
         else:
-            print(f"  [--] WireGuard: not configured (direct LAN is fine)")
+            print("  [--] WireGuard: not configured (direct LAN is fine)")
 
         print(f"  [OK] Remote inference: {result.get('core_llm_url', 'N/A')}")
         print(f"  [OK] Config saved to {result.get('config_saved', '~/.aither/config.json')}")
@@ -4799,7 +4872,7 @@ def _admin_create_token(args):
                     node_id = data.get("node_id", "")
 
                     print()
-                    print(f"  [OK] Token created!")
+                    print("  [OK] Token created!")
                     print(f"  Node ID: {node_id}")
                     print(f"  Token:   {token}")
                     print()
@@ -5165,12 +5238,12 @@ def _cmd_pack(args) -> int:
         pack_id = args.pack_id
 
         # Deploy-based packs (grid, sovereign) — redirect to deploy command
-        _DEPLOY_PACKS = {
+        deploy_packs = {
             "grid-distributed": ("grid", "adk deploy grid"),
             "grid": ("grid", "adk deploy grid"),
         }
-        if pack_id in _DEPLOY_PACKS:
-            component, hint = _DEPLOY_PACKS[pack_id]
+        if pack_id in deploy_packs:
+            component, hint = deploy_packs[pack_id]
             print(f"\n  {pack_id} is an infrastructure pack — installing via deploy.\n")
             print(f"  Running: {hint}")
             print()
@@ -5624,10 +5697,10 @@ def _cmd_soul(args) -> int:
     sub = getattr(args, "soul_command", None)
 
     if sub == "import":
-        from pathlib import Path as _P
+        from pathlib import Path
         from adk.identity import load_soul_md, Identity
 
-        path = _P(args.path)
+        path = Path(args.path)
         if not path.exists():
             print(f"File not found: {path}")
             return 1
@@ -5644,7 +5717,7 @@ def _cmd_soul(args) -> int:
 
         # Save as YAML
         import yaml
-        out_path = _P("identities") / f"{identity.name}.yaml"
+        out_path = Path("identities") / f"{identity.name}.yaml"
         out_path.parent.mkdir(exist_ok=True)
         data = {
             "name": identity.name,
@@ -5780,7 +5853,7 @@ def _cmd_train(args) -> int:
         readiness = _api("GET", "/training/pipeline/readiness")
 
         print()
-        print(f"  Training Dashboard")
+        print("  Training Dashboard")
         print(f"  {'='*40}")
         print(f"  Total Runs:     {dashboard.get('total_runs', 0)}")
         print(f"  Active Runs:    {dashboard.get('active_runs', 0)}")
@@ -5909,7 +5982,7 @@ def _cmd_train(args) -> int:
         print(f"  GPU registered: {gpu_model} ({vram}GB) at {host}:{port}")
         if node_id:
             print(f"  Node ID: {node_id}")
-        print(f"  This GPU is now available for training via 'adk train launch --gpu customer'")
+        print("  This GPU is now available for training via 'adk train launch --gpu customer'")
         return 0
 
     else:
@@ -6038,6 +6111,16 @@ def _register_commands(sub):
     run_p.add_argument("-a", "--agents", help="Comma-separated agent identities")
     run_p.add_argument("--mesh", action="store_true",
                        help="Enable mesh hosting (advertise tools/inference to connected desktop)")
+
+    # adk up — supervise consumer stack
+    up_p = sub.add_parser("up", help="Start consumer stack (Room + Ollama) as native processes")
+    up_p.add_argument("--interval", type=int, default=10,
+                      help="Health check interval in seconds (default: 10)")
+
+    # adk wizard — first-run setup
+    wizard_p = sub.add_parser("wizard", help="First-run wizard — hardware detection, setup recommendations, auth token")
+    wizard_p.add_argument("--yes", action="store_true",
+                         help="Non-interactive mode: accept defaults without prompts")
 
     # aither register
     register_p = sub.add_parser("register", help="Create a new Aitherium account")
@@ -6329,7 +6412,7 @@ def _register_commands(sub):
     test_p.add_argument("--coverage", action="store_true", help="Show coverage report")
 
     # adk status
-    status_p = sub.add_parser("status", help="Show backend and service status")
+    _ = sub.add_parser("status", help="Show backend and service status")
 
     # adk publish — submit to Elysium marketplace
     publish_p = sub.add_parser("publish", help="Publish agent to Elysium marketplace")
@@ -6538,6 +6621,27 @@ def _register_commands(sub):
     soul_export_p = soul_sub.add_parser("export", help="Export identity as SOUL.md")
     soul_export_p.add_argument("name", help="Identity name to export")
 
+    # adk doc — encrypted document storage
+    doc_p = sub.add_parser("doc", help="Manage encrypted documents (upload, list, download, delete)")
+    doc_sub = doc_p.add_subparsers(dest="doc_command")
+    doc_upload_p = doc_sub.add_parser("upload", help="Upload and encrypt a document")
+    doc_upload_p.add_argument("path", help="Path to document file")
+    doc_upload_p.add_argument("--type", help="Document MIME type (optional, e.g. application/pdf)")
+    doc_upload_p.add_argument("--gateway", help="Gateway/Genesis URL (default: http://localhost:8001)")
+    doc_upload_p.add_argument("--api-key", help="API key (or set AITHER_API_KEY env var)")
+    doc_list_p = doc_sub.add_parser("list", help="List your encrypted documents")
+    doc_list_p.add_argument("--gateway", help="Gateway/Genesis URL (default: http://localhost:8001)")
+    doc_list_p.add_argument("--api-key", help="API key (or set AITHER_API_KEY env var)")
+    doc_get_p = doc_sub.add_parser("get", help="Download and decrypt a document")
+    doc_get_p.add_argument("doc_id", help="Document UUID")
+    doc_get_p.add_argument("-o", "--output", help="Output file path (required)")
+    doc_get_p.add_argument("--gateway", help="Gateway/Genesis URL (default: http://localhost:8001)")
+    doc_get_p.add_argument("--api-key", help="API key (or set AITHER_API_KEY env var)")
+    doc_delete_p = doc_sub.add_parser("delete", help="Delete a document")
+    doc_delete_p.add_argument("doc_id", help="Document UUID")
+    doc_delete_p.add_argument("--gateway", help="Gateway/Genesis URL (default: http://localhost:8001)")
+    doc_delete_p.add_argument("--api-key", help="API key (or set AITHER_API_KEY env var)")
+
     # adk mcp — MCP server (stdio for Claude Code, or config helper)
     mcp_p = sub.add_parser("mcp", help="MCP server, IDE setup, and cloud gateway connection")
     mcp_sub = mcp_p.add_subparsers(dest="mcp_command")
@@ -6603,7 +6707,7 @@ def _register_commands(sub):
     listen_note_p.add_argument("--backend", default="wasapi", choices=["wasapi", "pulse", "sounddevice"])
     listen_note_p.add_argument("--workspace", help="Auto-save to workspace ID")
 
-    listen_sessions_p = listen_sub.add_parser("sessions", help="List active listening sessions")
+    _ = listen_sub.add_parser("sessions", help="List active listening sessions")
     listen_stop_p = listen_sub.add_parser("stop", help="Stop a listening session")
     listen_stop_p.add_argument("session_id", help="Session ID (partial match supported)")
 
@@ -6630,7 +6734,7 @@ def _register_commands(sub):
     train_p = sub.add_parser("train", help="Manage model training (launch, monitor, cancel)")
     train_sub = train_p.add_subparsers(dest="train_command")
 
-    train_status_p = train_sub.add_parser("status", help="Check training readiness and active runs")
+    _ = train_sub.add_parser("status", help="Check training readiness and active runs")
 
     train_launch_p = train_sub.add_parser("launch", help="Launch a training run")
     train_launch_p.add_argument("--preset", "-p", default="nemotron-orchestrator-8b",
@@ -6776,6 +6880,11 @@ def main():
         sys.exit(cmd_new(args))
     elif args.command == "run":
         cmd_run(args)
+    elif args.command == "up":
+        sys.exit(cmd_up(args))
+    elif args.command == "wizard":
+        from adk.setup_cli import cmd_wizard
+        sys.exit(cmd_wizard(args))
     elif args.command == "register":
         sys.exit(cmd_register(args))
     elif args.command == "login":
@@ -6858,6 +6967,9 @@ def main():
         sys.exit(_cmd_skills(args))
     elif args.command == "soul":
         sys.exit(_cmd_soul(args))
+    elif args.command == "doc":
+        from adk.doc import cmd_doc
+        sys.exit(cmd_doc(args))
     elif args.command == "mcp":
         mcp_cmd = getattr(args, "mcp_command", None)
         if mcp_cmd == "serve":

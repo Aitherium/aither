@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "aither-adk"
-version = "2.7.0"
+version = "2.8.0"
 description = "Build AI agents with real memory + faculties on any backend, local or cloud. Open-core: free local runtime with typed memory, knowledge graph, code graph and ReAct; paid tiers (portal.aitherium.com) unlock fleets, channels, reasoning and marketplace packs."
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -130,6 +130,10 @@ packages = ["adk"]
 [tool.hatch.build.targets.wheel.force-include]
 "docker-compose.adk-vllm.yml" = "adk/docker-compose.adk-vllm.yml"
 "agent.yaml" = "adk/workspace-agent.yaml"
+
+[tool.hatch.build.targets.wheel.targets.data]
+"adk/shell_binaries" = "adk/shell_binaries"
+"adk/room_binaries" = "adk/room_binaries"
 
 
 [tool.pytest.ini_options]

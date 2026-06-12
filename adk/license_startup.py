@@ -39,13 +39,18 @@ def gate_startup(product: str = "aither", require_license: bool = False):
     Returns the resolved ``adk.licensing.License`` (or ``None`` if licensing is
     unavailable). Never raises unless a paid license is required and absent — startup
     gating must not crash a product over a transient resolution issue.
+
+    Provides three specific guidance messages:
+      (a) No license anywhere → community tier, free but limited
+      (b) License key/file provided but signature invalid → loud warning, free tier
+      (c) License file corrupt/unparseable → clear error, free tier
     """
     if product in _gated_products:
         return None
     _gated_products.add(product)
 
     try:
-        from adk.licensing import LicenseError, get_license_manager
+        from adk.licensing import LicenseError, get_license_manager, Tier
     except Exception as exc:  # licensing module unavailable — do not block startup
         logger.debug("license gate skipped (%s unavailable): %s", product, exc)
         return None
@@ -55,11 +60,29 @@ def gate_startup(product: str = "aither", require_license: bool = False):
     ent = lic.entitlements
     tier = lic.tier.value
 
-    logger.info(
-        "%s startup: tier=%s tenant=%s source=%s max_effort=%s monthly_tokens=%s",
-        product, tier, lic.tenant_id or "-", lic.source, ent.max_effort,
-        ent.monthly_token_limit or "unlimited",
-    )
+    # Distinguish three startup cases with specific guidance
+    if lic.source == "default":
+        # Case (a): no license provided anywhere
+        logger.info(
+            "%s startup (no license): tier=%s, limited to 100k tokens/month on our cloud. "
+            "For local/BYO-key unlimited, upgrade at portal.aitherium.com (sovereign=$1000/perpetual).",
+            product, tier,
+        )
+    elif lic.source in ("env", "file") and lic.tier == Tier.COMMUNITY:
+        # Case (b): key/file was provided but signature failed or key placeholder not set
+        logger.warning(
+            "%s: license signature INVALID (source=%s) — falling back to free tier. "
+            "If the key is correct, check https://portal.aitherium.com/status for platform issues. "
+            "For offline testing, set AITHER_LICENSE_PUBLIC_KEY=<your-hex-key>.",
+            product, lic.source,
+        )
+    else:
+        # Case (c): license parsed successfully, or tier > community
+        logger.info(
+            "%s startup: tier=%s tenant=%s source=%s max_effort=%s monthly_tokens=%s",
+            product, tier, lic.tenant_id or "-", lic.source, ent.max_effort,
+            ent.monthly_token_limit or "unlimited",
+        )
 
     require = require_license or _env_true("AITHER_LICENSE_REQUIRE")
     if require and tier == "community":
