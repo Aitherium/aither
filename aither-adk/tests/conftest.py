@@ -27,7 +27,7 @@ def _isolated_load_saved_config(config_path=None):
 
 
 @pytest.fixture(autouse=True)
-def _isolate_env(monkeypatch):
+def _isolate_env(monkeypatch, tmp_path):
     """Strip AitherOS credentials from the environment for every test.
 
     Also patches load_saved_config so the default path (~/.aither/config.yaml)
@@ -43,6 +43,22 @@ def _isolate_env(monkeypatch):
     for var in _ISOLATION_VARS:
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr("adk.config.load_saved_config", _isolated_load_saved_config)
+
+    # Isolate ALL on-disk state (GraphMemory writes to AITHER_DATA_DIR/{agent}.db,
+    # NOT the per-test Memory db) so prior runs don't pollute a "fresh" agent's
+    # graph — otherwise a memory-question recalls its own past asks and self-grounds.
+    monkeypatch.setenv("AITHER_DATA_DIR", str(tmp_path / ".aither"))
+
+    # Isolate the operator-blind companion vault: tests must NOT read the dev
+    # machine's ~/.aither persona, which would swap every agent's identity into
+    # the companion. Tests that exercise the companion patch this explicitly.
+    monkeypatch.setattr("adk.private_companion.get_companion_vault",
+                        lambda *a, **k: None, raising=False)
+    try:
+        import adk.private_companion as _pc
+        _pc._vault = None
+    except Exception:
+        pass
 
     monkeypatch.setenv("AITHER_TENANT_SLUG", "aitherium")
     try:

@@ -15,6 +15,7 @@ from .base import (
     llm_retry,
     strip_internal_tags,
 )
+from .continuation import run_continuation, stitch
 
 if TYPE_CHECKING:
     from adk.config import Config
@@ -32,6 +33,8 @@ __all__ = [
     "StreamChunk",
     "ToolCall",
     "llm_retry",
+    "run_continuation",
+    "stitch",
     "strip_internal_tags",
 ]
 
@@ -934,6 +937,31 @@ class LLMRouter:
             resp.effort_level = effort
         self._log_cost(resp, self._provider_name)
         return resp
+
+    async def chat_with_continuation(
+        self,
+        messages: list[Message],
+        *,
+        max_continuations: int | None = None,
+        max_total_output_tokens: int | None = None,
+        **chat_kwargs,
+    ) -> LLMResponse:
+        """``chat()`` that auto-continues+stitches a completion truncated at the
+        output token cap. Router-level parity with ``LLMProvider`` so any
+        call-site holding the router (not just the ReAct loop) inherits the one
+        shared continuation primitive (``adk.llm.continuation``)."""
+        from .continuation import run_continuation
+
+        first = await self.chat(messages, **chat_kwargs)
+
+        async def _again(_msgs: list[Message]) -> LLMResponse:
+            return await self.chat(_msgs, **chat_kwargs)
+
+        return await run_continuation(
+            _again, messages, first,
+            max_continuations=max_continuations,
+            max_total_output_tokens=max_total_output_tokens,
+        )
 
     async def chat_stream(
         self,

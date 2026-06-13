@@ -2,6 +2,30 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [2.9.0] - 2026-06-13
+
+### Added — universal LLM continuation primitive (`adk/llm/continuation.py`)
+- **`run_continuation()` + `stitch()`** — one shared continue-until-complete primitive. When a
+  completion stops because it hit the output token cap (`finish_reason == "length"`), it continues
+  the generation and STITCHES the chunks (overlap-dedup + restart-detect) into a complete answer,
+  instead of every call-site hand-rolling its own retry. Bounded three ways (max rounds AND total
+  output ceiling AND a no-growth break), and it never mutates the caller's message history.
+- **`LLMProvider.chat_with_continuation()`** and **`LLMRouter.chat_with_continuation()`** — every
+  provider AND the router inherit the primitive, so any call-site gets continuation for free.
+- Kill-switch `ADK_LLM_CONTINUATION=off`; tunables `ADK_LLM_MAX_CONTINUATIONS`,
+  `ADK_LLM_MAX_TOTAL_OUTPUT_TOKENS` (defaults: 2 rounds / 8192 tokens).
+
+### Changed
+- The ReAct loop's truncation recovery now uses the shared primitive. The previous inline
+  doubling-retry REPLACED the partial response (losing earlier text in `resp.content`) and injected
+  continuation scaffolding into the live message history; it now STITCHES and leaves history clean.
+  Tool-call turns are never continued as text.
+
+### Included — previously-committed-but-unreleased changes
+- 2.8.2: TLS verification on by default (`verify=False` removed).
+- 2.8.1: baked license + pack-signing public keys.
+- 2.8.0: version-bump release.
+
 ## [2.7.0] - 2026-06-05
 
 ### Added — provider-agnostic LLM cost levers (at the `LLMProvider` ABC)
