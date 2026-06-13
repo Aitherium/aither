@@ -10,6 +10,7 @@ import logging
 import os
 import uuid
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
 
 from adk.formbridge.mapper import CHECKBOX_ON, FillResolution, MappingError, MappingPack
@@ -23,6 +24,13 @@ try:  # graceful when the extra isn't installed — mirror adk's voice/graphs pa
     HAS_PYPDF = True
 except ImportError:  # pragma: no cover - environment dependent
     HAS_PYPDF = False
+
+try:  # overlay mode (flat scans) additionally needs fpdf2
+    from fpdf import FPDF
+
+    HAS_FPDF = True
+except ImportError:  # pragma: no cover - environment dependent
+    HAS_FPDF = False
 
 
 def _require_pypdf() -> None:
@@ -69,6 +77,75 @@ class FillResult:
     unknown_pdf_fields: list[str]  # mapping referenced fields the template lacks
 
 
+def _fill_overlay(
+    pack: MappingPack,
+    resolution: FillResolution,
+    template: Path,
+    out_dir: Path | None,
+) -> FillResult:
+    """Overlay mode — draw resolved values at x/y onto a flat (scanned) form.
+
+    Coordinates are PDF POINTS measured from the TOP-LEFT of each page (how
+    you'd measure from a screenshot). Checkbox values draw an X; /Off draws
+    nothing. Optional per-entry: page (0-based, default 0), size (pt, default 10).
+    """
+    if not HAS_FPDF:
+        raise MappingError(
+            "fpdf2 is not installed — overlay forms need the pdf extra: pip install 'aither-adk[pdf]'"
+        )
+    form = pack.form(resolution.form_id)
+    coords = {e["pdf_field"]: e for e in form.fill}
+
+    reader = PdfReader(str(template))
+    page_sizes = [
+        (float(p.mediabox.width), float(p.mediabox.height)) for p in reader.pages
+    ]
+
+    overlay = FPDF(unit="pt", format=page_sizes[0])
+    overlay.set_auto_page_break(False)
+    overlay.set_font("Helvetica", size=10)
+    for w, h in page_sizes:
+        overlay.add_page(format=(w, h))
+    for name, value in resolution.values.items():
+        entry = coords.get(name) or {}
+        page_idx = int(entry.get("page", 0))
+        if page_idx >= len(page_sizes):
+            continue
+        text = "X" if value == CHECKBOX_ON else ("" if value == "/Off" else value)
+        if not text:
+            continue
+        overlay.page = page_idx + 1  # fpdf pages are 1-based
+        overlay.set_font_size(float(entry.get("size", 10)))
+        overlay.set_xy(float(entry["x"]), float(entry["y"]))
+        overlay.cell(text=text)
+
+    overlay_reader = PdfReader(BytesIO(overlay.output()))
+    writer = PdfWriter()
+    writer.append(reader)
+    # merge on writer-attached pages (merging reader pages is deprecated in pypdf)
+    for idx, page in enumerate(writer.pages):
+        if idx < len(overlay_reader.pages):
+            page.merge_page(overlay_reader.pages[idx])
+
+    job_id = uuid.uuid4().hex[:12]
+    out = (out_dir or output_dir()) / f"{resolution.form_id}-{job_id}.pdf"
+    with open(out, "wb") as fh:
+        writer.write(fh)
+
+    logger.info(
+        "formbridge: overlay-filled %s -> %s (%d fields, %d unresolved)",
+        resolution.form_id, out.name, len(resolution.values), len(resolution.unresolved),
+    )
+    return FillResult(
+        job_id=job_id,
+        output_path=str(out),
+        filled=sorted(resolution.values.keys()),
+        unresolved=resolution.unresolved,
+        llm_assist_fields=resolution.llm_assist_fields,
+        unknown_pdf_fields=[],
+    )
+
+
 def fill_pdf(
     pack: MappingPack,
     resolution: FillResolution,
@@ -78,13 +155,17 @@ def fill_pdf(
 ) -> FillResult:
     """Fill the form's template with resolved values; write to the output dir.
 
-    Checkbox values use the /Yes-/Off AcroForm convention (set by the
-    checkbox transform); everything else is written as text.
+    AcroForm mode fills named fields (checkboxes via the /Yes-/Off convention
+    set by the checkbox transform). Overlay mode (mapping `mode: overlay`)
+    draws text at x/y for flat scanned forms with no fields.
     """
     _require_pypdf()
     template = pack.template_path(resolution.form_id)
     if not template.is_file():
         raise MappingError(f"Template not found: {template}")
+
+    if pack.form(resolution.form_id).mode == "overlay":
+        return _fill_overlay(pack, resolution, template, out_dir)
 
     reader = PdfReader(str(template))
     writer = PdfWriter()

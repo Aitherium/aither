@@ -133,12 +133,37 @@ def create_formbridge_router() -> APIRouter:
                 })
         return {"forms": out}
 
+    def _translate_fields(batch: CaptureBatch) -> list[dict]:
+        """Apply the pack's source.fields capture→as map to incoming paths.
+
+        The browser capture script sends raw selector paths ("#subjective",
+        "input[name=dob]"); mapping packs declare the selector → logical-name
+        correspondence in source.fields. Unmapped paths pass through verbatim
+        so logical-name producers (tabbed-editor entries, tests, curl) work
+        unchanged.
+        """
+        packs = _load_packs()
+        selector_map: dict[str, str] = {}
+        candidates = [
+            p for p in packs.values()
+            if not batch.source_origin or p.origin == batch.source_origin.rstrip("/")
+        ] or list(packs.values())
+        for p in candidates:
+            for f in p.capture_fields:
+                cap, logical = f.get("capture"), f.get("as")
+                if cap and logical:
+                    selector_map.setdefault(cap, logical)
+        return [
+            {**f, "path": selector_map.get(str(f.get("path", "")), f.get("path"))}
+            for f in batch.fields
+        ]
+
     @router.post("/capture")
     async def capture(batch: CaptureBatch, request: Request):
         _require_loopback(request)
         written = get_store().ingest_batch(
             batch.patient_key,
-            batch.fields,
+            _translate_fields(batch),
             display_name=batch.display_name,
             source_origin=batch.source_origin,
         )

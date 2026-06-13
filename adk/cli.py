@@ -460,6 +460,33 @@ def cmd_run(args):
     server_main()
 
 
+def _sync_entitled_packs_quiet() -> None:
+    """Run a license-driven pack sync (best-effort) and print a one-line result.
+
+    Shared by `adk up` startup. Resolves the portal + saved token like
+    `adk pack sync`; a portal/auth absence is a no-op, never a hard error.
+    """
+    from adk.shell.plugins.builtins.packs import PacksPlugin
+
+    plugin = PacksPlugin()
+    portal = (
+        os.environ.get("AITHER_PORTAL_URL")
+        or os.environ.get("AITHER_ELYSIUM_URL")
+        or "https://portal.aitherium.com"
+    ).rstrip("/")
+    plugin._base_url = portal
+    cfg = load_saved_config()
+    token = cfg.get("api_key") or cfg.get("access_token") or os.environ.get("AITHER_API_KEY", "")
+    if not token:
+        return  # not authenticated → nothing to converge
+    plugin.auth.set_auth(token, cfg.get("tenant_id"))
+    result = plugin._sync([])
+    # Print only the summary line to keep startup output tight.
+    first_line = (result or "").strip().splitlines()
+    if first_line:
+        print(f"  packs: {first_line[1] if len(first_line) > 1 else first_line[0]}")
+
+
 def cmd_up(args):
     """Start the consumer stack (Room + Ollama) as native processes.
 
@@ -467,6 +494,15 @@ def cmd_up(args):
     with health checks, crash restarts, and graceful shutdown on Ctrl+C.
     """
     from adk.process_supervisor import ProcessSpec, ProcessSupervisor, resolve_room_launch_target
+
+    # Converge entitled packs first so the agent comes up with everything the
+    # customer has bought (a portal purchase → `adk up` → packs present). Opt-out
+    # with --no-sync; never block startup if the portal is unreachable.
+    if not getattr(args, "no_sync", False):
+        try:
+            _sync_entitled_packs_quiet()
+        except Exception as e:  # noqa: BLE001
+            print(f"  (pack sync skipped: {e})")
 
     supervisor = ProcessSupervisor()
 
@@ -5234,6 +5270,77 @@ def _cmd_pack(args) -> int:
         print(f"\n{len(matches)} pack(s) matching '{query}'")
         return 0
 
+    if sub == "sync":
+        # License-driven convergence: install every entitled pack not present.
+        # Delegates to the shared PacksPlugin sync (download → verify → extract).
+        try:
+            from adk.shell.plugins.builtins.packs import PacksPlugin
+        except Exception as e:  # noqa: BLE001
+            print(f"pack sync unavailable: {e}")
+            return 1
+        plugin = PacksPlugin()
+        # Customer node talks to its portal/gateway; the v1 routes live there.
+        portal = (
+            os.environ.get("AITHER_PORTAL_URL")
+            or os.environ.get("AITHER_ELYSIUM_URL")
+            or genesis_url
+            or "https://portal.aitherium.com"
+        ).rstrip("/")
+        plugin._base_url = portal
+        cfg = load_saved_config()
+        token = cfg.get("api_key") or cfg.get("access_token") or os.environ.get("AITHER_API_KEY", "")
+        if token:
+            plugin.auth.set_auth(token, cfg.get("tenant_id"))
+        sync_args = ["--dry-run"] if getattr(args, "dry_run", False) else []
+        print(plugin._sync(sync_args))
+        return 0
+
+    if sub in ("buy", "negotiate"):
+        import httpx as _httpx
+        portal = (
+            os.environ.get("AITHER_PORTAL_URL")
+            or os.environ.get("AITHER_ELYSIUM_URL")
+            or genesis_url
+            or "https://portal.aitherium.com"
+        ).rstrip("/")
+        cfg = load_saved_config()
+        token = cfg.get("api_key") or cfg.get("access_token") or os.environ.get("AITHER_API_KEY", "")
+        headers = {"Content-Type": "application/json"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+            headers["X-Aither-Api-Key"] = token
+        try:
+            if sub == "negotiate":
+                body = {"listing_id": args.pack_id, "offer_credits": int(args.offer),
+                        "rationale": getattr(args, "why", "")}
+                with _httpx.Client(timeout=30.0, verify=False) as c:
+                    r = c.post(f"{portal}/v1/marketplace/negotiate", json=body, headers=headers)
+                data = r.json() if r.content else {}
+                print(json.dumps(data, indent=2))
+                if data.get("decision") == "accept" and data.get("negotiation_token"):
+                    print(f"\nAccepted at {data.get('agreed_credits')} credits. Buy it with:")
+                    print(f"  adk pack buy {args.pack_id} --token {data['negotiation_token']} --install")
+                return 0
+            # buy
+            body = {"listing_id": args.pack_id}
+            if getattr(args, "token", ""):
+                body["negotiation_token"] = args.token
+            with _httpx.Client(timeout=60.0, verify=False) as c:
+                r = c.post(f"{portal}/v1/marketplace/purchase", json=body, headers=headers)
+            data = r.json() if r.content else {}
+            print(json.dumps(data, indent=2))
+            if r.status_code == 200 and data.get("ok") and getattr(args, "install", False):
+                from adk.shell.plugins.builtins.packs import PacksPlugin
+                p = PacksPlugin()
+                p._base_url = portal
+                if token:
+                    p.auth.set_auth(token, cfg.get("tenant_id"))
+                print("\n" + p._sync([]))
+            return 0 if r.status_code == 200 else 1
+        except Exception as e:  # noqa: BLE001
+            print(f"ERROR: {type(e).__name__}: {e}")
+            return 1
+
     if sub == "install":
         pack_id = args.pack_id
 
@@ -6116,6 +6223,8 @@ def _register_commands(sub):
     up_p = sub.add_parser("up", help="Start consumer stack (Room + Ollama) as native processes")
     up_p.add_argument("--interval", type=int, default=10,
                       help="Health check interval in seconds (default: 10)")
+    up_p.add_argument("--no-sync", action="store_true",
+                      help="Skip the license-driven pack sync before starting")
 
     # adk wizard — first-run setup
     wizard_p = sub.add_parser("wizard", help="First-run wizard — hardware detection, setup recommendations, auth token")
@@ -6589,6 +6698,20 @@ def _register_commands(sub):
     pack_search_p.add_argument("--json", dest="json_output", action="store_true", help="JSON output")
     pack_install_p = pack_sub.add_parser("install", help="Install a tool pack")
     pack_install_p.add_argument("pack_id", help="Pack ID to install")
+    pack_sync_p = pack_sub.add_parser(
+        "sync", help="Install every entitled pack not already present (license-driven)")
+    pack_sync_p.add_argument("--dry-run", "-n", action="store_true",
+                             help="Preview what would be installed without installing")
+    pack_buy_p = pack_sub.add_parser(
+        "buy", help="Autonomously buy a pack with Aitherium credits (no Stripe)")
+    pack_buy_p.add_argument("pack_id", help="Listing id to buy")
+    pack_buy_p.add_argument("--token", default="", help="Negotiation token (agreed price)")
+    pack_buy_p.add_argument("--install", action="store_true", help="Run pack sync after buying")
+    pack_neg_p = pack_sub.add_parser(
+        "negotiate", help="Haggle with the seller Broker for a better price")
+    pack_neg_p.add_argument("pack_id", help="Listing id to negotiate")
+    pack_neg_p.add_argument("--offer", type=int, required=True, help="Your offer in Aitherium credits")
+    pack_neg_p.add_argument("--why", default="", help="Optional rationale for the Broker")
     pack_remove_p = pack_sub.add_parser("remove", help="Remove an installed pack")
     pack_remove_p.add_argument("pack_id", help="Pack ID to remove")
     pack_update_p = pack_sub.add_parser("update", help="Update one or all installed packs")

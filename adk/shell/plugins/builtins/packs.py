@@ -17,6 +17,26 @@ import httpx
 from adk.shell.plugins import SlashCommand
 
 
+def _safe_extract(tar: tarfile.TarFile, path: str) -> None:
+    """Extract a tarball, rejecting any member that would escape ``path``
+    (path-traversal / absolute-path / symlink-escape defense)."""
+    base = os.path.realpath(path)
+    for member in tar.getmembers():
+        target = os.path.realpath(os.path.join(path, member.name))
+        if not (target == base or target.startswith(base + os.sep)):
+            raise ValueError(f"unsafe path in archive: {member.name}")
+        if member.issym() or member.islnk():
+            link_target = os.path.realpath(os.path.join(path, member.linkname))
+            if not (link_target == base or link_target.startswith(base + os.sep)):
+                raise ValueError(f"unsafe link in archive: {member.name}")
+    # filter="data" (py3.12+) is the hardened extraction profile; our own check
+    # above is the portable belt-and-braces for older runtimes.
+    try:
+        tar.extractall(path, filter="data")
+    except TypeError:
+        tar.extractall(path)
+
+
 class AuthStore:
     """Simple auth token storage for marketplace API calls."""
 
@@ -49,6 +69,7 @@ class PacksPlugin(SlashCommand):
       /packs info <pack-id>    Show pack details
       /packs purchase <id>     Open Stripe checkout
       /packs install <id>      Download and extract pack
+      /packs sync              Install every entitled pack not already present
       /packs library           Show purchased packs
       /packs help              Show help text
     """
@@ -97,6 +118,8 @@ class PacksPlugin(SlashCommand):
             if len(args) < 2:
                 return "ERROR: /packs install requires <pack-id>"
             return self._install(args[1], args[2:])
+        elif command == "sync":
+            return self._sync(args[1:])
         elif command == "library":
             return self._show_library()
         elif command == "help":
@@ -257,6 +280,120 @@ class PacksPlugin(SlashCommand):
         except Exception as e:
             return f"ERROR: {type(e).__name__}: {e}"
 
+    @staticmethod
+    def _packs_dir() -> Path:
+        """The local pack install root (matches agent auto-discovery)."""
+        d = Path(os.path.expanduser("~")) / ".aitheros" / "packs"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def _sync(self, args: List[str]) -> str:
+        """Install every entitled pack that isn't already present locally.
+
+        Polls the customer's active licenses from the portal, then for each
+        entitled pack not yet in ``~/.aitheros/packs/`` downloads the artifact,
+        verifies its Ed25519 signature, and extracts it. A portal purchase thus
+        converges onto this node with one command (or on `adk up`), no manual
+        per-pack install.
+        """
+        dry_run = "--dry-run" in args or "-n" in args
+        packs_root = self._packs_dir()
+
+        # 1. Entitlements: the customer's active licenses (listing_id == pack id).
+        try:
+            with httpx.Client(timeout=15.0) as client:
+                resp = client.get(
+                    f"{self._base_url}/v1/marketplace/license/mine",
+                    headers=self.auth.get_headers(),
+                )
+                resp.raise_for_status()
+                licenses = resp.json().get("licenses", [])
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code in (401, 403):
+                return "ERROR: Not authenticated. Run /auth with your portal token first."
+            return f"ERROR: Could not fetch entitlements: HTTP {e.response.status_code}"
+        except Exception as e:  # noqa: BLE001
+            return f"ERROR: Could not reach the portal: {type(e).__name__}: {e}"
+
+        entitled = sorted({
+            lic.get("listing_id", "")
+            for lic in licenses
+            if lic.get("status") == "active" and lic.get("listing_id")
+        })
+        if not entitled:
+            return "No entitled packs. Buy packs at portal.aitherium.com/portal/marketplace/packs"
+
+        installed, skipped, failed = [], [], []
+        for pack_id in entitled:
+            dest = packs_root / pack_id
+            if dest.is_dir() and any(dest.iterdir()):
+                skipped.append(pack_id)
+                continue
+            if dry_run:
+                installed.append(f"{pack_id} (would install)")
+                continue
+            ok, detail = self._download_verify_install(pack_id, dest)
+            (installed if ok else failed).append(detail)
+
+        lines = [f"=== PACK SYNC ({'dry run' if dry_run else 'apply'}) ==="]
+        lines.append(f"Entitled: {len(entitled)} · installed: {len(installed)} · "
+                     f"already present: {len(skipped)} · failed: {len(failed)}")
+        for d in installed:
+            lines.append(f"  + {d}")
+        for d in failed:
+            lines.append(f"  ✗ {d}")
+        if skipped:
+            lines.append(f"  (present) {', '.join(skipped)}")
+        return "\n".join(lines)
+
+    def _download_verify_install(self, pack_id: str, dest: Path) -> tuple:
+        """Download → verify signature → extract one pack. Returns (ok, message)."""
+        try:
+            with httpx.Client(timeout=60.0, follow_redirects=True) as client:
+                resp = client.get(
+                    f"{self._base_url}/v1/packs/{pack_id}/download",
+                    headers=self.auth.get_headers(),
+                )
+            if resp.status_code == 402:
+                return False, f"{pack_id}: license required (purchase not active)"
+            if resp.status_code == 404:
+                return False, f"{pack_id}: no downloadable artifact"
+            resp.raise_for_status()
+            tarball = resp.content
+            signature = resp.headers.get("X-Aither-Pack-Signature")
+
+            # Ed25519 signature verification (fail-closed when a key is pinned).
+            try:
+                from adk.pack_verifier import verify_pack_tarball
+
+                verified, vmsg = verify_pack_tarball(tarball, signature)
+                if not verified:
+                    return False, f"{pack_id}: signature check failed ({vmsg})"
+            except ImportError:
+                pass  # verifier unavailable → proceed (legacy/offline)
+
+            # Extract to a temp dir then atomically swap in (no half-installed pack).
+            import io
+            import shutil
+            import tempfile
+
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(dir=str(dest.parent)) as tmp:
+                with tarfile.open(fileobj=io.BytesIO(tarball), mode="r:gz") as tar:
+                    _safe_extract(tar, tmp)
+                if dest.exists():
+                    shutil.rmtree(dest, ignore_errors=True)
+                # If the tar has a single top dir, promote it; else move tmp itself.
+                children = [p for p in Path(tmp).iterdir()]
+                if len(children) == 1 and children[0].is_dir():
+                    shutil.move(str(children[0]), str(dest))
+                else:
+                    shutil.move(tmp, str(dest))
+                    Path(tmp).mkdir(exist_ok=True)  # keep context manager happy
+            return True, f"{pack_id}"
+        except Exception as e:  # noqa: BLE001
+            return False, f"{pack_id}: {type(e).__name__}: {e}"
+
     def _show_library(self) -> str:
         """Show purchased packs in personal library."""
         try:
@@ -321,6 +458,13 @@ COMMANDS:
       --extract, -x    Automatically extract the .tar.gz archive
     Usage: /packs install <pack-id> [--extract]
     Example: /packs install my-skill-pack --extract
+
+  sync [--dry-run]
+    Install every entitled pack not already present locally. Polls your active
+    licenses, then downloads + signature-verifies + extracts each missing pack
+    into ~/.aitheros/packs/. A portal purchase converges onto this node with one
+    command. Use --dry-run to preview without installing.
+    Usage: /packs sync [--dry-run]
 
   library
     Show your purchased packs (my-library).

@@ -49,13 +49,11 @@ logger = logging.getLogger("adk.licensing")
 PORTAL_PACKS_URL = "portal.aitherium.com/portal/marketplace/packs"
 
 # Ed25519 public key (hex, 32 bytes) used to verify portal-signed licenses.
-# The matching PRIVATE key lives only on portal.aitherium.com and is NEVER
-# shipped.  Override at runtime with AITHER_LICENSE_PUBLIC_KEY=<hex> for
-# self-hosted/sovereign signing roots.  The placeholder below verifies nothing
-# (every signed license fails -> COMMUNITY) until the real key is dropped in;
-# that is the safe, fail-closed default.
+# The matching PRIVATE key lives only in the Aitherium platform vault
+# (AITHER_LICENSE_SIGNING_KEY) and is NEVER shipped.  Override at runtime with
+# AITHER_LICENSE_PUBLIC_KEY=<hex> for self-hosted/sovereign signing roots.
 _LICENSE_PUBLIC_KEY_HEX = (
-    "0000000000000000000000000000000000000000000000000000000000000000"
+    "1a468a332d6cfc5378edf7083b6d845bcfdf141fbce28e6dbe521dd6b84e233f"
 )
 
 

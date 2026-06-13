@@ -20,11 +20,11 @@ from typing import Optional
 
 logger = logging.getLogger("pack_verifier")
 
-# Placeholder public key (injected at build/deployment time)
-# This is the default public key; production deployments should inject
-# the real key via AITHER_PACK_PUBLIC_KEY env var.
-# Use None or empty to indicate key not configured (fail hard).
-_DEFAULT_PUBLIC_KEY_HEX = None
+# Aitherium pack-signing public key (provisioned 2026-06-13). Safe to ship — it
+# only VERIFIES signatures. The matching private seed lives in the vault as
+# AITHER_PACK_SIGNING_KEY (server-side only). Override at runtime with
+# AITHER_PACK_PUBLIC_KEY=<hex> for self-hosted/sovereign signing roots.
+_DEFAULT_PUBLIC_KEY_HEX = "77b08e2aac48efe9287138c6d80b6e4c5c4b8f815f68236ccb40b09c8880bccb"
 
 
 def get_pack_public_key() -> Optional[str]:

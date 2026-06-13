@@ -57,6 +57,7 @@ class FormDef:
     template: str
     fill: list[dict]
     required: list[str] = field(default_factory=list)
+    mode: str = "acroform"  # acroform = fill named fields; overlay = draw text at x/y (flat scans)
 
 
 @dataclass
@@ -109,15 +110,25 @@ def load_pack(pack_dir: Path | str) -> MappingPack:
         fid = f.get("id")
         if not fid or not f.get("template"):
             raise MappingError(f"Form entry needs id + template: {f}")
+        mode = str(f.get("mode", "acroform"))
+        if mode not in ("acroform", "overlay"):
+            raise MappingError(f"Form {fid}: mode must be acroform|overlay, got {mode!r}")
         entries = f.get("fill") or []
         for e in entries:
             if not e.get("pdf_field") or not e.get("from"):
                 raise MappingError(f"fill entry needs pdf_field + from (form {fid}): {e}")
+            if mode == "overlay" and not (
+                isinstance(e.get("x"), (int, float)) and isinstance(e.get("y"), (int, float))
+            ):
+                raise MappingError(
+                    f"overlay fill entry needs numeric x + y (form {fid}): {e}"
+                )
         forms[fid] = FormDef(
             id=fid,
             template=f["template"],
             fill=entries,
             required=list(f.get("required") or []),
+            mode=mode,
         )
     if not forms:
         raise MappingError("Mapping pack defines no forms")

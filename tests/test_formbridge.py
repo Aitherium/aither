@@ -299,6 +299,82 @@ class TestPdfFill:
         assert "PatientName" in names and "Carrier_BCBS" in names
 
 
+# ── Overlay mode (flat scanned forms, no AcroForm fields) ───────────────────
+
+OVERLAY_MAPPING = """
+pack: overlay-clinic
+version: 1.0.0
+source:
+  origin: "http://localhost:8910"
+  anchor: { selector: "#patient-name" }
+  fields:
+    - { capture: "#patient-name", as: "patient.name" }
+forms:
+  - id: flat-letter
+    template: templates/flat.pdf
+    mode: overlay
+    required: ["patient.name"]
+    fill:
+      - { pdf_field: "Name",    from: "patient.name",      x: 150, y: 96,  size: 11 }
+      - { pdf_field: "DOB",     from: "patient.dob",       x: 150, y: 130, transform: "date:MM/DD/YYYY" }
+      - { pdf_field: "BCBSBox", from: "insurance.carrier", x: 72,  y: 200, transform: "checkbox:equals(BCBS)" }
+"""
+
+
+@pytest.fixture
+def overlay_pack_dir(tmp_path: Path) -> Path:
+    fpdf2 = pytest.importorskip("fpdf", reason="overlay tests need fpdf2 from the pdf extra")
+    d = tmp_path / "overlay-clinic"
+    d.mkdir()
+    (d / "mapping.yaml").write_text(OVERLAY_MAPPING, encoding="utf-8")
+    # flat one-page PDF, NO AcroForm — like a scanned office form
+    pdf = fpdf2.FPDF(unit="pt", format=(612, 792))
+    pdf.add_page()
+    pdf.set_font("Helvetica", size=11)
+    pdf.set_xy(72, 96)
+    pdf.cell(text="Patient Name: ____________")
+    (d / "templates").mkdir()
+    (d / "templates" / "flat.pdf").write_bytes(bytes(pdf.output()))
+    return d
+
+
+class TestOverlayFill:
+    def test_overlay_round_trip(self, overlay_pack_dir, tmp_path):
+        pack = load_pack(overlay_pack_dir)
+        res = resolve(RECORD, pack, "flat-letter")
+        out_dir = tmp_path / "out"
+        out_dir.mkdir()
+        result = fill_pdf(pack, res, out_dir=out_dir)
+        text = PdfReader(result.output_path).pages[0].extract_text()
+        assert "Pat Example" in text
+        assert "04/12/1980" in text
+        assert "X" in text  # BCBS checkbox drawn as X
+        assert "Pat" not in Path(result.output_path).name  # opaque filename rule
+
+    def test_overlay_requires_coords(self, tmp_path):
+        d = tmp_path / "bad-overlay"
+        d.mkdir()
+        (d / "mapping.yaml").write_text(
+            OVERLAY_MAPPING.replace("x: 150, y: 96,  size: 11", "size: 11"),
+            encoding="utf-8",
+        )
+        with pytest.raises(MappingError, match="needs numeric x"):
+            load_pack(d)
+
+    def test_overlay_off_checkbox_draws_nothing(self, overlay_pack_dir, tmp_path):
+        pack = load_pack(overlay_pack_dir)
+        rec = dict(RECORD)
+        rec["insurance.carrier"] = "Aetna"  # checkbox:equals(BCBS) -> /Off
+        res = resolve(rec, pack, "flat-letter")
+        out_dir = tmp_path / "out2"
+        out_dir.mkdir()
+        result = fill_pdf(pack, res, out_dir=out_dir)
+        text = PdfReader(result.output_path).pages[0].extract_text()
+        assert "Pat Example" in text
+        # the only X would be the checkbox; with /Off nothing is drawn at 72,200
+        assert "X" not in text
+
+
 # ── HTTP routes ──────────────────────────────────────────────────────────────
 
 @pytest.fixture
@@ -372,6 +448,28 @@ class TestRoutes:
         })
         r = client.post("/formbridge/purge", json={"patient_key": "DEMO-9"})
         assert r.json()["deleted"] == 1
+
+    def test_capture_translates_selector_paths(self, client):
+        """The browser sends SELECTOR paths; ingest must translate them via the
+        pack's source.fields capture→as map so the mapper finds logical names.
+        (Regression: this gap let unit tests pass while the real browser→engine
+        path produced empty resolutions.)"""
+        batch = {
+            "patient_key": "DEMO-SEL",
+            "source_origin": "http://localhost:8910",
+            "fields": [
+                {"path": "#patient-name", "value": "Pat Example"},   # mapped selector
+                {"path": "patient.dob", "value": "1980-04-12"},      # already-logical passes through
+                {"path": "#unmapped-widget", "value": "kept verbatim"},
+            ],
+        }
+        r = client.post("/formbridge/capture", json=batch)
+        assert r.status_code == 200 and r.json()["written"] == 3
+        rec = client.get("/formbridge/patients/DEMO-SEL").json()["fields"]
+        assert rec["patient.name"] == "Pat Example"        # translated
+        assert rec["patient.dob"] == "1980-04-12"          # passthrough
+        assert rec["#unmapped-widget"] == "kept verbatim"  # verbatim
+        assert "#patient-name" not in rec
 
 
 # ── Tool redaction (the 06 hard rule) ───────────────────────────────────────
