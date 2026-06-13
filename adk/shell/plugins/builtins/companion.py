@@ -74,6 +74,8 @@ class CompanionPlugin(SlashCommand):
             "context": self._context,
             "safety": self._safety,
             "tier": self._safety,
+            "local_vault": self._local_vault,
+            "vault": self._local_vault,
             "help": self._help,
         }
 
@@ -365,6 +367,107 @@ class CompanionPlugin(SlashCommand):
             return f"❌ Failed to set tier: {resp.status_code} — {resp.text[:200]}"
 
         return f"✅ Content tier set to **{level}**"
+
+    async def _local_vault(self, args: List[str], ctx: Dict[str, Any]) -> str:
+        """Manage the local private companion vault (operator-blind encryption).
+
+        Commands:
+            /companion local_vault status         — show vault status
+            /companion local_vault store <name> <path>  — store persona from file
+            /companion local_vault list           — list stored personas
+            /companion local_vault level [tier]   — get/set safety tier
+        """
+        if not args:
+            return self._get_vault_help()
+
+        try:
+            from adk.private_companion import get_companion_vault
+        except ImportError:
+            return (
+                "❌ Private companion vault requires cryptography package.\n"
+                "Install with: `pip install cryptography`"
+            )
+
+        vault = get_companion_vault()
+        if not vault:
+            return "❌ Failed to initialize private vault"
+
+        sub = args[0].lower()
+        if sub == "status":
+            status = vault.vault_status()
+            lines = ["📦 **Private Companion Vault**\n"]
+            lines.append(f"  Location: {status.get('lockbox_dir')}")
+            lines.append(f"  Personas: {status.get('persona_count', 0)}")
+            if status.get('personas'):
+                lines.append(f"  Stored: {', '.join(status['personas'])}")
+            lines.append(
+                f"  Safety level: {status.get('safety_level', 'not set')}"
+            )
+            lines.append("\n✅ All data encrypted locally; operator-blind")
+            return "\n".join(lines)
+
+        elif sub == "list":
+            personas = vault.list_personas()
+            if not personas:
+                return "No personas stored. Use `/companion vault store` to add one."
+            lines = ["👥 **Stored Personas**\n"]
+            for name in personas:
+                persona = vault.get_persona(name)
+                if persona:
+                    lines.append(
+                        f"  **{name}** [{persona.safety_level}] — {persona.description or '(no desc)'}"
+                    )
+            return "\n".join(lines)
+
+        elif sub == "level":
+            if len(args) == 1:
+                # Show current level
+                level = vault.get_safety_level()
+                return f"Safety level: `{level or 'professional (default)'}`"
+            else:
+                # Set level
+                level = args[1]
+                if level not in ("professional", "casual", "unrestricted", "explicit"):
+                    return (
+                        f"Invalid tier `{level}`. "
+                        f"Valid: professional, casual, unrestricted, explicit"
+                    )
+                vault.set_safety_level(level)
+                return f"✅ Safety level set to `{level}`"
+
+        elif sub == "store":
+            if len(args) < 3:
+                return "Usage: `/companion vault store <name> <path>` — store persona from file"
+            name = args[1]
+            path = " ".join(args[2:])  # path might have spaces
+            import os
+            if not os.path.exists(path):
+                return f"❌ File not found: {path}"
+            try:
+                with open(path, "r") as f:
+                    content = f.read()
+                vault.store_persona(name, content, safety_level="unrestricted")
+                return f"✅ Stored persona **{name}** from {path}"
+            except Exception as e:
+                return f"❌ Failed to store persona: {e}"
+
+        else:
+            return self._get_vault_help()
+
+    def _get_vault_help(self) -> str:
+        return """🔐 **Private Companion Vault** (operator-blind)
+
+| Command | Description |
+|---------|-------------|
+| `/companion vault status` | Show vault status |
+| `/companion vault list` | List stored personas |
+| `/companion vault level [tier]` | Get/set safety tier |
+| `/companion vault store <name> <path>` | Store persona from file |
+
+**Safety Tiers:** professional, casual, unrestricted, explicit
+
+All data is encrypted locally with your machine key. The operator never sees it.
+"""
 
     async def _help(self, args: List[str], ctx: Dict[str, Any]) -> str:
         return self.get_help()

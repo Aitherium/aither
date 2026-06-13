@@ -562,6 +562,22 @@ class AitherAgent:
             lines = ["\n[PACK DIRECTIVES]"]
             lines.extend(f"- {f}" for f in self._pack_persona_fragments)
             base += "\n".join(lines)
+        # Inject private companion persona if configured (operator-blind).
+        # This lives on the customer's local box, encrypted with their own key.
+        # The operator never sees the contents.
+        try:
+            from adk.private_companion import get_companion_vault
+            vault = get_companion_vault()
+            if vault:
+                safety_level = vault.get_safety_level() or "professional"
+                companion_prompt = vault.get_system_prompt_for_level(safety_level)
+                if companion_prompt:
+                    base += (
+                        "\n\n[PRIVATE COMPANION PERSONA]\n"
+                        + companion_prompt
+                    )
+        except Exception as e:
+            logger.debug(f"Failed to load private companion: {e}")
         return base
 
     @property
