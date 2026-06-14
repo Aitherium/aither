@@ -27,6 +27,17 @@ from .tiers import MemoryTier
 
 log = logging.getLogger("agent_core.bridge")
 
+
+def tls_verify() -> bool:
+    """Verify TLS by default; ``AITHER_TLS_VERIFY=false`` disables (dev only).
+
+    Self-contained (no adk dependency) so this scaffolded template runs
+    standalone in a generated project.
+    """
+    return os.environ.get("AITHER_TLS_VERIFY", "true").strip().lower() not in (
+        "false", "0", "no", "off",
+    )
+
 _DEFAULT_TIMEOUT = 5.0
 
 
@@ -123,7 +134,7 @@ class SpiritBridge:
             "source": "agent_core",
         }
         try:
-            async with httpx.AsyncClient(timeout=self.timeout, verify=False) as client:
+            async with httpx.AsyncClient(timeout=self.timeout, verify=tls_verify()) as client:
                 for url in targets:
                     try:
                         r = await client.post(url, json=payload)
@@ -156,7 +167,7 @@ class SpiritBridge:
             targets.append(f"{self.memory_hub_url}/api/v1/memory/query")
         payload = {"tenant_id": tenant_id, "query": query, "limit": limit}
         try:
-            async with httpx.AsyncClient(timeout=self.timeout, verify=False) as client:
+            async with httpx.AsyncClient(timeout=self.timeout, verify=tls_verify()) as client:
                 for url in targets:
                     try:
                         r = await client.post(url, json=payload)
