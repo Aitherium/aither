@@ -715,6 +715,19 @@ def _persist_shell_auth(identity_url: str, eps: dict | None, result: dict) -> bo
         return False
 
 
+def _resolve_identity_url(url: str) -> str:
+    """Resolve the AitherIdentity API host from a portal/identity URL.
+
+    The device-flow API (`/auth/device/code|token`) lives on AitherIdentity
+    (prod: idp.aitherium.com), NOT the Veil/portal frontend (portal/veil
+    .aitherium.com) — those 307-redirect API auth calls to `/login`. For the
+    known aitherium.com topology, map to the idp host; otherwise (localhost /
+    bespoke sovereign) use the URL as-is.
+    """
+    eps = _derive_cloud_endpoints(url)
+    return (eps["identity_url"] if eps else url).rstrip("/")
+
+
 def _device_flow_login(identity_url: str, client_name: str = "adk") -> dict:
     """Run RFC 8628 device code flow. Returns token response dict or raises."""
     import json as _json
@@ -723,12 +736,20 @@ def _device_flow_login(identity_url: str, client_name: str = "adk") -> dict:
     import urllib.error
     import webbrowser
 
+    # A real User-Agent: idp.* sits behind Cloudflare, which 403s urllib's default
+    # "Python-urllib/3.x" UA as a bot. Without this, device flow fails before it starts.
+    try:
+        from adk import __version__ as _v
+    except Exception:  # noqa: BLE001
+        _v = "0"
+    _ua = f"aither-adk/{_v} ({client_name})"
+
     # Step 1: Request device code
     req_data = _json.dumps({"client_name": client_name, "scopes": "full"}).encode()
     req = urllib.request.Request(
         f"{identity_url}/auth/device/code",
         data=req_data,
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json", "Accept": "application/json", "User-Agent": _ua},
         method="POST",
     )
     try:
@@ -766,7 +787,7 @@ def _device_flow_login(identity_url: str, client_name: str = "adk") -> dict:
         poll_req = urllib.request.Request(
             f"{identity_url}/auth/device/token",
             data=poll_data,
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", "Accept": "application/json", "User-Agent": _ua},
             method="POST",
         )
         try:
@@ -860,7 +881,8 @@ def cmd_login(args) -> int:
     print("  AitherOS Login")
     print("  ==============")
     try:
-        result = _device_flow_login(identity_url)
+        # Device flow must hit AitherIdentity (idp.*), not the portal frontend.
+        result = _device_flow_login(_resolve_identity_url(identity_url))
     except RuntimeError as exc:
         print(f"  Error: {exc}")
         return 1
@@ -2065,8 +2087,10 @@ def cmd_host(args):
                     or saved.get("api_key", "") or saved.get("access_token", ""))
     will_register = not getattr(args, "no_register", False)
     if will_register and not portal_token and not dry_run:
-        login_url = (getattr(args, "login_url", "") or os.environ.get("AITHER_PORTAL_URL", "")
-                     or portal or _DEFAULT_IDENTITY_URL).rstrip("/")
+        login_url = _resolve_identity_url(
+            getattr(args, "login_url", "") or os.environ.get("AITHER_PORTAL_URL", "")
+            or portal or _DEFAULT_IDENTITY_URL
+        )
         print()
         print(f"  Not signed in — starting device-flow login at {login_url} …")
         try:
@@ -2189,20 +2213,41 @@ def cmd_host(args):
         print(f"  [+] Tunnel live: {public_url}")
 
         # ── 8. Register with the control plane ──
+        # A stale/expired saved token must NOT dead-end onboarding: on 401/403 we
+        # re-authenticate via device flow and retry once. This is what keeps the
+        # one-command flow autonomous even when ~/.aither holds an old token.
         reg = register_url or f"{portal}/api/genesis/v1/agent/fleet/register"
         body = {"name": name, "invoke_url": public_url, "reach": "tunnel",
                 "agent_type": "adk-agent", "token": auth_token,
                 "model": model, "provider_hint": provider}
-        headers = {"Content-Type": "application/json"}
-        if portal_token:
-            headers["Authorization"] = f"Bearer {portal_token}"
+
+        def _do_register(tok: str):
+            hdrs = {"Content-Type": "application/json"}
+            if tok:
+                hdrs["Authorization"] = f"Bearer {tok}"
+            return httpx.post(reg, json=body, headers=hdrs, timeout=20)
+
         try:
-            rr = httpx.post(reg, json=body, headers=headers, timeout=20)
+            rr = _do_register(portal_token)
+            if rr.status_code in (401, 403):
+                login_url = _resolve_identity_url(
+                    getattr(args, "login_url", "") or os.environ.get("AITHER_PORTAL_URL", "")
+                    or portal or _DEFAULT_IDENTITY_URL
+                )
+                print(f"  Saved token rejected ({rr.status_code}) — re-authenticating via device flow…")
+                dev = _device_flow_login(login_url, client_name=f"adk-host:{name}")
+                portal_token = dev.get("access_token", "") or dev.get("token", "")
+                if portal_token:
+                    try:
+                        save_saved_config({"api_key": portal_token})
+                    except Exception:  # noqa: BLE001
+                        pass
+                    rr = _do_register(portal_token)
             if rr.status_code >= 300:
                 print(f"  [x] Registration rejected ({rr.status_code}): {rr.text[:300]}")
                 _cleanup()
                 return 1
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             print(f"  [x] Registration failed: {e}")
             _cleanup()
             return 1
