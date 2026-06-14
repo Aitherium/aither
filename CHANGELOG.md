@@ -2,6 +2,21 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [2.11.1] - 2026-06-14
+
+### Fixed — `adk host` / `adk login` device flow (autonomous onboarding)
+Found driving `adk host` against production; all broke real device-flow login:
+- **Device flow hit the portal FRONTEND, not AitherIdentity.** `adk login`/`adk host`
+  POSTed `/auth/device/code` to portal/veil.aitherium.com, which 307-redirects API auth
+  to `/login`. Added `_resolve_identity_url()` mapping the aitherium.com topology to
+  `idp.aitherium.com` (the Identity API); localhost/bespoke pass through unchanged.
+- **Cloudflare 403'd urllib.** `idp.*` sits behind Cloudflare, which blocks urllib's
+  default `Python-urllib/3.x` UA. Device-code + poll requests now send a real
+  User-Agent + Accept (verified urllib→idp 200, was 403).
+- **`adk host` now self-authenticates via device flow** when there's no token, and
+  **retries via device flow on a 401/403** (a stale saved token no longer dead-ends
+  registration).
+
 ## [2.11.0] - 2026-06-14
 
 ### Added — attach your own MCP "hands" to a self-hosted agent
