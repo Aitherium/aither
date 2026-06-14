@@ -2055,14 +2055,35 @@ def cmd_host(args):
         minted = True
 
     # ── 3. Control-plane token (for registration) ──
+    # Resolution order: explicit --token → env → saved login → DEVICE-FLOW LOGIN.
+    # Device flow (RFC 8628) is the autonomous path: no token, no manual steps —
+    # print a short code + URL, the human approves once in a browser (or an agent
+    # approves it headlessly), and the token arrives. Anyone — including a non-tech
+    # user or an autonomous agent on the internet — can self-onboard with ONE command.
     saved = load_saved_config()
     portal_token = (getattr(args, "token", "") or os.environ.get("AITHER_PORTAL_TOKEN", "")
                     or saved.get("api_key", "") or saved.get("access_token", ""))
     will_register = not getattr(args, "no_register", False)
     if will_register and not portal_token and not dry_run:
-        print("  No control-plane token. Run 'adk login' first, or pass --token, or use")
-        print("  --no-register to just run locally. Aborting.")
-        return 1
+        login_url = (getattr(args, "login_url", "") or os.environ.get("AITHER_PORTAL_URL", "")
+                     or portal or _DEFAULT_IDENTITY_URL).rstrip("/")
+        print()
+        print(f"  Not signed in — starting device-flow login at {login_url} …")
+        try:
+            dev = _device_flow_login(login_url, client_name=f"adk-host:{name}")
+            portal_token = dev.get("access_token", "") or dev.get("token", "")
+        except Exception as e:  # noqa: BLE001 — surface a clear next step
+            print(f"  Device-flow login failed: {e}")
+            print("  Pass --token, run 'adk login', or use --no-register to run locally.")
+            return 1
+        if not portal_token:
+            print("  No token returned from device-flow login. Aborting.")
+            return 1
+        try:
+            save_saved_config({"api_key": portal_token})
+        except Exception:  # noqa: BLE001 — persistence is best-effort
+            pass
+        print("  [+] Signed in (token saved to ~/.aither/config.json).")
 
     # ── 4. Approval policy ──
     approval = getattr(args, "approve", None)
@@ -6800,6 +6821,7 @@ def _register_commands(sub):
     host_p.add_argument("--token", help="Control-plane token for registration (else 'adk login' / $AITHER_PORTAL_TOKEN)")
     host_p.add_argument("--auth-token", help="Callback bearer the control plane presents back to your agent (minted if omitted)")
     host_p.add_argument("--portal", default="https://veil.aitherium.com", help="Control-plane base URL")
+    host_p.add_argument("--login-url", help="Device-flow login base URL (default: --portal, then portal.aitherium.com)")
     host_p.add_argument("--register-url", help="Full fleet-register URL (overrides --portal; e.g. http://localhost:8001/v1/agent/fleet/register)")
     host_p.add_argument("--no-register", action="store_true", help="Run locally only — no tunnel, no fleet registration")
     host_p.add_argument("--dry-run", action="store_true", help="Show what would happen without starting anything")
