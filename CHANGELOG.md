@@ -2,6 +2,21 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [2.11.0] - 2026-06-14
+
+### Added — attach your own MCP "hands" to a self-hosted agent
+A self-hosted agent now has the full brain (your model) · body (this loop) · **hands**
+(your tools) trifecta. The AitherOS platform relays the MCP servers you registered for
+your agent in the `/stream` request body as `mcp_endpoints`, and the loop wires their
+tools into the ReAct turn:
+- **`adk/mcp_endpoint_tools.register_mcp_endpoint_tools(agent, endpoints)`** — speaks MCP
+  JSON-RPC (`tools/list` to discover, `tools/call` to invoke) and registers a namespaced
+  proxy tool (`{endpoint}__{tool}`) for each advertised tool. Mirrors `app_proxy_tools`.
+  Best-effort: an unreachable endpoint registers nothing and never raises.
+- **`POST /stream` and `POST /chat/stream`** accept an optional `mcp_endpoints` list
+  (`[{name, url, [headers]}]`); `_aitheros_stream` attaches them to the agent before the
+  turn. Existing callers are unaffected (the field is optional).
+
 ## [2.10.1] - 2026-06-14
 
 ### Fixed — self-hosted `aither-serve` was crash-on-startup (2.10.0 regression)

@@ -492,9 +492,10 @@ def create_app(
         session_id = body.get("session_id") or f"adk-{uuid.uuid4().hex[:8]}"
         agent_name = body.get("agent")
         reasoning = body.get("reasoning", False)
+        mcp_endpoints = body.get("mcp_endpoints")
 
         return StreamingResponse(
-            _aitheros_stream(get_agent, message, session_id, agent_name, reasoning),
+            _aitheros_stream(get_agent, message, session_id, agent_name, reasoning, mcp_endpoints),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
@@ -512,9 +513,10 @@ def create_app(
         session_id = body.get("session_id") or f"adk-{uuid.uuid4().hex[:8]}"
         agent_name = body.get("agent") or body.get("persona")
         reasoning = body.get("reasoning", False)
+        mcp_endpoints = body.get("mcp_endpoints")
 
         return StreamingResponse(
-            _aitheros_stream(get_agent, message, session_id, agent_name, reasoning),
+            _aitheros_stream(get_agent, message, session_id, agent_name, reasoning, mcp_endpoints),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
@@ -1817,7 +1819,7 @@ async def _strata_ingest_bg(**kwargs):
         pass
 
 
-async def _aitheros_stream(get_agent_fn, message: str, session_id: str, agent_name: str | None, reasoning: bool):
+async def _aitheros_stream(get_agent_fn, message: str, session_id: str, agent_name: str | None, reasoning: bool, mcp_endpoints: list | None = None):
     """SSE generator emitting AitherOS-typed events.
 
     Uses the app-level get_agent() for shared memory/tools/fleet support.
@@ -1835,6 +1837,14 @@ async def _aitheros_stream(get_agent_fn, message: str, session_id: str, agent_na
     start = time.time()
     try:
         agent = await get_agent_fn(agent_name)
+        # Attach the customer's self-hosted MCP "hands" relayed by the platform in
+        # the /stream body (brain/body/HANDS). Best-effort; never blocks the turn.
+        if mcp_endpoints:
+            try:
+                from adk.mcp_endpoint_tools import register_mcp_endpoint_tools
+                register_mcp_endpoint_tools(agent, mcp_endpoints)
+            except Exception:
+                pass
         model_name = getattr(agent.llm, "provider_name", "unknown")
 
         # session_start

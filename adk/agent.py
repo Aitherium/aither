@@ -1625,6 +1625,11 @@ class AitherAgent:
 
         # Store in memory
         await self.memory.add_message(sid, "user", message)
+        # Streaming already delivered the tokens, so we can't un-show a fabricated
+        # claim here — generation grounding (the companion COHERENCE prompt block)
+        # is the live defense for the streamed text. But we DO ground the PERSISTED
+        # copy so a fabrication isn't recalled + compounded on a later turn.
+        full_content = await self._companion_grounding_repair(full_content, message, sid)
         await self.memory.add_message(sid, "assistant", full_content)
 
         # Emit completion event
@@ -1877,6 +1882,8 @@ class AitherAgent:
         try:
             await self.memory.add_message(sid, "user", message)
             if answer:
+                # Ground the persisted + returned copy (tokens already streamed).
+                answer = await self._companion_grounding_repair(answer, message, sid)
                 await self.memory.add_message(sid, "assistant", answer)
         except Exception:
             pass
