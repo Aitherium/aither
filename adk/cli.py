@@ -7,6 +7,7 @@ Usage:
 """
 
 from __future__ import annotations
+from adk._tls import tls_verify
 
 import argparse
 import json
@@ -5313,7 +5314,7 @@ def _cmd_pack(args) -> int:
             if sub == "negotiate":
                 body = {"listing_id": args.pack_id, "offer_credits": int(args.offer),
                         "rationale": getattr(args, "why", "")}
-                with _httpx.Client(timeout=30.0, verify=False) as c:
+                with _httpx.Client(timeout=30.0, verify=tls_verify()) as c:
                     r = c.post(f"{portal}/v1/marketplace/negotiate", json=body, headers=headers)
                 data = r.json() if r.content else {}
                 print(json.dumps(data, indent=2))
@@ -5325,7 +5326,7 @@ def _cmd_pack(args) -> int:
             body = {"listing_id": args.pack_id}
             if getattr(args, "token", ""):
                 body["negotiation_token"] = args.token
-            with _httpx.Client(timeout=60.0, verify=False) as c:
+            with _httpx.Client(timeout=60.0, verify=tls_verify()) as c:
                 r = c.post(f"{portal}/v1/marketplace/purchase", json=body, headers=headers)
             data = r.json() if r.content else {}
             print(json.dumps(data, indent=2))

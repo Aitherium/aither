@@ -22,6 +22,7 @@ Usage:
 """
 
 from __future__ import annotations
+from adk._tls import tls_verify
 
 import json
 import logging
@@ -89,7 +90,7 @@ class SecretsSync:
         # Try AitherSecrets service directly (sovereign stack)
         if self.secrets_url:
             try:
-                async with httpx.AsyncClient(timeout=10, verify=False) as client:
+                async with httpx.AsyncClient(timeout=10, verify=tls_verify()) as client:
                     resp = await client.get(
                         f"{self.secrets_url}/secrets/all",
                         headers=self._headers(),
@@ -136,7 +137,7 @@ class SecretsSync:
 
         if self.secrets_url:
             try:
-                async with httpx.AsyncClient(timeout=10, verify=False) as client:
+                async with httpx.AsyncClient(timeout=10, verify=tls_verify()) as client:
                     resp = await client.post(
                         f"{self.secrets_url}/secrets/set",
                         json={"key": key, "value": value},

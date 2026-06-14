@@ -22,6 +22,7 @@ Reads:
 """
 
 from __future__ import annotations
+from adk._tls import tls_verify
 
 import os
 from typing import Any, Dict, List, Optional
@@ -156,7 +157,7 @@ class Secret(SlashCommand):
         fmt = str(flags.get("format", "urlsafe"))
         overwrite = bool(flags.get("overwrite", False))
 
-        async with httpx.AsyncClient(timeout=15.0, verify=False) as client:
+        async with httpx.AsyncClient(timeout=15.0, verify=tls_verify()) as client:
             # Preferred: server-side generation (atomic, returns existing if not overwrite)
             try:
                 resp = await client.post(
@@ -253,7 +254,7 @@ class Secret(SlashCommand):
             "secret_type": "generic",
             "access_level": "internal",
         }
-        async with httpx.AsyncClient(timeout=15.0, verify=False) as client:
+        async with httpx.AsyncClient(timeout=15.0, verify=tls_verify()) as client:
             resp = await client.post(f"{url}/secrets", json=body, headers=_headers())
             resp.raise_for_status()
             data = resp.json()
@@ -263,7 +264,7 @@ class Secret(SlashCommand):
         if not rest:
             return "Usage: /secret get <NAME>"
         name = rest[0]
-        async with httpx.AsyncClient(timeout=15.0, verify=False) as client:
+        async with httpx.AsyncClient(timeout=15.0, verify=tls_verify()) as client:
             resp = await client.get(f"{url}/secrets/{name}", headers=_headers())
         if resp.status_code == 404:
             return f"[!!] '{name}' not found."
@@ -276,7 +277,7 @@ class Secret(SlashCommand):
         return f"  {name} = {value}" if value is not None else f"[!!] No value: {data}"
 
     async def _list(self, url: str) -> str:
-        async with httpx.AsyncClient(timeout=15.0, verify=False) as client:
+        async with httpx.AsyncClient(timeout=15.0, verify=tls_verify()) as client:
             resp = await client.get(f"{url}/secrets", headers=_headers())
             resp.raise_for_status()
             data = resp.json()

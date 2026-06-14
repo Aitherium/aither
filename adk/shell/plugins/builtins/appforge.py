@@ -17,6 +17,7 @@ Aliases: /forge, /af
 """
 
 import asyncio
+from adk._tls import tls_verify
 import json
 import sys
 import time
@@ -100,14 +101,14 @@ class AppForgePlugin:
 
     async def _get(self, path: str) -> dict:
         import httpx
-        async with httpx.AsyncClient(verify=False, timeout=15.0) as c:
+        async with httpx.AsyncClient(verify=tls_verify(), timeout=15.0) as c:
             r = await c.get(f"{self.genesis_url}{path}", headers=_api_headers())
             r.raise_for_status()
             return r.json()
 
     async def _post(self, path: str, data: dict) -> dict:
         import httpx
-        async with httpx.AsyncClient(verify=False, timeout=30.0) as c:
+        async with httpx.AsyncClient(verify=tls_verify(), timeout=30.0) as c:
             r = await c.post(f"{self.genesis_url}{path}", json=data, headers=_api_headers())
             r.raise_for_status()
             return r.json()
@@ -161,7 +162,7 @@ class AppForgePlugin:
 
         url = f"{self.genesis_url}/appforge/{project_id}/stream"
         try:
-            async with httpx.AsyncClient(verify=False, timeout=None) as client:
+            async with httpx.AsyncClient(verify=tls_verify(), timeout=None) as client:
                 async with client.stream("GET", url, headers=_api_headers()) as resp:
                     resp.raise_for_status()
                     event_type = ""

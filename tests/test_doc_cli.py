@@ -128,10 +128,14 @@ class TestDocUpload:
             api_key="sk-test-123",
         )
 
-        with patch("pathlib.Path.exists", return_value=True):
-            with patch("pathlib.Path.is_file", return_value=True):
-                with patch("builtins.open", mock_open(read_data=b"")):
-                    result = await _cmd_doc_upload(args)
+        # Scope TLS off: this test globally mocks Path.is_file=True, which would
+        # otherwise make the TLS CA-bundle probe return a bogus (mock-existing)
+        # bundle path that httpx can't load. Upload logic is what's under test.
+        with patch.dict("os.environ", {"AITHER_TLS_VERIFY": "false"}):
+            with patch("pathlib.Path.exists", return_value=True):
+                with patch("pathlib.Path.is_file", return_value=True):
+                    with patch("builtins.open", mock_open(read_data=b"")):
+                        result = await _cmd_doc_upload(args)
 
         assert result == 1
 

@@ -23,6 +23,7 @@ Aliases: /a (for /agent)
 """
 
 import json
+from adk._tls import tls_verify
 import os
 import shutil
 from pathlib import Path
@@ -92,7 +93,7 @@ class AgentPlugin(SlashCommand):
         }
 
         try:
-            async with httpx.AsyncClient(timeout=120, verify=False) as c:
+            async with httpx.AsyncClient(timeout=120, verify=tls_verify()) as c:
                 r = await c.post(url, json=payload, headers=_api_headers())
                 if r.status_code != 200:
                     return f"Dispatch failed (HTTP {r.status_code}): {r.text[:300]}"
@@ -177,7 +178,7 @@ class AgentsPlugin(SlashCommand):
         import httpx
 
         try:
-            async with httpx.AsyncClient(timeout=15, verify=False) as c:
+            async with httpx.AsyncClient(timeout=15, verify=tls_verify()) as c:
                 r = await c.get(
                     f"{_genesis_url()}/workspace/agents",
                     headers=_api_headers(),
@@ -209,7 +210,7 @@ class AgentsPlugin(SlashCommand):
         import httpx
 
         try:
-            async with httpx.AsyncClient(timeout=15, verify=False) as c:
+            async with httpx.AsyncClient(timeout=15, verify=tls_verify()) as c:
                 r = await c.get(
                     f"{_genesis_url()}/workspace/agents",
                     headers=_api_headers(),
@@ -219,7 +220,7 @@ class AgentsPlugin(SlashCommand):
             # Also try portal fleet
             portal_agents = []
             try:
-                async with httpx.AsyncClient(timeout=10, verify=False) as c:
+                async with httpx.AsyncClient(timeout=10, verify=tls_verify()) as c:
                     veil_url = os.environ.get("AITHER_VEIL_URL", "http://localhost:3000")
                     r2 = await c.get(
                         f"{veil_url}/api/aitherconnect/fleet",
@@ -234,7 +235,7 @@ class AgentsPlugin(SlashCommand):
             # Fetch workspace cycles with fleet bindings
             cycle_bindings: Dict[str, List[str]] = {}  # agent_id -> [cycle summaries]
             try:
-                async with httpx.AsyncClient(timeout=10, verify=False) as c:
+                async with httpx.AsyncClient(timeout=10, verify=tls_verify()) as c:
                     # Query all workspaces for cycles — Genesis iterates them
                     r3 = await c.get(
                         f"{_genesis_url()}/fleet/agents",
@@ -291,7 +292,7 @@ class AgentsPlugin(SlashCommand):
         slug = args[0].lower()
 
         try:
-            async with httpx.AsyncClient(timeout=30, verify=False) as c:
+            async with httpx.AsyncClient(timeout=30, verify=tls_verify()) as c:
                 r = await c.post(
                     f"{_genesis_url()}/workspace/agents/deploy",
                     json={"slug": slug},
@@ -318,7 +319,7 @@ class AgentsPlugin(SlashCommand):
         slug = args[0].lower()
 
         try:
-            async with httpx.AsyncClient(timeout=15, verify=False) as c:
+            async with httpx.AsyncClient(timeout=15, verify=tls_verify()) as c:
                 r = await c.delete(
                     f"{_genesis_url()}/workspace/agents/{slug}",
                     headers=_api_headers(),
@@ -337,7 +338,7 @@ class AgentsPlugin(SlashCommand):
         import httpx
 
         try:
-            async with httpx.AsyncClient(timeout=15, verify=False) as c:
+            async with httpx.AsyncClient(timeout=15, verify=tls_verify()) as c:
                 r = await c.get(
                     f"{_genesis_url()}/workspace/agents/catalog",
                     headers=_api_headers(),
@@ -573,7 +574,7 @@ class AgentsPlugin(SlashCommand):
 
         import httpx
         try:
-            async with httpx.AsyncClient(timeout=30, verify=False) as c:
+            async with httpx.AsyncClient(timeout=30, verify=tls_verify()) as c:
                 r = await c.post(
                     f"{_genesis_url()}/agents/store/register",
                     json={

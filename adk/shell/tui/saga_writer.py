@@ -26,6 +26,7 @@ Usage:
 """
 
 import argparse
+from adk._tls import tls_verify
 import asyncio
 import json
 import os
@@ -80,7 +81,7 @@ class SagaClient:
     async def get(self, path: str) -> Dict[str, Any]:
         async with httpx.AsyncClient(
             base_url=self.base_url, headers=self._headers(),
-            timeout=15, verify=False,
+            timeout=15, verify=tls_verify(),
         ) as c:
             resp = await c.get(path)
             resp.raise_for_status()
@@ -89,7 +90,7 @@ class SagaClient:
     async def post(self, path: str, data: Dict[str, Any] = None) -> Dict[str, Any]:
         async with httpx.AsyncClient(
             base_url=self.base_url, headers=self._headers(),
-            timeout=120, verify=False,
+            timeout=120, verify=tls_verify(),
         ) as c:
             resp = await c.post(path, json=data or {})
             resp.raise_for_status()
@@ -98,7 +99,7 @@ class SagaClient:
     async def put(self, path: str, data: Dict[str, Any] = None) -> Dict[str, Any]:
         async with httpx.AsyncClient(
             base_url=self.base_url, headers=self._headers(),
-            timeout=15, verify=False,
+            timeout=15, verify=tls_verify(),
         ) as c:
             resp = await c.put(path, json=data or {})
             resp.raise_for_status()

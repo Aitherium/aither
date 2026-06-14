@@ -13,10 +13,12 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Callable
 
+from adk import coherence
 from adk.config import Config
 from adk.grounding import ground_system_prompt
 from adk.identity import Identity, load_identity
 from adk.llm import DegenerationDetector, LLMRouter, Message, LLMResponse, strip_internal_tags
+from adk.llm.continuation import run_continuation
 from adk.llm.advisor import (
     AdvisorConfig,
     advisor_brevity_line,
@@ -105,6 +107,10 @@ class AgentResponse:
     advisor_calls: int = 0
     advisor_input_tokens: int = 0
     advisor_output_tokens: int = 0
+    # Human-in-the-loop: set when the turn paused awaiting tool approval. ``pending`` =
+    # the gated tool calls the customer must allow/deny before the turn can continue.
+    requires_action: bool = False
+    pending: list[dict] = field(default_factory=list)
 
 
 class AitherAgent:
@@ -556,28 +562,50 @@ class AitherAgent:
 
     @property
     def system_prompt(self) -> str:
+        # WHOLESALE IDENTITY SWAP (mirrors Genesis build_system_message
+        # identity_override): if a private companion persona is active, it IS the
+        # identity — REPLACE the base agent identity, do NOT append. Appending lets
+        # the base "You are <agent>" win and the persona never drives the
+        # conversation (the exact bug fixed on Genesis). The persona is operator-
+        # blind: encrypted on the customer's box with their own key.
+        # An EXPLICIT system_prompt is a deliberate identity and wins — only the
+        # default identity-based agent gets swapped to the companion. This also
+        # keeps specialized agents (a coding/tool agent) from being hijacked into
+        # the companion just because a companion persona exists in the local vault.
+        companion_prompt = None
+        if not self._system_prompt:
+            try:
+                from adk.private_companion import get_companion_vault
+                vault = get_companion_vault()
+                if vault:
+                    safety_level = vault.get_safety_level() or "professional"
+                    companion_prompt = vault.get_system_prompt_for_level(safety_level)
+            except Exception as e:
+                logger.debug(f"Failed to load private companion: {e}")
+
+        if companion_prompt and companion_prompt.strip():
+            return (
+                "[IDENTITY]\n"
+                f"{companion_prompt.strip()}\n\n"
+                "This is who you ARE — embody it fully and consistently. You are NOT "
+                "a generic AI assistant or an operating system; never break character "
+                "to talk about yourself as a system/agent, services, or 'how can I "
+                "help you'. Address the user by their own name; never invent one.\n"
+                "COHERENCE — critical: you only know what is in your MEMORY (shown "
+                "below) and this conversation. NEVER invent or guess people, places, "
+                "dates, events, or shared history you have no memory of. If asked about "
+                "something you have nothing on record for, say so warmly and honestly "
+                "(\"I don't think you've told me about that yet — tell me?\") and ask; "
+                "do NOT make something up. Made-up memories break trust.\n"
+                "[/IDENTITY]"
+            )
+
         base = self._system_prompt or self._identity.build_system_prompt()
         # Append pack persona fragments as [PACK DIRECTIVES] block
         if self._pack_persona_fragments:
             lines = ["\n[PACK DIRECTIVES]"]
             lines.extend(f"- {f}" for f in self._pack_persona_fragments)
             base += "\n".join(lines)
-        # Inject private companion persona if configured (operator-blind).
-        # This lives on the customer's local box, encrypted with their own key.
-        # The operator never sees the contents.
-        try:
-            from adk.private_companion import get_companion_vault
-            vault = get_companion_vault()
-            if vault:
-                safety_level = vault.get_safety_level() or "professional"
-                companion_prompt = vault.get_system_prompt_for_level(safety_level)
-                if companion_prompt:
-                    base += (
-                        "\n\n[PRIVATE COMPANION PERSONA]\n"
-                        + companion_prompt
-                    )
-        except Exception as e:
-            logger.debug(f"Failed to load private companion: {e}")
         return base
 
     @property
@@ -726,6 +754,9 @@ class AitherAgent:
         # model to ground in it and NOT fabricate. (Top-3 truncated to 200 chars was
         # too thin: under noise it surfaced PARTIAL facts and weaker models then
         # invented the missing fields.)
+        # _mem_grounded: did we find a memory that actually mentions the question's
+        # subject? Drives the never-fabricate gate below.
+        _mem_grounded = False
         if self._graph:
             try:
                 relevant = await self._graph.search(message, limit=6)
@@ -739,6 +770,14 @@ class AitherAgent:
                             "names, numbers, or dates.\n" + "\n".join(graph_lines)
                         )
                         messages.insert(1, Message(role="system", content=graph_context))
+                    try:
+                        from adk.coherence import subject_grounded
+                        _joined = " ".join(
+                            f"{getattr(n, 'label', '') or ''} {n.content or ''}" for n in relevant)
+                        if subject_grounded(_joined, message):
+                            _mem_grounded = True
+                    except Exception:
+                        pass
             except Exception:
                 pass
 
@@ -750,11 +789,43 @@ class AitherAgent:
                 recalled = await self._typed.context_block(message, limit=5)
                 if recalled:
                     messages.insert(1, Message(role="system", content=recalled))
+                    try:
+                        from adk.coherence import subject_grounded
+                        if subject_grounded(recalled, message):
+                            _mem_grounded = True
+                    except Exception:
+                        pass
                 constraints = await self._typed.constraints_block()
                 if constraints:
                     messages.insert(1, Message(role="system", content=constraints))
             except Exception:
                 pass
+
+        # ── NEVER-FABRICATE GATE (companion turns) ──
+        # Mirrors Genesis: when a private companion is active and the turn asks
+        # about specific shared history that no SUBJECT-GROUNDED memory and no
+        # session history covers, return a deterministic honest reply — no LLM
+        # call → invention is impossible. Soft "don't invent" prompting alone does
+        # not stop weaker local models from confabulating.
+        try:
+            from adk.coherence import is_memory_question, history_may_answer, honest_miss_reply
+            _companion_active = False
+            try:
+                from adk.private_companion import get_companion_vault
+                _v = get_companion_vault()
+                _companion_active = bool(
+                    _v and _v.get_system_prompt_for_level(_v.get_safety_level() or "professional"))
+            except Exception:
+                _companion_active = False
+            if _companion_active and is_memory_question(message) and not _mem_grounded:
+                _coh_hist = history or await self.memory.get_history(sid, limit=20)
+                if not history_may_answer(message, _coh_hist):
+                    logger.info("[COHERENCE] adk companion memory-question MISS — honest reply, "
+                                "no fabrication")
+                    return AgentResponse(
+                        content=honest_miss_reply(message), session_id=sid)
+        except Exception as _coh_e:
+            logger.debug("[COHERENCE] adk never-fabricate gate skipped: %s", _coh_e)
 
         # Recall relevant learned skills BEFORE acting — inject the top matches so the
         # model reuses proven procedures instead of re-deriving them (non-fatal).
@@ -803,6 +874,13 @@ class AitherAgent:
         # Call LLM (with tool loop if tools registered)
         tools_schema = self._tools.to_openai_format() if self._tools.list_tools() else None
         tool_calls_made = []
+        # Human-in-the-loop approval state. ``_pending_approvals`` collects gated tool
+        # calls awaiting a customer decision; ``_paused`` short-circuits the turn so the
+        # caller can surface Allow/Deny cards (resume via agent.resume()).
+        from adk.approval import get_approval_store, needs_approval
+        _approval_store = get_approval_store()
+        _pending_approvals: list[dict] = []
+        _paused = False
         # Extract inference controls from kwargs (null=auto pattern)
         _tool_choice = kwargs.pop("tool_choice", None)
         _top_p = kwargs.pop("top_p", None)
@@ -945,39 +1023,28 @@ class AitherAgent:
                 advisor=(_advisor if _advisor_on else None), **kwargs,
             )
 
-            # ── Gap 3: max_output_tokens escalation ──
-            # If response was truncated (finish_reason == "length"), retry with doubled tokens
-            if resp.finish_reason == "length" and not _max_output_escalated:
+            # ── Gap 3: continuation on output-cap truncation ──
+            # finish_reason == "length" → continue + STITCH via the shared adk
+            # primitive (adk.llm.continuation), the one source of truth for
+            # continue-until-complete across every provider/call-site. This
+            # replaces the old inline doubling-retry, which REPLACED the partial
+            # (losing earlier text in resp.content) instead of stitching, and
+            # mutated the live message history with continuation scaffolding.
+            # Never continue a tool-call turn — that is the ReAct loop's job.
+            if (resp.finish_reason == "length"
+                    and not _max_output_escalated
+                    and not resp.tool_calls):
                 _max_output_escalated = True
-                _current_max = kwargs.get("max_tokens", 4096)
-                logger.debug("[REACT] Response truncated — retrying with max_tokens=%d", _current_max * 2)
-                # Inject partial response + continuation prompt
-                messages.append(Message(role="assistant", content=resp.content or ""))
-                messages.append(Message(
-                    role="user",
-                    content="Your previous response was truncated. Continue exactly where you left off.",
-                ))
-                _escalation_kwargs = {**kwargs, "max_tokens": _current_max * 2}
-                resp = await self.llm.chat(
-                    messages, tools=tools_schema, effort=_effort,
-                    tool_choice=_tool_choice, top_p=_top_p,
-                    repetition_penalty=_repetition_penalty,
-                    advisor=(_advisor if _advisor_on else None), **_escalation_kwargs,
-                )
-                # If still truncated, try one more time with 3x
-                if resp.finish_reason == "length":
-                    messages.append(Message(role="assistant", content=resp.content or ""))
-                    messages.append(Message(
-                        role="user",
-                        content="Your previous response was truncated. Continue exactly where you left off.",
-                    ))
-                    _escalation_kwargs["max_tokens"] = _current_max * 3
-                    resp = await self.llm.chat(
-                        messages, tools=tools_schema, effort=_effort,
+
+                async def _continue_chat(_msgs):
+                    return await self.llm.chat(
+                        _msgs, tools=tools_schema, effort=_effort,
                         tool_choice=_tool_choice, top_p=_top_p,
                         repetition_penalty=_repetition_penalty,
-                        advisor=(_advisor if _advisor_on else None), **_escalation_kwargs,
+                        advisor=(_advisor if _advisor_on else None), **kwargs,
                     )
+
+                resp = await run_continuation(_continue_chat, messages, resp)
 
             # Accumulate advisor usage for this iteration (Opus sub-inference,
             # metered apart from the executor). resp is now settled for the turn.
@@ -1094,15 +1161,27 @@ class AitherAgent:
                     except Exception:
                         pass
                 # Auto-ingest conversation into graph memory (fire-and-forget)
-                if self._graph:
+                if self._graph and not coherence.is_memory_question(message):
                     try:
+                        # FEEDBACK-LOOP GUARD: ingest ONLY the user's turn (ground
+                        # truth they shared) — never the assistant's own generated
+                        # reply. Storing model output as memory lets a fabrication be
+                        # recalled + elaborated next turn (compounding, permanent).
+                        # And NEVER ingest a memory-QUESTION: a question ("do you
+                        # remember Italy?") is not a fact, and storing it lets the
+                        # question self-ground on the next ask, defeating the gate.
                         await self._graph.ingest_conversation(sid, [
                             {"role": "user", "content": message},
-                            {"role": "assistant", "content": content},
                         ])
                     except Exception:
                         pass
                 await self._learn_after(message, content, tool_calls_made)
+                # Turn finished (model stopped calling tools) — clear any approval pause
+                # so a later identical gated call re-prompts instead of reusing a decision.
+                try:
+                    _approval_store.clear(sid)
+                except Exception:  # noqa: BLE001
+                    pass
                 return AgentResponse(
                     content=content,
                     model=resp.model,
@@ -1180,6 +1259,31 @@ class AitherAgent:
                 if verdict.action == LoopAction.WARN:
                     logger.debug("Loop guard WARN: %s", verdict.reason)
                     _deferred_nudges.append(verdict.nudge_message)
+
+                # ── Human-in-the-loop approval gate ──
+                # A tool whose policy is always_ask pauses the turn until the customer
+                # allows/denies it. On resume the turn re-runs (adk rebuilds the loop from
+                # memory) with the decision recorded, so the gate consumes it here on the
+                # second pass: deny → feed a denial observation; allow → fall through to
+                # execute; undecided → record the pending call and pause the whole turn.
+                if needs_approval(self.name, tc.name):
+                    _decision = _approval_store.decision_for(sid, tc.name)
+                    if _decision == "deny":
+                        tool_calls_made.append(f"{tc.name}[denied]")
+                        messages.append(Message(
+                            role="tool",
+                            content=json.dumps({"error": "denied",
+                                                "message": "The user denied this tool call."}),
+                            tool_call_id=tc.id,
+                        ))
+                        continue
+                    if _decision != "allow":
+                        _pending_approvals.append({
+                            "tool_use_id": tc.id, "tool": tc.name,
+                            "args": tc.arguments if isinstance(tc.arguments, dict) else {},
+                        })
+                        _paused = True
+                        break
 
                 # ALLOW or WARN — execute the tool
                 tool_calls_made.append(tc.name)
@@ -1260,6 +1364,25 @@ class AitherAgent:
                     content="\n".join(dict.fromkeys(_deferred_nudges)),
                 ))
 
+            # A gated tool paused the turn — persist the pause and return so the caller
+            # can surface Allow/Deny cards. Resume re-enters via agent.resume(session_id).
+            if _paused:
+                _approval_store.put_pending(
+                    sid, user_message=message, agent=self.name, pending=_pending_approvals,
+                )
+                pend_names = ", ".join(p["tool"] for p in _pending_approvals)
+                _total_ms = (time.perf_counter() - _chat_start) * 1000
+                return AgentResponse(
+                    content=(f"Waiting for your approval to run: {pend_names}."),
+                    model=getattr(resp, "model", ""),
+                    session_id=sid,
+                    tool_calls_made=tool_calls_made,
+                    latency_ms=_total_ms,
+                    finish_reason="requires_action",
+                    requires_action=True,
+                    pending=list(_pending_approvals),
+                )
+
         # Exhausted tool loops — return last response
         final = await self.llm.chat(
             messages, effort=_effort, top_p=_top_p,
@@ -1297,16 +1420,25 @@ class AitherAgent:
                 )
             except Exception:
                 pass
-        # Auto-ingest conversation into graph memory (fire-and-forget)
-        if self._graph:
+        # Auto-ingest conversation into graph memory (fire-and-forget).
+        # FEEDBACK-LOOP GUARD: user turn ONLY — never ingest the assistant's own
+        # generated reply (a fabrication stored as memory recalls + compounds).
+        # Skip memory-QUESTIONS: a question is not a fact, and ingesting it lets
+        # the question self-ground on the next ask, defeating the never-fabricate gate.
+        if self._graph and not coherence.is_memory_question(message):
             try:
                 await self._graph.ingest_conversation(sid, [
                     {"role": "user", "content": message},
-                    {"role": "assistant", "content": content},
                 ])
             except Exception:
                 pass
         await self._learn_after(message, content, tool_calls_made)
+        # Turn completed without (re-)pausing — clear any approval state for this session
+        # so a later identical tool call re-prompts instead of reusing a stale decision.
+        try:
+            _approval_store.clear(sid)
+        except Exception:  # noqa: BLE001
+            pass
         return AgentResponse(
             content=content,
             model=final.model,
@@ -1321,6 +1453,20 @@ class AitherAgent:
             effort_level=final.effort_level,
             cache_status=final.cache_status,
         )
+
+    async def resume(self, session_id: str, decisions: list[dict], **kwargs) -> "AgentResponse":
+        """Resume a turn that paused for tool approval. Records the customer's allow/deny
+        ``decisions`` (each ``{tool_use_id|tool, result, deny_message?}``) then re-runs the
+        paused turn — the approval gate now consumes the recorded decision (executes an
+        allowed tool, feeds a denial observation for a denied one). Returns the continued
+        turn's response (which may pause AGAIN on a different gated tool)."""
+        from adk.approval import get_approval_store
+        store = get_approval_store()
+        paused = store.get(session_id)
+        if not paused:
+            return AgentResponse(content="", session_id=session_id, finish_reason="stop")
+        store.record_decisions(session_id, decisions)
+        return await self.chat(paused.get("user_message", ""), session_id=session_id, **kwargs)
 
     async def chat_stream(
         self,

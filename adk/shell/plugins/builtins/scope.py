@@ -22,6 +22,7 @@ Aliases: /aitherscope, /codeview
 """
 
 import json
+from adk._tls import tls_verify
 import os
 import subprocess
 import sys
@@ -147,7 +148,7 @@ Use `/scope system` for the full picture or a specific view like `/scope infra`.
 
         # POST to Veil's desktop window API to open scope window
         try:
-            async with httpx.AsyncClient(timeout=10, verify=False) as c:
+            async with httpx.AsyncClient(timeout=10, verify=tls_verify()) as c:
                 r = await c.post(
                     f"{_veil_url()}/api/desktop/open-window",
                     json={
@@ -173,7 +174,7 @@ Use `/scope system` for the full picture or a specific view like `/scope infra`.
         path = args[0] if args else "AitherOS"
 
         try:
-            async with httpx.AsyncClient(timeout=30, verify=False) as c:
+            async with httpx.AsyncClient(timeout=30, verify=tls_verify()) as c:
                 r = await c.get(
                     f"{_genesis_url()}/scope/graph/full",
                     params={"root": path},
@@ -215,7 +216,7 @@ Use `/scope system` for the full picture or a specific view like `/scope infra`.
         path = args[0] if args else ""
 
         try:
-            async with httpx.AsyncClient(timeout=30, verify=False) as c:
+            async with httpx.AsyncClient(timeout=30, verify=tls_verify()) as c:
                 r = await c.get(
                     f"{_genesis_url()}/scope/dead-code",
                     params={"path": path} if path else {},
@@ -252,7 +253,7 @@ Use `/scope system` for the full picture or a specific view like `/scope infra`.
         import httpx
 
         try:
-            async with httpx.AsyncClient(timeout=15, verify=False) as c:
+            async with httpx.AsyncClient(timeout=15, verify=tls_verify()) as c:
                 r = await c.get(
                     f"{_genesis_url()}/scope/codebase-metrics",
                     headers=_api_headers(),
@@ -293,7 +294,7 @@ Use `/scope system` for the full picture or a specific view like `/scope infra`.
             ("CodeGraph Stats", f"{_genesis_url()}/scope/codegraph-stats"),
         ]
 
-        async with httpx.AsyncClient(timeout=10, verify=False) as c:
+        async with httpx.AsyncClient(timeout=10, verify=tls_verify()) as c:
             for name, url in checks:
                 try:
                     r = await c.get(url, headers=_api_headers())
@@ -316,7 +317,7 @@ Use `/scope system` for the full picture or a specific view like `/scope infra`.
             return "Usage: `/scope reindex <path>`\n  Or set AITHER_PROJECT_PATH via `/project switch`."
 
         try:
-            async with httpx.AsyncClient(timeout=60, verify=False) as c:
+            async with httpx.AsyncClient(timeout=60, verify=tls_verify()) as c:
                 r = await c.post(
                     f"{_genesis_url()}/scope/reindex",
                     json={"path": path, "force": True},
@@ -338,7 +339,7 @@ Use `/scope system` for the full picture or a specific view like `/scope infra`.
         import httpx
 
         try:
-            async with httpx.AsyncClient(timeout=30, verify=False) as c:
+            async with httpx.AsyncClient(timeout=30, verify=tls_verify()) as c:
                 r = await c.post(
                     f"{_genesis_url()}/scope/system",
                     json=flags,

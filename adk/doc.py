@@ -11,6 +11,7 @@ Documents are encrypted at rest. Metadata is plaintext.
 """
 
 from __future__ import annotations
+from adk._tls import tls_verify
 
 import asyncio
 import os
@@ -51,7 +52,7 @@ async def _get_client_with_auth(
 
     client = httpx.AsyncClient(
         timeout=30.0,
-        verify=False,  # Trust internal CA for local deployments
+        verify=tls_verify(),  # Trust internal CA for local deployments
     )
 
     return client, headers

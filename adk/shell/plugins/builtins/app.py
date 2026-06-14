@@ -22,6 +22,7 @@ Aliases: /apps, /workspace-app
 """
 
 import asyncio
+from adk._tls import tls_verify
 import json
 import os
 import platform
@@ -196,7 +197,7 @@ class AppPlugin(SlashCommand):
         # Try Genesis deployments
         for base_url in [GENESIS_URL, f"{PORTAL_URL}/api/bridge/genesis"]:
             try:
-                async with httpx.AsyncClient(timeout=15, verify=False) as c:
+                async with httpx.AsyncClient(timeout=15, verify=tls_verify()) as c:
                     r = await c.get(f"{base_url}/apps/deployments", headers=headers)
                     if r.status_code == 200:
                         data = r.json()
@@ -216,7 +217,7 @@ class AppPlugin(SlashCommand):
         if not apps_found:
             for base_url in [GENESIS_URL, f"{PORTAL_URL}/api/bridge/genesis"]:
                 try:
-                    async with httpx.AsyncClient(timeout=15, verify=False) as c:
+                    async with httpx.AsyncClient(timeout=15, verify=tls_verify()) as c:
                         r = await c.get(f"{base_url}/apps/catalog", headers=headers)
                         if r.status_code == 200:
                             catalog = r.json()
@@ -392,7 +393,7 @@ class AppPlugin(SlashCommand):
         # Try Genesis first (local AitherOS)
         for base_url in [GENESIS_URL, f"{PORTAL_URL}/api/bridge/genesis"]:
             try:
-                async with httpx.AsyncClient(timeout=15, verify=False) as c:
+                async with httpx.AsyncClient(timeout=15, verify=tls_verify()) as c:
                     # Try self-hosted config endpoint
                     r = await c.post(
                         f"{base_url}/apps/self-hosted/generate-config",
@@ -416,7 +417,7 @@ class AppPlugin(SlashCommand):
         # Try scaffold-download (get full project as files dict)
         for base_url in [GENESIS_URL, f"{PORTAL_URL}/api/bridge/genesis"]:
             try:
-                async with httpx.AsyncClient(timeout=30, verify=False) as c:
+                async with httpx.AsyncClient(timeout=30, verify=tls_verify()) as c:
                     r = await c.post(
                         f"{base_url}/apps/scaffold",
                         json={
@@ -441,7 +442,7 @@ class AppPlugin(SlashCommand):
 
         # Try portal deployments API
         try:
-            async with httpx.AsyncClient(timeout=15, verify=False) as c:
+            async with httpx.AsyncClient(timeout=15, verify=tls_verify()) as c:
                 r = await c.get(
                     f"{PORTAL_URL}/api/bridge/genesis/apps/deployments",
                     headers=headers,

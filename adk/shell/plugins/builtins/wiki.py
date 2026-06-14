@@ -24,6 +24,7 @@ Aliases: /lyra, /kb-wiki
 """
 
 import os
+from adk._tls import tls_verify
 from typing import Any, Dict, List, Optional
 
 from adk.shell.plugins import SlashCommand
@@ -49,7 +50,7 @@ def _api_headers() -> Dict[str, str]:
 
 async def _post(path: str, body: dict = None) -> dict:
     import httpx
-    async with httpx.AsyncClient(timeout=120, verify=False) as c:
+    async with httpx.AsyncClient(timeout=120, verify=tls_verify()) as c:
         resp = await c.post(f"{_wiki_url()}{path}", json=body or {}, headers=_api_headers())
         resp.raise_for_status()
         return resp.json()
@@ -57,7 +58,7 @@ async def _post(path: str, body: dict = None) -> dict:
 
 async def _get(path: str, params: dict = None) -> dict:
     import httpx
-    async with httpx.AsyncClient(timeout=30, verify=False) as c:
+    async with httpx.AsyncClient(timeout=30, verify=tls_verify()) as c:
         resp = await c.get(f"{_wiki_url()}{path}", params=params or {}, headers=_api_headers())
         resp.raise_for_status()
         return resp.json()

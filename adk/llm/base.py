@@ -404,6 +404,35 @@ class LLMProvider(ABC):
         """
         ...
 
+    async def chat_with_continuation(
+        self,
+        messages: list[Message],
+        *,
+        max_continuations: int | None = None,
+        max_total_output_tokens: int | None = None,
+        **chat_kwargs,
+    ) -> LLMResponse:
+        """``chat()`` that auto-continues a completion truncated at the output
+        token cap (``finish_reason == "length"``) and stitches the chunks.
+
+        Every provider inherits this for free — the continue+stitch logic lives
+        in one place (``adk.llm.continuation``) instead of each call-site rolling
+        its own retry loop. Returns the fully-stitched LLMResponse. A no-op when
+        the first response was not truncated or the kill-switch is set.
+        """
+        from .continuation import run_continuation  # lazy: avoid import cycle
+
+        first = await self.chat(messages, **chat_kwargs)
+
+        async def _again(_msgs: list[Message]) -> LLMResponse:
+            return await self.chat(_msgs, **chat_kwargs)
+
+        return await run_continuation(
+            _again, messages, first,
+            max_continuations=max_continuations,
+            max_total_output_tokens=max_total_output_tokens,
+        )
+
     async def chat_stream(
         self,
         messages: list[Message],

@@ -28,6 +28,7 @@ Aliases: /story
 """
 
 import json
+from adk._tls import tls_verify
 import os
 import sys
 from typing import Any, Dict, List, Optional
@@ -152,7 +153,7 @@ class SagaPlugin(SlashCommand):
         import httpx
 
         async with httpx.AsyncClient(
-            base_url=_saga_url(), headers=_headers(), timeout=15, verify=False
+            base_url=_saga_url(), headers=_headers(), timeout=15, verify=tls_verify()
         ) as c:
             resp = await c.get("/projects")
 
@@ -213,7 +214,7 @@ class SagaPlugin(SlashCommand):
             body["description"] = description
 
         async with httpx.AsyncClient(
-            base_url=_saga_url(), headers=_headers(), timeout=15, verify=False
+            base_url=_saga_url(), headers=_headers(), timeout=15, verify=tls_verify()
         ) as c:
             resp = await c.post("/projects", json=body)
 
@@ -237,7 +238,7 @@ class SagaPlugin(SlashCommand):
 
         pid = args[0]
         async with httpx.AsyncClient(
-            base_url=_saga_url(), headers=_headers(), timeout=15, verify=False
+            base_url=_saga_url(), headers=_headers(), timeout=15, verify=tls_verify()
         ) as c:
             resp = await c.get(f"/projects/{pid}")
 
@@ -297,7 +298,7 @@ class SagaPlugin(SlashCommand):
             )
 
         async with httpx.AsyncClient(
-            base_url=_saga_url(), headers=_headers(), timeout=15, verify=False
+            base_url=_saga_url(), headers=_headers(), timeout=15, verify=tls_verify()
         ) as c:
             resp = await c.delete(f"/projects/{pid}")
 
@@ -326,7 +327,7 @@ class SagaPlugin(SlashCommand):
             return f"{_C.RED}Failed to read file: {e}{_C.RESET}"
 
         async with httpx.AsyncClient(
-            base_url=_saga_url(), headers=_headers(), timeout=30, verify=False
+            base_url=_saga_url(), headers=_headers(), timeout=30, verify=tls_verify()
         ) as c:
             resp = await c.post("/projects/import", json=payload)
 
@@ -352,7 +353,7 @@ class SagaPlugin(SlashCommand):
         outfile = args[1] if len(args) > 1 else f"saga-{pid[:12]}.json"
 
         async with httpx.AsyncClient(
-            base_url=_saga_url(), headers=_headers(), timeout=30, verify=False
+            base_url=_saga_url(), headers=_headers(), timeout=30, verify=tls_verify()
         ) as c:
             resp = await c.get(f"/projects/{pid}/export")
 
@@ -374,7 +375,7 @@ class SagaPlugin(SlashCommand):
 
         pid = args[0]
         async with httpx.AsyncClient(
-            base_url=_saga_url(), headers=_headers(), timeout=15, verify=False
+            base_url=_saga_url(), headers=_headers(), timeout=15, verify=tls_verify()
         ) as c:
             resp = await c.get(f"/projects/{pid}/characters")
 
@@ -431,7 +432,7 @@ class SagaPlugin(SlashCommand):
             body["description"] = description
 
         async with httpx.AsyncClient(
-            base_url=_saga_url(), headers=_headers(), timeout=15, verify=False
+            base_url=_saga_url(), headers=_headers(), timeout=15, verify=tls_verify()
         ) as c:
             resp = await c.post(f"/projects/{pid}/characters", json=body)
 
@@ -452,7 +453,7 @@ class SagaPlugin(SlashCommand):
 
         pid = args[0]
         async with httpx.AsyncClient(
-            base_url=_saga_url(), headers=_headers(), timeout=15, verify=False
+            base_url=_saga_url(), headers=_headers(), timeout=15, verify=tls_verify()
         ) as c:
             resp = await c.get(f"/projects/{pid}/locations")
 
@@ -483,7 +484,7 @@ class SagaPlugin(SlashCommand):
 
         pid = args[0]
         async with httpx.AsyncClient(
-            base_url=_saga_url(), headers=_headers(), timeout=15, verify=False
+            base_url=_saga_url(), headers=_headers(), timeout=15, verify=tls_verify()
         ) as c:
             resp = await c.get(f"/projects/{pid}/lorebook")
 
@@ -518,7 +519,7 @@ class SagaPlugin(SlashCommand):
 
         pid = args[0]
         async with httpx.AsyncClient(
-            base_url=_saga_url(), headers=_headers(), timeout=15, verify=False
+            base_url=_saga_url(), headers=_headers(), timeout=15, verify=tls_verify()
         ) as c:
             resp = await c.get(f"/projects/{pid}/sessions")
 
@@ -573,7 +574,7 @@ class SagaPlugin(SlashCommand):
             body["prompt"] = prompt
 
         async with httpx.AsyncClient(
-            base_url=_saga_url(), headers=_headers(), timeout=120, verify=False
+            base_url=_saga_url(), headers=_headers(), timeout=120, verify=tls_verify()
         ) as c:
             resp = await c.post("/engine/generate", json=body)
 
@@ -626,7 +627,7 @@ class SagaPlugin(SlashCommand):
             body["description"] = scene_desc
 
         async with httpx.AsyncClient(
-            base_url=_saga_url(), headers=_headers(), timeout=60, verify=False
+            base_url=_saga_url(), headers=_headers(), timeout=60, verify=tls_verify()
         ) as c:
             resp = await c.post("/engine/visualize", json=body)
 
@@ -649,7 +650,7 @@ class SagaPlugin(SlashCommand):
 
         try:
             async with httpx.AsyncClient(
-                base_url=_saga_url(), headers=_headers(), timeout=10, verify=False
+                base_url=_saga_url(), headers=_headers(), timeout=10, verify=tls_verify()
             ) as c:
                 resp = await c.get("/health")
         except Exception as e:
@@ -740,7 +741,7 @@ class SagaPlugin(SlashCommand):
 
         pid = args[0]
         async with httpx.AsyncClient(
-            base_url=_saga_url(), headers=_headers(), timeout=15, verify=False
+            base_url=_saga_url(), headers=_headers(), timeout=15, verify=tls_verify()
         ) as c:
             resp = await c.get(f"/projects/{pid}/manuscript")
 
@@ -795,7 +796,7 @@ class SagaPlugin(SlashCommand):
 
         pid = args[0]
         async with httpx.AsyncClient(
-            base_url=_saga_url(), headers=_headers(), timeout=15, verify=False
+            base_url=_saga_url(), headers=_headers(), timeout=15, verify=tls_verify()
         ) as c:
             resp = await c.get(f"/projects/{pid}/manuscript/chapters")
 
@@ -830,7 +831,7 @@ class SagaPlugin(SlashCommand):
 
         pid = args[0]
         async with httpx.AsyncClient(
-            base_url=_saga_url(), headers=_headers(), timeout=15, verify=False
+            base_url=_saga_url(), headers=_headers(), timeout=15, verify=tls_verify()
         ) as c:
             resp = await c.get(f"/projects/{pid}/manuscript/outline")
 
@@ -870,7 +871,7 @@ class SagaPlugin(SlashCommand):
 
         pid = args[0]
         async with httpx.AsyncClient(
-            base_url=_saga_url(), headers=_headers(), timeout=15, verify=False
+            base_url=_saga_url(), headers=_headers(), timeout=15, verify=tls_verify()
         ) as c:
             resp = await c.get(f"/projects/{pid}/manuscript/stats")
 
@@ -926,7 +927,7 @@ class SagaPlugin(SlashCommand):
                 word_count = int(args[i + 1])
 
         async with httpx.AsyncClient(
-            base_url=_saga_url(), headers=_headers(), timeout=120, verify=False
+            base_url=_saga_url(), headers=_headers(), timeout=120, verify=tls_verify()
         ) as c:
             resp = await c.post("/writing/continue", json={
                 "project_id": pid, "chapter_id": ch_id,
@@ -958,7 +959,7 @@ class SagaPlugin(SlashCommand):
         instruction = args[4] if len(args) > 4 else "improve clarity and flow"
 
         async with httpx.AsyncClient(
-            base_url=_saga_url(), headers=_headers(), timeout=120, verify=False
+            base_url=_saga_url(), headers=_headers(), timeout=120, verify=tls_verify()
         ) as c:
             resp = await c.post("/writing/rewrite", json={
                 "project_id": pid, "chapter_id": ch_id,
@@ -991,7 +992,7 @@ class SagaPlugin(SlashCommand):
                 target = int(args[i + 1])
 
         async with httpx.AsyncClient(
-            base_url=_saga_url(), headers=_headers(), timeout=120, verify=False
+            base_url=_saga_url(), headers=_headers(), timeout=120, verify=tls_verify()
         ) as c:
             resp = await c.post("/writing/expand", json={
                 "project_id": pid, "chapter_id": ch_id,
@@ -1023,7 +1024,7 @@ class SagaPlugin(SlashCommand):
                 count = int(args[i + 1])
 
         async with httpx.AsyncClient(
-            base_url=_saga_url(), headers=_headers(), timeout=60, verify=False
+            base_url=_saga_url(), headers=_headers(), timeout=60, verify=tls_verify()
         ) as c:
             resp = await c.post("/writing/suggest", json={
                 "project_id": pid, "count": count,
@@ -1058,7 +1059,7 @@ class SagaPlugin(SlashCommand):
         topic = " ".join(args[1:])
 
         async with httpx.AsyncClient(
-            base_url=_saga_url(), headers=_headers(), timeout=60, verify=False
+            base_url=_saga_url(), headers=_headers(), timeout=60, verify=tls_verify()
         ) as c:
             resp = await c.post("/writing/brainstorm", json={
                 "project_id": pid, "topic": topic,

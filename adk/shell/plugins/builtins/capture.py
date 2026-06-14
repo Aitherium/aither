@@ -18,6 +18,7 @@ Aliases: /cap
 """
 
 import json
+from adk._tls import tls_verify
 import os
 from typing import Any, Dict, List, Optional
 
@@ -49,7 +50,7 @@ def _api_headers() -> Dict[str, str]:
 
 async def _api_get(path: str, params: dict = None) -> dict:
     import httpx
-    async with httpx.AsyncClient(timeout=60, verify=False) as c:
+    async with httpx.AsyncClient(timeout=60, verify=tls_verify()) as c:
         resp = await c.get(f"{_genesis_url()}{_PREFIX}{path}", params=params or {}, headers=_api_headers())
         resp.raise_for_status()
         return resp.json()
@@ -57,7 +58,7 @@ async def _api_get(path: str, params: dict = None) -> dict:
 
 async def _api_post(path: str, body: dict = None) -> dict:
     import httpx
-    async with httpx.AsyncClient(timeout=120, verify=False) as c:
+    async with httpx.AsyncClient(timeout=120, verify=tls_verify()) as c:
         resp = await c.post(f"{_genesis_url()}{_PREFIX}{path}", json=body or {}, headers=_api_headers())
         resp.raise_for_status()
         return resp.json()

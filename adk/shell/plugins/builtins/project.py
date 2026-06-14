@@ -20,6 +20,7 @@ Aliases: /proj, /workspace, /ws, /repo
 """
 
 import asyncio
+from adk._tls import tls_verify
 import json
 import os
 import shutil
@@ -539,7 +540,7 @@ It sets the active CodeGraph root, Repowise scope, and system prompt context.
 
         # CodeGraph index
         try:
-            async with httpx.AsyncClient(timeout=60, verify=False) as c:
+            async with httpx.AsyncClient(timeout=60, verify=tls_verify()) as c:
                 r = await c.post(
                     f"{genesis}/scope/reindex",
                     json={"path": p.path, "force": True},
@@ -554,7 +555,7 @@ It sets the active CodeGraph root, Repowise scope, and system prompt context.
 
         # Repowise onboard
         try:
-            async with httpx.AsyncClient(timeout=120, verify=False) as c:
+            async with httpx.AsyncClient(timeout=120, verify=tls_verify()) as c:
                 r = await c.post(
                     f"{genesis}/api/v1/tools/call",
                     json={"tool": "onboard_external_repo", "args": {"repo_url": p.origin or p.path, "name": name}},

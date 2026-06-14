@@ -17,6 +17,7 @@ Aliases: /gha, /ghapp
 """
 
 from __future__ import annotations
+from adk._tls import tls_verify
 
 import os
 from pathlib import Path
@@ -257,7 +258,7 @@ class GitHubApp(SlashCommand):
     async def _status(self) -> str:
         url = _secrets_url()
         results: Dict[str, str] = {}
-        async with httpx.AsyncClient(timeout=15.0, verify=False) as client:
+        async with httpx.AsyncClient(timeout=15.0, verify=tls_verify()) as client:
             for name in _KEYS:
                 r = await client.get(f"{url}/secrets/{name}", headers=_secrets_headers())
                 if r.status_code == 200:
@@ -313,7 +314,7 @@ class GitHubApp(SlashCommand):
     async def _verify(self) -> str:
         flow = _flow_url()
         try:
-            async with httpx.AsyncClient(timeout=10.0, verify=False) as client:
+            async with httpx.AsyncClient(timeout=10.0, verify=tls_verify()) as client:
                 r = await client.get(f"{flow}/github-app/status")
                 r.raise_for_status()
                 data = r.json()
@@ -341,7 +342,7 @@ class GitHubApp(SlashCommand):
         relay = _relay_url()
         admin = _resolve_admin_key()
         try:
-            async with httpx.AsyncClient(timeout=10.0, verify=False) as client:
+            async with httpx.AsyncClient(timeout=10.0, verify=tls_verify()) as client:
                 r = await client.put(
                     f"{relay}/v1/workspaces/{slug}/integrations",
                     json={"github_repo": repo},

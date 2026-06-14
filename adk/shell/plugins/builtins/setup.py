@@ -19,6 +19,7 @@ Aliases: /connect, /install
 """
 
 import asyncio
+from adk._tls import tls_verify
 import json
 import os
 import platform
@@ -725,7 +726,7 @@ class SetupPlugin(SlashCommand):
         import httpx
         for attempt in range(30):
             try:
-                async with httpx.AsyncClient(timeout=5, verify=False) as c:
+                async with httpx.AsyncClient(timeout=5, verify=tls_verify()) as c:
                     r = await c.get("http://localhost:8000/health")
                     if r.status_code == 200:
                         lines.append("  ✅ vLLM healthy!")

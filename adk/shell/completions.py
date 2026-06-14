@@ -25,6 +25,7 @@ Setup:
 """
 
 import os
+from adk._tls import tls_verify
 import sys
 
 
@@ -39,7 +40,7 @@ def setup_argcomplete(parser):
             try:
                 import httpx
                 url = os.environ.get("AITHER_URL", "https://localhost:8001")
-                r = httpx.get(f"{url}/models", timeout=2.0, verify=False)
+                r = httpx.get(f"{url}/models", timeout=2.0, verify=tls_verify())
                 if r.status_code == 200:
                     data = r.json()
                     models = []
@@ -55,7 +56,7 @@ def setup_argcomplete(parser):
             try:
                 import httpx
                 url = os.environ.get("AITHER_WILL_URL", "https://localhost:8097")
-                r = httpx.get(f"{url}/wills", timeout=2.0, verify=False)
+                r = httpx.get(f"{url}/wills", timeout=2.0, verify=tls_verify())
                 if r.status_code == 200:
                     data = r.json()
                     wills = data.get("wills", data if isinstance(data, list) else [])

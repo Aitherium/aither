@@ -451,6 +451,47 @@ class CompanionPlugin(SlashCommand):
             except Exception as e:
                 return f"❌ Failed to store persona: {e}"
 
+        elif sub in ("backup", "restore"):
+            # The passphrase is read from the env (never a shell arg → never logged in
+            # history). It is the ONLY thing that can decrypt a portable backup — keep
+            # it safe; lose it and the backup is unrecoverable (that is the point).
+            import os
+            passphrase = os.environ.get("AITHER_COMPANION_BACKUP_PASSPHRASE", "")
+            if not passphrase:
+                return (
+                    "🔑 Set a backup passphrase first (kept out of shell history):\n"
+                    "  `export AITHER_COMPANION_BACKUP_PASSPHRASE='…'`\n"
+                    "It encrypts the portable backup so it restores on any machine but "
+                    "stays operator-blind. Lose it and the backup can't be recovered."
+                )
+            if len(args) < 2:
+                return f"Usage: `/companion vault {sub} <file>`"
+            path = " ".join(args[1:])
+            if sub == "backup":
+                try:
+                    out = vault.export_backup_to_file(path, passphrase)
+                    return (
+                        f"✅ Portable backup written to `{out}`\n"
+                        "Move it to another machine and `restore` with the SAME passphrase."
+                    )
+                except Exception as e:
+                    return f"❌ Backup failed: {e}"
+            else:  # restore
+                overwrite = "--overwrite" in args or "--force" in args
+                clean = [a for a in args[1:] if a not in ("--overwrite", "--force")]
+                path = " ".join(clean)
+                try:
+                    result = vault.import_backup_from_file(
+                        path, passphrase, overwrite=overwrite)
+                    return (
+                        f"✅ Restored {result['count']} persona(s): "
+                        f"{', '.join(result['restored']) or '(none)'}\n"
+                        "Re-pinned to this machine; your companion is back."
+                    )
+                except Exception as e:
+                    hint = "" if "overwrite" not in str(e) else " (add `--overwrite` to replace)"
+                    return f"❌ Restore failed: {e}{hint}"
+
         else:
             return self._get_vault_help()
 
@@ -463,8 +504,14 @@ class CompanionPlugin(SlashCommand):
 | `/companion vault list` | List stored personas |
 | `/companion vault level [tier]` | Get/set safety tier |
 | `/companion vault store <name> <path>` | Store persona from file |
+| `/companion vault backup <file>` | Write a portable, passphrase-encrypted backup |
+| `/companion vault restore <file> [--overwrite]` | Restore a backup onto this machine |
 
 **Safety Tiers:** professional, casual, unrestricted, explicit
+
+**Backup/restore** move your companion between machines or recover after disk loss.
+Set `AITHER_COMPANION_BACKUP_PASSPHRASE` first — it encrypts the portable bundle so
+it restores anywhere yet stays operator-blind. Lose it and the backup is unrecoverable.
 
 All data is encrypted locally with your machine key. The operator never sees it.
 """
