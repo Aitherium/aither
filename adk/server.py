@@ -17,6 +17,7 @@ import uuid
 from contextlib import asynccontextmanager
 from typing import Any
 
+import httpx
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
@@ -711,7 +712,7 @@ def create_app(
             from adk.a2a import A2AServer
 
             a = _state.get("agent")
-            base_url = f"http://localhost:{port}"
+            base_url = f"http://localhost:{config.server_port}"
 
             a2a = A2AServer(
                 agent=a,
@@ -776,10 +777,14 @@ def create_app(
     async def _chronicle_log_chat(**kwargs):
         """Send chat event to Chronicle. Never blocks or raises."""
         try:
+            import inspect
             from adk.chronicle import get_chronicle
             chronicle = get_chronicle()
-            await chronicle.log_llm_call(**kwargs)
-        except (ImportError, RuntimeError, OSError):
+            # Drop kwargs log_llm_call doesn't accept (e.g. session_id) — callers
+            # pass a richer set; signature drift must not crash this fire-and-forget.
+            accepted = set(inspect.signature(chronicle.log_llm_call).parameters)
+            await chronicle.log_llm_call(**{k: v for k, v in kwargs.items() if k in accepted})
+        except Exception:
             pass  # Truly fire-and-forget
 
     async def _flush_chronicle_queue():
@@ -857,7 +862,7 @@ def create_app(
                 )
             _state["fleet_registered"] = True
             logger.info("Registered fleet endpoint: %s -> %s", agent_name, invoke_url)
-        except (ImportError, RuntimeError, OSError, ConnectionError) as exc:
+        except (ImportError, RuntimeError, OSError, ConnectionError, httpx.HTTPError) as exc:
             _state["fleet_registered"] = False
             logger.warning("Fleet endpoint registration failed (non-fatal): %s", exc)
 
@@ -890,7 +895,7 @@ def create_app(
                     logger.info("Registered fleet API endpoint: %s (id=%s)", agent_name, _state.get("fleet_endpoint_id"))
                 else:
                     logger.debug("Fleet API registration returned %d", fleet_resp.status_code)
-        except (ImportError, RuntimeError, OSError, ConnectionError) as exc:
+        except (ImportError, RuntimeError, OSError, ConnectionError, httpx.HTTPError) as exc:
             logger.debug("Fleet API registration failed (non-fatal): %s", exc)
 
         # Register with AitherFleet service (central roster for cycle dispatch)
@@ -916,7 +921,7 @@ def create_app(
                     },
                 )
             logger.info("Registered with AitherFleet service: %s", agent_name)
-        except (ImportError, RuntimeError, OSError, ConnectionError) as exc:
+        except (ImportError, RuntimeError, OSError, ConnectionError, httpx.HTTPError) as exc:
             logger.debug("AitherFleet registration failed (non-fatal): %s", exc)
 
     async def _deregister_fleet_endpoint():
@@ -944,7 +949,7 @@ def create_app(
                     headers={"Authorization": f"Bearer {api_key}"},
                 )
             logger.info("Deregistered fleet endpoint: %s", agent_name)
-        except (ImportError, RuntimeError, OSError, ConnectionError) as exc:
+        except (ImportError, RuntimeError, OSError, ConnectionError, httpx.HTTPError) as exc:
             logger.debug("Fleet endpoint deregistration failed (non-fatal): %s", exc)
 
         # Deregister from fleet API (separate try/except for resilience)
@@ -959,7 +964,7 @@ def create_app(
                         headers={"Authorization": f"Bearer {api_key}"},
                     )
                 logger.info("Deregistered fleet API endpoint: %s (id=%s)", agent_name, fleet_endpoint_id)
-            except (ImportError, RuntimeError, OSError, ConnectionError) as exc:
+            except (ImportError, RuntimeError, OSError, ConnectionError, httpx.HTTPError) as exc:
                 logger.debug("Fleet API deregistration failed (non-fatal): %s", exc)
 
     async def _fleet_heartbeat_loop():
@@ -1077,7 +1082,7 @@ def create_app(
             synced = await sync_secrets()
             if synced:
                 logger.info("Synced %d secrets from vault", len(synced))
-        except (ImportError, RuntimeError, OSError, ConnectionError) as exc:
+        except (ImportError, RuntimeError, OSError, ConnectionError, httpx.HTTPError) as exc:
             logger.debug("Secrets sync failed (non-fatal): %s", exc)
 
     async def _register_with_gateway():
@@ -1099,7 +1104,7 @@ def create_app(
             )
             _state["gateway_connected"] = True
             logger.info("Registered with gateway %s: %s", config.gateway_url, result)
-        except (ImportError, RuntimeError, OSError, ConnectionError) as exc:
+        except (ImportError, RuntimeError, OSError, ConnectionError, httpx.HTTPError) as exc:
             _state["gateway_connected"] = False
             logger.warning("Gateway registration failed (non-fatal): %s", exc)
 
@@ -1121,7 +1126,7 @@ def create_app(
                 node_name=os.getenv("AITHER_NODE_NAME", ""),
                 agents=agent_names,
                 capabilities=_detect_node_capabilities(),
-                port=port,
+                port=config.server_port,
             )
             result = await relay.register()
             if result.get("ok") is not False:
@@ -1131,7 +1136,7 @@ def create_app(
                     "Joined AitherNet mesh as %s (node_id=%s, agents=%s)",
                     relay.node_name, relay.node_id[:12], agent_names,
                 )
-        except (ImportError, RuntimeError, OSError, ConnectionError) as exc:
+        except (ImportError, RuntimeError, OSError, ConnectionError, httpx.HTTPError) as exc:
             logger.debug("AitherNet join failed (non-fatal): %s", exc)
 
     def _detect_node_capabilities() -> list[str]:
@@ -1218,7 +1223,7 @@ def create_app(
             relay_kwargs = {
                 "node_name": os.getenv("AITHER_NODE_NAME", ""),
                 "capabilities": _detect_node_capabilities(),
-                "port": port,
+                "port": config.server_port,
             }
             if base_host:
                 relay_kwargs["gateway_url"] = f"{base_host}:8001"
@@ -1797,6 +1802,21 @@ def create_app(
     return app
 
 
+async def _strata_ingest_bg(**kwargs):
+    """Module-level fire-and-forget Strata ingest for _aitheros_stream.
+
+    _aitheros_stream is module-level and cannot see create_app's _strata_ingest
+    closure — referencing it raised NameError and silently truncated the SSE
+    stream after the answer. Never blocks or raises.
+    """
+    try:
+        from adk.strata import get_strata_ingest
+        strata = get_strata_ingest()
+        await strata.ingest_chat(**kwargs)
+    except Exception:
+        pass
+
+
 async def _aitheros_stream(get_agent_fn, message: str, session_id: str, agent_name: str | None, reasoning: bool):
     """SSE generator emitting AitherOS-typed events.
 
@@ -1838,11 +1858,23 @@ async def _aitheros_stream(get_agent_fn, message: str, session_id: str, agent_na
                 yield f"event: complete\ndata: {json.dumps({'type': 'complete', 'content': resp.content, 'pending': pending, 'requires_action': True, 'duration_ms': duration_ms, 'session_id': session_id})}\n\n"
                 return
 
-            # Emit tool calls if any
+            # Emit tool calls if any. AgentResponse.tool_calls_made is a list[str]
+            # of tool names (a clean name = success; a "name[denied|blocked|
+            # circuit_break]" suffix marks a non-execution). Tolerate dict entries
+            # too in case a caller enriches them.
             if resp.tool_calls_made:
                 for tc in resp.tool_calls_made:
-                    yield f"event: tool_call\ndata: {json.dumps({'type': 'tool_call', 'tools': [{'name': tc.get('name', '?'), 'args': tc.get('args', {})}]})}\n\n"
-                    yield f"event: tool_result\ndata: {json.dumps({'type': 'tool_result', 'results': [{'tool': tc.get('name', '?'), 'success': True, 'output': str(tc.get('output', ''))[:500]}]})}\n\n"
+                    if isinstance(tc, dict):
+                        tname = tc.get("name", "?")
+                        targs = tc.get("args", {})
+                        toutput = tc.get("output", "")
+                    else:
+                        tname = str(tc)
+                        targs = {}
+                        toutput = ""
+                    success = "[" not in tname
+                    yield f"event: tool_call\ndata: {json.dumps({'type': 'tool_call', 'tools': [{'name': tname, 'args': targs}]})}\n\n"
+                    yield f"event: tool_result\ndata: {json.dumps({'type': 'tool_result', 'results': [{'tool': tname, 'success': success, 'output': str(toutput)[:500]}]})}\n\n"
 
             yield f"event: answer\ndata: {json.dumps({'type': 'answer', 'answer': resp.content})}\n\n"
 
@@ -1850,7 +1882,7 @@ async def _aitheros_stream(get_agent_fn, message: str, session_id: str, agent_na
             yield f"event: complete\ndata: {json.dumps({'type': 'complete', 'duration_ms': duration_ms, 'tokens_used': resp.tokens_used, 'model': resp.model, 'session_id': session_id})}\n\n"
 
             # Fire-and-forget Strata + Chronicle
-            asyncio.ensure_future(_strata_ingest(
+            asyncio.ensure_future(_strata_ingest_bg(
                 agent=agent.name, session_id=session_id,
                 user_message=message, assistant_response=resp.content,
                 model=resp.model, tokens_used=resp.tokens_used,
@@ -1872,15 +1904,19 @@ async def _aitheros_stream(get_agent_fn, message: str, session_id: str, agent_na
         duration_ms = int((time.time() - start) * 1000)
         yield f"event: complete\ndata: {json.dumps({'type': 'complete', 'duration_ms': duration_ms, 'tokens_used': token_count, 'model': model_name, 'session_id': session_id})}\n\n"
 
-        asyncio.ensure_future(_strata_ingest(
+        asyncio.ensure_future(_strata_ingest_bg(
             agent=agent.name, session_id=session_id,
             user_message=message, assistant_response=full_content,
             model=model_name, tokens_used=token_count,
             latency_ms=duration_ms, tool_calls=[],
         ))
 
-    except (RuntimeError, OSError, ConnectionError) as exc:
-        logger.error("AitherOS stream error: %s", exc)
+    except Exception as exc:
+        # Broad on purpose: an unhandled exception inside an SSE generator silently
+        # truncates the stream (client sees session_start + heartbeats then EOF, with
+        # no error/complete). Surface it as a typed error + terminal complete so the
+        # caller always gets a clean end, and log the full traceback for diagnosis.
+        logger.exception("AitherOS stream error: %s", exc)
         yield f"event: error\ndata: {json.dumps({'type': 'error', 'error': str(exc)})}\n\n"
         duration_ms = int((time.time() - start) * 1000)
         yield f"event: complete\ndata: {json.dumps({'type': 'complete', 'duration_ms': duration_ms})}\n\n"
@@ -2299,6 +2335,12 @@ def main():
 
     port = args.port or config.server_port
     host = args.host or config.server_host
+    # Write the resolved port/host back so lifespan helpers (_join_aithernet,
+    # invoke_url, gateway/fleet registration) all see the actual bound port —
+    # not the config default. Without this, --port diverges from config.server_port
+    # (and _join_aithernet referenced an undefined `port`, crashing startup).
+    config.server_port = port
+    config.server_host = host
 
     if args.invoke_url:
         os.environ["AITHER_INVOKE_URL"] = args.invoke_url

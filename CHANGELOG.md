@@ -2,6 +2,32 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [2.10.1] - 2026-06-14
+
+### Fixed — self-hosted `aither-serve` was crash-on-startup (2.10.0 regression)
+A fresh `pip install aither-adk && aither-serve --backend deepseek` could not boot. Found
+and fixed while standing up a real self-hosted DeepSeek agent end-to-end:
+- **Startup `NameError: name 'port' is not defined`** in three lifespan helpers
+  (`_join_aithernet`, `_init_a2a_server`, `_start_mesh_hosting`) — they referenced a bare
+  `port` no longer in scope. Now use `config.server_port`, and `main()` writes the resolved
+  `--port`/`--host` back to `config` so every lifespan helper and the invoke_url see the
+  actual bound port.
+- **Fleet self-registration crashed the whole server** — the registration handlers caught
+  `(ImportError, RuntimeError, OSError, ConnectionError)` but **not** `httpx.HTTPError`, so a
+  `RemoteProtocolError`/connect error talking to the control plane took the agent down. All
+  network-facing lifespan handlers now also catch `httpx.HTTPError` (non-fatal, as intended).
+- **`--backend` was ignored when `AITHER_API_KEY` was set** — `_auto_detect` picked the cloud
+  gateway before the explicit backend, and `_try_elysium_fallback` then replaced the chosen
+  provider. An explicit backend (deepseek/openai/anthropic/your own vllm/ollama) now always
+  wins; "auto"/"gateway" still flow through detection. The operator's own brain is never
+  silently hijacked.
+- **Approved-tool trace truncated after `/sessions/{id}/confirm`** — the SSE relay treated
+  `AgentResponse.tool_calls_made` (a `list[str]`) as dicts (`tc.get(...)`), raised
+  `AttributeError`, and an over-narrow `except` swallowed it so the client saw only
+  `session_start` + heartbeats. The relay now handles string tool names, the `except` is
+  broad (always emits a typed `error` + terminal `complete`), and the module-level
+  `_strata_ingest` `NameError` + Chronicle `session_id` kwarg mismatch are fixed.
+
 ## [2.10.0] - 2026-06-13
 
 ### Added — human-in-the-loop tool approval (`adk/approval.py`)

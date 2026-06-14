@@ -500,6 +500,38 @@ class LLMRouter:
         """
         import os
 
+        # 0. Explicit backend (--backend / AITHER_LLM_BACKEND / config) ALWAYS wins.
+        # For a self-hosted agent the operator's chosen brain (deepseek, their own
+        # vllm/ollama, etc.) must take precedence over gateway auto-selection — a
+        # saved AITHER_API_KEY must not silently hijack an explicit --backend.
+        # Default is "auto" (and "gateway" still flows through detection), so this
+        # only fires when a concrete backend was explicitly requested.
+        explicit = (
+            (getattr(self._config, "llm_backend", "") or "").strip().lower()
+            if self._config else ""
+        )
+        if explicit and explicit not in ("auto", "gateway"):
+            key_for = {
+                "deepseek": getattr(self._config, "deepseek_api_key", ""),
+                "openai": getattr(self._config, "openai_api_key", ""),
+                "anthropic": getattr(self._config, "anthropic_api_key", ""),
+                "gemini": getattr(self._config, "gemini_api_key", ""),
+            }
+            api_key = key_for.get(explicit, "") or os.getenv(f"{explicit.upper()}_API_KEY", "")
+            try:
+                p = self._create_provider(explicit, base_url=None, api_key=api_key)
+                self._provider_name = explicit
+                logger.info(
+                    "Using explicit backend '%s' (model=%s)",
+                    explicit, self._model or "default",
+                )
+                return p
+            except Exception as e:
+                logger.warning(
+                    "Explicit backend '%s' failed (%s); falling back to auto-detect",
+                    explicit, e,
+                )
+
         gateway_key = (
             (self._config.aither_api_key if self._config else "")
             or os.getenv("AITHER_API_KEY", "")

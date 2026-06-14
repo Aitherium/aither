@@ -1930,6 +1930,295 @@ def cmd_onboard(args):
     return asyncio.run(_onboard())
 
 
+def _find_cloudflared() -> str | None:
+    """Locate the cloudflared binary, checking PATH + common install dirs."""
+    import shutil
+    cf = shutil.which("cloudflared")
+    if cf:
+        return cf
+    candidates = [
+        r"C:\Program Files (x86)\cloudflared\cloudflared.exe",
+        r"C:\Program Files\cloudflared\cloudflared.exe",
+        "/usr/local/bin/cloudflared",
+        "/opt/homebrew/bin/cloudflared",
+        os.path.expanduser("~/.cloudflared/cloudflared"),
+    ]
+    for c in candidates:
+        if os.path.exists(c):
+            return c
+    return None
+
+
+def _cloudflared_install_hint() -> str:
+    if sys.platform == "win32":
+        return "  winget install --id Cloudflare.cloudflared"
+    if sys.platform == "darwin":
+        return "  brew install cloudflared"
+    return ("  curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/"
+            "download/cloudflared-linux-amd64 -o /usr/local/bin/cloudflared && "
+            "chmod +x /usr/local/bin/cloudflared")
+
+
+def cmd_host(args):
+    """One command to host a self-hosted agent and connect it to your fleet.
+
+    Prompts for your model key (stored locally in ~/.aither/provider_keys.json —
+    NEVER sent to AitherOS), starts aither-serve on your machine with your chosen
+    brain, opens a secure Cloudflare quick tunnel (no account, no inbound ports),
+    and registers the agent with the AitherOS control plane. Ctrl+C stops the
+    agent + tunnel and deregisters.
+
+    You run the brain (your key), the body (this loop) and the hands (your MCP).
+    AitherOS drives it over the tunnel — chat + live trace, tool approval,
+    artifacts. The only secret AitherOS holds is the callback bearer it presents
+    back to YOUR agent.
+    """
+    import base64
+    import getpass
+    import re
+    import secrets as _secrets
+    import subprocess
+    import threading
+    import time as _time
+    from queue import Empty, Queue
+
+    import httpx
+
+    provider = (getattr(args, "provider", "") or "").strip().lower()
+    port = getattr(args, "port", None) or 8080
+    name = (getattr(args, "name", "") or "").strip()
+    if not name:
+        import socket
+        name = re.sub(r"[^a-z0-9_-]", "-", f"{socket.gethostname()}-adk".lower())
+    identity = getattr(args, "identity", None) or "aither"
+    register_url = getattr(args, "register_url", "") or ""
+    portal = (getattr(args, "portal", "") or "https://veil.aitherium.com").rstrip("/")
+    dry_run = bool(getattr(args, "dry_run", False))
+
+    print()
+    print("  Host a self-hosted agent -> AitherOS fleet")
+    print("  ==========================================")
+    print()
+
+    # ── 1. Provider + model key (local store, never an env var the user types) ──
+    if not provider:
+        try:
+            provider = (input("  Model provider [deepseek/openai/anthropic]: ").strip().lower()
+                        or "deepseek")
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return 1
+    if provider not in _KNOWN_PROVIDERS:
+        print(f"  Unknown provider '{provider}'. Known: {', '.join(sorted(_KNOWN_PROVIDERS))}")
+        return 1
+
+    keys = _load_provider_keys()
+    env_name = _KNOWN_PROVIDERS[provider]["env"]
+    key = keys.get(provider, "") or os.environ.get(env_name, "")
+    if key:
+        print(f"  [+] {_KNOWN_PROVIDERS[provider]['label']} key found: {_mask_key(key)}")
+    else:
+        print(f"  Enter your {_KNOWN_PROVIDERS[provider]['label']} API key.")
+        print("  It is stored locally (~/.aither/provider_keys.json) and NEVER sent to AitherOS.")
+        try:
+            key = getpass.getpass(f"  {_KNOWN_PROVIDERS[provider]['label']} API key: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return 1
+        if not key:
+            print("  No key entered — aborting.")
+            return 1
+        ok, msg = _test_provider_key(provider, key)
+        print(f"  [{'+' if ok else 'x'}] {msg}")
+        if not ok:
+            print("  Key failed validation — aborting (not saved).")
+            return 1
+        keys[provider] = key
+        _save_provider_keys(keys)
+        print(f"  Saved to {_keys_path()} (local only).")
+    # Make the key available to the child server without the user ever exporting it.
+    os.environ[env_name] = key
+
+    _default_models = {
+        "deepseek": "deepseek-chat",
+        "openai": "gpt-4o-mini",
+        "anthropic": "claude-sonnet-4-6",
+        "gemini": "gemini-2.0-flash",
+    }
+    model = getattr(args, "model", None) or _default_models.get(provider, "")
+
+    # ── 2. Callback bearer — the ONE secret the control plane presents back to us ──
+    auth_token = getattr(args, "auth_token", "") or os.environ.get("AITHER_SERVER_API_KEY", "")
+    minted = False
+    if not auth_token:
+        auth_token = base64.urlsafe_b64encode(_secrets.token_bytes(24)).decode().rstrip("=")
+        minted = True
+
+    # ── 3. Control-plane token (for registration) ──
+    saved = load_saved_config()
+    portal_token = (getattr(args, "token", "") or os.environ.get("AITHER_PORTAL_TOKEN", "")
+                    or saved.get("api_key", "") or saved.get("access_token", ""))
+    will_register = not getattr(args, "no_register", False)
+    if will_register and not portal_token and not dry_run:
+        print("  No control-plane token. Run 'adk login' first, or pass --token, or use")
+        print("  --no-register to just run locally. Aborting.")
+        return 1
+
+    # ── 4. Approval policy ──
+    approval = getattr(args, "approve", None)
+    if approval is None:
+        approval = "file_write,shell_exec,shell"  # sensible default: gate the dangerous ones
+    print(f"  Tool approval gating: {approval or '(none)'}")
+
+    # ── 5. cloudflared availability (skip if local-only) ──
+    cf = _find_cloudflared()
+    if will_register and not cf and not dry_run:
+        print("  cloudflared is not installed (needed for the secure tunnel):")
+        print(_cloudflared_install_hint())
+        print("  Or re-run with --no-register to run locally without a tunnel.")
+        return 1
+
+    if dry_run:
+        print()
+        print("  [dry-run] would:")
+        print(f"    1. aither-serve --backend {provider} --port {port} --identity {identity}")
+        print(f"    2. cloudflared tunnel --url http://localhost:{port}")
+        reg = register_url or f"{portal}/api/genesis/v1/agent/fleet/register"
+        body = {"name": name, "invoke_url": "https://<tunnel>.trycloudflare.com",
+                "reach": "tunnel", "agent_type": "adk-agent", "token": "<callback-bearer>",
+                "model": model, "provider_hint": provider}
+        print(f"    3. POST {reg}  {json.dumps(body)}")
+        return 0
+
+    procs: list[subprocess.Popen] = []
+
+    def _cleanup():
+        for p in procs:
+            try:
+                p.terminate()
+            except Exception:
+                pass
+
+    try:
+        # ── 6. Start aither-serve ──
+        print()
+        print(f"  Starting aither-serve ({provider}, :{port}) …")
+        child_env = dict(os.environ)
+        child_env["AITHER_SERVER_API_KEY"] = auth_token
+        child_env["AITHER_TOOL_APPROVAL"] = approval or ""
+        server = subprocess.Popen(
+            [sys.executable, "-m", "adk.server", "--backend", provider,
+             "--port", str(port), "--identity", identity],
+            env=child_env,
+        )
+        procs.append(server)
+
+        # Wait for /health
+        healthy = False
+        deadline = _time.time() + 60
+        while _time.time() < deadline:
+            if server.poll() is not None:
+                print("  [x] aither-serve exited during startup.")
+                return 1
+            try:
+                r = httpx.get(f"http://localhost:{port}/health", timeout=3)
+                if r.status_code == 200:
+                    healthy = True
+                    break
+            except Exception:
+                pass
+            _time.sleep(2)
+        if not healthy:
+            print("  [x] aither-serve did not become healthy in 60s.")
+            _cleanup()
+            return 1
+        print(f"  [+] Agent healthy on :{port} (brain: {model or provider})")
+
+        if not will_register:
+            print()
+            print(f"  Agent running locally at http://localhost:{port} (no tunnel, --no-register).")
+            print("  Ctrl+C to stop.")
+            server.wait()
+            return 0
+
+        # ── 7. Open the quick tunnel + capture the public URL ──
+        print("  Opening a secure Cloudflare quick tunnel …")
+        tunnel = subprocess.Popen(
+            [cf, "tunnel", "--url", f"http://localhost:{port}", "--no-autoupdate"],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+        )
+        procs.append(tunnel)
+        url_q: Queue = Queue()
+
+        def _scan():
+            pat = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
+            for line in iter(tunnel.stdout.readline, ""):
+                m = pat.search(line)
+                if m:
+                    url_q.put(m.group(0))
+                    break
+
+        threading.Thread(target=_scan, daemon=True).start()
+        try:
+            public_url = url_q.get(timeout=45)
+        except Empty:
+            print("  [x] Could not obtain a trycloudflare.com URL.")
+            _cleanup()
+            return 1
+        print(f"  [+] Tunnel live: {public_url}")
+
+        # ── 8. Register with the control plane ──
+        reg = register_url or f"{portal}/api/genesis/v1/agent/fleet/register"
+        body = {"name": name, "invoke_url": public_url, "reach": "tunnel",
+                "agent_type": "adk-agent", "token": auth_token,
+                "model": model, "provider_hint": provider}
+        headers = {"Content-Type": "application/json"}
+        if portal_token:
+            headers["Authorization"] = f"Bearer {portal_token}"
+        try:
+            rr = httpx.post(reg, json=body, headers=headers, timeout=20)
+            if rr.status_code >= 300:
+                print(f"  [x] Registration rejected ({rr.status_code}): {rr.text[:300]}")
+                _cleanup()
+                return 1
+        except Exception as e:
+            print(f"  [x] Registration failed: {e}")
+            _cleanup()
+            return 1
+        print(f"  [+] Registered '{name}' with the control plane.")
+
+        if minted:
+            print()
+            print("  [!] A callback bearer was minted for inbound control-plane calls.")
+            print("     It is set on this agent for this run. To make it durable, start with:")
+            print(f"       AITHER_SERVER_API_KEY={auth_token}")
+
+        print()
+        print("  [OK] Your self-hosted agent is LIVE in the fleet.")
+        print(f"     Fleet:  {portal}/portal/fleet")
+        print(f"     Chat:   {portal}/settings/agent?agent={name}")
+        print("     Your model key never left this machine.")
+        print()
+        print("  Leave this running. Ctrl+C to stop + deregister.")
+        server.wait()
+        return 0
+
+    except KeyboardInterrupt:
+        print("\n  Stopping …")
+        # Best-effort deregister
+        if will_register and not getattr(args, "no_register", False) and (portal_token or register_url):
+            try:
+                reg_base = register_url.rsplit("/fleet/register", 1)[0] if register_url else f"{portal}/api/genesis/v1/agent"
+                dh = {"Authorization": f"Bearer {portal_token}"} if portal_token else {}
+                httpx.request("DELETE", f"{reg_base}/agent-endpoints/{name}", headers=dh, timeout=10)
+                print("  [+] Deregistered from the fleet.")
+            except Exception:
+                pass
+        return 0
+    finally:
+        _cleanup()
+
+
 def cmd_integrate(args):
     """Integrate external tools with AitherOS."""
     import asyncio
@@ -6497,6 +6786,24 @@ def _register_commands(sub):
     onboard_p.add_argument("--agent", help="Register a running agent with the portal fleet")
     onboard_p.add_argument("--non-interactive", action="store_true", help="Skip prompts, use defaults")
 
+    # aither host — one command: serve a self-hosted agent + connect it to your fleet
+    host_p = sub.add_parser(
+        "host",
+        help="Host a self-hosted agent (your model key) + connect it to your fleet — one command",
+    )
+    host_p.add_argument("--provider", help="Model provider: deepseek/openai/anthropic (prompted if omitted)")
+    host_p.add_argument("--model", help="Model name (default: the provider's default)")
+    host_p.add_argument("--name", help="Fleet label for this agent (default: <hostname>-adk)")
+    host_p.add_argument("--identity", default="aither", help="Agent identity to load (default: aither)")
+    host_p.add_argument("--port", type=int, default=8080, help="Local port for aither-serve (default: 8080)")
+    host_p.add_argument("--approve", help="Comma-list of tools that pause for approval, or '*' (default: file_write,shell_exec,shell)")
+    host_p.add_argument("--token", help="Control-plane token for registration (else 'adk login' / $AITHER_PORTAL_TOKEN)")
+    host_p.add_argument("--auth-token", help="Callback bearer the control plane presents back to your agent (minted if omitted)")
+    host_p.add_argument("--portal", default="https://veil.aitherium.com", help="Control-plane base URL")
+    host_p.add_argument("--register-url", help="Full fleet-register URL (overrides --portal; e.g. http://localhost:8001/v1/agent/fleet/register)")
+    host_p.add_argument("--no-register", action="store_true", help="Run locally only — no tunnel, no fleet registration")
+    host_p.add_argument("--dry-run", action="store_true", help="Show what would happen without starting anything")
+
     # aither integrate — connect external tools
     integrate_p = sub.add_parser("integrate", help="Connect external tools (OpenClaw, etc.)")
     integrate_p.add_argument("target", nargs="?", default="list",
@@ -7045,6 +7352,8 @@ def main():
         sys.exit(cmd_workspace(args))
     elif args.command == "onboard":
         sys.exit(cmd_onboard(args))
+    elif args.command == "host":
+        sys.exit(cmd_host(args))
     elif args.command == "integrate":
         sys.exit(cmd_integrate(args))
     elif args.command == "publish":
