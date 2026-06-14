@@ -66,6 +66,12 @@ SALT_FILE = LOCKBOX_DIR / ".vault_salt"
 MANIFEST_FILE = LOCKBOX_DIR / ".manifest.json"
 SAFETY_LEVEL_FILE = LOCKBOX_DIR / ".safety_level"
 
+# Portable-backup format: a bundle the user can move between machines / keep as a
+# recovery copy. Encrypted with a passphrase ONLY (no machine fingerprint) so it
+# restores anywhere — yet still operator-blind, because the operator has no passphrase.
+BACKUP_FORMAT = "aither-companion-backup"
+BACKUP_ITERATIONS = 200_000
+
 
 # ===============================================================================
 # MACHINE FINGERPRINTING
@@ -204,6 +210,23 @@ def derive_key(machine_id: str, passphrase: str = "", salt: bytes = None) -> byt
 
     key = base64.urlsafe_b64encode(kdf.derive(combined))
     return key
+
+
+def _derive_backup_key(passphrase: str, salt: bytes, iterations: int = BACKUP_ITERATIONS) -> bytes:
+    """Derive a Fernet key from a passphrase ALONE (no machine fingerprint).
+
+    Used to wrap a portable backup so it can be restored on any machine with the
+    passphrase — distinct from derive_key(), which binds the at-rest key to this box.
+    """
+    if not HAS_CRYPTO:
+        raise ImportError("cryptography package required for vault operations")
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=salt,
+        iterations=iterations,
+    )
+    return base64.urlsafe_b64encode(kdf.derive(passphrase.encode()))
 
 
 def _load_or_create_vault_key(passphrase: str = "") -> bytes:
@@ -521,6 +544,135 @@ class PrivateCompanionVault:
             "personas": self.list_personas(),
             "safety_level": self.get_safety_level(),
         }
+
+    # ===========================================================================
+    # PORTABLE BACKUP / RESTORE (machine-independent, operator-blind)
+    # ===========================================================================
+
+    def export_backup(self, backup_passphrase: str) -> bytes:
+        """Export a PORTABLE, passphrase-encrypted backup of the whole vault.
+
+        The companion is normally pinned to this machine (the at-rest key mixes in
+        the machine fingerprint). A backup breaks that pin SAFELY: the random data
+        key — which encrypts every persona + the manifest — is re-wrapped under a key
+        derived from ``backup_passphrase`` ALONE, and the already-encrypted persona
+        blobs are bundled verbatim. Anyone WITH the passphrase can restore it on any
+        machine; the operator (who has no passphrase) still cannot read it.
+
+        A non-empty passphrase is REQUIRED — an unencrypted portable bundle would be
+        operator-readable, defeating the whole point.
+        """
+        if not backup_passphrase:
+            raise ValueError(
+                "a backup passphrase is required — a portable backup MUST be encrypted "
+                "with a secret only you hold (so the operator can never read it)")
+        self._ensure_initialized()
+
+        data_key = _load_or_create_vault_key(self.passphrase)
+        salt = os.urandom(16)
+        backup_key = _derive_backup_key(backup_passphrase, salt)
+        wrapped = Fernet(backup_key).encrypt(data_key)
+
+        personas: Dict[str, str] = {}
+        for name in list(self._manifest.keys()):
+            blob_path = self._get_prompt_path(name)
+            if blob_path.exists():
+                personas[name] = base64.b64encode(blob_path.read_bytes()).decode()
+
+        # Re-encrypt the live manifest with the data key (same scheme as on disk) so
+        # the bundle is self-contained even if .manifest.json hasn't been flushed.
+        manifest_blob = self._fernet.encrypt(json.dumps(self._manifest).encode())
+
+        bundle = {
+            "format": BACKUP_FORMAT,
+            "version": 1,
+            "created_at": datetime.utcnow().isoformat(),
+            "kdf": {
+                "salt": base64.b64encode(salt).decode(),
+                "iterations": BACKUP_ITERATIONS,
+            },
+            "wrapped_data_key": base64.b64encode(wrapped).decode(),
+            "manifest": base64.b64encode(manifest_blob).decode(),
+            "safety_level": self.get_safety_level(),
+            "personas": personas,
+        }
+        return json.dumps(bundle, indent=2).encode()
+
+    def export_backup_to_file(self, path: Any, backup_passphrase: str) -> Path:
+        """Write a portable backup to ``path`` (0600). Returns the path."""
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(self.export_backup(backup_passphrase))
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass  # best-effort on platforms without POSIX perms
+        return path
+
+    def import_backup(
+        self, bundle_bytes: bytes, backup_passphrase: str, overwrite: bool = False
+    ) -> Dict[str, Any]:
+        """Restore a portable backup onto THIS machine.
+
+        Unwraps the data key with the passphrase, re-pins it to this box (machine_id +
+        local passphrase), and writes back the persona blobs + manifest. Refuses to
+        clobber a populated vault unless ``overwrite=True``. Raises ValueError on a
+        wrong passphrase or an unrecognized bundle (never silently no-ops).
+        """
+        if not backup_passphrase:
+            raise ValueError("a backup passphrase is required to restore")
+        try:
+            bundle = json.loads(bundle_bytes)
+        except (ValueError, TypeError) as e:
+            raise ValueError(f"not a valid backup bundle: {e}")
+        if not isinstance(bundle, dict) or bundle.get("format") != BACKUP_FORMAT:
+            raise ValueError("unrecognized backup format")
+
+        self._ensure_initialized()
+        if self._manifest and not overwrite:
+            raise ValueError(
+                f"vault already holds {len(self._manifest)} persona(s); "
+                "pass overwrite=True to replace it")
+
+        kdf = bundle.get("kdf") or {}
+        salt = base64.b64decode(kdf.get("salt", ""))
+        backup_key = _derive_backup_key(
+            backup_passphrase, salt, iterations=int(kdf.get("iterations", BACKUP_ITERATIONS)))
+        try:
+            data_key = Fernet(backup_key).decrypt(
+                base64.b64decode(bundle["wrapped_data_key"]))
+        except (InvalidToken, KeyError, ValueError):
+            raise ValueError("wrong backup passphrase (or corrupted bundle)")
+
+        # Re-pin the data key to THIS machine and lay down the encrypted blobs.
+        LOCKBOX_DIR.mkdir(parents=True, exist_ok=True)
+        machine_key = derive_key(get_machine_id(), self.passphrase)
+        VAULT_KEY_FILE.write_bytes(Fernet(machine_key).encrypt(data_key))
+        MANIFEST_FILE.write_bytes(base64.b64decode(bundle["manifest"]))
+
+        restored: List[str] = []
+        for name, blob in (bundle.get("personas") or {}).items():
+            self._get_prompt_path(name).write_bytes(base64.b64decode(blob))
+            restored.append(name)
+        if bundle.get("safety_level"):
+            self.set_safety_level(bundle["safety_level"])
+
+        # Rebuild in-memory state from the freshly restored data key.
+        self._fernet = Fernet(data_key)
+        self._load_manifest()
+
+        return {
+            "restored": restored,
+            "count": len(restored),
+            "safety_level": bundle.get("safety_level"),
+        }
+
+    def import_backup_from_file(
+        self, path: Any, backup_passphrase: str, overwrite: bool = False
+    ) -> Dict[str, Any]:
+        """Restore a portable backup previously written by export_backup_to_file."""
+        return self.import_backup(
+            Path(path).read_bytes(), backup_passphrase, overwrite=overwrite)
 
 
 # ===============================================================================

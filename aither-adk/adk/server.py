@@ -536,6 +536,33 @@ def create_app(
         arts = get_registry().get(session_id)
         return {"session_id": session_id, "artifacts": [a.to_dict() for a in arts]}
 
+    @app.post("/sessions/{session_id}/confirm")
+    async def confirm_tools(session_id: str, request: Request):
+        """Resume a turn paused for tool approval (human-in-the-loop).
+
+        Body: ``{decisions: [{tool_use_id|tool, result: "allow"|"deny", deny_message?}]}``.
+        Records the decisions then re-runs the paused turn, streaming the continuation as
+        the same SSE trace (``session_start`` → … → ``complete``). 409 if nothing paused."""
+        from adk.approval import get_approval_store
+        body = await request.json()
+        decisions = body.get("decisions", []) or []
+        store = get_approval_store()
+        paused = store.get(session_id)
+        if not paused:
+            return JSONResponse(
+                {"error": "no_paused_turn",
+                 "message": "no turn is awaiting approval for this session"},
+                status_code=409,
+            )
+        store.record_decisions(session_id, decisions)
+        message = paused.get("user_message", "")
+        agent_name = paused.get("agent")
+        return StreamingResponse(
+            _aitheros_stream(get_agent, message, session_id, agent_name, False),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
     # ─── OpenAI-compatible endpoints ───
 
     @app.post("/v1/chat/completions")
@@ -1801,6 +1828,15 @@ async def _aitheros_stream(get_agent_fn, message: str, session_id: str, agent_na
                 yield f"event: heartbeat\ndata: {json.dumps({'type': 'heartbeat'})}\n\n"
                 await asyncio.sleep(2)
             resp = chat_task.result()
+
+            # HITL: the turn paused for tool approval — surface the pending tools and stop.
+            # The customer allows/denies via POST /sessions/{id}/confirm, which resumes.
+            if getattr(resp, "requires_action", False):
+                pending = getattr(resp, "pending", []) or []
+                yield f"event: requires_action\ndata: {json.dumps({'type': 'requires_action', 'pending': pending, 'session_id': session_id})}\n\n"
+                duration_ms = int((time.time() - start) * 1000)
+                yield f"event: complete\ndata: {json.dumps({'type': 'complete', 'content': resp.content, 'pending': pending, 'requires_action': True, 'duration_ms': duration_ms, 'session_id': session_id})}\n\n"
+                return
 
             # Emit tool calls if any
             if resp.tool_calls_made:

@@ -2,6 +2,25 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [2.10.0] - 2026-06-13
+
+### Added — human-in-the-loop tool approval (`adk/approval.py`)
+- **Pause before a gated tool, resume on decision.** An agent can now pause its turn before
+  executing a sensitive tool and wait for a human's allow/deny — so a managed control plane
+  (or any operator) can gate tool use without forking the loop.
+- **Policy via `AITHER_TOOL_APPROVAL`** — a comma-separated list of tool names (optionally
+  `agent:tool`), or `*` for every tool. Empty = no gating (unchanged behavior).
+- **Survives restarts / days-later approvals.** The paused turn (user message + pending tool
+  calls) is persisted to disk keyed by `session_id`; resume is a fresh request, not a held
+  connection. Decisions are recorded per `(session_id, tool_name)`.
+- **`AgentResponse.requires_action` / `.pending`** — set when a turn paused; `pending` lists
+  the gated tool calls awaiting a decision.
+- **`AitherAgent.resume(session_id, decisions)`** — records the decisions and re-runs the
+  paused turn (the gate consumes them: allowed tools execute, denied tools get a denial
+  observation, the turn continues — and may pause again on a different gated tool).
+- **Server:** `POST /sessions/{id}/confirm` records decisions and streams the resumed turn;
+  `/stream` emits a `requires_action` event when a turn pauses.
+
 ## [2.9.0] - 2026-06-13
 
 ### Added — universal LLM continuation primitive (`adk/llm/continuation.py`)

@@ -107,6 +107,10 @@ class AgentResponse:
     advisor_calls: int = 0
     advisor_input_tokens: int = 0
     advisor_output_tokens: int = 0
+    # Human-in-the-loop: set when the turn paused awaiting tool approval. ``pending`` =
+    # the gated tool calls the customer must allow/deny before the turn can continue.
+    requires_action: bool = False
+    pending: list[dict] = field(default_factory=list)
 
 
 class AitherAgent:
@@ -870,6 +874,13 @@ class AitherAgent:
         # Call LLM (with tool loop if tools registered)
         tools_schema = self._tools.to_openai_format() if self._tools.list_tools() else None
         tool_calls_made = []
+        # Human-in-the-loop approval state. ``_pending_approvals`` collects gated tool
+        # calls awaiting a customer decision; ``_paused`` short-circuits the turn so the
+        # caller can surface Allow/Deny cards (resume via agent.resume()).
+        from adk.approval import get_approval_store, needs_approval
+        _approval_store = get_approval_store()
+        _pending_approvals: list[dict] = []
+        _paused = False
         # Extract inference controls from kwargs (null=auto pattern)
         _tool_choice = kwargs.pop("tool_choice", None)
         _top_p = kwargs.pop("top_p", None)
@@ -1165,6 +1176,12 @@ class AitherAgent:
                     except Exception:
                         pass
                 await self._learn_after(message, content, tool_calls_made)
+                # Turn finished (model stopped calling tools) — clear any approval pause
+                # so a later identical gated call re-prompts instead of reusing a decision.
+                try:
+                    _approval_store.clear(sid)
+                except Exception:  # noqa: BLE001
+                    pass
                 return AgentResponse(
                     content=content,
                     model=resp.model,
@@ -1242,6 +1259,31 @@ class AitherAgent:
                 if verdict.action == LoopAction.WARN:
                     logger.debug("Loop guard WARN: %s", verdict.reason)
                     _deferred_nudges.append(verdict.nudge_message)
+
+                # ── Human-in-the-loop approval gate ──
+                # A tool whose policy is always_ask pauses the turn until the customer
+                # allows/denies it. On resume the turn re-runs (adk rebuilds the loop from
+                # memory) with the decision recorded, so the gate consumes it here on the
+                # second pass: deny → feed a denial observation; allow → fall through to
+                # execute; undecided → record the pending call and pause the whole turn.
+                if needs_approval(self.name, tc.name):
+                    _decision = _approval_store.decision_for(sid, tc.name)
+                    if _decision == "deny":
+                        tool_calls_made.append(f"{tc.name}[denied]")
+                        messages.append(Message(
+                            role="tool",
+                            content=json.dumps({"error": "denied",
+                                                "message": "The user denied this tool call."}),
+                            tool_call_id=tc.id,
+                        ))
+                        continue
+                    if _decision != "allow":
+                        _pending_approvals.append({
+                            "tool_use_id": tc.id, "tool": tc.name,
+                            "args": tc.arguments if isinstance(tc.arguments, dict) else {},
+                        })
+                        _paused = True
+                        break
 
                 # ALLOW or WARN — execute the tool
                 tool_calls_made.append(tc.name)
@@ -1322,6 +1364,25 @@ class AitherAgent:
                     content="\n".join(dict.fromkeys(_deferred_nudges)),
                 ))
 
+            # A gated tool paused the turn — persist the pause and return so the caller
+            # can surface Allow/Deny cards. Resume re-enters via agent.resume(session_id).
+            if _paused:
+                _approval_store.put_pending(
+                    sid, user_message=message, agent=self.name, pending=_pending_approvals,
+                )
+                pend_names = ", ".join(p["tool"] for p in _pending_approvals)
+                _total_ms = (time.perf_counter() - _chat_start) * 1000
+                return AgentResponse(
+                    content=(f"Waiting for your approval to run: {pend_names}."),
+                    model=getattr(resp, "model", ""),
+                    session_id=sid,
+                    tool_calls_made=tool_calls_made,
+                    latency_ms=_total_ms,
+                    finish_reason="requires_action",
+                    requires_action=True,
+                    pending=list(_pending_approvals),
+                )
+
         # Exhausted tool loops — return last response
         final = await self.llm.chat(
             messages, effort=_effort, top_p=_top_p,
@@ -1372,6 +1433,12 @@ class AitherAgent:
             except Exception:
                 pass
         await self._learn_after(message, content, tool_calls_made)
+        # Turn completed without (re-)pausing — clear any approval state for this session
+        # so a later identical tool call re-prompts instead of reusing a stale decision.
+        try:
+            _approval_store.clear(sid)
+        except Exception:  # noqa: BLE001
+            pass
         return AgentResponse(
             content=content,
             model=final.model,
@@ -1386,6 +1453,20 @@ class AitherAgent:
             effort_level=final.effort_level,
             cache_status=final.cache_status,
         )
+
+    async def resume(self, session_id: str, decisions: list[dict], **kwargs) -> "AgentResponse":
+        """Resume a turn that paused for tool approval. Records the customer's allow/deny
+        ``decisions`` (each ``{tool_use_id|tool, result, deny_message?}``) then re-runs the
+        paused turn — the approval gate now consumes the recorded decision (executes an
+        allowed tool, feeds a denial observation for a denied one). Returns the continued
+        turn's response (which may pause AGAIN on a different gated tool)."""
+        from adk.approval import get_approval_store
+        store = get_approval_store()
+        paused = store.get(session_id)
+        if not paused:
+            return AgentResponse(content="", session_id=session_id, finish_reason="stop")
+        store.record_decisions(session_id, decisions)
+        return await self.chat(paused.get("user_message", ""), session_id=session_id, **kwargs)
 
     async def chat_stream(
         self,
