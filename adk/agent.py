@@ -704,13 +704,17 @@ class AitherAgent:
                         f"- {n.label}: {n.content[:500]}" for n in _rel if n.content]
                 except Exception:
                     pass
-            try:
-                _hist = await self.memory.get_history(sid, limit=12)
-                _known_parts += [
-                    (h.get("content") if isinstance(h, dict) else str(h)) or "" for h in _hist]
-            except Exception:
-                pass
+            # KNOWN = DURABLE memory only (graph, subject-keyed above). Conversation
+            # history is NOT used as grounding: incidental chat would mask a real
+            # fabrication, and the current turn is the trigger, not a fact.
             _known = "\n".join(p for p in _known_parts if p)
+            # AIRTIGHT case: nothing on record → the shared-history claim is
+            # definitionally fabrication → deterministic honest reply (no model
+            # call, reliable even with a weak local model). Nuanced case (facts
+            # exist) falls through to the LLM edit pass below.
+            if not _known.strip():
+                logger.info("[COHERENCE] adk airtight fabrication (no memory) — honest reply")
+                return coherence.grounded_affection_reply(message)
             _sys, _usr = coherence.grounding_repair_messages(content, _known, self.name)
             _resp = await self.llm.chat(
                 [Message(role="system", content=_sys), Message(role="user", content=_usr)],

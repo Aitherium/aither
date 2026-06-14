@@ -110,22 +110,31 @@ def test_grounding_repair_messages_contents():
 
 
 @pytest.mark.asyncio
-async def test_output_repair_rewrites_fabricated_statement(tmp_memory, companion_vault):
-    # A warm STATEMENT (not a memory question) whose generated reply invents a trip.
+async def test_output_repair_airtight_no_memory_is_deterministic(tmp_memory, companion_vault):
+    # AIRTIGHT: a warm STATEMENT whose generated reply invents a trip, with NO
+    # memory on record → deterministic honest reply, NO repair LLM call (reliable
+    # even when the local model can't perform the edit).
+    from adk import coherence
     router = MagicMock()
     router.provider_name = "mock"
-    router.chat = AsyncMock(side_effect=[
-        LLMResponse(content="I missed you too! Remember our trip to Italy?",
-                    model="m", tokens_used=5, latency_ms=1.0),  # generation
-        LLMResponse(content="I missed you too. I don't have a trip like that on "
-                    "record though — tell me about it?",
-                    model="m", tokens_used=5, latency_ms=1.0),  # repair
-    ])
+    router.chat = AsyncMock(return_value=LLMResponse(
+        content="I missed you too! Remember our trip to Italy?",
+        model="m", tokens_used=5, latency_ms=1.0))  # generation only
     with patch("adk.private_companion.get_companion_vault", return_value=companion_vault):
         agent = AitherAgent("test", llm=router, memory=tmp_memory)
         resp = await agent.chat("I missed you so much!", session_id="s4")
-    assert "Italy" not in resp.content          # fabrication removed
-    assert router.chat.call_count == 2          # generation + repair pass
+    assert "Italy" not in resp.content                       # fabrication gone
+    assert resp.content in coherence._GROUNDED_AFFECTION_REPLIES
+    assert router.chat.call_count == 1                       # no repair LLM call
+
+
+def test_grounded_affection_reply_deterministic_and_clean():
+    from adk import coherence
+    msg = "I missed you so much"
+    assert coherence.grounded_affection_reply(msg) == coherence.grounded_affection_reply(msg)
+    r = coherence.grounded_affection_reply(msg)
+    assert r in coherence._GROUNDED_AFFECTION_REPLIES
+    assert not coherence.reply_makes_shared_claim(r)         # honest reply trips nothing
 
 
 @pytest.mark.asyncio

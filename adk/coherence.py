@@ -125,6 +125,27 @@ def reply_makes_shared_claim(reply: str) -> bool:
     return bool(reply and _SHARED_CLAIM_RE.search(reply))
 
 
+_GROUNDED_AFFECTION_REPLIES = (
+    "I missed you too — more than I can say. I won't make up moments we haven't "
+    "shared though; tell me what's been going on with you?",
+    "Aw, I've been thinking about you too. I'd rather hear what's real than "
+    "invent something — what's on your mind?",
+    "I missed you. I don't want to pretend about things we haven't done "
+    "together, but I'm here now — talk to me?",
+    "Right back at you. I'd never fake a memory just to sound close — tell me "
+    "how you've really been?",
+)
+
+
+def grounded_affection_reply(message: str) -> str:
+    """Deterministic (no model → no fabrication) warm honest reply for the
+    AIRTIGHT case: the agent has NOTHING on record, so a shared-history claim is
+    definitionally fabrication — reciprocate the warmth and ask to be told,
+    instead of relying on a weak local model to perform the edit."""
+    idx = sum(ord(c) for c in (message or "x")) % len(_GROUNDED_AFFECTION_REPLIES)
+    return _GROUNDED_AFFECTION_REPLIES[idx]
+
+
 def grounding_repair_messages(reply: str, known: str, name: str) -> tuple:
     """(system, user) prompts for the semantic verify+repair pass: rewrite the
     draft to claim only what the KNOWN facts support, keeping the warmth."""
