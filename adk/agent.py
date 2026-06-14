@@ -432,6 +432,13 @@ class AitherAgent:
         api_key = os.environ.get("AITHER_API_KEY", "")
         if not api_key:
             return
+        # Respect an explicitly chosen backend. A self-hosted operator who set
+        # --backend deepseek (or anthropic/openai/their own vllm/ollama) must NOT
+        # have their own brain hijacked by Elysium just because AITHER_API_KEY is
+        # present. Default is "auto" ("gateway" still falls through to Elysium).
+        explicit = (getattr(self.config, "llm_backend", "") or "").strip().lower()
+        if explicit and explicit not in ("auto", "gateway"):
+            return
         # Check if the LLM router has a working local backend
         if self.llm.provider_name in ("ollama", "vllm"):
             return  # Local backend detected, no need for Elysium
@@ -665,6 +672,58 @@ class AitherAgent:
                     self._skills.save(skill)
         except Exception:
             pass
+
+    async def _companion_grounding_repair(self, content: str, message: str, sid: str) -> str:
+        """OUTPUT-side never-fabricate backstop (companion turns). When the reply
+        plausibly claims shared history, ONE LLM pass checks it against the agent's
+        actual known facts (graph memory + this conversation) and rewrites only the
+        unsupported specifics — warm and coherent. The companion system prompt
+        already grounds at generation (the COHERENCE block); this catches the cases
+        the model ignores it. Returns ``content`` unchanged on any error or when the
+        turn isn't a companion turn / makes no shared-history claim."""
+        try:
+            if not content or not coherence.reply_makes_shared_claim(content):
+                return content
+            # Companion turn? (private vault persona active)
+            _active = False
+            try:
+                from adk.private_companion import get_companion_vault
+                _v = get_companion_vault()
+                _active = bool(
+                    _v and _v.get_system_prompt_for_level(_v.get_safety_level() or "professional"))
+            except Exception:
+                _active = False
+            if not _active:
+                return content
+            # Gather KNOWN facts: graph memory keyed to message+reply, + this chat.
+            _known_parts: list[str] = []
+            if self._graph:
+                try:
+                    _rel = await self._graph.search(f"{message}\n{content}", limit=6)
+                    _known_parts += [
+                        f"- {n.label}: {n.content[:500]}" for n in _rel if n.content]
+                except Exception:
+                    pass
+            try:
+                _hist = await self.memory.get_history(sid, limit=12)
+                _known_parts += [
+                    (h.get("content") if isinstance(h, dict) else str(h)) or "" for h in _hist]
+            except Exception:
+                pass
+            _known = "\n".join(p for p in _known_parts if p)
+            _sys, _usr = coherence.grounding_repair_messages(content, _known, self.name)
+            _resp = await self.llm.chat(
+                [Message(role="system", content=_sys), Message(role="user", content=_usr)],
+                temperature=0.2, max_tokens=400,
+            )
+            _repaired = strip_internal_tags(getattr(_resp, "content", "") or "").strip()
+            if _repaired and len(_repaired) >= 8 and _repaired != content.strip():
+                logger.info("[COHERENCE] adk grounding-repair rewrote a shared-history claim")
+                return _repaired
+            return content
+        except Exception as _e:
+            logger.debug("[COHERENCE] adk grounding-repair skipped: %s", _e)
+            return content
 
     async def chat(
         self,
@@ -1138,6 +1197,8 @@ class AitherAgent:
                             content = out_result.sanitized_content
                     except Exception:
                         pass
+                # OUTPUT-side never-fabricate backstop (companion turns; no-op otherwise).
+                content = await self._companion_grounding_repair(content, message, sid)
                 await self.memory.add_message(sid, "assistant", content)
                 try:
                     store = _get_conversations()
@@ -1398,6 +1459,8 @@ class AitherAgent:
                     content = out_result.sanitized_content
             except Exception:
                 pass
+        # OUTPUT-side never-fabricate backstop (companion turns; no-op otherwise).
+        content = await self._companion_grounding_repair(content, message, sid)
         await self.memory.add_message(sid, "assistant", content)
         try:
             store = _get_conversations()

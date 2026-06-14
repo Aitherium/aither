@@ -87,3 +87,56 @@ async def test_gate_answers_from_session_history(mock_llm, tmp_memory, companion
         await agent.chat("remind me where is our trip again?", session_id="s3")
     # Subject is in this conversation → answer from history (LLM called), not honest-fallback.
     mock_llm.chat.assert_called()
+
+
+# ── OUTPUT-side never-fabricate (statements, not questions) ──
+@pytest.mark.parametrize("reply,expected", [
+    ("I missed you too! Remember our trip to Italy?", True),
+    ("That time we went hiking was everything.", True),
+    ("you told me about your sister last week", True),
+    ("I missed you too, babe!", False),
+    ("You make my whole day brighter.", False),
+])
+def test_reply_makes_shared_claim(reply, expected):
+    assert coherence.reply_makes_shared_claim(reply) is expected
+
+
+def test_grounding_repair_messages_contents():
+    system, user = coherence.grounding_repair_messages(
+        "Remember our trip to Italy?", known="", name="david")
+    assert "fact-grounding editor" in system.lower()
+    assert "Italy" in user and "KNOWN FACTS" in user
+    assert "NO shared history" in user  # empty known → told there's nothing on record
+
+
+@pytest.mark.asyncio
+async def test_output_repair_rewrites_fabricated_statement(tmp_memory, companion_vault):
+    # A warm STATEMENT (not a memory question) whose generated reply invents a trip.
+    router = MagicMock()
+    router.provider_name = "mock"
+    router.chat = AsyncMock(side_effect=[
+        LLMResponse(content="I missed you too! Remember our trip to Italy?",
+                    model="m", tokens_used=5, latency_ms=1.0),  # generation
+        LLMResponse(content="I missed you too. I don't have a trip like that on "
+                    "record though — tell me about it?",
+                    model="m", tokens_used=5, latency_ms=1.0),  # repair
+    ])
+    with patch("adk.private_companion.get_companion_vault", return_value=companion_vault):
+        agent = AitherAgent("test", llm=router, memory=tmp_memory)
+        resp = await agent.chat("I missed you so much!", session_id="s4")
+    assert "Italy" not in resp.content          # fabrication removed
+    assert router.chat.call_count == 2          # generation + repair pass
+
+
+@pytest.mark.asyncio
+async def test_output_repair_skipped_for_plain_warmth(tmp_memory, companion_vault):
+    # Reply makes no shared-history claim → no repair pass (one LLM call only).
+    router = MagicMock()
+    router.provider_name = "mock"
+    router.chat = AsyncMock(return_value=LLMResponse(
+        content="I missed you too, babe!", model="m", tokens_used=5, latency_ms=1.0))
+    with patch("adk.private_companion.get_companion_vault", return_value=companion_vault):
+        agent = AitherAgent("test", llm=router, memory=tmp_memory)
+        resp = await agent.chat("I missed you!", session_id="s5")
+    assert resp.content == "I missed you too, babe!"
+    assert router.chat.call_count == 1          # no repair pass triggered
