@@ -60,18 +60,30 @@ def create_app(
             json_output=config.json_logging,
         )
 
-        await _register_with_gateway()
-        await _sync_secrets()
-        await _join_aithernet()
-        await _init_chat_relay()
-        await _init_mail_relay()
+        # Sovereign/offline mode: skip ALL network registration (gateway, secrets,
+        # AitherNet, relays, Elysium, mesh, fleet heartbeat, telemetry flushes).
+        # The server still mounts every LOCAL route (incl. FormBridge) + the local
+        # MCP/A2A servers — it just never phones home. This is the PHI/sovereign
+        # posture AND the FormBridge demo runtime, so there is ONE server, not a
+        # separate demo shim. Enable with AITHER_OFFLINE=1.
+        offline = os.getenv("AITHER_OFFLINE", "").lower() in ("1", "true", "yes")
+        if offline:
+            logger.info("AITHER_OFFLINE=1 — sovereign mode: local only, no network registration")
+
+        if not offline:
+            await _register_with_gateway()
+            await _sync_secrets()
+            await _join_aithernet()
+            await _init_chat_relay()
+            await _init_mail_relay()
         await _init_mcp_server()
         await _init_a2a_server()
         await _connect_service_bridge()
-        await _flush_strata_queue()
-        await _flush_chronicle_queue()
-        await _start_watch_reporter()
-        await _flush_pulse_queue()
+        if not offline:
+            await _flush_strata_queue()
+            await _flush_chronicle_queue()
+            await _start_watch_reporter()
+            await _flush_pulse_queue()
         # Eagerly detect LLM backend so /health shows the right provider
         try:
             a = await get_agent()
@@ -79,14 +91,15 @@ def create_app(
         except (ImportError, RuntimeError, OSError):
             pass
 
-        # ── Elysium auto-reconnect + mesh hosting ──
-        await _reconnect_elysium()
-        await _start_mesh_hosting()
+        if not offline:
+            # ── Elysium auto-reconnect + mesh hosting ──
+            await _reconnect_elysium()
+            await _start_mesh_hosting()
 
-        # ── Fleet endpoint registration + continuous heartbeat ──
-        await _register_fleet_endpoint()
-        _heartbeat_task = asyncio.create_task(_fleet_heartbeat_loop())
-        _state["heartbeat_task"] = _heartbeat_task
+            # ── Fleet endpoint registration + continuous heartbeat ──
+            await _register_fleet_endpoint()
+            _heartbeat_task = asyncio.create_task(_fleet_heartbeat_loop())
+            _state["heartbeat_task"] = _heartbeat_task
 
         yield
         # ── Shutdown cleanup ──
@@ -141,10 +154,10 @@ def create_app(
     # ─── Auth middleware (optional, enabled via AITHER_API_KEY or --api-key) ───
 
     _server_api_key = os.getenv("AITHER_SERVER_API_KEY", "")
-    _SKIP_AUTH_PATHS = {"/health", "/docs", "/openapi.json", "/metrics", "/demo", "/redoc"}
+    _skip_auth_paths = {"/health", "/docs", "/openapi.json", "/metrics", "/demo", "/redoc"}
 
     # Valid caller types for header validation (prevents spoofing)
-    _VALID_CALLER_TYPES = {"PLATFORM", "PUBLIC", "DEMO", "TENANT", "ANONYMOUS"}
+    _valid_caller_types = {"PLATFORM", "PUBLIC", "DEMO", "TENANT", "ANONYMOUS"}
 
     @app.middleware("http")
     async def _auth_middleware(request: Request, call_next):
@@ -153,13 +166,13 @@ def create_app(
         Validates X-Caller-Type header to prevent header-spoofing attacks.
         External requests cannot claim PLATFORM caller type.
         """
-        if request.url.path in _SKIP_AUTH_PATHS:
+        if request.url.path in _skip_auth_paths:
             return await call_next(request)
 
         # Validate X-Caller-Type if present (prevent spoofing)
         caller_type = request.headers.get("x-caller-type", "")
         if caller_type:
-            if caller_type not in _VALID_CALLER_TYPES:
+            if caller_type not in _valid_caller_types:
                 return JSONResponse(
                     status_code=400,
                     content={"error": f"Invalid X-Caller-Type: {caller_type}"},
@@ -2091,8 +2104,8 @@ def _mount_workspace_routers(app: FastAPI, port: int) -> None:
         return
 
     # ── Set up workspace data directory ──
-    from pathlib import Path as _P
-    data_dir = _P(os.getenv("AITHER_DATA_DIR", os.path.expanduser("~/.aither")))
+    from pathlib import Path
+    data_dir = Path(os.getenv("AITHER_DATA_DIR", os.path.expanduser("~/.aither")))
     store_path = data_dir / "workspace" / "aitherchat.db"
     store_path.parent.mkdir(parents=True, exist_ok=True)
     os.environ.setdefault("AITHER_CHAT_STORE_PATH", str(store_path))
@@ -2302,14 +2315,14 @@ def _mount_workspace_routers(app: FastAPI, port: int) -> None:
 
     # ── Serve workspace frontend (catch-all, MUST be last) ──
     # Search order: custom frontend-dist, WorkspaceRuntime frontend, bundled fallback
-    from pathlib import Path as _FP
+    from pathlib import Path
     from fastapi.staticfiles import StaticFiles
 
     _frontend_candidates = [
-        _FP(os.getenv("AITHER_FRONTEND_DIR", "")),                    # explicit override
-        _FP.cwd() / "frontend-dist",                                  # local build output
-        _FP.cwd() / "frontend",                                       # local dev frontend
-        _FP(__file__).resolve().parent / "workspace-frontend",        # bundled with ADK
+        Path(os.getenv("AITHER_FRONTEND_DIR", "")),                    # explicit override
+        Path.cwd() / "frontend-dist",                                  # local build output
+        Path.cwd() / "frontend",                                       # local dev frontend
+        Path(__file__).resolve().parent / "workspace-frontend",        # bundled with ADK
     ]
     for fdir in _frontend_candidates:
         if fdir.exists() and (fdir / "index.html").exists():

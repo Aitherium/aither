@@ -32,6 +32,7 @@ Transforms v1: date:<fmt> · name_split:first|last · checkbox:equals(v)|contain
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from dataclasses import dataclass, field
@@ -71,6 +72,22 @@ class MappingPack:
     self_check: list[dict]
     forms: dict[str, FormDef]
     root: Path  # pack directory — templates resolve relative to this
+    #: Tabbed single-editor capture config (the ChiroTouch Chart Notes shape).
+    #: Extension-side capture hint; ignored by the deterministic mapper.
+    tabbed_editors: list[dict] = field(default_factory=list)
+    #: The EHR's entry URL (the doctor's EHR login page; the demo mock in dev).
+    #: Surfaced so the UI can offer an "Open EHR" link.
+    ehr_url: str = ""
+    #: API-response capture (cloud EHRs like ChiroTouch): list of
+    #: {endpoint, fields:[{path, as}]} OR {endpoint, kind: rtf, as}. The engine
+    #: reads the app's OWN JSON/RTF responses instead of scraping the DOM.
+    api_fields: list[dict] = field(default_factory=list)
+    #: Static per-office config merged into every record at fill time (the office's
+    #: identity on the form: provider name/address, BWC number, phone/fax). Set once.
+    office: dict = field(default_factory=dict)
+    #: For API packs: the URL path segment whose following id keys the record
+    #: (e.g. "patients" → .../patients/{patientId}/...).
+    url_id_segment: str = ""
 
     def form(self, form_id: str) -> FormDef:
         f = self.forms.get(form_id)
@@ -99,11 +116,17 @@ def load_pack(pack_dir: Path | str) -> MappingPack:
 
     src = raw.get("source") or {}
     anchor = src.get("anchor") or {}
-    if not anchor.get("selector"):
-        raise MappingError("source.anchor.selector is MANDATORY (anchor-gated capture)")
-    origin = (src.get("origin") or "").rstrip("/")
-    if not origin:
-        raise MappingError("source.origin is required")
+    api_fields = list(src.get("api") or [])
+    # Two capture modes: DOM (needs an anchor.selector) OR API (reads the app's own
+    # responses — keyed by a URL id segment, no DOM selector). Require one of them.
+    if not anchor.get("selector") and not api_fields:
+        raise MappingError(
+            "pack needs either source.anchor.selector (DOM capture) or source.api (API capture)"
+        )
+    # origin pins the DOM-capture host; API packs may use `base` instead.
+    origin = (src.get("origin") or src.get("base") or "").rstrip("/")
+    if not origin and not api_fields:
+        raise MappingError("source.origin is required for DOM-capture packs")
 
     forms: dict[str, FormDef] = {}
     for f in raw.get("forms") or []:
@@ -143,6 +166,11 @@ def load_pack(pack_dir: Path | str) -> MappingPack:
         self_check=list(src.get("self_check") or []),
         forms=forms,
         root=root,
+        tabbed_editors=list(src.get("tabbed_editors") or []),
+        ehr_url=(src.get("ehr_url") or "").strip(),
+        api_fields=api_fields,
+        office=dict(raw.get("office") or {}),
+        url_id_segment=str(anchor.get("url_id_segment") or "").strip(),
     )
 
 
@@ -267,6 +295,48 @@ class FillResolution:
     values: dict[str, str]          # pdf_field -> final value
     unresolved: list[str]           # pdf_field names with no/failed source
     llm_assist_fields: list[str]    # pdf_field names flagged llm_assist (review!)
+    #: pdf_field -> human-readable reason it's unresolved (no value vs failed
+    #: transform). Surfaced to the operator so "unresolved" isn't a silent mystery.
+    unresolved_reasons: dict[str, str] = field(default_factory=dict)
+
+
+def _as_list(raw: str) -> list | None:
+    """An API array-capture value is stored as a JSON array string. Return the
+    list if `raw` is one, else None (a plain scalar)."""
+    if raw[:1] == "[":
+        try:
+            v = json.loads(raw)
+            return v if isinstance(v, list) else None
+        except (ValueError, TypeError):
+            return None
+    return None
+
+
+def _resolve_from(entry: dict, record: dict[str, str]) -> str:
+    """Resolve a fill entry's source value. Handles @today, concat[] (join several
+    fields), index (one element of an array-captured field), and a plain field
+    (an array value joins with ', '; a scalar passes through)."""
+    src = entry.get("from", "")
+    if src == "@today":
+        return datetime.now().strftime("%Y-%m-%d")
+    concat = entry.get("concat")
+    if concat:
+        parts = []
+        for k in concat:
+            v = record.get(k, "")
+            lst = _as_list(v)
+            parts.append(str(lst[0]) if lst else v)
+        return " ".join(p.strip() for p in parts if p and p.strip())
+    raw = record.get(src, "")
+    idx = entry.get("index")
+    lst = _as_list(raw)
+    if idx is not None:
+        if lst is not None:
+            return str(lst[idx]).strip() if 0 <= idx < len(lst) else ""
+        return raw if idx == 0 else ""          # scalar: index 0 is the value
+    if lst is not None:
+        return ", ".join(str(x) for x in lst if str(x).strip())
+    return raw
 
 
 def resolve(record: dict[str, str], pack: MappingPack, form_id: str) -> FillResolution:
@@ -278,6 +348,9 @@ def resolve(record: dict[str, str], pack: MappingPack, form_id: str) -> FillReso
     """
     form = pack.form(form_id)
 
+    # Static office config is just more record fields (captured data overrides it).
+    record = {**pack.office, **record}
+
     missing = [r for r in form.required if not record.get(r, "").strip()]
     if missing:
         raise MappingError(
@@ -286,26 +359,27 @@ def resolve(record: dict[str, str], pack: MappingPack, form_id: str) -> FillReso
 
     values: dict[str, str] = {}
     unresolved: list[str] = []
+    unresolved_reasons: dict[str, str] = {}
     llm_fields: list[str] = []
 
     for entry in form.fill:
         pdf_field = entry["pdf_field"]
         source = entry["from"]
-        raw = record.get(source, "")
+        raw = _resolve_from(entry, record)
         if entry.get("llm_assist"):
             llm_fields.append(pdf_field)
 
         transform = entry.get("transform")
-        # concat() reads multiple record fields; it works even when the
-        # primary `from` value is empty.
-        if not raw.strip() and not (transform or "").startswith("concat"):
+        if not raw.strip():
             unresolved.append(pdf_field)
+            unresolved_reasons[pdf_field] = f"no captured value for '{source}'"
             continue
         try:
             value = apply_transform(raw, transform, record) if transform else raw
         except MappingError as e:
             logger.warning("formbridge: transform failed for %s: %s", pdf_field, e)
             unresolved.append(pdf_field)
+            unresolved_reasons[pdf_field] = str(e)
             continue
 
         max_len = entry.get("max_len")
@@ -318,6 +392,7 @@ def resolve(record: dict[str, str], pack: MappingPack, form_id: str) -> FillReso
         values=values,
         unresolved=sorted(unresolved),
         llm_assist_fields=sorted(llm_fields),
+        unresolved_reasons=unresolved_reasons,
     )
 
 

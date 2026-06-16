@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import uuid
 from dataclasses import dataclass
 from io import BytesIO
@@ -75,6 +76,23 @@ class FillResult:
     unresolved: list[str]
     llm_assist_fields: list[str]
     unknown_pdf_fields: list[str]  # mapping referenced fields the template lacks
+    encrypted: bool = False        # output PDF is password-protected (AES-256)
+
+
+def _finalize(writer: "PdfWriter", out: Path, password: str | None) -> bool:
+    """Optionally AES-256 password-protect the PDF, then write it. Returns True
+    if encrypted. The password comes from the office vault (per-document)."""
+    enc = False
+    if password:
+        try:
+            writer.encrypt(password, algorithm="AES-256")
+        except TypeError:  # older pypdf without the algorithm kwarg
+            writer.encrypt(password)
+        enc = True
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with open(out, "wb") as fh:
+        writer.write(fh)
+    return enc
 
 
 def _fill_overlay(
@@ -82,6 +100,7 @@ def _fill_overlay(
     resolution: FillResolution,
     template: Path,
     out_dir: Path | None,
+    password: str | None = None,
 ) -> FillResult:
     """Overlay mode — draw resolved values at x/y onto a flat (scanned) form.
 
@@ -129,12 +148,12 @@ def _fill_overlay(
 
     job_id = uuid.uuid4().hex[:12]
     out = (out_dir or output_dir()) / f"{resolution.form_id}-{job_id}.pdf"
-    with open(out, "wb") as fh:
-        writer.write(fh)
+    enc = _finalize(writer, out, password)
 
     logger.info(
-        "formbridge: overlay-filled %s -> %s (%d fields, %d unresolved)",
+        "formbridge: overlay-filled %s -> %s (%d fields, %d unresolved%s)",
         resolution.form_id, out.name, len(resolution.values), len(resolution.unresolved),
+        ", encrypted" if enc else "",
     )
     return FillResult(
         job_id=job_id,
@@ -143,6 +162,7 @@ def _fill_overlay(
         unresolved=resolution.unresolved,
         llm_assist_fields=resolution.llm_assist_fields,
         unknown_pdf_fields=[],
+        encrypted=enc,
     )
 
 
@@ -152,6 +172,7 @@ def fill_pdf(
     *,
     flatten: bool = False,
     out_dir: Path | None = None,
+    password: str | None = None,
 ) -> FillResult:
     """Fill the form's template with resolved values; write to the output dir.
 
@@ -165,7 +186,7 @@ def fill_pdf(
         raise MappingError(f"Template not found: {template}")
 
     if pack.form(resolution.form_id).mode == "overlay":
-        return _fill_overlay(pack, resolution, template, out_dir)
+        return _fill_overlay(pack, resolution, template, out_dir, password)
 
     reader = PdfReader(str(template))
     writer = PdfWriter()
@@ -227,12 +248,12 @@ def fill_pdf(
 
     job_id = uuid.uuid4().hex[:12]
     out = (out_dir or output_dir()) / f"{resolution.form_id}-{job_id}.pdf"
-    with open(out, "wb") as fh:
-        writer.write(fh)
+    enc = _finalize(writer, out, password)
 
     logger.info(
-        "formbridge: filled %s -> %s (%d fields, %d unresolved)",
+        "formbridge: filled %s -> %s (%d fields, %d unresolved%s)",
         resolution.form_id, out.name, len(resolution.values), len(resolution.unresolved),
+        ", encrypted" if enc else "",
     )
     return FillResult(
         job_id=job_id,
@@ -241,4 +262,73 @@ def fill_pdf(
         unresolved=resolution.unresolved,
         llm_assist_fields=resolution.llm_assist_fields,
         unknown_pdf_fields=unknown,
+        encrypted=enc,
+    )
+
+
+def _humanize_label(key: str) -> str:
+    """Readable label for the generated-record PDF, so an UNMAPPED capture shows
+    as "Dob" not "input[name=dob]" and a logical name "provider.name_address" shows
+    as "Provider Name Address". Falls back to the raw key if nothing's left."""
+    s = str(key)
+    m = re.search(r"\[name=([^\]]+)\]", s)        # input[name=dob] -> dob
+    if m:
+        s = m.group(1)
+    elif s[:1] in "#.":                            # #patient-id / .field -> strip marker
+        s = s[1:]
+    s = re.sub(r"[._\-]+", " ", s).strip()         # dots/underscores/hyphens -> spaces
+    return s.title() if s else str(key)
+
+
+def generate_pdf(
+    patient_key: str,
+    record: dict[str, str],
+    *,
+    title: str = "Captured Patient Record",
+    out_dir: Path | None = None,
+    password: str | None = None,
+) -> FillResult:
+    """Render a captured record into a clean PDF via fpdf2 — NO AcroForm template
+    required. For offices whose real form we don't have yet; the SAME record fills
+    their real PDF once we do. Optionally AES-256 password-protected from the vault."""
+    if not HAS_FPDF:
+        raise MappingError(
+            "fpdf2 is not installed — generate needs the pdf extra: pip install 'aither-adk[pdf]'"
+        )
+    pdf = FPDF(unit="pt", format="letter")
+    pdf.set_auto_page_break(True, margin=54)
+    pdf.add_page()
+    pdf.set_font("Helvetica", "B", 16)
+    pdf.cell(0, 24, text=title, new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("Helvetica", size=9)
+    pdf.set_text_color(110, 110, 110)
+    pdf.cell(0, 14, text=f"Patient: {patient_key}", new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(10)
+    pdf.set_text_color(20, 20, 20)
+    for key in sorted(record):
+        val = record[key]
+        pdf.set_font("Helvetica", "B", 10)
+        pdf.cell(170, 16, text=_humanize_label(key))
+        pdf.set_font("Helvetica", size=10)
+        pdf.multi_cell(0, 16, text=(str(val) if val else "—"), new_x="LMARGIN", new_y="NEXT")
+    raw = bytes(pdf.output())
+
+    job_id = uuid.uuid4().hex[:12]
+    out = (out_dir or output_dir()) / f"generated-{job_id}.pdf"
+    enc = False
+    if password:
+        _require_pypdf()
+        writer = PdfWriter()
+        writer.append(PdfReader(BytesIO(raw)))
+        enc = _finalize(writer, out, password)
+    else:
+        out.write_bytes(raw)
+    logger.info(
+        "formbridge: generated PDF for %s -> %s (%d fields%s)",
+        patient_key, out.name, len(record), ", encrypted" if enc else "",
+    )
+    return FillResult(
+        job_id=job_id, output_path=str(out),
+        filled=sorted(record.keys()), unresolved=[], llm_assist_fields=[],
+        unknown_pdf_fields=[], encrypted=enc,
     )
