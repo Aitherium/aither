@@ -47,6 +47,8 @@ class ChatMessage:
     timestamp: float = 0.0
     thread_id: str = ""
     node_id: str = ""  # Origin node for federated messages
+    user_id: str = ""  # User ID of the message sender
+    session_id: str = ""  # Session ID for conversation tracking
 
     def __post_init__(self):
         if not self.timestamp:

@@ -76,6 +76,7 @@ def create_app(
             await _join_aithernet()
             await _init_chat_relay()
             await _init_mail_relay()
+            await _init_relay_client()
         await _init_mcp_server()
         await _init_a2a_server()
         await _connect_service_bridge()
@@ -121,6 +122,12 @@ def create_app(
         chat = _state.get("chat_relay")
         if chat:
             await chat.stop_irc_server()
+        relay_client = _state.get("relay_client")
+        if relay_client:
+            try:
+                await relay_client.disconnect()
+            except (OSError, RuntimeError) as exc:
+                logger.warning(f"relay_client disconnect on shutdown failed: {exc}")
 
     app = FastAPI(
         title=f"AitherADK — {'Fleet' if is_fleet else identity}",
@@ -1377,6 +1384,87 @@ def create_app(
             logger.info("Mail relay initialized (configured=%s)", mail.is_configured)
         except (ImportError, RuntimeError, OSError) as exc:
             logger.debug("Mail relay init failed (non-fatal): %s", exc)
+
+    async def _init_relay_client():
+        """Initialize ChatRelayClient so this node can be a first-class relay
+        participant. Requires RELAY_URL and AITHER_BEARER env vars.
+        Registers agents as mention handlers that dispatch to agent.chat().
+        """
+        relay_url = os.getenv("RELAY_URL", "")
+        aither_bearer = os.getenv("AITHER_BEARER", "")
+        if not relay_url or not aither_bearer:
+            logger.debug(
+                "Relay client skipped (RELAY_URL or AITHER_BEARER not set)"
+            )
+            return
+
+        try:
+            from adk.relay_client import get_relay_client
+
+            workspace_id = os.getenv("RELAY_WORKSPACE_ID", "")
+            client = get_relay_client(
+                base_url=relay_url,
+                aither_bearer=aither_bearer,
+                workspace_id=workspace_id or None,
+                user_id=_state.get("identity", identity),
+                nick=_state.get("identity", identity),
+            )
+
+            # Register mention handlers to dispatch to agents
+            if is_fleet and _state.get("fleet"):
+                for a in _state["fleet"].agents:
+
+                    def _make_handler(agent):
+                        async def handle(msg):
+                            try:
+                                # Strip @mentions for natural input
+                                txt = msg.content
+                                for nick in (ag.name for ag in _state["fleet"].agents):
+                                    txt = txt.replace(f"@{nick}", "").strip()
+                                resp = await agent.chat(
+                                    txt,
+                                    session_id=f"relay:{msg.channel}:{msg.nick}",
+                                )
+                                return resp.content
+                            except Exception as exc:
+                                logger.error(
+                                    "Mention handler error for @%s: %s",
+                                    agent.name, exc,
+                                )
+                                return None
+
+                        return handle
+
+                    client.register_mention_handler(a.name, _make_handler(a))
+            elif _state.get("agent"):
+                a = _state["agent"]
+
+                async def _default_mention_handler(msg):
+                    try:
+                        # Strip @nick from message
+                        txt = msg.content.replace(f"@{a.name}", "").strip()
+                        resp = await a.chat(
+                            txt,
+                            session_id=f"relay:{msg.channel}:{msg.nick}",
+                        )
+                        return resp.content
+                    except Exception as exc:
+                        logger.error(
+                            "Mention handler error for @%s: %s",
+                            a.name, exc,
+                        )
+                        return None
+
+                client.register_mention_handler(a.name, _default_mention_handler)
+
+            # Connect and store on app state
+            if await client.connect():
+                _state["relay_client"] = client
+                logger.info("Relay client connected as %s", client.nick)
+            else:
+                logger.warning("Relay client connection failed (non-fatal)")
+        except (ImportError, RuntimeError, OSError, ConnectionError) as exc:
+            logger.debug("Relay client init failed (non-fatal): %s", exc)
 
     def _handle_mesh_mail(data: dict):
         """Handle incoming mail from the mesh relay."""

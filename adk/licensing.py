@@ -100,6 +100,7 @@ class Entitlements:
     swarm: bool = False          # Genesis swarm-coding dispatch
     custom_agents: bool = False  # build/load custom identities + packs
     packs: bool = False          # install marketplace packs
+    can_use_computer_use: bool = False  # premium AitherPilot browser/computer-use tool pack
     monthly_token_limit: int = 100_000  # 0 == unlimited
 
     @classmethod
@@ -109,7 +110,7 @@ class Entitlements:
             return cls(
                 named_agents=["*"], max_effort=10, fleet=True, channels=True,
                 auto_neurons=True, cron=True, swarm=True, custom_agents=True,
-                packs=True, monthly_token_limit=0,
+                packs=True, can_use_computer_use=True, monthly_token_limit=0,
             )
         return cls(
             named_agents=list(_FREE_AGENTS),
@@ -121,6 +122,10 @@ class Entitlements:
             swarm=rank >= 3,                          # PROFESSIONAL+
             custom_agents=rank >= 3,                  # PROFESSIONAL+
             packs=rank >= 2,                          # BUILDER+
+            # AitherPilot is a high-value marquee capability delivered AS a custom pack,
+            # so it tracks the same tier as custom_agents/swarm (PROFESSIONAL+). Bump this
+            # one rank to change the monetization line — it is the single policy lever.
+            can_use_computer_use=rank >= 3,           # PROFESSIONAL+
             monthly_token_limit=0 if rank >= 1 else 100_000,
         )
 
