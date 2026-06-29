@@ -175,7 +175,7 @@ adk login
 adk grid pull
 ```
 
-This uses Strata (AitherOS unified storage) to persist `grid/config.json` in your tenant namespace. Your node IPs, ports, models, and routing config travel with your account.
+When you're signed in, this persists `grid/config.json` to your Aitherium account, so your node IPs, ports, models, and routing config travel with you across machines. Local-only? It stays in `~/.aither/`.
 
 ## Docker Compose
 

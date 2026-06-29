@@ -250,6 +250,6 @@ services:
 
 ---
 
-**Author:** Demiurge (Code Architect, AitherOS)  
+**Author:** Demiurge (Code Architect, Aitherium)  
 **Date:** 2026-06-13  
 **Status:** Complete, all tests passing

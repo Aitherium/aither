@@ -55,19 +55,35 @@ Providers handled natively: `anthropic`, `openai`, `deepseek`, `groq`, `together
 `vllm`, `lmstudio`, `llamacpp`, `ollama`, `gateway`, `picolm`. The OpenAI-compatible ones
 get the correct `base_url` + default model automatically.
 
-### 🚨 Disable license enforcement for self-hosted / BYO-key
+### ✅ Self-hosted / BYO-key is uncapped by default
 
-`AitherAgent` applies the **community-tier monthly token cap (100k/mo)** by default — and
-`_enforced()` defaults to **ON when the env var is absent**. On a BYO-key deployment the
-user pays for their own inference, so this cap will wrongly brick the agent (`"You've
-reached your monthly token limit on the community tier"`) even on their own key.
+You do **not** need to disable anything. `AitherAgent` caps tokens and reasoning
+effort on **exactly one** backend — Aitherium's metered cloud gateway
+(`provider="gateway"`), where Aitherium pays for the inference. Every other backend
+you wire up here — `anthropic` / `openai` / `deepseek` / `groq` BYO keys, local
+`ollama` / `vllm` / `llamacpp` / `lmstudio`, or any custom OpenAI-compatible
+endpoint — is **your** inference and is never capped or effort-limited. Enforcement
+is opt-in by provenance and **fail-open**: an unrecognized backend is treated as
+self-hosted (uncapped), never bricked.
+
+```python
+from adk.llm import LLMRouter
+agent = AitherAgent("aither", llm=LLMRouter(provider="deepseek", api_key="sk-..."))
+# No env vars, no quota surgery. Full effort (7-10), no monthly token cap.
+```
+
+Mechanics (so you can audit it): `AitherAgent.__init__` sets `self._metered_gateway =
+is_metered_backend(llm.provider_name)`; the monthly cap is applied and the effort
+clamp runs **only** when that is true, and `adk.metering.AgentMeter.can_spend()`
+fail-opens (returns `ALLOW`) for any non-gateway backend regardless of what limit a
+quota carries.
+
+If you ever want to force-disable **all** license enforcement explicitly (e.g. you run
+the metered gateway under your own contract), the global override still exists:
 
 ```python
 import os
 os.environ["AITHER_LICENSE_ENFORCE"] = "0"   # set BEFORE constructing the agent
-# Belt-and-suspenders kill switch (after construction):
-q = agent.meter._quota
-q.monthly_limit = q.daily_limit = q.hourly_limit = q.cost_limit_usd = 0
 ```
 
 ---
@@ -229,14 +245,15 @@ globals → it treats `request` as a required **query param** → every call 422
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `"reached your monthly token limit"` on BYO key | community-tier cap, enforced by default | `AITHER_LICENSE_ENFORCE=0` + zero `agent.meter._quota` |
+| `"reached your monthly token limit"` on BYO key | caps now apply only to `provider="gateway"` | nothing to set — BYO/local/custom backends are uncapped by default (upgrade ADK if you still see this) |
 | Agent over-searches, returns empty answer | `stream_react` text protocol never emits `FINAL` | use `agent.chat()` (native tool calling) |
 | Agent invents names/numbers on recall | partial top-3 graph injection under noise | RAG-ground top-8 + "don't invent" rule (§3) |
 | Tool crashes `int() ... not 'list'` | model passed a list/str for a number | coerce args (§4) |
 | FastAPI route 422 `Field required: request` | `__future__ annotations` + local `Request` import | import FastAPI at module level (§6) |
 | Token meter reads 0 while streaming | providers omit usage on stream | tokenizer-count the wire text (§5) |
 | Memory "forgotten" after 10+ turns | only in short-term window (20 msgs) | it's in the **graph** — RAG-recall it (§3) |
-| Custom identity blocked | license enforcement on a non-free agent | `AITHER_LICENSE_ENFORCE=0` for self-hosted |
+| Custom identity blocked | `AITHER_LICENSE_ENFORCE=1` set on a self-hosted box | unset it — identity gating is opt-in (off unless you turn it on) |
+| Effort silently capped at 3 on BYO key | (fixed) effort clamp was global; now gateway-only | upgrade ADK; self-hosted keeps full effort 7-10 |
 
 ---
 
