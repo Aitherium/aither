@@ -27,7 +27,7 @@ from adk.llm.advisor import (
 )
 from adk.loop_guard import LoopGuard, LoopAction
 from adk.memory import Memory
-from adk.metering import AgentMeter, QuotaAction, get_meter
+from adk.metering import AgentMeter, QuotaAction, get_meter, is_metered_backend
 from adk.metrics import get_metrics
 from adk.tools import ToolDef, ToolRegistry
 from adk.trace import get_trace_id
@@ -198,30 +198,40 @@ class AitherAgent:
         # pays for their own inference. This is the critical fix for the consumer
         # launch: community tier cap (100k/mo) applies ONLY to our gateway, not to
         # self-hosted or user-supplied API keys.
+        #
+        # Caps apply to EXACTLY ONE backend: Aitherium's metered cloud gateway
+        # (provider="gateway"), where we pay for the inference. Every other
+        # backend — BYO API keys (anthropic/openai/deepseek/groq/…), local
+        # runtimes (ollama/vllm/llamacpp/lmstudio), and any unknown/custom
+        # OpenAI-compatible endpoint — is the user's own inference and is NEVER
+        # capped. This is the inverse of an allowlist: we uncap by default and
+        # only the gateway opts INTO a cap, so a self-hosted/BYO agent can never
+        # be bricked by a community-tier limit it never agreed to.
+        self._provider_name = getattr(self.llm, "provider_name", "unknown")
+        self._metered_gateway = is_metered_backend(self._provider_name)
         try:
-            on_metered_gateway = getattr(self.llm, "provider_name", "") == "gateway"
-            on_byo_provider = getattr(self.llm, "provider_name", "") in (
-                "anthropic", "openai", "deepseek"
-            )
-            on_local_backend = getattr(self.llm, "provider_name", "") in (
-                "ollama", "vllm", "local"
-            )
+            # Mark the meter with backend provenance — metering enforces caps
+            # ONLY when this is "gateway" (see adk.metering.is_metered_backend).
+            self.meter._backend_type = self._provider_name
 
-            # Mark the meter with backend type so enforcement knows the provenance
-            self.meter._backend_type = getattr(self.llm, "provider_name", "unknown")
-
-            if (on_metered_gateway and self._license is not None
-                    and self._license._enforced()):
-                _cap = int(self._license.license.entitlements.monthly_token_limit)
-                if _cap > 0:
-                    self.meter._quota.monthly_limit = _cap
-            elif on_byo_provider or on_local_backend:
+            if self._metered_gateway:
+                # Aitherium-proxied inference: apply the licensed monthly ceiling
+                # (community = 100k/mo) as the organic upgrade pull. Honors the
+                # explicit AITHER_LICENSE_ENFORCE=0 opt-out.
+                if self._license is not None and self._license._enforced():
+                    _cap = int(self._license.license.entitlements.monthly_token_limit)
+                    if _cap > 0:
+                        self.meter._quota.monthly_limit = _cap
+            else:
+                # Self-hosted / BYO / local / unknown — drop every token cap.
                 self.meter._quota.monthly_limit = 0
                 self.meter._quota.daily_limit = 0
+                self.meter._quota.hourly_limit = 0
+                self.meter._quota.cost_limit_usd = 0
                 logger.debug(
                     "Agent '%s' using %s backend — all token caps disabled "
                     "(user pays their own inference)",
-                    self.name, self.meter._backend_type,
+                    self.name, self._provider_name,
                 )
         except Exception:
             pass
@@ -952,7 +962,12 @@ class AitherAgent:
         # License effort cap: free (COMMUNITY) tier is capped at effort 3 (small
         # models only). Reasoning effort (7-10) unlocks at the Professional tier.
         # Hitting this cap is the organic pull toward an upgrade.
-        if self._license is not None:
+        # The effort cap applies ONLY on the metered gateway (community tier =
+        # effort<=3, the pull toward an upgrade). Self-hosted / BYO / local agents
+        # pay for their own inference and keep FULL reasoning effort (7-10) so they
+        # can escalate to a reasoning backend. The getattr guard keeps agents
+        # constructed before this attribute existed working.
+        if self._license is not None and getattr(self, "_metered_gateway", False):
             _effort, _capped = self._license.clamp_effort(_effort)
             if _capped:
                 logger.info(

@@ -224,16 +224,54 @@ def create_app(
                 return fleet.agents[0]
 
         if _state["agent"] is None:
-            _state["agent"] = AitherAgent(
-                name=_state["identity"],
-                identity=_state["identity"],
-                config=_state["config"],
-            )
+            # Load agent spec with customization overrides
+            from adk.pack_discovery import load_agent_spec
+            from pathlib import Path
+
+            identity = _state["identity"]
+            agent_spec = {}
+
+            # Try to load agent spec from installed pack
+            pack_dir = Path.home() / ".aither" / "agents" / identity
+            if pack_dir.exists():
+                agent_yaml = pack_dir / "agent.yaml"
+                if agent_yaml.exists():
+                    agent_spec = load_agent_spec(agent_yaml) or {}
+
+            # Build AitherAgent with optional system_prompt override
+            kwargs = {
+                "name": identity,
+                "identity": identity,
+                "config": _state["config"],
+            }
+            if agent_spec.get("system_prompt"):
+                kwargs["system_prompt"] = agent_spec["system_prompt"]
+
+            _state["agent"] = AitherAgent(**kwargs)
         agent = _state["agent"]
 
         # If a different agent is requested in single mode, create it
         if name and name != agent.name:
-            return AitherAgent(name=name, identity=name, config=_state["config"])
+            # Load agent spec for the requested agent
+            from adk.pack_discovery import load_agent_spec
+            from pathlib import Path
+
+            agent_spec = {}
+            pack_dir = Path.home() / ".aither" / "agents" / name
+            if pack_dir.exists():
+                agent_yaml = pack_dir / "agent.yaml"
+                if agent_yaml.exists():
+                    agent_spec = load_agent_spec(agent_yaml) or {}
+
+            kwargs = {
+                "name": name,
+                "identity": name,
+                "config": _state["config"],
+            }
+            if agent_spec.get("system_prompt"):
+                kwargs["system_prompt"] = agent_spec["system_prompt"]
+
+            return AitherAgent(**kwargs)
 
         return agent
 

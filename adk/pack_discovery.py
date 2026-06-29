@@ -26,7 +26,15 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
+
+__all__ = [
+    "discover_brain_pack",
+    "discover_agent_yaml",
+    "discover_pack_dir",
+    "list_available_packs",
+    "load_agent_spec",
+]
 
 logger = logging.getLogger("adk.pack_discovery")
 
@@ -77,7 +85,11 @@ def _find_entrypoint_packs() -> list[dict]:
                         "dir": pack_dir,
                         "source": "entrypoint",
                     })
-                    logger.info("Discovered brain pack via entry point: %s -> %s", ep.name, pack_dir)
+                    logger.info(
+                        "Discovered brain pack via entry point: %s -> %s",
+                        ep.name,
+                        pack_dir,
+                    )
             except Exception as e:
                 logger.debug("Failed to load entry point %s: %s", ep.name, e)
     except Exception as e:
@@ -252,3 +264,64 @@ def list_available_packs() -> list[dict]:
             seen.add(p["name"])
             unique.append(p)
     return unique
+
+
+def _deep_merge_dicts(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+    """Recursively merge overlay dict into base dict.
+
+    For scalar keys, overlay wins. For lists (capabilities, enabled_domains),
+    overlay REPLACES (not merged).
+    """
+    result = dict(base)
+    for key, value in overlay.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            result[key] = _deep_merge_dicts(result[key], value)
+        else:
+            # Scalar or list: overlay wins (replaces entirely for lists)
+            result[key] = value
+    return result
+
+
+def load_agent_spec(agent_yaml_path: Optional[Path] = None) -> dict[str, Any]:
+    """Load agent.yaml and deep-merge in agent.yaml.local if it exists.
+
+    Args:
+        agent_yaml_path: Optional explicit path to agent.yaml. If None, uses discover_agent_yaml.
+
+    Returns:
+        Merged spec dict. Local values override base values (scalars replace; lists replace).
+        Returns {} if no agent.yaml found.
+
+    Raises:
+        No exceptions — failures are logged and return empty dict.
+    """
+    import yaml
+
+    try:
+        # Resolve the base agent.yaml
+        yaml_path = agent_yaml_path or discover_agent_yaml()
+        if not yaml_path or not yaml_path.exists():
+            logger.debug("No agent.yaml found")
+            return {}
+
+        # Load base spec
+        try:
+            base = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
+        except Exception as e:
+            logger.warning("Failed to load agent.yaml at %s: %s", yaml_path, e)
+            return {}
+
+        # Check for local override
+        local_yaml = yaml_path.parent / "agent.yaml.local"
+        if local_yaml.exists():
+            try:
+                local = yaml.safe_load(local_yaml.read_text(encoding="utf-8")) or {}
+                logger.debug("Merging agent.yaml.local from %s", local_yaml)
+                base = _deep_merge_dicts(base, local)
+            except Exception as e:
+                logger.warning("Failed to load agent.yaml.local at %s: %s", local_yaml, e)
+
+        return base
+    except Exception as e:
+        logger.warning("load_agent_spec failed: %s", e)
+        return {}

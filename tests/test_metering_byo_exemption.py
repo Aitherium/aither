@@ -7,7 +7,28 @@ from pathlib import Path
 
 import pytest
 
-from adk.metering import AgentMeter, QuotaAction, QuotaConfig, get_meter
+from adk.metering import (
+    AgentMeter,
+    QuotaAction,
+    QuotaConfig,
+    get_meter,
+    is_metered_backend,
+)
+
+
+@pytest.fixture(autouse=True)
+def _clear_meter_singletons():
+    """Isolate the get_meter() singleton cache between tests.
+
+    ``get_meter`` caches AgentMeter instances by name in a module global, so a
+    meter created (and its _backend_type mutated) by one test would otherwise
+    leak into the next under cross-file ordering — making assertions on a fresh
+    meter's default state flaky. Clear it before and after every test.
+    """
+    import adk.metering as _m
+    _m._meters.clear()
+    yield
+    _m._meters.clear()
 
 
 @pytest.fixture
@@ -168,6 +189,57 @@ def test_quota_config_zero_is_unlimited(temp_db):
         meter.record_usage(tokens=100_000, model="aither-orchestrator")
     # With limit=0, no HARD_LIMIT possible
     assert meter.can_spend() == QuotaAction.ALLOW
+
+
+def test_is_metered_backend_only_gateway():
+    """Only the metered gateway is a metered backend; everything else fail-opens."""
+    assert is_metered_backend("gateway") is True
+    assert is_metered_backend("GATEWAY") is True  # case-insensitive
+    assert is_metered_backend(" gateway ") is True  # whitespace-tolerant
+    for byo in ("anthropic", "openai", "deepseek", "groq", "together",
+                "ollama", "vllm", "llamacpp", "lmstudio",
+                "unknown", "custom", "", None):  # type: ignore[arg-type]
+        assert is_metered_backend(byo) is False
+
+
+def test_unknown_backend_never_capped_even_with_limits(temp_db):
+    """A non-gateway backend fail-opens even if a quota carries hard limits.
+
+    This is the core BYO-default invariant: a stray cap (community default, a
+    product super-cap, a custom endpoint the allowlist didn't recognize) can
+    never brick a self-hosted agent — enforcement requires gateway provenance.
+    """
+    meter = AgentMeter(
+        agent_name="test",
+        quota=QuotaConfig(monthly_limit=1000, daily_limit=1000, hourly_limit=1000),
+        db_path=temp_db,
+    )
+    meter._backend_type = "unknown"  # the agent didn't recognize the provider
+
+    # Blow past every limit — still ALLOW because the backend isn't metered.
+    for _ in range(100):
+        meter.record_usage(tokens=10_000, model="my-custom-endpoint")
+    assert meter.can_spend() == QuotaAction.ALLOW
+
+
+def test_custom_byo_backend_never_capped(temp_db):
+    """A custom OpenAI-compatible endpoint (not on any allowlist) is uncapped."""
+    meter = AgentMeter(
+        agent_name="test",
+        quota=QuotaConfig(monthly_limit=500),
+        db_path=temp_db,
+    )
+    meter._backend_type = "openrouter"  # not in any historical allowlist
+    for _ in range(50):
+        meter.record_usage(tokens=50_000, model="some/model")
+    assert meter.can_spend() == QuotaAction.ALLOW
+
+
+def test_default_daily_limit_is_unlimited():
+    """The default QuotaConfig must NOT carry a latent daily cap (was 100k)."""
+    assert QuotaConfig().daily_limit == 0
+    assert QuotaConfig().monthly_limit == 0
+    assert QuotaConfig().hourly_limit == 0
 
 
 def test_meter_tracks_backend_type():

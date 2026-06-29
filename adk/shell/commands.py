@@ -13,6 +13,7 @@ Commands that don't require CLI framework:
 These are called by cli.py and shell.py.
 """
 
+import httpx
 import json
 import logging
 from pathlib import Path
@@ -401,6 +402,73 @@ Examples:
             return json.dumps(data, indent=2)
         except httpx.RequestError as e:
             raise CommandError(f"Genesis unreachable: {e}")
+
+    async def resume(self, *args) -> str:
+        """Resume a previous session.
+
+        Usage:
+            resume <session_id>
+
+        Args:
+            *args: session_id
+
+        Returns:
+            Confirmation message
+
+        Raises:
+            CommandError: If session_id is missing
+        """
+        if not args or not args[0]:
+            raise CommandError("Usage: resume <session_id>")
+
+        session_id = args[0]
+        self.config.session_id = session_id
+        self.config.last_session_id = session_id
+
+        # Try to save, but don't fail if it doesn't work
+        try:
+            self._save_config()
+        except Exception:
+            pass
+
+        return f"Resumed session {session_id}"
+
+    async def research(self, *args) -> str:
+        """Research a question using web sources and deliver a written report.
+
+        Usage:
+            research "<question>"
+
+        Args:
+            *args: question text
+
+        Returns:
+            Research result from the chat backend
+
+        Raises:
+            CommandError: If question is missing
+        """
+        if not args or not args[0]:
+            raise CommandError("Usage: research <question>")
+
+        question = " ".join(args) if len(args) > 1 else args[0]
+
+        # Frame the question as a research prompt
+        research_prompt = (
+            "Research the following thoroughly using web sources and deliver "
+            "a written report with citations:\n\n"
+            f"{question}"
+        )
+
+        # Use the chat method with the current session_id
+        kwargs = {
+            "message": research_prompt,
+        }
+        if self.config.session_id:
+            kwargs["session_id"] = self.config.session_id
+
+        response = await self.genesis_client.chat(**kwargs)
+        return response
 
     async def exit(self, *args) -> str:
         """Exit the shell.

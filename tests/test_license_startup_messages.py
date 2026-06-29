@@ -56,8 +56,11 @@ def test_startup_case_b_invalid_signature(monkeypatch, tmp_path, caplog):
 
     lic = gate_startup("test_product_b")
     assert lic.tier == Tier.COMMUNITY
-    # Either the key is not set, or the signature is bad; both show a warning
-    assert "present" in caplog.text.lower() or "key" in caplog.text.lower()
+    # Either the key is not configured ("...NO verification key...") or the
+    # signature failed against a real baked-in key ("signature INVALID"); both
+    # are loud warnings that fall back to the free tier.
+    _t = caplog.text.lower()
+    assert "present" in _t or "key" in _t or "invalid" in _t
 
 
 def test_startup_case_c_valid_license(monkeypatch, tmp_path, caplog):

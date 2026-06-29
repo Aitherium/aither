@@ -17,6 +17,7 @@ import asyncio
 import json
 import logging
 import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import Optional
@@ -62,6 +63,7 @@ def setup_logging(verbose: bool = False):
 @click.option("--model", help="Model override")
 @click.option("--max-tokens", type=int, help="Maximum tokens in response")
 @click.option("--temperature", type=click.FloatRange(0.0, 2.0), help="Sampling temperature")
+@click.option("--session", help="Session ID (resume a previous session)")
 @click.option("--verbose", is_flag=True, help="Verbose logging")
 @click.option("--init", is_flag=True, help="Initialize shell config")
 @click.option("--config", is_flag=True, help="Show configuration")
@@ -80,6 +82,7 @@ def cli(
     model,
     max_tokens,
     temperature,
+    session,
     verbose,
     init,
     config,
@@ -120,6 +123,9 @@ def cli(
         aither_config.max_tokens = max_tokens
     if temperature:
         aither_config.temperature = temperature
+    if session:
+        aither_config.session_id = session
+        aither_config.last_session_id = session
     if output_format == "json":
         aither_config.rich_output = False
         aither_config.stream = False

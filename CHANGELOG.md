@@ -2,6 +2,30 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [2.12.0] - 2026-06-28
+
+### Added — one-command local inference + upgrade path (click-to-run)
+- **`adk quickstart-local`** — detects hardware, picks a backend
+  (Ollama / llama.cpp / vLLM), installs it, downloads a model, verifies, and
+  prints next steps. Bootstraps Ollama itself via winget/brew/install.sh when
+  missing (no "go install it" dead-ends). Default model `gemma4:e2b`.
+- **`adk backend switch <ollama|llamacpp|vllm>`** (+ `backend status`) — migrate
+  the active deployment between engines; re-points config and smoke-tests.
+- **`adk install pack:<name>`** (+ `adk install list` / `adk packs`) — install
+  ready-made agent packs (openclaw, hermes, claude-code) into `~/.aither/agents`.
+
+### Fixed (found via live end-to-end testing on Windows + CUDA)
+- quickstart-local reported success on a dead endpoint (smoke test was warn-only);
+  a failed smoke now fails the command, with a service-readiness wait.
+- `--model` resolved to `None` (getattr default never fired) → uses the real default.
+- Smoke test: 30s→180s timeout for cold model load; accepts reasoning-model output
+  (empty `content` at low token budgets is no longer a false failure).
+- `adk install pack:<name>` colon syntax (argparse rejected it before dispatch).
+- `adk backend status` health probe used a nonexistent `/health` path → 404; now
+  probes `/v1/models` (uniform OpenAI-compatible liveness for all three backends).
+- Windows: removed non-ASCII glyphs from printed strings that crashed the cp1252
+  console (a `✓` even made a successful install report failure).
+
 ## [2.11.1] - 2026-06-14
 
 ### Fixed — `adk host` / `adk login` device flow (autonomous onboarding)

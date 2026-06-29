@@ -728,6 +728,70 @@ def _resolve_identity_url(url: str) -> str:
     return (eps["identity_url"] if eps else url).rstrip("/")
 
 
+def _post_json_resilient(
+    url: str,
+    payload: dict,
+    headers: dict,
+    *,
+    attempt_timeout: int = 15,
+    total_budget: float = 90.0,
+) -> dict:
+    """POST JSON with retry/backoff over TRANSIENT failures, returning parsed JSON.
+
+    Why this exists: the first request to a just-restarted security-core (or
+    through a cold Cloudflare tunnel) can be slow or briefly return 5xx
+    (502/503/504/520-530) while it warms its vault/DB connections. A single-shot
+    request dies in that window -- the #1 cause of "Cannot reach idp.aitherium.com"
+    on `adk login`. We retry transient failures with exponential backoff up to
+    `total_budget` seconds so login sails through the cold-start window. Genuine
+    client errors (4xx other than 408/429) fail fast and are NOT masked.
+    """
+    import json as _json
+    import time as _time
+    import urllib.request as _ur
+    import urllib.error as _ue
+
+    _TRANSIENT = {408, 425, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524, 525, 526, 527, 530}  # noqa: N806 — deliberate constant-style set of transient HTTP codes
+    body = _json.dumps(payload).encode()
+    deadline = _time.time() + total_budget
+    delay = 2.0
+    attempt = 0
+    printed = False
+    last_exc = None
+    while True:
+        attempt += 1
+        req = _ur.Request(url, data=body, headers=headers, method="POST")
+        try:
+            with _ur.urlopen(req, timeout=attempt_timeout) as resp:
+                result = _json.loads(resp.read())
+            if printed:
+                print(" ok")
+            return result
+        except _ue.HTTPError as exc:
+            if exc.code not in _TRANSIENT:
+                if printed:
+                    print()
+                raise  # genuine error -- surface it, don't retry or mask
+            last_exc = exc
+        except (_ue.URLError, OSError) as exc:
+            last_exc = exc
+        remaining = deadline - _time.time()
+        if remaining <= 0:
+            if printed:
+                print()
+            raise RuntimeError(
+                f"Cannot reach {url} after {attempt} attempts over "
+                f"{int(total_budget)}s (last error: {last_exc}). The service may "
+                f"be starting up -- wait a few seconds and run `adk login` again."
+            )
+        if not printed:
+            print("  Service waking up (cold start) -- retrying", end="", flush=True)
+            printed = True
+        print(".", end="", flush=True)
+        _time.sleep(min(delay, remaining))
+        delay = min(delay * 1.5, 10.0)
+
+
 def _device_flow_login(identity_url: str, client_name: str = "adk") -> dict:
     """Run RFC 8628 device code flow. Returns token response dict or raises."""
     import json as _json
@@ -744,17 +808,17 @@ def _device_flow_login(identity_url: str, client_name: str = "adk") -> dict:
         _v = "0"
     _ua = f"aither-adk/{_v} ({client_name})"
 
-    # Step 1: Request device code
-    req_data = _json.dumps({"client_name": client_name, "scopes": "full"}).encode()
-    req = urllib.request.Request(
-        f"{identity_url}/auth/device/code",
-        data=req_data,
-        headers={"Content-Type": "application/json", "Accept": "application/json", "User-Agent": _ua},
-        method="POST",
-    )
+    # Step 1: Request device code. Resilient: the first call after a fleet
+    # restart can be slow or briefly 5xx while security-core warms its vault/DB,
+    # so retry transient failures with backoff instead of dying on attempt 1.
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = _json.loads(resp.read())
+        data = _post_json_resilient(
+            f"{identity_url}/auth/device/code",
+            {"client_name": client_name, "scopes": "full"},
+            {"Content-Type": "application/json", "Accept": "application/json", "User-Agent": _ua},
+        )
+    except RuntimeError:
+        raise  # already a clear, budget-exhausted message
     except (urllib.error.URLError, OSError) as exc:
         raise RuntimeError(f"Cannot reach {identity_url}: {exc}") from exc
 
@@ -1952,6 +2016,82 @@ def cmd_onboard(args):
     return asyncio.run(_onboard())
 
 
+def cmd_enroll(args) -> int:
+    """Register this workstation with the control plane.
+
+    Shows hardware info, available models, and enrollment status.
+    Persists node_id to ~/.aither/node_auth.json for future heartbeats.
+    """
+    import asyncio
+
+    try:
+        portal_url = getattr(args, "portal", None) or os.environ.get("AITHER_PORTAL_URL", "https://portal.aitherium.com")
+        genesis_url = getattr(args, "genesis", None) or os.environ.get("AITHER_GENESIS_URL", "http://localhost:8001")
+        no_heartbeat = getattr(args, "no_heartbeat", False)
+        force = getattr(args, "force", False)
+
+        from adk.fleet_enroll import enroll_on_boot, _load_node_auth, _generate_node_id
+        from adk.enrollment import build_registration
+
+        # Check if already enrolled
+        existing = _load_node_auth()
+        if existing.get("node_id") and not force:
+            node_id = existing["node_id"]
+            print(f"✓ Already enrolled: {node_id}")
+            print()
+            print("Node details:")
+            print(f"  Tenant: {existing.get('tenant_slug', 'unknown')}")
+            print(f"  Hub: {existing.get('hub_url', 'unknown')}")
+            print(f"  Mode: {existing.get('mode', 'legacy')}")
+            print()
+            print("To re-enroll, use: adk enroll --force")
+            return 0
+
+        # Perform enrollment
+        result = asyncio.run(enroll_on_boot(
+            genesis_url=genesis_url,
+            portal_url=portal_url,
+            enable_heartbeat=not no_heartbeat,
+        ))
+
+        if not result.get("enrolled"):
+            error_detail = result.get("error", "unknown error")
+            print(f"ERROR: Enrollment failed: {error_detail}")
+            return 1
+
+        # Build registration for display
+        node_id = result.get("node_id")
+        reg = build_registration(node_id)
+
+        # Format success response
+        print("✓ Enrollment successful")
+        print()
+        print("Node Information:")
+        print(f"  ID: {result.get('node_id', 'unknown')}")
+        print(f"  Hardware:")
+        print(f"    CPU: {reg.get('cpu_count', 0)} cores")
+        print(f"    RAM: {reg.get('ram_mb', 0)} MB")
+        if reg.get("gpu_name"):
+            print(f"    GPU: {reg['gpu_name']} ({reg.get('gpu_vram_mb', 0)} MB)")
+        else:
+            print(f"    GPU: none")
+        models_str = ", ".join(reg.get("available_models", []))[:80]
+        print(f"  Available Models: {models_str if models_str else 'none'}")
+        print()
+        print("Fleet Status:")
+        print(f"  Workspace ID: {result.get('workspace_id', 'N/A')}")
+        print(f"  Agents Upserted: {result.get('agents_upserted', 0)}")
+        if not no_heartbeat:
+            print(f"  Heartbeat: enabled (60s interval)")
+        print()
+        print(f"View in portal: {portal_url.rstrip('/')}/portal/workstation")
+        print()
+        return 0
+    except Exception as e:
+        print(f"ERROR: Enrollment failed: {e}")
+        return 1
+
+
 def _find_cloudflared() -> str | None:
     """Locate the cloudflared binary, checking PATH + common install dirs."""
     import shutil
@@ -2736,8 +2876,9 @@ def cmd_test(args):
 
 
 def cmd_backend(args):
-    """Manage LLM backends — list, set, test."""
+    """Manage LLM backends — list, set, test, switch, status."""
     import asyncio
+    import time
 
     sub = getattr(args, "backend_command", None)
 
@@ -2809,6 +2950,176 @@ def cmd_backend(args):
         print(f"Reasoning backend set to: {provider}")
         return 0
 
+    elif sub == "status":
+        """Show current backend configuration and connectivity."""
+        cfg_dict = load_saved_config()
+        current_backend = cfg_dict.get("setup_backend", "unknown")
+        inference_url = cfg_dict.get("inference_url", "not configured")
+        inference_model = cfg_dict.get(
+            "inference_model",
+            cfg_dict.get("ollama_model", "not configured"),
+        )
+
+        print("\n  Backend Status")
+        print("  " + "=" * 50)
+        print(f"  Backend:  {current_backend}")
+        print(f"  Endpoint: {inference_url}")
+        print(f"  Model:    {inference_model}")
+        print()
+
+        # Quick connectivity check
+        async def _check():
+            try:
+                import httpx
+                async with httpx.AsyncClient(timeout=3.0) as client:
+                    # All three backends are OpenAI-compatible — /v1/models is
+                    # the uniform liveness probe (Ollama/vLLM/llama.cpp serve it).
+                    base = inference_url.rstrip("/")
+                    probe = base + "/models" if base.endswith("/v1") else base + "/v1/models"
+                    r = await client.get(probe)
+                    if r.status_code == 200:
+                        print("  Status:   UP (responding)")
+                    else:
+                        print(f"  Status:   HTTP {r.status_code}")
+                    return 0
+            except Exception as e:
+                print(f"  Status:   DOWN ({type(e).__name__})")
+                return 0
+
+        asyncio.run(_check())
+        print()
+        return 0
+
+    elif sub == "switch":
+        """Switch to a different inference backend (ollama, llamacpp, vllm)."""
+        target = getattr(args, "target_backend", None)
+        if not target or target not in ("ollama", "llamacpp", "vllm"):
+            print("Usage: adk backend switch <ollama|llamacpp|vllm>")
+            return 1
+
+        print()
+        print("  Backend Switch")
+        print("  " + "=" * 50)
+        print()
+
+        cfg_dict = load_saved_config()
+        current_backend = cfg_dict.get("setup_backend", "unknown")
+
+        if target == current_backend:
+            print(f"  Already using {target}. No changes needed.")
+            return 0
+
+        # Install/ensure the target backend
+        print(f"  [1/3] Preparing {target} backend...")
+
+        if target == "ollama":
+            from adk.ollama_setup import ensure_installed, ensure_running
+
+            if not ensure_installed():
+                print("  ERROR: Failed to install Ollama", file=sys.stderr)
+                return 1
+            if not ensure_running():
+                print("  ERROR: Failed to start Ollama", file=sys.stderr)
+                return 1
+            endpoint = "http://localhost:11434/v1"
+            # Preserve the model if it was ollama before, else use default
+            model_name = cfg_dict.get("ollama_model", "gemma4:e2b")
+
+        elif target == "llamacpp":
+            from adk import llamacpp_setup
+
+            result = llamacpp_setup.install(quant=None, port=8200, service=True)
+            if not result.success:
+                print(f"  ERROR: {result.error}", file=sys.stderr)
+                return 1
+            endpoint = f"http://localhost:{result.port}/v1"
+            model_name = result.quant
+
+        elif target == "vllm":
+            from adk.setup_cli import cmd_setup
+
+            class SetupArgs:
+                shortcut = None
+                tier = None
+                mode = "auto"
+                reasoning_api = None
+                reasoning_model = ""
+                dgx_spark = None
+                stack = None
+                dry_run = False
+                non_interactive = True
+                hf_token = ""
+                api_key = ""
+                output = "docker-compose.vllm.yml"
+
+            setup_result = cmd_setup(SetupArgs())
+            if setup_result != 0:
+                print("  ERROR: vLLM setup failed", file=sys.stderr)
+                return 1
+            endpoint = "http://localhost:8200/v1"
+            model_name = "auto"
+        else:
+            print(f"  ERROR: unknown backend {target}", file=sys.stderr)
+            return 1
+
+        # Step 2: Verify with smoke test
+        print()
+        print("  [2/3] Verifying endpoint...")
+        time.sleep(2)  # Give service time to start
+
+        if target in ("llamacpp", "vllm"):
+            from adk import llamacpp_setup
+
+            verify_port = 8200 if target == "vllm" else 8200
+            for _ in range(30):
+                if llamacpp_setup.status(port=verify_port).running:
+                    break
+                time.sleep(1)
+
+            ok = llamacpp_setup.smoke_test(port=verify_port)
+            if not ok:
+                print(
+                    "  ERROR: Smoke test failed - the endpoint did not return a valid "
+                    "completion. Check logs and re-run.",
+                    file=sys.stderr,
+                )
+                return 1
+        elif target == "ollama":
+            from adk.ollama_setup import smoke_test as ollama_smoke_test
+
+            ok = ollama_smoke_test(model_name)
+            if not ok:
+                print(
+                    "  ERROR: Smoke test failed - the endpoint did not respond. "
+                    "Check logs and re-run.",
+                    file=sys.stderr,
+                )
+                return 1
+
+        print(f"  Endpoint ready: {endpoint}")
+
+        # Step 3: Persist configuration
+        print()
+        print("  [3/3] Saving configuration...")
+        save_saved_config({
+            "setup_backend": target,
+            "inference_url": endpoint,
+            "inference_model": model_name,
+        })
+        if target == "ollama":
+            save_saved_config({"ollama_model": model_name})
+
+        print()
+        print("=" * 60)
+        print("  Backend Switched Successfully")
+        print("=" * 60)
+        print()
+        print(f"  Backend:  {target}")
+        print(f"  Endpoint: {endpoint}")
+        print(f"  Model:    {model_name}")
+        print()
+        return 0
+
     elif sub == "test":
         async def _test():
             from adk.llm import LLMRouter
@@ -2832,8 +3143,132 @@ def cmd_backend(args):
             return 0
         return asyncio.run(_test())
 
-    print("Usage: adk backend [list|set|set-reasoning|test]")
+    print("Usage: adk backend [list|set|set-reasoning|test|switch|status]")
     return 1
+
+
+def cmd_install(args) -> int:
+    """Install ready-made agent packs into user workspace.
+
+    Accepts `adk install` / `adk install list` (list packs), and
+    `adk install pack:<name>` or `adk install <name>` (install a pack).
+    """
+    # Resolve the requested target across the CLI positional and the legacy
+    # subcommand arg shape still used by tests.
+    target = getattr(args, "target", None)
+    if target is None:
+        legacy = getattr(args, "install_command", None)
+        if legacy == "pack":
+            target = getattr(args, "pack_name", None)
+        elif legacy:
+            target = legacy
+
+    # Get available packs from the bundled packs directory
+    packs_dir = Path(__file__).parent / "packs"
+    available_packs = {}
+    if packs_dir.exists():
+        for pack_dir in packs_dir.iterdir():
+            if pack_dir.is_dir():
+                agent_yaml = pack_dir / "agent.yaml"
+                if agent_yaml.exists():
+                    try:
+                        import yaml
+                        data = yaml.safe_load(agent_yaml.read_text(encoding="utf-8")) or {}
+                        available_packs[pack_dir.name] = {
+                            "path": pack_dir,
+                            "name": data.get("name", pack_dir.name),
+                            "description": data.get("description", ""),
+                            "identity": data.get("identity", pack_dir.name),
+                        }
+                    except Exception:
+                        pass
+
+    if target is None or target == "list":
+        """List available bundled packs."""
+        if not available_packs:
+            print("No agent packs available.")
+            return 0
+
+        print("\n  Available Agent Packs")
+        print("  " + "=" * 50)
+        print()
+        for pack_id, info in sorted(available_packs.items()):
+            print(f"  {pack_id:<20s} {info['name']}")
+            if info["description"]:
+                desc = info["description"].split("\n")[0]
+                print(f"  {'':20s} {desc[:50]}")
+            print()
+        print(f"  Install with: adk install pack:<name>")
+        print()
+        return 0
+
+    # Install mode — accept 'pack:<name>' or a bare '<name>'.
+    pack_name = target[len("pack:"):] if target.startswith("pack:") else target
+    pack_name = (pack_name or "").strip()
+    if target is not None:
+        if not pack_name:
+            print("Usage: adk install pack:<name>")
+            print()
+            print("Available packs:")
+            for pid in sorted(available_packs.keys()):
+                print(f"  - {pid}")
+            return 1
+
+        if pack_name not in available_packs:
+            print(f"ERROR: Unknown pack '{pack_name}'")
+            print()
+            print("Available packs:")
+            for pid in sorted(available_packs.keys()):
+                print(f"  - {pid}")
+            return 1
+
+        pack_info = available_packs[pack_name]
+        pack_src = pack_info["path"]
+
+        # Determine install location
+        install_base = Path.home() / ".aither" / "agents"
+        install_dst = install_base / pack_name
+
+        print()
+        print(f"  Installing {pack_name}...")
+        print("  " + "=" * 50)
+        print()
+
+        # Create install directory
+        try:
+            install_base.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            print(f"  ERROR: Could not create directory {install_base}: {e}")
+            return 1
+
+        # Copy pack files
+        try:
+            import shutil
+            if install_dst.exists():
+                print(f"  Removing existing installation at {install_dst}")
+                shutil.rmtree(install_dst)
+            shutil.copytree(pack_src, install_dst)
+            print(f"  Installed to: {install_dst}")
+        except Exception as e:
+            print(f"  ERROR: Failed to install pack: {e}")
+            return 1
+
+        # Print instructions
+        print()
+        print("  Next steps:")
+        print(f"    adk run --agents {pack_name}      # Run this agent")
+        print(f"    adk serve --agents {pack_name}    # Serve as a web service")
+        print()
+        return 0
+
+    print("Usage: adk install [list|pack:<name>]")
+    return 1
+
+
+def cmd_packs(args) -> int:
+    """Alias for 'adk install list' — list available agent packs."""
+    args.install_command = "list"
+    return cmd_install(args)
 
 
 # ── Phase 1: aither keys — API key management ─────────────────────────────
@@ -4685,6 +5120,181 @@ def cmd_quickstart(args):
     return 0
 
 
+def cmd_quickstart_local(args):
+    """
+    One-command local inference quickstart.
+
+    Detects hardware → picks backend (llamacpp/ollama/vllm) →
+    installs & verifies → launches agent.
+    """
+    from adk import llamacpp_setup
+    from adk.local_backends import pick_backend, docker_available
+    from adk.ollama_setup import (
+        DEFAULT_OLLAMA_MODEL,
+        ensure_running,
+        pull,
+        register_config as ollama_register_config,
+        smoke_test as ollama_smoke_test,
+    )
+
+    print()
+    print("  AitherADK Local Inference Quickstart")
+    print("  ====================================")
+    print()
+
+    # Step 1: Detect accelerator
+    print("  [1/5] Detecting hardware...")
+    accel = llamacpp_setup.detect_accel()
+    print(
+        f"  Hardware: {accel.os_family}/{accel.arch}, "
+        f"accel={accel.kind}, GPU={accel.name}, "
+        f"VRAM={accel.vram_gb:.1f}GB, RAM={accel.ram_gb:.1f}GB"
+    )
+
+    # Step 2: Pick backend
+    print()
+    print("  [2/5] Selecting backend...")
+    backend = pick_backend(
+        accel,
+        prefer=getattr(args, "backend", "auto"),
+        docker_available_override=docker_available(),
+    )
+    print(f"  Backend: {backend}")
+    if backend == "vllm":
+        print("    (NVIDIA CUDA + Docker: optimal throughput)")
+    elif backend == "ollama":
+        print("    (Ollama installed: convenient & portable)")
+    else:
+        print("    (llama.cpp: pure stdlib, no dependencies)")
+
+    # Step 3: Install backend
+    print()
+    print("  [3/5] Installing inference backend...")
+
+    if backend == "llamacpp":
+        result = llamacpp_setup.install(
+            quant=None,  # auto-detect from hardware
+            port=getattr(args, "port", llamacpp_setup.DEFAULT_PORT),
+            service=True,
+            dry_run=getattr(args, "dry_run", False),
+        )
+        if not result.success:
+            print(
+                f"  ERROR: {result.error}",
+                file=sys.stderr,
+            )
+            return 1
+        endpoint = f"http://localhost:{result.port}/v1"
+        model_name = result.quant
+
+    elif backend == "ollama":
+        if not ensure_running():
+            print(
+                "  ERROR: Could not start Ollama. "
+                "Install from https://ollama.ai",
+                file=sys.stderr,
+            )
+            return 1
+
+        # NB: args.model exists but defaults to None, so getattr's fallback never
+        # fires — use `or` to apply the default when the flag was omitted.
+        model = getattr(args, "model", None) or DEFAULT_OLLAMA_MODEL
+        if getattr(args, "dry_run", False):
+            print(f"  [DRY] Would pull model: {model}")
+        else:
+            if not pull(model):
+                print(f"  ERROR: Failed to pull model {model}", file=sys.stderr)
+                return 1
+        ollama_register_config(model)
+        endpoint = "http://localhost:11434/v1"
+        model_name = model
+
+    elif backend == "vllm":
+        # Use setup_cli's cmd_setup for Docker-based vLLM
+        from adk.setup_cli import cmd_setup
+
+        class SetupArgs:
+            shortcut = None
+            tier = None
+            mode = "auto"
+            reasoning_api = None
+            reasoning_model = ""
+            dgx_spark = None
+            stack = None
+            dry_run = getattr(args, "dry_run", False)
+            non_interactive = True
+            hf_token = ""
+            api_key = getattr(args, "api_key", "") or ""
+            output = "docker-compose.vllm.yml"
+
+        setup_result = cmd_setup(SetupArgs())
+        if setup_result != 0:
+            print("  ERROR: vLLM setup failed", file=sys.stderr)
+            return 1
+        endpoint = "http://localhost:8200/v1"
+        model_name = "auto"
+    else:
+        print(f"  ERROR: unknown backend {backend}", file=sys.stderr)
+        return 1
+
+    # Step 4: Verify with smoke test. A failed verification FAILS the command —
+    # proving inference actually works is the entire point of "quickstart".
+    print()
+    print("  [4/5] Verifying endpoint...")
+    if getattr(args, "dry_run", False):
+        print("  [DRY] Skipping smoke test")
+    else:
+        if backend in ("llamacpp", "vllm"):
+            import time
+
+            verify_port = getattr(args, "port", 8200) if backend == "llamacpp" else 8200
+            # Wait for the freshly-started service to bind + load the model.
+            for _ in range(60):
+                if llamacpp_setup.status(port=verify_port).running:
+                    break
+                time.sleep(2)
+            ok = llamacpp_setup.smoke_test(port=verify_port)
+        else:  # ollama
+            ok = ollama_smoke_test(model)
+        if not ok:
+            print(
+                "  ERROR: Smoke test failed — the endpoint did not return a valid "
+                "completion. The backend may have failed to start or load the model. "
+                "Check logs and re-run.",
+                file=sys.stderr,
+            )
+            return 1
+    print(f"  Endpoint ready: {endpoint}")
+
+    # Step 5: Persist config
+    print()
+    print("  [5/5] Saving configuration...")
+    save_saved_config({
+        "setup_backend": backend,
+        "inference_url": endpoint,
+        "inference_model": model_name,
+    })
+    print("  Config saved to ~/.aither/config.json")
+
+    # Banner
+    print()
+    print("=" * 60)
+    print("  Local Inference Backend Ready!")
+    print("=" * 60)
+    print()
+    print(f"  Endpoint:  {endpoint}")
+    print(f"  Model:     {model_name}")
+    print(f"  Backend:   {backend}")
+    print()
+    print("  Next steps:")
+    print("    adk start              Chat with your codebase")
+    print("    adk shell              Interactive terminal")
+    print("    adk doctor             Check system health")
+    print()
+
+    return 0
+
+
 def cmd_status(args):
     """Show backend and service status."""
     import asyncio
@@ -5981,7 +6591,95 @@ def _cmd_pack(args) -> int:
         print("(Offline export bundles are an enterprise feature — contact sales@aitherium.com)")
         return 0
 
-    print("Usage: adk pack [list|search|install|remove|info|update|export]")
+    if sub == "customize":
+        import yaml
+        from adk.pack_discovery import load_agent_spec
+
+        pack_name = args.pack_id
+        pack_dir = Path.home() / ".aither" / "agents" / pack_name
+
+        if not pack_dir.exists():
+            print(f"ERROR: Pack '{pack_name}' not installed.")
+            print(f"Install it with: adk install pack:{pack_name}")
+            return 1
+
+        # Parse options
+        system_prompt = None
+        capabilities = None
+        show_spec = getattr(args, "show", False)
+
+        if getattr(args, "system_prompt_file", None):
+            try:
+                sp = Path(getattr(args, "system_prompt_file")).expanduser()
+                system_prompt = sp.read_text(encoding="utf-8")
+            except Exception as e:
+                print(f"ERROR: Failed to read system prompt file: {e}")
+                return 1
+
+        if getattr(args, "system_prompt", None):
+            system_prompt = args.system_prompt
+
+        if getattr(args, "capabilities", None):
+            capabilities = [c.strip() for c in args.capabilities.split(",")]
+
+        # If --show and no overrides, just display current spec
+        if show_spec and not system_prompt and not capabilities:
+            spec = load_agent_spec(pack_dir / "agent.yaml")
+            if not spec:
+                print("No agent.yaml found in pack")
+                return 1
+            print(f"Pack '{pack_name}' current spec:")
+            print()
+            for key, value in sorted(spec.items()):
+                if isinstance(value, (list, tuple)):
+                    val_str = "[" + ", ".join(str(v) for v in value) + "]"
+                elif isinstance(value, dict):
+                    val_str = "{...}"
+                elif isinstance(value, str) and len(value) > 80:
+                    val_str = value[:80] + "..."
+                else:
+                    val_str = str(value)
+                print(f"  {key}: {val_str}")
+            return 0
+
+        # Build overlay
+        if not system_prompt and not capabilities:
+            print("ERROR: No options provided. Use --system-prompt, --system-prompt-file, --capabilities, or --show")
+            return 1
+
+        overlay = {}
+        if system_prompt:
+            if len(system_prompt) > 8000:
+                print("ERROR: system_prompt exceeds 8000 character limit")
+                return 1
+            overlay["system_prompt"] = system_prompt
+
+        if capabilities:
+            overlay["capabilities"] = capabilities
+
+        # Write agent.yaml.local
+        local_yaml = pack_dir / "agent.yaml.local"
+        try:
+            local_yaml.write_text(yaml.dump(overlay, default_flow_style=False), encoding="utf-8")
+        except Exception as e:
+            print(f"ERROR: Failed to write agent.yaml.local: {e}")
+            return 1
+
+        # Show confirmation
+        print(f"✓ Customized pack '{pack_name}'")
+        print()
+        print(f"Overrides saved to: {local_yaml}")
+        print()
+        if system_prompt:
+            prompt_preview = system_prompt[:100].replace("\n", " ")
+            print(f"  system_prompt: {prompt_preview}...")
+        if capabilities:
+            print(f"  capabilities: {', '.join(capabilities)}")
+        print()
+        print(f"Apply with: adk run --agents {pack_name}")
+        return 0
+
+    print("Usage: adk pack [list|search|install|remove|info|update|export|customize]")
     return 1
 
 
@@ -6852,6 +7550,13 @@ def _register_commands(sub):
     onboard_p.add_argument("--agent", help="Register a running agent with the portal fleet")
     onboard_p.add_argument("--non-interactive", action="store_true", help="Skip prompts, use defaults")
 
+    # adk enroll — register workstation with control plane
+    enroll_p = sub.add_parser("enroll", help="Register this workstation with the control plane")
+    enroll_p.add_argument("--portal", help="Portal URL (default: portal.aitherium.com)")
+    enroll_p.add_argument("--genesis", help="Genesis URL (default: localhost:8001)")
+    enroll_p.add_argument("--no-heartbeat", action="store_true", help="Skip background heartbeat")
+    enroll_p.add_argument("--force", action="store_true", help="Re-enroll even if already registered")
+
     # aither host — one command: serve a self-hosted agent + connect it to your fleet
     host_p = sub.add_parser(
         "host",
@@ -6929,7 +7634,7 @@ def _register_commands(sub):
     sub.add_parser("disconnect", help="Disconnect from desktop AitherOS mesh")
 
     # adk backend — manage LLM backends
-    backend_p = sub.add_parser("backend", help="Manage LLM backends (list, set, test)")
+    backend_p = sub.add_parser("backend", help="Manage LLM backends (list, set, test, switch, status)")
     backend_sub = backend_p.add_subparsers(dest="backend_command")
     backend_sub.add_parser("list", help="Show detected and configured backends")
     backend_set_p = backend_sub.add_parser("set", help="Set default backend")
@@ -6942,6 +7647,10 @@ def _register_commands(sub):
     backend_reason_p.add_argument("--api-key", help="API key")
     backend_reason_p.add_argument("--model", help="Reasoning model")
     backend_sub.add_parser("test", help="Test current backend with a simple prompt")
+    backend_switch_p = backend_sub.add_parser("switch", help="Switch to a different inference backend")
+    backend_switch_p.add_argument("target_backend", choices=["ollama", "llamacpp", "vllm"],
+                                  help="Target backend to switch to")
+    backend_sub.add_parser("status", help="Show current backend configuration and connectivity")
 
     # adk keys — manage cloud provider API keys
     keys_p = sub.add_parser("keys", help="Manage cloud provider API keys (set, list, test, remove)")
@@ -7009,6 +7718,34 @@ def _register_commands(sub):
     quickstart_p.add_argument("--api-key", help="AITHER_API_KEY")
     quickstart_p.add_argument("--cloud", action="store_true", help="Cloud-only setup (no GPU required)")
 
+    # adk quickstart-local — local-only inference quickstart
+    quickstart_local_p = sub.add_parser(
+        "quickstart-local",
+        help="Local inference quickstart (no cloud required)"
+    )
+    quickstart_local_p.add_argument(
+        "--backend",
+        choices=["auto", "llamacpp", "ollama", "vllm"],
+        default="auto",
+        help="Inference backend (auto = detect best fit)"
+    )
+    quickstart_local_p.add_argument(
+        "--model",
+        help="Model name/ID (for Ollama; others auto-detected)"
+    )
+    quickstart_local_p.add_argument(
+        "--port",
+        type=int,
+        default=8200,
+        help="Port for local inference endpoint (default: 8200)"
+    )
+    quickstart_local_p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would happen without making changes"
+    )
+    quickstart_local_p.add_argument("--api-key", help="AITHER_API_KEY")
+
     # adk backup — export all ~/.aither/ data
     backup_p = sub.add_parser("backup", help="Backup all agent data (memory, graphs, config)")
     backup_p.add_argument("-o", "--output", help="Output file path (default: aither-backup-<timestamp>.tar.gz)")
@@ -7064,6 +7801,16 @@ def _register_commands(sub):
     addon_logs_p.add_argument("--lines", type=int, default=100, help="Number of log lines (default: 100)")
     addon_sub.add_parser("update", help="Pull latest images for all enabled addons")
 
+    # adk install — install agent packs and extensions
+    install_p = sub.add_parser("install", help="Install an agent pack (e.g. adk install pack:openclaw)")
+    install_p.add_argument(
+        "target", nargs="?", default=None,
+        help="'list', 'pack:<name>', or a pack name (openclaw, hermes, claude-code)",
+    )
+
+    # adk packs — alias for list
+    sub.add_parser("packs", help="List available agent packs")
+
     # adk pack — tool pack management
     pack_p = sub.add_parser("pack", help="Manage ToolPack extensions (list, search, install, remove, info)")
     pack_sub = pack_p.add_subparsers(dest="pack_command")
@@ -7096,6 +7843,12 @@ def _register_commands(sub):
     pack_export_p.add_argument("-o", "--output", default=".", help="Output directory")
     pack_info_p = pack_sub.add_parser("info", help="Show pack details")
     pack_info_p.add_argument("pack_id", help="Pack ID to inspect")
+    pack_customize_p = pack_sub.add_parser("customize", help="Customize installed pack (system_prompt, capabilities, domains)")
+    pack_customize_p.add_argument("pack_id", help="Pack name to customize")
+    pack_customize_p.add_argument("--system-prompt", help="Override system prompt")
+    pack_customize_p.add_argument("--system-prompt-file", help="Load system prompt from file")
+    pack_customize_p.add_argument("--capabilities", help="Override capabilities (comma-separated)")
+    pack_customize_p.add_argument("--show", action="store_true", help="Show current spec")
 
     # adk support — help and community links
     sub.add_parser("support", help="Get help — Discord, GitHub, docs")
@@ -7419,6 +8172,8 @@ def main():
         sys.exit(cmd_workspace(args))
     elif args.command == "onboard":
         sys.exit(cmd_onboard(args))
+    elif args.command == "enroll":
+        sys.exit(cmd_enroll(args))
     elif args.command == "host":
         sys.exit(cmd_host(args))
     elif args.command == "integrate":
@@ -7445,6 +8200,8 @@ def main():
         sys.exit(cmd_tools(args))
     elif args.command == "quickstart":
         sys.exit(cmd_quickstart(args))
+    elif args.command == "quickstart-local":
+        sys.exit(cmd_quickstart_local(args))
     elif args.command == "backup":
         sys.exit(cmd_backup(args))
     elif args.command == "ingest":
@@ -7461,6 +8218,10 @@ def main():
         sys.exit(_cmd_cron(args))
     elif args.command == "addon":
         sys.exit(_cmd_addon(args))
+    elif args.command == "install":
+        sys.exit(cmd_install(args))
+    elif args.command == "packs":
+        sys.exit(cmd_packs(args))
     elif args.command == "pack":
         sys.exit(_cmd_pack(args))
     elif args.command == "skills":

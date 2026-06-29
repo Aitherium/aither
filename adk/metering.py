@@ -64,6 +64,24 @@ MODEL_PRICING: Dict[str, Dict[str, float]] = {
 }
 
 
+def is_metered_backend(backend_type: str) -> bool:
+    """True only for Aitherium's metered cloud gateway.
+
+    Token/cost quotas are ENFORCED on exactly one backend — the metered gateway
+    (``provider="gateway"``), where Aitherium pays for the inference. Every other
+    backend is the user's own inference and is NEVER capped:
+
+      - BYO API keys: anthropic / openai / deepseek / groq / together / …
+      - local runtimes: ollama / vllm / llamacpp / lmstudio
+      - any unknown / custom OpenAI-compatible endpoint
+
+    Enforcement is therefore opt-in by provenance and FAIL-OPEN: an unrecognized
+    backend is treated as self-hosted (uncapped), never bricked. This is the
+    inverse of an allowlist — only ``gateway`` opts into a cap.
+    """
+    return (backend_type or "").strip().lower() == "gateway"
+
+
 class QuotaAction(str, Enum):
     """What to do when quota is exceeded."""
     ALLOW = "allow"          # Under budget
@@ -93,7 +111,7 @@ class QuotaConfig:
     Limits are in tokens. Set to 0 for unlimited.
     """
     hourly_limit: int = 0        # 0 = unlimited
-    daily_limit: int = 100_000   # 100K tokens/day default
+    daily_limit: int = 0         # 0 = unlimited (caps are opt-in; gateway-only)
     monthly_limit: int = 0       # 0 = unlimited
     cost_limit_usd: float = 0.0  # 0 = unlimited
     soft_limit_pct: float = 0.8  # Warn at 80%
@@ -229,6 +247,12 @@ class AgentMeter:
         Returns the appropriate quota action based on current usage. Also emits
         a one-time warning at 80% of monthly cap (if enforced on this backend).
         """
+        # Caps are enforced ONLY on Aitherium's metered gateway. BYO / local /
+        # custom / unknown backends pay for their own inference and are never
+        # capped — fail-open so a self-hosted agent can never be bricked by a
+        # stray quota (e.g. a community default or a product super-cap).
+        if not is_metered_backend(self._backend_type):
+            return QuotaAction.ALLOW
         now = time.time()
         hour_ago = now - 3600
         day_ago = now - 86400

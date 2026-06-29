@@ -359,7 +359,18 @@ async def enroll_on_boot(
     genesis_url = genesis_url or os.environ.get("AITHER_GENESIS_URL", "http://localhost:8001")
     portal_url = portal_url or os.environ.get("AITHER_PORTAL_URL", "https://portal.aitherium.com")
 
-    log.info("Enrolling node in fleet (genesis=%s, portal=%s)", genesis_url, portal_url)
+    # Resolve Identity service URL for rich enrollment (node registration)
+    enroll_base = (
+        os.environ.get("AITHER_ENROLL_BASE")
+        or os.environ.get("AITHERIDENTITY_URL")
+        or os.environ.get("AITHER_IDP_PUBLIC_URL")
+        or "https://idp.aitherium.com"
+    )
+
+    log.info(
+        "Enrolling node in fleet (identity=%s, genesis=%s, portal=%s)",
+        enroll_base, genesis_url, portal_url
+    )
 
     # Load or fetch API key
     auth = _load_auth_config()
@@ -371,23 +382,65 @@ async def enroll_on_boot(
         log.info("Node already enrolled: %s", node_auth["node_id"])
         # Still upsert agents and start heartbeat if enabled
         if enable_heartbeat and not node_auth.get("_heartbeat_started"):
-            asyncio.create_task(
-                _heartbeat_loop(
-                    node_auth.get("hub_url", genesis_url),
-                    node_auth.get("api_key", api_key),
-                    node_auth["node_id"],
+            try:
+                asyncio.create_task(
+                    _heartbeat_loop(
+                        node_auth.get("hub_url", genesis_url),
+                        node_auth.get("api_key", api_key),
+                        node_auth["node_id"],
+                    )
                 )
-            )
-            node_auth["_heartbeat_started"] = True
-            _save_node_auth(node_auth)
+                node_auth["_heartbeat_started"] = True
+                _save_node_auth(node_auth)
+            except RuntimeError:
+                # No running event loop (sync context) — never crash boot.
+                log.debug("No event loop for heartbeat; skipping background task")
         return {
             "enrolled": True,
             "node_id": node_auth["node_id"],
             "already_registered": True,
         }
 
-    # Try portal first
     node_id = _generate_node_id()
+
+    # PRIMARY: rich endpoint enrollment (hardware + inference readiness → Identity
+    # node registry → AitherDirectory). Falls through to the legacy federation path
+    # if it doesn't take (older control plane, no token, offline, etc.).
+    try:
+        from adk.enrollment import rich_enroll
+
+        rich = await rich_enroll(
+            enroll_base, api_key, node_id, enable_heartbeat=enable_heartbeat
+        )
+    except Exception as e:  # never let enrollment block boot
+        log.debug("Rich enrollment unavailable: %s", e)
+        rich = {"enrolled": False, "error": str(e)}
+
+    if rich.get("enrolled"):
+        _save_node_auth({
+            "node_id": node_id,
+            "api_key": api_key,
+            "hub_url": portal_url,
+            "tenant_slug": _extract_tenant_slug(),
+            "mode": "rich",
+            "_heartbeat_started": enable_heartbeat,
+        })
+        log.info("Node enrolled (rich): %s", node_id)
+        agents_upserted = 0
+        if await _upsert_agents_to_portal(portal_url, api_key, node_id):
+            registry = _load_agents_registry()
+            agents_upserted = len(registry.get("agents", {}))
+        return {
+            "enrolled": True,
+            "node_id": node_id,
+            "agents_upserted": agents_upserted,
+            "mode": "rich",
+            "workspace": rich.get("workspace", {}),
+        }
+
+    # FALLBACK: legacy federation registration (agents only, no hardware).
+    log.info("Rich enrollment did not take (%s); using federation path",
+             rich.get("error", "unknown"))
     result = await _register_node_with_federation(portal_url, api_key, node_id)
     if result.get("error"):
         # Fallback to Genesis
@@ -422,9 +475,11 @@ async def enroll_on_boot(
 
     # Start heartbeat
     if enable_heartbeat:
-        asyncio.create_task(
-            _heartbeat_loop(hub_url, api_key, node_id)
-        )
+        try:
+            asyncio.create_task(_heartbeat_loop(hub_url, api_key, node_id))
+        except RuntimeError:
+            # No running event loop (sync context) — never crash boot.
+            log.debug("No event loop for heartbeat; skipping background task")
 
     return {
         "enrolled": True,

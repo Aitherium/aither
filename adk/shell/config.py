@@ -61,6 +61,7 @@ class AitherConfig:
 
     # Session
     session_id: Optional[str] = None
+    last_session_id: Optional[str] = None
     auto_continue: bool = False
 
     # Shell
@@ -242,6 +243,8 @@ def save_config(cfg: AitherConfig):
         data["persona"] = cfg.persona
     if cfg.effort:
         data["effort"] = cfg.effort
+    if cfg.session_id:
+        data["session_id"] = cfg.session_id
     # Only write non-default values
     data = {k: v for k, v in data.items() if v is not None and v != ""}
     with open(CONFIG_FILE, "w") as f:

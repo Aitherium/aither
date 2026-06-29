@@ -146,12 +146,14 @@ class AitherREPL:
         if command == "help":
             return (
                 "\nAitherShell Built-in Commands:\n\n"
-                "/help               Show this help\n"
-                "/history            Show command history\n"
-                "/artifacts          List all artifacts from this session\n"
-                "/get N [path]       Download artifact #N (default: current dir)\n"
-                "/clear              Clear history\n"
-                "/exit, /quit        Exit shell\n\n"
+                "/help                  Show this help\n"
+                "/history               Show command history\n"
+                "/artifacts             List all artifacts from this session\n"
+                "/get N [path]          Download artifact #N (default: current dir)\n"
+                "/clear                 Clear history\n"
+                "/resume <session_id>   Resume a previous session\n"
+                "/research <question>   Research a question (web + report)\n"
+                "/exit, /quit           Exit shell\n\n"
                 "During generation, type anything to steer the active session.\n"
                 "Ctrl+C during generation cancels it.\n"
             )
@@ -170,6 +172,32 @@ class AitherREPL:
             self.history.clear()
             self._save_history()
             return "History cleared."
+        elif command == "resume":
+            if len(parts) < 2 or not parts[1].strip():
+                return "Usage: /resume <session_id>"
+            session_id = parts[1].strip()
+            self.config.session_id = session_id
+            self.config.last_session_id = session_id
+            # Try to save config
+            try:
+                from adk.shell.config import save_config
+                save_config(self.config)
+            except Exception:
+                pass
+            return f"Resumed session {session_id}"
+        elif command == "research":
+            if len(parts) < 2 or not parts[1].strip():
+                return "Usage: /research <question>"
+            question = parts[1].strip()
+            # Frame as research prompt
+            research_prompt = (
+                "Research the following thoroughly using web sources and deliver "
+                "a written report with citations:\n\n"
+                f"{question}"
+            )
+            # Queue the research prompt for processing
+            await self._input_queue.put(research_prompt)
+            return None  # Handled via queue
         elif command in ("exit", "quit"):
             self._shutdown = True
             return None
@@ -383,7 +411,11 @@ class AitherREPL:
 
     async def _run_generation(self, user_input: str) -> None:
         """Stream a chat request. Non-blocking — _input_loop keeps running."""
-        session_id = str(uuid4())
+        # Use config.session_id if set, otherwise generate a new one
+        if self.config.session_id:
+            session_id = self.config.session_id
+        else:
+            session_id = str(uuid4())
         self._generating = True
         self._active_session = session_id
         self._thinking_active = False
