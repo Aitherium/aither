@@ -345,12 +345,35 @@ class AitherAgent:
         # Inject graph memory context (non-fatal)
         if self._graph:
             try:
-                relevant = await self._graph.search(message, limit=3)
-                if relevant:
-                    graph_lines = [f"- {n.label}: {n.content[:200]}" for n in relevant if n.content]
+                from adk.graph_memory import unified_memory_mode as _unified_mode
+                if _unified_mode() == "on":
+                    # Unified memory: authority + spreading-activation recall,
+                    # surfacing [CORRECTION]/[STALE]/… labels the LLM reads.
+                    relevant = await self._graph.recall_with_activation(message, limit=6)
+                    graph_lines = []
+                    for n in relevant:
+                        if not n.content:
+                            continue
+                        _labs = (n.metadata.get("_authority_labels")
+                                 if isinstance(n.metadata, dict) else None)
+                        _pref = "".join(f"[{l}] " for l in _labs) if _labs else ""
+                        graph_lines.append(f"- {_pref}{n.label}: {n.content[:500]}")
                     if graph_lines:
-                        graph_context = "[MEMORY GRAPH]\n" + "\n".join(graph_lines)
+                        graph_context = (
+                            "[MEMORY GRAPH] Facts you already know (authoritative). "
+                            "Answer from these; if a requested detail is NOT present "
+                            "here, say you don't have it on record — never invent "
+                            "names, numbers, or dates.\n" + "\n".join(graph_lines)
+                        )
                         messages.insert(1, Message(role="system", content=graph_context))
+                else:
+                    # Legacy path — byte-identical to pre-graft behaviour.
+                    relevant = await self._graph.search(message, limit=3)
+                    if relevant:
+                        graph_lines = [f"- {n.label}: {n.content[:200]}" for n in relevant if n.content]
+                        if graph_lines:
+                            graph_context = "[MEMORY GRAPH]\n" + "\n".join(graph_lines)
+                            messages.insert(1, Message(role="system", content=graph_context))
             except Exception:
                 pass
 
@@ -557,6 +580,17 @@ class AitherAgent:
                             {"role": "user", "content": message},
                             {"role": "assistant", "content": content},
                         ])
+                        # Unified memory: also store the user turn as a typed,
+                        # role-classified record so authority recall + governance
+                        # see it. Flag-gated (mode 'on'); only the user turn.
+                        from adk.graph_memory import unified_memory_mode as _umm
+                        if _umm() == "on":
+                            from adk.core.typed_memory import infer_role
+                            from adk.unified_contract import MemoryRecord
+                            await self._graph.store(MemoryRecord(
+                                content=message, role=infer_role(message),
+                                source="user", confidence=0.7,
+                            ))
                     except Exception:
                         pass
                 return AgentResponse(
@@ -697,6 +731,17 @@ class AitherAgent:
                     {"role": "user", "content": message},
                     {"role": "assistant", "content": content},
                 ])
+                # Unified memory: also store the user turn as a typed,
+                # role-classified record so authority recall + governance see
+                # it. Flag-gated (mode 'on'); only the user turn.
+                from adk.graph_memory import unified_memory_mode as _umm
+                if _umm() == "on":
+                    from adk.core.typed_memory import infer_role
+                    from adk.unified_contract import MemoryRecord
+                    await self._graph.store(MemoryRecord(
+                        content=message, role=infer_role(message),
+                        source="user", confidence=0.7,
+                    ))
             except Exception:
                 pass
         return AgentResponse(

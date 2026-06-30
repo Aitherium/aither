@@ -98,6 +98,43 @@ class Memory:
             for r in rows
         ]
 
+    async def get_entry(self, key: str) -> MemoryEntry | None:
+        """Fetch a full stored entry (value + metadata) by key, or None."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT key, value, category, timestamp, metadata FROM kv_store WHERE key = ?",
+                (key,),
+            ).fetchone()
+        if not row:
+            return None
+        return MemoryEntry(
+            key=row[0], value=row[1], category=row[2], timestamp=row[3],
+            metadata=json.loads(row[4]) if row[4] else None,
+        )
+
+    async def recent(self, limit: int = 20, category: str | None = None) -> list[MemoryEntry]:
+        """Return the most recently stored entries (newest first)."""
+        with self._connect() as conn:
+            if category:
+                rows = conn.execute(
+                    "SELECT key, value, category, timestamp, metadata FROM kv_store "
+                    "WHERE category = ? ORDER BY timestamp DESC LIMIT ?",
+                    (category, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT key, value, category, timestamp, metadata FROM kv_store "
+                    "ORDER BY timestamp DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+        return [
+            MemoryEntry(
+                key=r[0], value=r[1], category=r[2], timestamp=r[3],
+                metadata=json.loads(r[4]) if r[4] else None,
+            )
+            for r in rows
+        ]
+
     async def forget(self, key: str):
         """Remove a key from memory."""
         with self._connect() as conn:
