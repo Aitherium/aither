@@ -2,6 +2,19 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [0.17.0] - 2026-06-30
+
+### Self-Maintaining Memory — typed, activation-scored, governed (opt-in)
+- **Typed memory contract** (`unified_contract.py`) — `MemoryRecord` with `Role` (FACT / CORRECTION / OBSERVATION / …) × `Tier` (PERSISTENT / EPHEMERAL / …) authority model. Corrections outrank stale facts; tiers decay at different half-lives.
+- **Activation scoring** (`graph_rag/activation_scoring.py`) — zero-dependency spreading-activation recall: `effective_confidence = confidence × temporal_consistency`, freshness decay, and authority labelling (`CORRECTION` / `STALE`) surfaced on recalled nodes.
+- **Supersession cascade** (`graph_rag/governance.py`) — superseding a record marks it stale, links `superseded_by`, and **decays related neighbours' recall weight** (writes the `temporal_consistency` that scoring actually consumes — the cascade now bites instead of writing cosmetic-only hints).
+- **GraphMemory integration** — `store()` / `recall_with_activation()` / `supersede()` on the v3 role/confidence/tier schema (migration-safe); governance auto-wired via `MutationLedger`.
+- **`ADK_MEMORY_CONFIG`** — point at a `ScoringConfig` JSON to tune decay/half-lives without code edits.
+- **Fully gated behind `AITHER_UNIFIED_MEMORY`** (`off` | `shadow` | `on`, default `off`) — flag-off is byte-identical to prior search; additive, no breaking changes. 12 unified + 92 back-compat tests green.
+
+### llmfit auto-install
+- Hardware-aware model selection without a Docker sidecar.
+
 ## [0.16.0] - 2026-04-16
 
 ### Swarm Coding Engine & Repowise Integration
