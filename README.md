@@ -207,7 +207,8 @@ adk deploy grid --mac-host 192.168.1.100 --cluster-nodes '["192.168.1.10"]'
 adk shell
 ```
 
-Omit `--mac-host` to auto-scan the LAN. Full walkthrough + sizing in **[GRID_SETUP.md](GRID_SETUP.md)**.
+Omit `--mac-host` to auto-scan the LAN. For advanced multi-node sizing, start with
+`adk deploy grid --help`; deployment-specific runbooks live outside the public SDK package.
 
 ---
 

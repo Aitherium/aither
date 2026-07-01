@@ -2,6 +2,13 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [2.12.6] - 2026-07-01
+
+### Changed
+- Trimmed public package debt by removing grid runbook artifacts and shell/room binary placeholder directories from published artifacts.
+- Removed stale public-sync allowlist entries for deleted phase test files and added explicit public-sync guards for binary placeholder directories and grid artifacts.
+- Updated the public README grid note so it no longer links to runbook files excluded from the SDK package.
+
 ## [2.12.5] - 2026-07-01
 
 ### Added

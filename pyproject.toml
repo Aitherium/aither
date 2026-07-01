@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "aither-adk"
-version = "2.12.5"
+version = "2.12.6"
 description = "Build AI agents with real memory + faculties on any backend, local or cloud. Open-core: free local runtime with typed memory, knowledge graph, code graph and ReAct; paid tiers (portal.aitherium.com) unlock fleets, channels, reasoning and marketplace packs."
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -122,6 +122,10 @@ exclude = [
     "adk/identities/*.yaml",
     "adk/nanogpt.py",
     "adk/formbridge/**",
+    "adk/room_binaries/**",
+    "adk/shell_binaries/**",
+    "GRID_SETUP.md",
+    "docker-compose.grid.yml",
     "tests/test_formbridge.py",
 ]
 artifacts = [
@@ -135,8 +139,6 @@ packages = ["adk"]
 "agent.yaml" = "adk/workspace-agent.yaml"
 
 [tool.hatch.build.targets.wheel.targets.data]
-"adk/shell_binaries" = "adk/shell_binaries"
-"adk/room_binaries" = "adk/room_binaries"
 "adk/packs" = "adk/packs"
 
 
