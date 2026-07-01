@@ -2159,19 +2159,25 @@ class AitherAgent:
             pass
 
     def set_memory_graph(self, memory_graph) -> None:
-        """Attach a MemoryGraph to this agent.
+        """Attach a legacy MemoryGraph to this agent.
 
-        When a MemoryGraph is attached, the agent automatically gains
-        ``remember``, ``recall``, and ``query_memory`` built-in tools.
-        The graph is also queried during chat to inject relevant memories
-        into the system prompt.
+        .. deprecated:: 2.12.7
+           The agent already has :class:`adk.graph_memory.GraphMemory` wired
+           as ``self._graph`` during ``__init__``.  This method is kept only
+           for callers that pass a pre-existing graph object; internally it
+           stores the reference and registers tools but new code should use
+           the built-in ``self._graph`` directly.
 
         Usage::
 
-            from adk.faculties import MemoryGraph
+            # Preferred (no call needed — already wired):
+            agent = AitherAgent("atlas")
+            await agent.graph_remember("AitherOS", "uses", "SQLite")
 
-            mg = MemoryGraph(data_dir="~/.aither/memory")
-            agent.set_memory_graph(mg)
+            # Legacy (still works):
+            from adk.graph_memory import GraphMemory
+            g = GraphMemory(agent_name="custom-db")
+            agent.set_memory_graph(g)
         """
         self._memory_graph = memory_graph
         try:

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "aither-adk"
-version = "2.12.7"
+version = "2.13.0"
 description = "Build AI agents with real memory + faculties on any backend, local or cloud. Open-core: free local runtime with typed memory, knowledge graph, code graph and ReAct; paid tiers (portal.aitherium.com) unlock fleets, channels, reasoning and marketplace packs."
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -124,6 +124,8 @@ exclude = [
     "adk/formbridge/**",
     "adk/room_binaries/**",
     "adk/shell_binaries/**",
+    "adk/faculties/memory_graph.py",
+    "adk/platform/memory/**",
     "GRID_SETUP.md",
     "docker-compose.grid.yml",
     "tests/test_formbridge.py",

@@ -5439,18 +5439,16 @@ def cmd_start(args):
     # ── Step 4: Set up memory ───────────────────────────────────────
     # Suppress noisy warnings for casual use
     _logging = __import__("logging")
-    _logging.getLogger("adk.faculties.base").setLevel(_logging.ERROR)
-    _logging.getLogger("adk.faculties.memory_graph").setLevel(_logging.ERROR)
+    _logging.getLogger("adk.graph_memory").setLevel(_logging.ERROR)
     _logging.getLogger("adk.identity").setLevel(_logging.ERROR)
 
-    memory_dir = os.path.join(os.path.expanduser("~/.aither"), "memory", project_name)
-    from adk.faculties.memory_graph import MemoryGraph
-    memory_graph = MemoryGraph(data_dir=memory_dir)
-    mem_stats = memory_graph.get_stats()
-    if mem_stats["nodes"] > 0:
+    from adk.graph_memory import GraphMemory
+    graph = GraphMemory(agent_name=project_name)
+    mem_stats = asyncio.run(graph.get_stats())
+    if mem_stats.get("nodes", 0) > 0:
         print(f"  Memory:     {mem_stats['nodes']} memories restored from previous sessions")
     else:
-        print(f"  Memory:     New (will persist to {memory_dir})")
+        print(f"  Memory:     New (will persist across sessions)")
 
     # ── Step 5: Build agent ─────────────────────────────────────────
     print()
@@ -5499,7 +5497,7 @@ def cmd_start(args):
 
     if code_graph:
         agent.set_code_graph(code_graph)
-    agent.set_memory_graph(memory_graph)
+    # GraphMemory is already wired via agent._graph in __init__
 
     # ── Step 6: Interactive chat loop ───────────────────────────────
     print()

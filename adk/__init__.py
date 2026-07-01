@@ -217,7 +217,8 @@ def __getattr__(name):
         from adk.faculties.code_graph import CodeGraph
         return CodeGraph
     if name == "MemoryGraph":
-        from adk.faculties.memory_graph import MemoryGraph
+        # Back-compat: MemoryGraph now resolves to the canonical GraphMemory
+        from adk.graph_memory import GraphMemory as MemoryGraph
         return MemoryGraph
     if name == "EmbeddingProvider":
         from adk.faculties.embeddings import EmbeddingProvider

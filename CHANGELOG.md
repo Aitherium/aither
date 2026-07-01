@@ -2,6 +2,19 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [2.13.0] - 2026-07-01
+
+### Removed
+- **`adk.faculties.memory_graph`** — the pickle-based `MemoryGraph` module is deleted. `from adk.faculties import MemoryGraph` now resolves to the canonical `adk.graph_memory.GraphMemory` for back-compat.
+- **`adk.platform.memory`** — the entire legacy memory subsystem (`MemoryManager`, `UnifiedMemorySystem`, `GameEngine`, `StoryboardEngine`, `AnchorGenerator`) is deleted. Agent memory is `adk.memory.Memory` + `adk.graph_memory.GraphMemory`.
+
+### Changed
+- `adk work` command now uses `GraphMemory` instead of the removed pickle-based faculty graph.
+- `adk.MemoryGraph` and `adk.faculties.MemoryGraph` lazy exports now resolve to `adk.graph_memory.GraphMemory`.
+- `agent.set_memory_graph()` kept for back-compat but documented as deprecated; agents already wire `GraphMemory` automatically in `__init__`.
+- Platform startup (`adk.platform.infrastructure.startup`) gracefully handles missing `MemoryManager`.
+- Platform CLI module listing and health check updated to reflect removed memory module.
+
 ## [2.12.7] - 2026-07-01
 
 ### Deprecated

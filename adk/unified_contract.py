@@ -105,7 +105,7 @@ TIER_TTL_SECONDS: Dict[Tier, Optional[float]] = {
 class EdgeType(str, Enum):
     """Typed relationships between memories.
 
-    Superset of ``lib.faculties.MemoryGraph.EdgeType`` so existing graph edges
+    Superset of ``adk.graph_memory.EdgeType`` so existing graph edges
     map directly.
     """
     SUPERSEDES = "supersedes"

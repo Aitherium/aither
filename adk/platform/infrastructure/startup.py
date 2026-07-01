@@ -1,5 +1,8 @@
 import os
-from adk.platform.memory.memory import MemoryManager
+try:
+    from adk.platform.memory.memory import MemoryManager
+except ImportError:
+    MemoryManager = None
 from adk.platform.infrastructure.tasks import TaskManager
 from adk.platform.ai.ollama_service import OllamaService
 from adk.platform.ai.comfyui_service import ComfyUIService
@@ -42,7 +45,7 @@ def common_on_startup(agent, agent_root_dir, use_local_models=False):
         
         # Still need local memory for this agent instance
         memory_file = os.path.join(agent_root_dir, "memory", "long_term_memory.json")
-        memory_manager = MemoryManager(memory_file)
+        memory_manager = MemoryManager(memory_file) if MemoryManager else None
         
         tasks_file = os.path.join(agent_root_dir, "memory", "tasks.json")
         task_manager = TaskManager(tasks_file)
@@ -69,7 +72,7 @@ def common_on_startup(agent, agent_root_dir, use_local_models=False):
 
     # Initialize Memory
     memory_file = os.path.join(agent_root_dir, "memory", "long_term_memory.json")
-    memory_manager = MemoryManager(memory_file)
+    memory_manager = MemoryManager(memory_file) if MemoryManager else None
 
     # Initialize Task Manager
     tasks_file = os.path.join(agent_root_dir, "memory", "tasks.json")

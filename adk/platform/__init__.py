@@ -10,7 +10,6 @@ Modules:
   - ``adk.platform.ai``              — LLM providers, prompt engineering, safety
   - ``adk.platform.communication``   — IRC relay, messaging, notifications
   - ``adk.platform.infrastructure``  — Service management, auth, deployment
-  - ``adk.platform.memory``          — Memory systems, game engine, storyboard
   - ``adk.platform.tools``           — Tool wrappers, function registration
   - ``adk.platform.ui``              — Console UI, toolbars, commands
 
@@ -27,7 +26,6 @@ MODULES = [
     "ai",
     "communication",
     "infrastructure",
-    "memory",
     "tools",
     "ui",
 ]

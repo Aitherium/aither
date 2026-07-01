@@ -122,7 +122,6 @@ def info():
         ("ai", "adk.platform.ai", "LLM providers, models, safety"),
         ("communication", "adk.platform.communication", "Inter-agent messaging"),
         ("infrastructure", "adk.platform.infrastructure", "Auth, config, services"),
-        ("memory", "adk.platform.memory", "Memory management"),
         ("tools", "adk.platform.tools", "Tool loader, MCP integration"),
         ("ui", "adk.platform.ui", "Console, CLI, commands"),
     ]
@@ -152,7 +151,7 @@ def check():
         ("adk.platform.ai", "from adk.platform.ai.ollama import preload_model"),
         ("adk.platform.communication", "from adk.platform.communication.mailbox import Mailbox"),
         ("adk.platform.infrastructure", "from adk.platform.infrastructure.utils import configure_logging"),
-        ("adk.platform.memory", "from adk.platform.memory.memory import MemoryManager"),
+        ("adk.memory", "from adk.memory import Memory"),
         ("adk.platform.tools", "from adk.platform.tools.tool_loader import aither_tools"),
         ("adk.platform.ui", "from adk.platform.ui.console import console"),
     ]
@@ -1507,10 +1506,9 @@ def docs_api():
   CouncilClient      - Council API client
   A2AClient          - A2A protocol client
 
-[bold]adk.platform.memory[/]
-  MemoryManager      - Conversation memory
-  MemorySystem       - Multi-layer memory
-  GameEngine         - RPG game state
+[bold]adk.memory / adk.graph_memory[/]
+  Memory             - SQLite KV + conversation store
+  GraphMemory        - Knowledge graph with embeddings
 
 [bold]adk.platform.tools[/]
   aither_tools       - PowerShell automation tools
