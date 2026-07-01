@@ -59,10 +59,39 @@ class Memory:
                 self._spirit_recall_path = "/v1/memory/recall"
             # Use ACTA key or bearer token for gateway auth
             self._spirit_auth_token = os.environ.get("AITHER_API_KEY", "")
+
+        # ── Fleet sync: push local memories to Nexus (Qdrant) for RAG ────
+        # Local SQLite is source of truth. Fleet sync is best-effort async.
+        # Supports: direct Nexus (:8122), portal gateway, or customer Qdrant.
+        self._fleet_url = os.environ.get("AITHER_FLEET_MEMORY_URL", "")
+        self._fleet_enabled = os.environ.get(
+            "AITHER_FLEET_SYNC", "auto"
+        ).lower()
+        # auto = enable if AITHER_FLEET_MEMORY_URL is set
+        if self._fleet_enabled == "auto":
+            self._fleet_enabled = bool(self._fleet_url)
+        else:
+            self._fleet_enabled = self._fleet_enabled == "true"
+        if not self._fleet_url and self._fleet_enabled:
+            # Infer from cloud mode or default to local Nexus
+            if cloud_mode in ("cloud_first", "cloud_only"):
+                gw = os.environ.get(
+                    "AITHER_GATEWAY_URL", "https://gateway.aitherium.com"
+                )
+                self._fleet_url = f"{gw}/v1/memory"
+            else:
+                self._fleet_url = "http://localhost:8122"
+        self._fleet_collection = os.environ.get(
+            "AITHER_FLEET_COLLECTION", "memories"
+        )
+        self._fleet_auth_token = (
+            self._spirit_auth_token
+            or os.environ.get("AITHER_API_KEY", "")
+        )
         self._init_db()
 
     # Schema version — increment when tables change, add migration in _migrate()
-    _SCHEMA_VERSION = 2
+    _SCHEMA_VERSION = 3
 
     def _init_db(self):
         with self._connect() as conn:
@@ -108,6 +137,29 @@ class Memory:
                 conn.execute("ALTER TABLE conversations ADD COLUMN agent_name TEXT DEFAULT ''")
             except sqlite3.OperationalError:
                 pass  # Column already exists
+
+        if current < 3:
+            # v3: fleet sync tracking — marks entries that haven't been pushed yet
+            try:
+                conn.execute(
+                    "ALTER TABLE kv_store ADD COLUMN synced INTEGER DEFAULT 0"
+                )
+            except sqlite3.OperationalError:
+                pass
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS fleet_sync_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    entry_key TEXT NOT NULL,
+                    entry_type TEXT NOT NULL DEFAULT 'kv',
+                    fleet_doc_id TEXT DEFAULT '',
+                    synced_at REAL NOT NULL,
+                    status TEXT DEFAULT 'ok'
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_sync_key
+                ON fleet_sync_log(entry_key)
+            """)
 
         # Update version
         conn.execute("DELETE FROM schema_version")
@@ -184,6 +236,161 @@ class Memory:
         except Exception as e:
             logger.debug("SpiritBridge recall failed (non-fatal): %s", e)
         return []
+
+    # ─────────────────────────────────────────────────────────────────────
+    # FLEET SYNC — push local memories to Nexus/Qdrant for RAG
+    # ─────────────────────────────────────────────────────────────────────
+
+    def _fleet_headers(self) -> dict[str, str]:
+        headers: dict[str, str] = {"Content-Type": "application/json"}
+        if self._fleet_auth_token:
+            headers["Authorization"] = f"Bearer {self._fleet_auth_token}"
+        if self._tenant_id:
+            headers["X-Tenant-ID"] = self._tenant_id
+        return headers
+
+    async def _fleet_push(
+        self, key: str, content: str, category: str = "general",
+        content_type: str = "text",
+    ):
+        """Push a memory entry to the fleet's vector store (best-effort).
+
+        Target is Nexus (:8122 /ingest) or the gateway/portal memory proxy.
+        Entries are ingested into the configured collection so they become
+        searchable via RAG. Non-fatal — local SQLite is the source of truth.
+        """
+        if not self._fleet_enabled or not self._fleet_url:
+            return
+        try:
+            import httpx
+
+            payload = {
+                "content": content,
+                "title": key,
+                "source_type": "manual",
+                "content_type": content_type,
+                "collection": self._fleet_collection,
+                "metadata": {
+                    "source_agent": self._agent,
+                    "category": category,
+                    "tenant_id": self._tenant_id,
+                    "workspace_id": self._workspace_id,
+                    "synced_from": "adk_memory",
+                },
+            }
+
+            url = self._fleet_url.rstrip("/")
+            # Nexus uses /ingest, gateway uses /ingest too
+            ingest_url = f"{url}/ingest"
+
+            async with httpx.AsyncClient(
+                timeout=8.0,
+                verify=os.getenv("AITHER_TLS_VERIFY", "true").lower() != "false",
+            ) as client:
+                resp = await client.post(
+                    ingest_url, json=payload, headers=self._fleet_headers(),
+                )
+                if resp.status_code in (200, 201):
+                    doc_ids = resp.json().get("document_ids", [])
+                    # Track sync in local DB
+                    with self._connect() as conn:
+                        conn.execute(
+                            "UPDATE kv_store SET synced = 1 WHERE key = ?",
+                            (key,),
+                        )
+                        conn.execute(
+                            "INSERT INTO fleet_sync_log "
+                            "(entry_key, entry_type, fleet_doc_id, synced_at) "
+                            "VALUES (?, ?, ?, ?)",
+                            (
+                                key, "kv",
+                                doc_ids[0] if doc_ids else "",
+                                time.time(),
+                            ),
+                        )
+                    logger.debug("Fleet sync pushed: %s -> %s", key, doc_ids)
+                else:
+                    logger.debug(
+                        "Fleet sync push failed (%d): %s",
+                        resp.status_code, resp.text[:200],
+                    )
+        except Exception as e:
+            logger.debug("Fleet sync push failed (non-fatal): %s", e)
+
+    async def _fleet_search(self, query: str, limit: int = 5) -> list[dict]:
+        """Search the fleet's vector store for RAG-relevant memories.
+
+        Returns results from Nexus/Qdrant that match the query semantically.
+        These supplement local substring search with vector similarity.
+        Non-fatal — returns [] on failure.
+        """
+        if not self._fleet_enabled or not self._fleet_url:
+            return []
+        try:
+            import httpx
+
+            url = self._fleet_url.rstrip("/")
+            search_url = f"{url}/search"
+
+            payload = {
+                "query": query,
+                "limit": limit,
+                "collection": self._fleet_collection,
+            }
+            if self._tenant_id:
+                payload["tenant_id"] = self._tenant_id
+
+            async with httpx.AsyncClient(
+                timeout=5.0,
+                verify=os.getenv("AITHER_TLS_VERIFY", "true").lower() != "false",
+            ) as client:
+                resp = await client.post(
+                    search_url, json=payload, headers=self._fleet_headers(),
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    return data.get("results", data.get("hits", []))
+        except Exception as e:
+            logger.debug("Fleet search failed (non-fatal): %s", e)
+        return []
+
+    async def fleet_sync_pending(self) -> int:
+        """Return count of local entries not yet synced to fleet."""
+        with self._connect() as conn:
+            try:
+                row = conn.execute(
+                    "SELECT COUNT(*) FROM kv_store WHERE synced = 0"
+                ).fetchone()
+                return row[0] if row else 0
+            except sqlite3.OperationalError:
+                return 0
+
+    async def fleet_push_all(self) -> dict:
+        """Push all unsynced local memories to fleet (batch catchup).
+
+        Call on reconnect or periodically to ensure fleet has everything.
+        Returns: {"pushed": int, "failed": int, "total_pending": int}
+        """
+        if not self._fleet_enabled:
+            return {"pushed": 0, "failed": 0, "total_pending": 0}
+        with self._connect() as conn:
+            try:
+                rows = conn.execute(
+                    "SELECT key, value, category FROM kv_store "
+                    "WHERE synced = 0 ORDER BY timestamp DESC LIMIT 100"
+                ).fetchall()
+            except sqlite3.OperationalError:
+                return {"pushed": 0, "failed": 0, "total_pending": 0}
+        pushed = 0
+        failed = 0
+        for key, value, category in rows:
+            try:
+                await self._fleet_push(key, f"{key}: {value}", category)
+                pushed += 1
+            except Exception:
+                failed += 1
+        pending = await self.fleet_sync_pending()
+        return {"pushed": pushed, "failed": failed, "total_pending": pending}
 
     async def remember(self, key: str, value: str, category: str = "general", metadata: dict | None = None):
         """Store a key-value pair in memory."""

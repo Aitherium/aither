@@ -2,7 +2,7 @@
 
 All notable changes to aither-adk will be documented in this file.
 
-## [2.12.3] - 2026-07-01
+## [2.12.4] - 2026-07-01
 
 ### Added
 - Added a hot-reload endpoint for installed agent packs so newly applied pack tools can be picked up without restarting `aither-serve`.
