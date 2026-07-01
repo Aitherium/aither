@@ -393,13 +393,26 @@ class Memory:
         return {"pushed": pushed, "failed": failed, "total_pending": pending}
 
     async def remember(self, key: str, value: str, category: str = "general", metadata: dict | None = None):
-        """Store a key-value pair in memory."""
+        """Store a key-value pair in memory.
+
+        Writes locally (SQLite), then syncs to Spirit (cross-session) and
+        fleet (Qdrant/RAG) in parallel. Both syncs are best-effort.
+        """
         with self._connect() as conn:
             conn.execute(
-                "INSERT OR REPLACE INTO kv_store (key, value, category, timestamp, metadata) VALUES (?, ?, ?, ?, ?)",
-                (key, value, category, time.time(), json.dumps(metadata) if metadata else None),
+                "INSERT OR REPLACE INTO kv_store "
+                "(key, value, category, timestamp, metadata, synced) "
+                "VALUES (?, ?, ?, ?, ?, 0)",
+                (key, value, category, time.time(),
+                 json.dumps(metadata) if metadata else None),
             )
-        await self._spirit_teach(f"{key}: {value}", category)
+        # Sync to Spirit + fleet in parallel (both non-fatal)
+        import asyncio
+        await asyncio.gather(
+            self._spirit_teach(f"{key}: {value}", category),
+            self._fleet_push(key, f"{key}: {value}", category),
+            return_exceptions=True,
+        )
 
     async def recall(self, key: str) -> str | None:
         """Retrieve a value by key."""
@@ -422,7 +435,11 @@ class Memory:
         return None
 
     async def search(self, query: str, limit: int = 10) -> list[MemoryEntry]:
-        """Search memory entries by substring match."""
+        """Search memory by substring (local) + vector similarity (fleet).
+
+        Local SQLite results come first, then Spirit cross-session, then
+        fleet/Qdrant vector matches fill remaining slots. Deduped by key.
+        """
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT key, value, category, timestamp, metadata FROM kv_store "
@@ -436,22 +453,50 @@ class Memory:
             )
             for r in rows
         ]
-        # Fill remaining slots from Spirit if local results are sparse
-        if len(results) < limit:
-            spirit_results = await self._spirit_recall(query, limit=limit - len(results))
-            seen_keys = {r.key for r in results}
-            for sr in spirit_results:
-                key = sr.get("title", sr.get("id", ""))
-                if key and key not in seen_keys:
-                    results.append(MemoryEntry(
-                        key=key,
-                        value=sr.get("content", sr.get("value", "")),
-                        category=sr.get("category", "spirit"),
-                        timestamp=sr.get("timestamp", 0.0),
-                        metadata={"source": "spirit"},
-                    ))
-                    seen_keys.add(key)
-        return results
+        seen_keys = {r.key for r in results}
+        remaining = limit - len(results)
+
+        if remaining > 0:
+            # Fetch from Spirit + fleet in parallel
+            import asyncio
+            spirit_task = self._spirit_recall(query, limit=remaining)
+            fleet_task = self._fleet_search(query, limit=remaining)
+            spirit_results, fleet_results = await asyncio.gather(
+                spirit_task, fleet_task, return_exceptions=True,
+            )
+
+            # Merge Spirit results
+            if isinstance(spirit_results, list):
+                for sr in spirit_results:
+                    key = sr.get("title", sr.get("id", ""))
+                    if key and key not in seen_keys:
+                        results.append(MemoryEntry(
+                            key=key,
+                            value=sr.get("content", sr.get("value", "")),
+                            category=sr.get("category", "spirit"),
+                            timestamp=sr.get("timestamp", 0.0),
+                            metadata={"source": "spirit"},
+                        ))
+                        seen_keys.add(key)
+
+            # Merge fleet/Qdrant results
+            if isinstance(fleet_results, list):
+                for fr in fleet_results:
+                    key = fr.get("title", fr.get("id", ""))
+                    if key and key not in seen_keys:
+                        results.append(MemoryEntry(
+                            key=key,
+                            value=fr.get("content", fr.get("text", "")),
+                            category="fleet",
+                            timestamp=fr.get("timestamp", 0.0),
+                            metadata={
+                                "source": "fleet",
+                                "score": fr.get("score", 0.0),
+                            },
+                        ))
+                        seen_keys.add(key)
+
+        return results[:limit]
 
     async def forget(self, key: str):
         """Remove a key from memory."""

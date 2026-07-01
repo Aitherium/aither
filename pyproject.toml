@@ -121,6 +121,8 @@ adk-shell = "adk.shell.cli:entry"
 exclude = [
     "adk/identities/*.yaml",
     "adk/nanogpt.py",
+    "adk/formbridge/**",
+    "tests/test_formbridge.py",
 ]
 artifacts = [
     "adk/identities/aither.yaml",

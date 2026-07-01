@@ -198,6 +198,19 @@ class Config:
         default_factory=lambda: os.getenv("AITHER_LLMFIT_URL", "")
     )
 
+    # Fleet memory sync — push local memories to Qdrant/Nexus for RAG.
+    # Set by ``aither connect`` or portal provisioning.
+    # URL targets: Nexus (:8122), portal gateway, or customer Qdrant.
+    fleet_memory_url: str = field(
+        default_factory=lambda: os.getenv("AITHER_FLEET_MEMORY_URL", "")
+    )
+    fleet_memory_collection: str = field(
+        default_factory=lambda: os.getenv("AITHER_FLEET_COLLECTION", "memories")
+    )
+    fleet_sync: str = field(
+        default_factory=lambda: os.getenv("AITHER_FLEET_SYNC", "auto")
+    )
+
     # JSON structured logging (default off for standalone ADK; set AITHER_JSON_LOGGING=true for prod)
     json_logging: bool = field(
         default_factory=lambda: os.getenv("AITHER_JSON_LOGGING", "false").lower() in ("true", "1", "yes")
@@ -280,6 +293,17 @@ class Config:
             os.environ["AITHER_SPIRIT_TEACH_PATH"] = saved["spirit_teach_path"]
         if saved.get("spirit_recall_path") and not os.environ.get("AITHER_SPIRIT_RECALL_PATH"):
             os.environ["AITHER_SPIRIT_RECALL_PATH"] = saved["spirit_recall_path"]
+
+        # Fleet memory sync config (saved by `adk connect` or portal provisioning)
+        if saved.get("fleet_memory_url") and not os.environ.get("AITHER_FLEET_MEMORY_URL"):
+            os.environ["AITHER_FLEET_MEMORY_URL"] = saved["fleet_memory_url"]
+            config.fleet_memory_url = saved["fleet_memory_url"]
+        if saved.get("fleet_collection") and not os.environ.get("AITHER_FLEET_COLLECTION"):
+            os.environ["AITHER_FLEET_COLLECTION"] = saved["fleet_collection"]
+            config.fleet_memory_collection = saved["fleet_collection"]
+        if saved.get("fleet_sync") and not os.environ.get("AITHER_FLEET_SYNC"):
+            os.environ["AITHER_FLEET_SYNC"] = saved["fleet_sync"]
+            config.fleet_sync = saved["fleet_sync"]
 
         # Backfill from provider_keys.json (written by `adk keys set`)
         # This is the bridge between `adk keys` CLI and the LLMRouter.
