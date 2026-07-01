@@ -2,6 +2,20 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [2.13.1] - 2026-07-01
+
+### Fixed
+- **CRITICAL:** `deploy_connect()` now sends a HEAD request to verify the GitHub release asset exists before downloading, with a clear error if the asset is missing.
+- **CRITICAL:** Compose file URLs are now pinned to a stable commit hash (configurable via `AITHER_COMPOSE_PIN` env) instead of tracking the mutable `main` branch.
+- **CRITICAL:** `deploy_adk_node()` now falls back to starting `adk-serve` natively when Docker is unavailable, instead of blocking with "Docker not installed".
+- **HIGH:** GHCR login failure now blocks deployment immediately with actionable guidance, instead of warning and continuing to a confusing image-pull failure.
+- **HIGH:** Health checks now stream the last 30 lines of Docker Compose logs on failure, so the user can see why a container didn't start.
+- **HIGH:** vLLM port allocation now probes for conflicts before assigning; if port 8200 is busy, workers are automatically remapped to the next free port.
+- **MEDIUM:** Compose file downloads are now cached with ETag; re-running `adk deploy node` skips re-downloading an unchanged file.
+- **MEDIUM:** DGX Spark discovery now respects `AITHER_DGX_HOSTS` env (comma-separated) for custom network topologies, instead of only checking `spark.local` and `192.168.0.33`.
+- **MEDIUM:** Cloud API keys (Anthropic, OpenAI, DeepSeek) are now validated with a lightweight probe during `adk setup` infra scan, so invalid keys surface early.
+- **MEDIUM:** `deploy_connect()` now validates the extracted extension has a `manifest.json` and warns if it's missing.
+
 ## [2.13.0] - 2026-07-01
 
 ### Removed

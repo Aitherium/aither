@@ -54,15 +54,17 @@ from adk.setup_cli import (
 # Constants
 # ---------------------------------------------------------------------------
 
-GITHUB_RAW = "https://raw.githubusercontent.com/Aitherium/AitherOS/main"
+# Pin compose files to a known-good commit so a new push to main can't break
+# an older ADK release.  Bump this hash when deployers are tested against a
+# new compose revision.
+_COMPOSE_PIN = os.environ.get("AITHER_COMPOSE_PIN", "main")  # override for dev
+
+GITHUB_RAW = f"https://raw.githubusercontent.com/Aitherium/AitherOS/{_COMPOSE_PIN}"
 GITHUB_RELEASES = "https://github.com/Aitherium/AitherOS/releases/latest/download"
 AITHER_DIR = Path.home() / ".aither"
 REGISTRY = "ghcr.io/aitherium"
 
 # Compose file URLs (private repo — requires auth)
-# Canonical home is .DEPLOYMENT/compose/ (see .DEPLOYMENT/MANIFEST.yaml).
-# NOTE: these raw.githubusercontent.com paths are only valid once the move is
-# merged + pushed to the default branch — verify post-merge with a curl check.
 COMPOSE_NODE_URL = f"{GITHUB_RAW}/.DEPLOYMENT/compose/docker-compose.node.yml"
 COMPOSE_NODE_ADK_URL = f"{GITHUB_RAW}/.DEPLOYMENT/compose/docker-compose.node-adk.yml"
 COMPOSE_FULL_URL = f"{GITHUB_RAW}/.DEPLOYMENT/compose/docker-compose.aitheros.yml"
@@ -281,6 +283,20 @@ def _docker_login_ghcr(api_key: str) -> bool:
         return False
 
 
+def _require_ghcr_login(api_key: str, dry_run: bool = False) -> bool:
+    """Attempt GHCR login; return True on success or dry-run.  Blocks on failure."""
+    if dry_run:
+        return True
+    if _docker_login_ghcr(api_key):
+        info(f"Authenticated with {REGISTRY}")
+        return True
+    err("GHCR login failed — cannot pull container images")
+    print()
+    print(f"  Verify your API key: {cyan('adk connect --api-key <key>')}")
+    print(f"  Or set {cyan('AITHER_API_KEY')} in your environment.")
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Helper: subprocess runner
 # ---------------------------------------------------------------------------
@@ -299,17 +315,34 @@ def _run(cmd: list[str], timeout: int = 30) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 def _download(url: str, dest: Path, dry_run: bool = False) -> bool:
-    """Download a file using urllib.request. Returns True on success."""
+    """Download a file using urllib.request.  Skips if cached copy is fresh.
+
+    Uses ETag / If-None-Match to avoid re-downloading an unchanged file.
+    Returns True on success (including cache hit).
+    """
     if dry_run:
         info(f"Would download: {url}")
         info(f"  -> {dest}")
         return True
     dest.parent.mkdir(parents=True, exist_ok=True)
+
+    # ── Cache check: skip download if etag matches ──────────────────
+    etag_file = dest.with_suffix(dest.suffix + ".etag")
+    headers = {"User-Agent": "AitherADK/1.0"}
+    if dest.exists() and etag_file.exists():
+        stored_etag = etag_file.read_text(encoding="utf-8").strip()
+        if stored_etag:
+            headers["If-None-Match"] = stored_etag
+
     info(f"Downloading: {url}")
     try:
-        req = Request(url, headers={"User-Agent": "AitherADK/1.0"})
+        req = Request(url, headers=headers)
         with urlopen(req, timeout=120) as resp:
             data = resp.read()
+            # Save new etag if server provided one
+            new_etag = resp.headers.get("ETag", "")
+            if new_etag:
+                etag_file.write_text(new_etag, encoding="utf-8")
         dest.write_bytes(data)
         size_kb = len(data) / 1024
         if size_kb > 1024:
@@ -317,7 +350,13 @@ def _download(url: str, dest: Path, dry_run: bool = False) -> bool:
         else:
             info(f"  -> {dest} ({size_kb:.0f} KB)")
         return True
-    except (HTTPError, URLError, OSError) as exc:
+    except HTTPError as exc:
+        if exc.code == 304:
+            info(f"  -> {dest} (cached, unchanged)")
+            return True
+        err(f"Download failed: {exc}")
+        return False
+    except (URLError, OSError) as exc:
         err(f"Download failed: {exc}")
         return False
 
@@ -331,6 +370,16 @@ def _download_bytes(url: str) -> Optional[bytes]:
     except (HTTPError, URLError, OSError) as exc:
         err(f"Download failed: {exc}")
         return None
+
+
+def _url_exists(url: str) -> bool:
+    """Send a HEAD request; return True if the server responds 200-399."""
+    try:
+        req = Request(url, method="HEAD", headers={"User-Agent": "AitherADK/1.0"})
+        with urlopen(req, timeout=15) as resp:
+            return resp.status < 400
+    except Exception:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -378,11 +427,14 @@ def _docker_compose(
 # Helper: Health Check
 # ---------------------------------------------------------------------------
 
-def _health_check(url: str, timeout: int = 120) -> bool:
-    """Poll a health endpoint until it returns 200 or timeout (seconds)."""
+def _health_check(url: str, timeout: int = 120, compose_file: Optional[Path] = None) -> bool:
+    """Poll a health endpoint until it returns 200 or timeout (seconds).
+
+    If *compose_file* is given and the check fails, tails Docker Compose logs
+    so the user can see why the container isn't responding.
+    """
     start = time.time()
     dots = 0
-    service_name = url.rsplit("/", 1)[0].rsplit(":", 1)[-1] if ":" in url else url
     while time.time() - start < timeout:
         try:
             req = Request(url, headers={"User-Agent": "AitherADK/1.0"})
@@ -400,6 +452,16 @@ def _health_check(url: str, timeout: int = 120) -> bool:
         time.sleep(3)
     if dots > 0:
         print()
+    # On failure, dump the last 30 lines of compose logs if available
+    if compose_file and compose_file.exists():
+        warn("Service did not become healthy — showing recent container logs:")
+        try:
+            subprocess.run(
+                ["docker", "compose", "-f", str(compose_file), "logs", "--tail", "30"],
+                timeout=10,
+            )
+        except Exception:
+            pass
     return False
 
 
@@ -685,6 +747,69 @@ def deploy_vllm(dry_run: bool = False, tier: Optional[str] = None, hf_token: str
 
 
 # ===========================================================================
+# Component: ADK Node — native fallback (no Docker)
+# ===========================================================================
+
+def _deploy_adk_node_native(dry_run: bool = False, api_key: str = "") -> int:
+    """Start adk-serve natively when Docker is unavailable.
+
+    This runs `adk-serve` as a background process and verifies it responds
+    on the health endpoint.  It does NOT require Docker, Redis, or Genesis.
+    """
+    adk_serve = shutil.which("adk-serve")
+    if not adk_serve:
+        err("Neither Docker nor adk-serve is available")
+        print()
+        print(f"  Option 1: Install Docker — {cyan('https://docker.com/products/docker-desktop')}")
+        print(f"  Option 2: Ensure adk-serve is in PATH — {cyan('pip install aither-adk')}")
+        return 1
+
+    if dry_run:
+        info(f"Would start: {adk_serve}")
+        return 0
+
+    info(f"Starting adk-serve natively: {adk_serve}")
+    env = os.environ.copy()
+    if api_key:
+        env["AITHER_API_KEY"] = api_key
+
+    try:
+        # Start as detached subprocess (survives parent exit)
+        pid_file = AITHER_DIR / "adk-serve.pid"
+        if sys.platform == "win32":
+            proc = subprocess.Popen(
+                [adk_serve],
+                env=env,
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        else:
+            proc = subprocess.Popen(
+                [adk_serve],
+                env=env,
+                start_new_session=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        pid_file.write_text(str(proc.pid))
+        info(f"adk-serve started (PID {proc.pid})")
+    except Exception as exc:
+        err(f"Failed to start adk-serve: {exc}")
+        return 1
+
+    # Health check
+    if _health_check("http://localhost:8080/health", timeout=30):
+        info(f"ADK server (:{cyan('8080')}): {green('healthy')}")
+        print()
+        info(f"{green(bold('ADK Node is ready!'))}")
+        return 0
+    else:
+        warn("ADK server started but health check timed out — check logs")
+        return 0
+
+
+# ===========================================================================
 # Component: ADK Node (Tier 2 — lightweight, no Genesis)
 # ===========================================================================
 
@@ -735,16 +860,13 @@ def deploy_adk_node(
     if docker_ok:
         info(f"{docker_msg}")
     else:
-        err(docker_msg)
-        print()
-        print(f"  Install Docker: {cyan('https://docker.com/products/docker-desktop')}")
-        return 1
+        # Docker not available — fall back to running adk-serve natively
+        warn(f"{docker_msg} — falling back to native adk-serve")
+        return _deploy_adk_node_native(dry_run, api_key)
 
     if not dry_run:
-        if _docker_login_ghcr(api_key):
-            info(f"Authenticated with {REGISTRY}")
-        else:
-            warn("GHCR login failed -- image pulls may fail if images are private")
+        if not _require_ghcr_login(api_key, dry_run):
+            return 1
 
     # -- Step 2: Download compose file ----------------------------------------
     step(2, total_steps, "Downloading ADK compose configuration")
@@ -814,7 +936,7 @@ def deploy_adk_node(
             endpoints.append((3000, "Workspace dashboard"))
 
         for port, name in endpoints:
-            if _health_check(f"http://localhost:{port}/health", timeout=90):
+            if _health_check(f"http://localhost:{port}/health", timeout=90, compose_file=compose_file):
                 info(f"{name} (:{port}): {green('healthy')}")
             else:
                 warn(f"{name} (:{port}): not responding yet -- may still be starting")
@@ -926,11 +1048,8 @@ def deploy_node(
         return 1
 
     # Authenticate with GHCR for private image pulls
-    if not dry_run:
-        if _docker_login_ghcr(api_key):
-            info(f"Authenticated with {REGISTRY}")
-        else:
-            warn(f"GHCR login failed -- image pulls may fail if images are private")
+    if not _require_ghcr_login(api_key, dry_run):
+        return 1
 
     # -- Step 2: Download compose file ----------------------------------------
     step(2, total_steps, "Downloading compose configuration")
@@ -1005,7 +1124,7 @@ def deploy_node(
 
         all_healthy = True
         for port, name in endpoints:
-            if _health_check(f"http://localhost:{port}/health", timeout=120):
+            if _health_check(f"http://localhost:{port}/health", timeout=120, compose_file=compose_file):
                 info(f"{name} (:{port}): {green('healthy')}")
             else:
                 warn(f"{name} (:{port}): not responding yet -- may still be starting")
@@ -2323,12 +2442,24 @@ def deploy_connect(dry_run: bool = False, api_key_arg: Optional[str] = None) -> 
     if dry_run:
         print(f"  {yellow('DRY RUN -- no changes will be made')}\n")
 
-    total_steps = 2
+    total_steps = 3
     connect_url = f"{GITHUB_RELEASES}/AitherConnect.zip"
     dest_dir = AITHER_DIR / "AitherConnect"
 
-    # -- Step 1: Download -----------------------------------------------------
-    step(1, total_steps, "Downloading AitherConnect")
+    # -- Step 1: Verify release asset exists ----------------------------------
+    step(1, total_steps, "Checking release asset")
+
+    if not dry_run and not _url_exists(connect_url):
+        err("AitherConnect.zip not found in the latest GitHub release")
+        print()
+        print(f"  This usually means a release hasn't been cut yet.")
+        print(f"  Check releases: {cyan('https://github.com/Aitherium/AitherOS/releases')}")
+        return 1
+    elif dry_run:
+        info(f"Would verify: {connect_url}")
+
+    # -- Step 2: Download + extract -------------------------------------------
+    step(2, total_steps, "Downloading AitherConnect")
 
     if dry_run:
         info(f"Would download: {connect_url}")
@@ -2352,8 +2483,18 @@ def deploy_connect(dry_run: bool = False, api_key_arg: Optional[str] = None) -> 
             err("Downloaded file is not a valid zip archive")
             return 1
 
-    # -- Step 2: Instructions -------------------------------------------------
-    step(2, total_steps, "Installation instructions")
+        # Validate the extension has a manifest
+        manifest = dest_dir / "manifest.json"
+        if not manifest.exists():
+            # Check one level deep (some zips wrap in a subdirectory)
+            nested = list(dest_dir.glob("*/manifest.json"))
+            if nested:
+                manifest = nested[0]
+            else:
+                warn("Extension manifest.json not found — extension may not load correctly")
+
+    # -- Step 3: Instructions -------------------------------------------------
+    step(3, total_steps, "Installation instructions")
 
     print()
     print(f"  To install the extension in Chrome:")

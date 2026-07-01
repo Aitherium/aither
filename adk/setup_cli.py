@@ -354,9 +354,37 @@ def recommend_tier(gpu: GPUInfo) -> str:
 # Docker Compose Generation
 # ---------------------------------------------------------------------------
 
+def _port_in_use(port: int) -> bool:
+    """Return True if *port* is bound on localhost (TCP)."""
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.3)
+        return s.connect_ex(("127.0.0.1", port)) == 0
+
+
+def _find_free_port(preferred: int, used: set[int]) -> int:
+    """Return *preferred* if free, otherwise scan upward until a free port is found."""
+    port = preferred
+    while port < preferred + 100:
+        if port not in used and not _port_in_use(port):
+            return port
+        port += 1
+    return preferred  # give up, let Docker report the conflict
+
+
 def generate_compose(tier_id: str, hf_token: str = "") -> str:
     tier = TIERS[tier_id]
     workers = tier["workers"]
+
+    # Resolve port conflicts before generating compose
+    used_ports: set[int] = set()
+    for w in workers:
+        resolved = _find_free_port(w.port, used_ports)
+        if resolved != w.port:
+            info(f"Port {w.port} in use — remapping {w.name} to :{resolved}")
+            w.port = resolved
+        used_ports.add(w.port)
+
     services = []
     for w in workers:
         extra = " ".join(w.extra_args)
@@ -753,8 +781,15 @@ def _scan_existing_infra() -> ExistingInfra:
     # DGX Spark / remote vLLM
     dgx_url = os.environ.get("AITHER_DGX_URL", "")
     if not dgx_url:
-        # Try common DGX Spark addresses
-        for host in ("spark.local", "192.168.0.33"):
+        # Try common DGX Spark / remote inference addresses.
+        # Respects AITHER_DGX_HOSTS for custom network topologies.
+        dgx_hosts = os.environ.get(
+            "AITHER_DGX_HOSTS", "spark.local,192.168.0.33"
+        ).split(",")
+        for host in dgx_hosts:
+            host = host.strip()
+            if not host:
+                continue
             for port in (8000, 8120, 8200):
                 try:
                     req = urllib.request.Request(f"http://{host}:{port}/v1/models")
@@ -808,11 +843,35 @@ def _scan_existing_infra() -> ExistingInfra:
     except Exception:
         pass
 
-    # Check for cloud API keys
-    for name, env in [("anthropic", "ANTHROPIC_API_KEY"), ("openai", "OPENAI_API_KEY"),
-                      ("deepseek", "DEEPSEEK_API_KEY"), ("aitherium", "AITHER_API_KEY")]:
-        if os.environ.get(env):
-            result.cloud_keys.append(name)
+    # Check for cloud API keys — validate with a lightweight probe when possible
+    _key_probes = {
+        "anthropic": ("ANTHROPIC_API_KEY", "https://api.anthropic.com/v1/messages"),
+        "openai": ("OPENAI_API_KEY", "https://api.openai.com/v1/models"),
+        "deepseek": ("DEEPSEEK_API_KEY", "https://api.deepseek.com/v1/models"),
+        "aitherium": ("AITHER_API_KEY", None),
+    }
+    for name, (env_var, probe_url) in _key_probes.items():
+        key = os.environ.get(env_var, "")
+        if not key:
+            continue
+        # Quick probe: send a lightweight GET with the key to confirm auth
+        valid = True
+        if probe_url:
+            try:
+                req = urllib.request.Request(
+                    probe_url,
+                    headers={
+                        "Authorization": f"Bearer {key}",
+                        "x-api-key": key,  # Anthropic uses this header
+                    },
+                )
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    valid = resp.status < 400
+            except urllib.error.HTTPError as exc:
+                valid = exc.code not in (401, 403)
+            except Exception:
+                valid = True  # network error ≠ bad key — assume valid
+        result.cloud_keys.append(f"{name}" if valid else f"{name}(invalid)")
 
     return result
 
