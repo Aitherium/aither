@@ -432,6 +432,55 @@ def create_app(
         sessions = await store.list_sessions(agent_name=agent_name)
         return {"agent": agent_name, "sessions": sessions}
 
+    @app.post("/agent/packs/reload")
+    async def reload_agent_packs():
+        """Hot-reload agent packs without restarting the process.
+
+        Rediscovers installed packs and rebuilds the ToolRegistry to pick up
+        any new skills or tools that were installed. Called when pack.applied
+        Flux events arrive, or manually via the endpoint.
+        """
+        try:
+            # Get the current agent
+            agent = await get_agent()
+
+            original_tool_count = len(agent._tools.list_tools())
+            logger.info("Pack reload: re-registering discovered packs for agent %s", agent.name)
+
+            # Actually rebuild: re-run pack discovery + tool-pack registration so
+            # newly-installed packs' tools land in agent._tools. _load_discovered_packs
+            # scans the discovery dirs and registers licensed packs into the live
+            # registry; fall back to register_tool_packs directly if unavailable.
+            reloaded = False
+            if hasattr(agent, "_load_discovered_packs"):
+                agent._load_discovered_packs()
+                reloaded = True
+            else:
+                try:
+                    from adk.builtin_tools import register_tool_packs
+                    register_tool_packs(agent)
+                    reloaded = True
+                except ImportError:
+                    logger.warning("register_tool_packs unavailable — reload is a no-op")
+
+            new_tool_count = len(agent._tools.list_tools())
+
+            return {
+                "status": "reloaded" if reloaded else "noop",
+                "agent": agent.name,
+                "tools_before": original_tool_count,
+                "tools_after": new_tool_count,
+                "tools_added": max(0, new_tool_count - original_tool_count),
+                "message": "Packs reloaded" if reloaded else "No reload mechanism available",
+            }
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Pack reload failed: %s", e)
+            return {
+                "status": "failed",
+                "error": str(e),
+                "message": "Pack reload encountered an error",
+            }
+
     @app.post("/forge/dispatch")
     async def forge_dispatch(request: Request):
         """Dispatch a task via AgentForge."""

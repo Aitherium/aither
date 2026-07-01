@@ -2,6 +2,15 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [2.12.3] - 2026-07-01
+
+### Added
+- Added a hot-reload endpoint for installed agent packs so newly applied pack tools can be picked up without restarting `aither-serve`.
+
+### Fixed
+- Fixed synchronous `ChatRelay` calls on Python 3.12 when no event loop is running; async WebSocket delivery is still scheduled when a loop exists.
+- Aligned gateway inference tier tests with the current public ladder: free, starter, pro, enterprise, platform.
+
 ## [2.12.0] - 2026-06-28
 
 ### Added — one-command local inference + upgrade path (click-to-run)

@@ -73,8 +73,8 @@ class TestModelRoutes:
     def test_model_tiers_assigned(self):
         routes = get_model_routes()
         assert routes["aither-small"].tier == "free"
-        assert routes["aither-orchestrator"].tier == "pro"
-        assert routes["aither-reasoning"].tier == "enterprise"
+        assert routes["aither-orchestrator"].tier == "starter"
+        assert routes["aither-reasoning"].tier == "pro"
 
     def test_model_costs_positive(self):
         routes = get_model_routes()
@@ -106,6 +106,10 @@ class TestTierAccess:
     def test_pro_denies_enterprise(self):
         assert tier_allows_model("pro", "enterprise") is False
 
+    def test_starter_allows_orchestrator_tier(self):
+        assert tier_allows_model("starter", "starter") is True
+        assert tier_allows_model("starter", "pro") is False
+
     def test_enterprise_allows_all(self):
         assert tier_allows_model("enterprise", "free") is True
         assert tier_allows_model("enterprise", "pro") is True
@@ -129,7 +133,7 @@ class TestModelListing:
     def test_list_models_pro_tier(self):
         models = list_available_models("pro")
         accessible = [m for m in models if m["accessible"]]
-        assert len(accessible) == 2  # small + orchestrator
+        assert len(accessible) == 5  # small + orchestrator + Pro models
 
     def test_list_models_enterprise_tier(self):
         models = list_available_models("enterprise")
@@ -171,7 +175,7 @@ class TestProxyChatCompletion:
         )
         assert result.success is False
         assert result.status_code == 403
-        assert "requires pro tier" in result.error
+        assert "requires starter tier" in result.error
 
     @pytest.mark.asyncio
     async def test_insufficient_balance_returns_402(self):

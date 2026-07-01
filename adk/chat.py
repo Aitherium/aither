@@ -118,6 +118,14 @@ class ChatRelay:
         self._load_channels()
         self._ensure_defaults()
 
+    def _schedule(self, coro) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            coro.close()
+            return
+        loop.create_task(coro)
+
     # ── Database ─────────────────────────────────────────────────────
 
     def _init_db(self):
@@ -322,7 +330,7 @@ class ChatRelay:
         self._store_message(msg)
 
         # Dispatch to WebSocket listeners
-        asyncio.ensure_future(self._broadcast_ws(channel, msg.to_dict()))
+        self._schedule(self._broadcast_ws(channel, msg.to_dict()))
 
         # Check for @mentions
         self._check_mentions(msg)
@@ -344,7 +352,7 @@ class ChatRelay:
             node_id=self.node_id,
         )
         self._store_message(msg)
-        asyncio.ensure_future(self._broadcast_ws(channel, msg.to_dict()))
+        self._schedule(self._broadcast_ws(channel, msg.to_dict()))
         self._emit_sync("action", msg.to_dict())
         return msg
 
@@ -359,11 +367,11 @@ class ChatRelay:
         # Send to recipient if connected
         ws = self._ws_connections.get(to_nick)
         if ws:
-            asyncio.ensure_future(self._send_ws(ws, msg.to_dict()))
+            self._schedule(self._send_ws(ws, msg.to_dict()))
         # Also send back to sender
         ws_from = self._ws_connections.get(from_nick)
         if ws_from:
-            asyncio.ensure_future(self._send_ws(ws_from, msg.to_dict()))
+            self._schedule(self._send_ws(ws_from, msg.to_dict()))
         self._emit_sync("dm", msg.to_dict())
         return msg
 
@@ -517,7 +525,7 @@ class ChatRelay:
             node_id=origin,
         )
         self._store_message(msg)
-        asyncio.ensure_future(self._broadcast_ws(channel, msg.to_dict()))
+        self._schedule(self._broadcast_ws(channel, msg.to_dict()))
 
     # ── IRC Protocol Bridge ──────────────────────────────────────────
 
@@ -593,7 +601,7 @@ class ChatRelay:
             try:
                 result = handler(data)
                 if asyncio.iscoroutine(result):
-                    asyncio.ensure_future(result)
+                    self._schedule(result)
             except Exception as e:
                 logger.debug("Chat event handler error (%s): %s", event, e)
 
@@ -686,7 +694,7 @@ class ChatRelay:
                 try:
                     result = handler(msg)
                     if asyncio.iscoroutine(result):
-                        asyncio.ensure_future(result)
+                        self._schedule(result)
                 except Exception as e:
                     logger.debug("Mention handler error for @%s: %s", agent_nick, e)
 
@@ -700,7 +708,7 @@ class ChatRelay:
             try:
                 result = handler(msg)
                 if asyncio.iscoroutine(result):
-                    asyncio.ensure_future(result)
+                    self._schedule(result)
             except Exception as e:
                 logger.debug("Outbound handler error (%s): %s", name, e)
 
