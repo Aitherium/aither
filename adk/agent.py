@@ -832,9 +832,23 @@ class AitherAgent:
         _mem_grounded = False
         if self._graph:
             try:
-                relevant = await self._graph.search(message, limit=6)
+                # Unified memory (AITHER_UNIFIED_MEMORY=on): authority + spreading
+                # activation recall, surfacing [CORRECTION]/[STALE]/… labels.
+                # Flag off → plain search(), byte-identical lines (no labels).
+                from adk.graph_memory import unified_memory_mode as _unified_mode
+                if _unified_mode() == "on":
+                    relevant = await self._graph.recall_with_activation(message, limit=6)
+                else:
+                    relevant = await self._graph.search(message, limit=6)
                 if relevant:
-                    graph_lines = [f"- {n.label}: {n.content[:500]}" for n in relevant if n.content]
+                    graph_lines = []
+                    for n in relevant:
+                        if not n.content:
+                            continue
+                        _labs = (n.metadata.get("_authority_labels")
+                                 if isinstance(n.metadata, dict) else None)
+                        _pref = "".join(f"[{l}] " for l in _labs) if _labs else ""
+                        graph_lines.append(f"- {_pref}{n.label}: {n.content[:500]}")
                     if graph_lines:
                         graph_context = (
                             "[MEMORY GRAPH] Facts you already know (authoritative). "
@@ -1253,6 +1267,17 @@ class AitherAgent:
                         await self._graph.ingest_conversation(sid, [
                             {"role": "user", "content": message},
                         ])
+                        # Unified memory: also store the user turn as a typed,
+                        # role-classified record (correction/decision/preference…)
+                        # so authority recall + governance see it. Flag-gated.
+                        from adk.graph_memory import unified_memory_mode as _umm
+                        if _umm() == "on":
+                            from adk.typed_memory import infer_role
+                            from adk.unified_contract import MemoryRecord
+                            await self._graph.store(MemoryRecord(
+                                content=message, role=infer_role(message),
+                                source="user", confidence=0.7,
+                            ))
                     except Exception:
                         pass
                 await self._learn_after(message, content, tool_calls_made)
@@ -1512,6 +1537,16 @@ class AitherAgent:
                 await self._graph.ingest_conversation(sid, [
                     {"role": "user", "content": message},
                 ])
+                # Unified memory: typed, role-classified store of the user turn
+                # (flag-gated; off → only legacy ingest runs, unchanged).
+                from adk.graph_memory import unified_memory_mode as _umm
+                if _umm() == "on":
+                    from adk.typed_memory import infer_role
+                    from adk.unified_contract import MemoryRecord
+                    await self._graph.store(MemoryRecord(
+                        content=message, role=infer_role(message),
+                        source="user", confidence=0.7,
+                    ))
             except Exception:
                 pass
         await self._learn_after(message, content, tool_calls_made)

@@ -5930,6 +5930,402 @@ def cmd_disconnect(args):
     return asyncio.run(_run())
 
 
+def cmd_jobs(args) -> int:
+    """Manage background jobs.
+
+    LOCAL by default (jobs run on THIS machine, tracked in ~/.aither/jobs.db);
+    pass --remote to operate on cloud expeditions via genesis/portal instead.
+    """
+    import asyncio
+
+    jobs_cmd = getattr(args, "jobs_command", None)
+    remote = bool(getattr(args, "remote", False))
+
+    # Local engine subcommands (no server required).
+    if jobs_cmd == "run":
+        return _jobs_run_local(args)
+    elif jobs_cmd == "start":
+        return _jobs_start_local(args)
+    elif jobs_cmd == "cancel":
+        return _jobs_cancel_local(args)
+    elif jobs_cmd == "sync":
+        return _jobs_sync_local(args)
+    elif jobs_cmd == "_exec":
+        from adk.local_jobs import _execute
+        _execute(args.id)
+        return 0
+
+    # Read/steer: remote (cloud) when --remote, else the local store.
+    if jobs_cmd == "list":
+        return asyncio.run(_jobs_list(args)) if remote else _jobs_list_local(args)
+    elif jobs_cmd == "status":
+        return asyncio.run(_jobs_status(args)) if remote else _jobs_status_local(args)
+    elif jobs_cmd == "steer":
+        return asyncio.run(_jobs_steer(args)) if remote else _jobs_steer_local(args, "append")
+    elif jobs_cmd == "hint":
+        return asyncio.run(_jobs_hint(args)) if remote else _jobs_steer_local(args, "hint")
+    elif jobs_cmd == "watch":
+        return asyncio.run(_jobs_watch(args))  # SSE watch is cloud-only
+    else:
+        print("Usage: adk jobs [run|start|list|status|steer|hint|cancel|watch|sync]")
+        print("  Local by default; add --remote to list/status/steer against the cloud.")
+        return 1
+
+
+# ── Local job engine handlers (~/.aither/jobs.db) ─────────────────────────────
+
+def _jobs_run_local(args) -> int:
+    """Run a job locally in the foreground and print its result."""
+    from adk.local_jobs import run_foreground
+    query = " ".join(args.query) if isinstance(args.query, list) else args.query
+    print(f"  Running locally: {query[:70]}")
+    row = run_foreground(query, agent=getattr(args, "agent", "aither"))
+    status = row.get("status", "?")
+    if status == "completed":
+        print(f"\n  [done] job {row.get('id', '')[:8]}\n")
+        print(row.get("result", "") or "  (no output)")
+    else:
+        print(f"  [{status}] {row.get('error', '') or ''}")
+    return 0 if status == "completed" else 1
+
+
+def _jobs_start_local(args) -> int:
+    """Start a local job in the background (detached) and return its id."""
+    from adk.local_jobs import spawn
+    query = " ".join(args.query) if isinstance(args.query, list) else args.query
+    jid = spawn(query, agent=getattr(args, "agent", "aither"))
+    print(f"  Started local job {jid[:8]} in the background.")
+    print(f"  Status: adk jobs status {jid[:8]}   ·   Cancel: adk jobs cancel {jid[:8]}")
+    return 0
+
+
+def _jobs_list_local(args) -> int:
+    """List local jobs from ~/.aither/jobs.db."""
+    from adk.local_jobs import get_store
+    jobs = get_store().list()
+    if not jobs:
+        print("  No local jobs. Start one: adk jobs start \"<task>\"")
+        return 0
+    print("\n  Local Jobs")
+    print("  " + "=" * 70)
+    print(f"  {'ID':<10s} {'Status':<11s} {'Synced':<7s} {'Query':<40s}")
+    print("  " + "-" * 70)
+    for j in jobs:
+        synced = "yes" if j.get("remote_id") else "-"
+        print(f"  {j['id'][:8]:<10s} {j['status']:<11s} {synced:<7s} {(j['query'] or '')[:40]:<40s}")
+    print()
+    return 0
+
+
+def _jobs_status_local(args) -> int:
+    """Show a local job's status + result."""
+    from adk.local_jobs import get_store
+    job = get_store().get(args.id)
+    if not job:
+        print(f"  Local job not found: {args.id}")
+        return 1
+    print(f"\n  Job {job['id'][:8]}  [{job['status']}]")
+    print(f"  Query: {job['query']}")
+    if job.get("remote_id"):
+        print(f"  Synced → {job.get('remote_url', '')}/expedition/{job['remote_id']}")
+    if job.get("result"):
+        print("\n" + job["result"])
+    if job.get("error"):
+        print(f"\n  Error: {job['error']}")
+    return 0
+
+
+def _jobs_steer_local(args, action: str) -> int:
+    """Queue a steering/hint nudge for a running local job."""
+    from adk.local_jobs import steer
+    ok = steer(args.id, args.message, action)
+    print(f"  {'Steered' if ok else 'Job not found:'} {args.id}" + ("" if ok else ""))
+    return 0 if ok else 1
+
+
+def _jobs_cancel_local(args) -> int:
+    """Cancel a running local job."""
+    from adk.local_jobs import cancel
+    ok = cancel(args.id)
+    print(f"  {'Cancelled' if ok else 'Not cancellable (missing or already finished):'} {args.id}")
+    return 0 if ok else 1
+
+
+def _jobs_sync_local(args) -> int:
+    """Push a local job up to the portal, or pull its remote status back."""
+    from adk.local_jobs import pull, push
+    if args.direction == "push":
+        res = push(args.id)
+        if res.get("ok"):
+            print(f"  Pushed local job {args.id} → portal expedition {res.get('remote_id', '')[:8]}")
+            return 0
+        print(f"  Push failed: {res.get('error')}")
+        return 1
+    else:
+        res = pull(args.id)
+        if res.get("ok"):
+            print(f"  Pulled: local job {args.id} is now '{res.get('status')}'")
+            return 0
+        print(f"  Pull failed: {res.get('error')}")
+        return 1
+
+
+async def _jobs_list(args) -> int:
+    """List all jobs and expeditions."""
+    import httpx
+
+    genesis_url = os.environ.get(
+        "AITHER_GENESIS_URL", os.environ.get("AITHER_URL", "http://localhost:8001")
+    )
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(f"{genesis_url.rstrip('/')}/expedition/list")
+            if resp.status_code == 200:
+                data = resp.json()
+                expeditions = data.get("expeditions", [])
+
+                if not expeditions:
+                    print("  No jobs found.")
+                    return 0
+
+                print("\n  Expeditions / Jobs")
+                print("  " + "=" * 70)
+                print(
+                    f"  {'ID':<20s} {'Status':<12s} {'Title':<36s}"
+                )
+                print("  " + "-" * 70)
+                for exp in expeditions:
+                    exp_id = exp.get("id", "unknown")[:20]
+                    status = exp.get("status", "unknown")[:12]
+                    title = exp.get("title", "")[:36]
+                    print(f"  {exp_id:<20s} {status:<12s} {title:<36s}")
+                print()
+                return 0
+            elif resp.status_code == 404:
+                print("  Error: Genesis /expedition/list not found (404)")
+                return 1
+            else:
+                print(
+                    f"  Error: HTTP {resp.status_code} from {genesis_url}"
+                )
+                return 1
+    except Exception as e:
+        print(f"  Error: Could not reach Genesis at {genesis_url}")
+        print(f"         {e}")
+        return 1
+
+
+async def _jobs_status(args) -> int:
+    """Show status of a job."""
+    import httpx
+
+    genesis_url = os.environ.get(
+        "AITHER_GENESIS_URL", os.environ.get("AITHER_URL", "http://localhost:8001")
+    )
+    exp_id = args.id
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            # Get expedition status
+            status_resp = await client.get(
+                f"{genesis_url.rstrip('/')}/expedition/{exp_id}/status"
+            )
+            if status_resp.status_code == 404:
+                print(f"  Error: Expedition '{exp_id}' not found")
+                return 1
+            elif status_resp.status_code != 200:
+                print(
+                    f"  Error: HTTP {status_resp.status_code} from {genesis_url}"
+                )
+                return 1
+
+            status_data = status_resp.json()
+
+            # Get expedition tasks
+            tasks_resp = await client.get(
+                f"{genesis_url.rstrip('/')}/expedition/{exp_id}/tasks"
+            )
+            tasks = []
+            if tasks_resp.status_code == 200:
+                tasks = tasks_resp.json().get("tasks", [])
+
+            # Print status
+            print()
+            print(f"  Expedition: {exp_id}")
+            print("  " + "=" * 70)
+            for key, value in status_data.items():
+                if key != "id":
+                    print(f"  {key:.<20s} {value}")
+
+            # Print tasks if available
+            if tasks:
+                print()
+                print("  Tasks:")
+                print("  " + "-" * 70)
+                for task in tasks:
+                    task_id = task.get("id", "unknown")
+                    task_status = task.get("status", "unknown")
+                    task_title = task.get("title", "")
+                    print(f"    [{task_status:>8s}] {task_id:.<24s} {task_title}")
+                    if task.get("result_summary"):
+                        print(f"             Result: {task['result_summary'][:50]}")
+                    if task.get("error"):
+                        print(f"             Error: {task['error'][:50]}")
+            print()
+            return 0
+    except Exception as e:
+        print(f"  Error: Could not reach Genesis at {genesis_url}")
+        print(f"         {e}")
+        return 1
+
+
+async def _jobs_steer(args) -> int:
+    """Send a follow-up message to a job."""
+    import httpx
+
+    genesis_url = os.environ.get(
+        "AITHER_GENESIS_URL", os.environ.get("AITHER_URL", "http://localhost:8001")
+    )
+    exp_id = args.id
+    message = args.message
+
+    if not message:
+        print("  Error: message is required")
+        return 1
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{genesis_url.rstrip('/')}/expedition/{exp_id}/steer",
+                json={"message": message, "action": "append"},
+            )
+            if resp.status_code == 404:
+                print(f"  Error: Expedition '{exp_id}' not found")
+                return 1
+            elif resp.status_code == 400:
+                print("  Error: Invalid request (400)")
+                return 1
+            elif resp.status_code in (200, 201):
+                data = resp.json()
+                print(f"  [OK] Message sent to {exp_id}")
+                if data.get("status"):
+                    print(f"       Status: {data['status']}")
+                return 0
+            else:
+                print(
+                    f"  Error: HTTP {resp.status_code} from {genesis_url}"
+                )
+                return 1
+    except Exception as e:
+        print(f"  Error: Could not reach Genesis at {genesis_url}")
+        print(f"         {e}")
+        return 1
+
+
+async def _jobs_hint(args) -> int:
+    """Send an invisible hint to a job."""
+    import httpx
+
+    genesis_url = os.environ.get(
+        "AITHER_GENESIS_URL", os.environ.get("AITHER_URL", "http://localhost:8001")
+    )
+    exp_id = args.id
+    message = args.message
+
+    if not message:
+        print("  Error: message is required")
+        return 1
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{genesis_url.rstrip('/')}/expedition/{exp_id}/steer",
+                json={"message": message, "action": "hint"},
+            )
+            if resp.status_code == 404:
+                print(f"  Error: Expedition '{exp_id}' not found")
+                return 1
+            elif resp.status_code == 400:
+                print("  Error: Invalid request (400)")
+                return 1
+            elif resp.status_code in (200, 201):
+                data = resp.json()
+                print(f"  [OK] Hint sent to {exp_id}")
+                if data.get("status"):
+                    print(f"       Status: {data['status']}")
+                return 0
+            else:
+                print(
+                    f"  Error: HTTP {resp.status_code} from {genesis_url}"
+                )
+                return 1
+    except Exception as e:
+        print(f"  Error: Could not reach Genesis at {genesis_url}")
+        print(f"         {e}")
+        return 1
+
+
+async def _jobs_watch(args) -> int:
+    """Watch a job's progress in real-time via SSE."""
+    import httpx
+
+    genesis_url = os.environ.get(
+        "AITHER_GENESIS_URL", os.environ.get("AITHER_URL", "http://localhost:8001")
+    )
+    exp_id = args.id
+
+    try:
+        async with httpx.AsyncClient(timeout=None) as client:
+            async with client.stream(
+                "GET",
+                f"{genesis_url.rstrip('/')}/expedition/{exp_id}/stream",
+            ) as resp:
+                if resp.status_code == 404:
+                    print(f"  Error: Expedition '{exp_id}' not found")
+                    return 1
+                elif resp.status_code != 200:
+                    print(
+                        f"  Error: HTTP {resp.status_code} from {genesis_url}"
+                    )
+                    return 1
+
+                print(f"\n  Watching expedition {exp_id}...")
+                print("  " + "=" * 70)
+
+                try:
+                    async for line in resp.aiter_lines():
+                        if not line or line.startswith(":"):
+                            # Skip empty lines and comments
+                            continue
+                        if line.startswith("data: "):
+                            # Parse SSE data line
+                            data_str = line[6:].strip()
+                            if data_str:
+                                try:
+                                    import json as _json
+
+                                    data = _json.loads(data_str)
+                                    # Print event details
+                                    event_type = data.get("type", "event")
+                                    msg = data.get("message", "")
+                                    if msg:
+                                        print(f"  [{event_type}] {msg}")
+                                except (ValueError, AttributeError):
+                                    # Fallback for unparseable JSON
+                                    print(f"  {data_str}")
+                except KeyboardInterrupt:
+                    print("\n  Watching stopped.")
+                    return 0
+
+                print("  " + "=" * 70)
+                return 0
+    except Exception as e:
+        print(f"  Error: Could not watch expedition")
+        print(f"         {e}")
+        return 1
+
+
 def _cmd_cron(args) -> int:
     """Handle `adk cron` subcommands."""
     sub = getattr(args, "cron_command", None)
@@ -8020,6 +8416,45 @@ def _register_commands(sub):
     train_register_gpu_p.add_argument("--gpu-model", help="GPU model name (auto-detected if omitted)")
     train_register_gpu_p.add_argument("--vram", type=int, help="GPU VRAM in GB (auto-detected if omitted)")
 
+    # adk jobs — manage background jobs and expeditions
+    jobs_p = sub.add_parser(
+        "jobs",
+        help="Manage background jobs — LOCAL by default, --remote for the portal/cloud",
+    )
+    jobs_sub = jobs_p.add_subparsers(dest="jobs_command")
+    # `--remote` on read/steer commands routes to genesis/portal expeditions;
+    # without it they operate on the LOCAL job store (~/.aither/jobs.db).
+    jobs_list_p = jobs_sub.add_parser("list", help="List jobs (local by default)")
+    jobs_list_p.add_argument("--remote", action="store_true", help="List cloud expeditions instead")
+    jobs_status_p = jobs_sub.add_parser("status", help="Show status of a job")
+    jobs_status_p.add_argument("id", help="Job ID (local) or Expedition ID (--remote)")
+    jobs_status_p.add_argument("--remote", action="store_true", help="Query the cloud expedition")
+    jobs_steer_p = jobs_sub.add_parser("steer", help="Send a follow-up message to a job")
+    jobs_steer_p.add_argument("id", help="Job/Expedition ID")
+    jobs_steer_p.add_argument("message", help="Follow-up message")
+    jobs_steer_p.add_argument("--remote", action="store_true", help="Steer the cloud expedition")
+    jobs_hint_p = jobs_sub.add_parser("hint", help="Send an invisible hint to a job")
+    jobs_hint_p.add_argument("id", help="Job/Expedition ID")
+    jobs_hint_p.add_argument("message", help="Hint message")
+    jobs_hint_p.add_argument("--remote", action="store_true", help="Hint the cloud expedition")
+    jobs_watch_p = jobs_sub.add_parser("watch", help="Watch a cloud job's progress in real-time")
+    jobs_watch_p.add_argument("id", help="Expedition ID")
+    # ── LOCAL job engine (runs on THIS machine; no server required) ──
+    jobs_run_p = jobs_sub.add_parser("run", help="Run a job locally in the FOREGROUND")
+    jobs_run_p.add_argument("query", nargs="+", help="The task to run")
+    jobs_run_p.add_argument("--agent", default="aither", help="Local agent persona")
+    jobs_start_p = jobs_sub.add_parser("start", help="Start a local job in the BACKGROUND (detached)")
+    jobs_start_p.add_argument("query", nargs="+", help="The task to run")
+    jobs_start_p.add_argument("--agent", default="aither", help="Local agent persona")
+    jobs_cancel_p = jobs_sub.add_parser("cancel", help="Cancel a running local job")
+    jobs_cancel_p.add_argument("id", help="Local job ID")
+    jobs_sync_p = jobs_sub.add_parser("sync", help="Sync a local job to/from the portal (opt-in)")
+    jobs_sync_p.add_argument("direction", choices=["push", "pull"], help="push=mirror up, pull=refresh")
+    jobs_sync_p.add_argument("id", help="Local job ID")
+    # Hidden executor used by `start` to run the detached job body.
+    jobs_exec_p = jobs_sub.add_parser("_exec", help=argparse.SUPPRESS)
+    jobs_exec_p.add_argument("id", help="Local job ID to execute")
+
 
 # ── MCP subcommand handlers ───────────────────────────────────────────────
 
@@ -8208,6 +8643,8 @@ def main():
         sys.exit(cmd_ingest(args))
     elif args.command == "disconnect":
         sys.exit(cmd_disconnect(args))
+    elif args.command == "jobs":
+        sys.exit(cmd_jobs(args))
     elif args.command == "doctor":
         from adk.doctor import cmd_doctor
         sys.exit(cmd_doctor(args))
