@@ -1,6 +1,11 @@
 """
-MemoryManager - Agent Memory with Unified Embedding
-====================================================
+MemoryManager - Agent Memory with Unified Embedding  (LEGACY)
+==============================================================
+
+.. deprecated:: 2.12.6
+   Use :class:`adk.memory.Memory` (SQLite KV + conversation) or
+   :class:`adk.graph_memory.GraphMemory` (knowledge graph) instead.
+   This module is kept for backward compatibility only.
 
 Simple memory manager for agents. Uses AitherMindClient for embeddings
 when available (shared cache, consistent embeddings) with fallback to
@@ -8,7 +13,7 @@ Google Gemini API.
 
 Usage:
     from adk.platform.memory.memory import MemoryManager
-    
+
     memory = MemoryManager("memory/long_term.json")
     memory.add_memory("User prefers dark mode", source="preference")
     results = memory.search("dark mode")

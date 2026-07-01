@@ -7,22 +7,24 @@ standalone use. No AitherOS services required.
 
 Provides:
   - CodeGraph: AST-based Python code indexer with call graph + semantic search
-  - MemoryGraph: Graph-based persistent agent memory with hybrid query
+  - MemoryGraph: **(deprecated)** pickle-based graph memory — use
+    :class:`adk.graph_memory.GraphMemory` for new code
   - EmbeddingProvider: Pluggable embedding backends (sentence-transformers/Ollama/Elysium/feature-hash)
   - BaseFacultyGraph: Abstract base with pickle persistence + HMAC integrity
 
 Usage:
-    from adk.faculties import CodeGraph, MemoryGraph
+    from adk.faculties import CodeGraph
 
     # Index a codebase
     cg = CodeGraph()
     await cg.index_codebase("./my-project")
     results = await cg.query("authentication middleware", max_results=5)
 
-    # Persistent memory
-    mg = MemoryGraph(data_dir="~/.aither/memory")
-    mg.add_node(label="user prefers TypeScript", content="...")
-    related = mg.hybrid_query("what language does user prefer?")
+    # For persistent memory, prefer adk.graph_memory.GraphMemory:
+    from adk.graph_memory import GraphMemory
+    graph = GraphMemory(agent_name="my-agent")
+    await graph.remember("AitherOS", "uses", "SQLite")
+    results = await graph.search("what database?")
 """
 
 from adk.faculties.base import BaseFacultyGraph, GraphSyncConfig

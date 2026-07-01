@@ -2,6 +2,15 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [2.12.7] - 2026-07-01
+
+### Deprecated
+- `adk.faculties.MemoryGraph` — emits `DeprecationWarning` on instantiation; use `adk.graph_memory.GraphMemory` (SQLite-backed, governed, embedding-native) instead.
+- `adk.platform.memory` package — the legacy `MemoryManager`, `UnifiedMemorySystem`, `GameEngine`, and `StoryboardEngine` modules now emit `DeprecationWarning` on import; use `adk.memory.Memory` and `adk.graph_memory.GraphMemory` for new code.
+
+### Changed
+- Updated `adk.faculties` docstring and usage examples to point at the canonical memory surface.
+
 ## [2.12.6] - 2026-07-01
 
 ### Changed

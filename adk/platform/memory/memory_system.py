@@ -1,5 +1,10 @@
 """
-AitherOS Unified Memory System
+AitherOS Unified Memory System  (LEGACY)
+
+.. deprecated:: 2.12.6
+   This three-tier memory architecture (World/System/Persona) is a legacy
+   subsystem from the ``aither-platform`` package merge.  For new code, use
+   :class:`adk.memory.Memory` and :class:`adk.graph_memory.GraphMemory`.
 
 Three-tier memory architecture:
 1. WORLD MEMORY - Shared facts about the world/setting (persistent)

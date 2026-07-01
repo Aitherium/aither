@@ -1,7 +1,15 @@
 #!/usr/bin/env python3
 """
-MemoryGraph - Graph-Based Memory for ADK
-==========================================
+MemoryGraph - Graph-Based Memory for ADK  (DEPRECATED)
+======================================================
+
+.. deprecated:: 2.12.6
+   ``adk.faculties.MemoryGraph`` is superseded by
+   :class:`adk.graph_memory.GraphMemory`, which uses SQLite (not pickle),
+   has built-in embedding search, governed ingestion, and is the memory
+   backend wired into :class:`adk.agent.AitherAgent`.  This module is
+   kept for backward compatibility and will be removed in a future
+   major release.
 
 Graph structure over Memory objects: real relationship edges,
 hybrid query (keyword + semantic + graph expansion), and associative
@@ -26,6 +34,7 @@ import pickle
 import re
 import threading
 import time
+import warnings
 from collections import defaultdict
 from dataclasses import dataclass, field
 from enum import Enum
@@ -274,6 +283,9 @@ class MemoryGraph(BaseFacultyGraph):
     """
     Graph structure over Memory objects.
 
+    .. deprecated:: 2.12.6
+       Use :class:`adk.graph_memory.GraphMemory` instead.
+
     Three-layer index for sublinear lookups:
     - by_tag:   tag string  -> list of node IDs
     - by_type:  memory_type -> list of node IDs
@@ -284,6 +296,13 @@ class MemoryGraph(BaseFacultyGraph):
     """
 
     def __init__(self, data_dir: Optional[str] = None):
+        warnings.warn(
+            "adk.faculties.MemoryGraph is deprecated — use "
+            "adk.graph_memory.GraphMemory instead (SQLite-backed, "
+            "governed, embedding-native).",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         super().__init__()
         if data_dir:
             self._data_dir = Path(os.path.expanduser(data_dir))
