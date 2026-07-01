@@ -2,6 +2,15 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [2.12.5] - 2026-07-01
+
+### Added
+- Added best-effort fleet memory sync from local ADK memory into Nexus/Qdrant-compatible RAG stores, including batch catch-up and vector-search recall hooks.
+- Added saved config/env support for fleet memory URL, collection, and sync mode.
+
+### Changed
+- Excluded FormBridge runtime/test internals from public ADK packaging and public repo sync.
+
 ## [2.12.4] - 2026-07-01
 
 ### Added
