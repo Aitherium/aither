@@ -1,0 +1,326 @@
+"""adk.mesh — autonomous AitherMesh (WireGuard overlay) onboarding.
+
+A fresh node (appliance, DGX Spark, OptiPlex, or a CI runner) joins the
+``10.77.0.0/16`` WireGuard overlay by the SAME proven flow used to onboard the
+DGX Spark and the Dell OptiPlex — now as a first-class, cross-platform SDK
+capability so `adk mesh join` works anywhere aither-adk runs:
+
+  1. generate a WireGuard keypair
+  2. POST /v1/mesh/onboard to the Conductor (:8193) → receive an ``overlay_ip``
+  3. fetch the server pubkey from AitherNet ``/aithernet/topology`` (:8125)
+  4. write the wg config + bring the interface up (wg-quick / wireguard.exe)
+  5. verify the handshake (``wg show``)
+
+Once up, the node reaches internal services at their mesh addresses
+(``aither-vllm-embeddings``, ``aitheros-flux``, ``aitheros-qdrant`` …) exactly
+like any fleet peer — which is how a swarm runner talks back to the fleet.
+
+Auth: the node's WireGuard public key registered through the Conductor is the
+identity. A pre-shared key (``AITHER_MESH_PSK``) is sent as a bearer challenge
+when the control plane requires one. The initial onboard call is a bootstrap:
+the node has no internal CA yet, so TLS trust is opt-in — provide
+``AITHER_CA_BUNDLE`` (preferred), or set ``AITHER_MESH_INSECURE_BOOTSTRAP=1`` to
+match the reference ``curl -sk`` bootstrap (loudly warned; the WireGuard key +
+PSK are the real auth, not TLS).
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import platform
+import shutil
+import subprocess
+from pathlib import Path
+from typing import Any
+
+logger = logging.getLogger("adk.mesh")
+
+MESH_CIDR = "10.77.0.0/16"
+DEFAULT_IFACE = "aithernet0"
+WG_PORT = 51820
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# WireGuard binaries / keys
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _wg() -> str | None:
+    return shutil.which("wg") or shutil.which("wg.exe")
+
+
+def _wg_quick() -> str | None:
+    return shutil.which("wg-quick")
+
+
+def _is_windows() -> bool:
+    return platform.system().lower().startswith("win")
+
+
+def generate_keypair() -> tuple[str, str]:
+    """Return (private_key, public_key). Requires the ``wg`` tool."""
+    wg = _wg()
+    if not wg:
+        raise RuntimeError(
+            "WireGuard 'wg' tool not found. Install wireguard-tools "
+            "(apt install wireguard-tools) or WireGuard for Windows.")
+    priv = subprocess.run([wg, "genkey"], capture_output=True, text=True,
+                          check=True).stdout.strip()
+    pub = subprocess.run([wg, "pubkey"], input=priv, capture_output=True,
+                         text=True, check=True).stdout.strip()
+    return priv, pub
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Control-plane calls (Conductor onboard + AitherNet topology)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _verify() -> Any:
+    """TLS verify for the bootstrap onboard. Prefer a CA bundle path; allow an
+    explicit insecure bootstrap (matches the proven ``curl -sk`` reference) since
+    a brand-new node has no internal CA and the WG key + PSK are the real auth."""
+    ca = os.getenv("AITHER_CA_BUNDLE") or os.getenv("AITHER_TLS_CA", "")
+    if ca and os.path.exists(ca):
+        return ca
+    if os.getenv("AITHER_MESH_INSECURE_BOOTSTRAP", "").strip().lower() in ("1", "true", "yes"):
+        logger.warning(
+            "AITHER_MESH_INSECURE_BOOTSTRAP set — skipping TLS verify for the "
+            "mesh onboard bootstrap ONLY (WG key + PSK are the real auth). "
+            "Provide AITHER_CA_BUNDLE to remove this.")
+        return False
+    return True
+
+
+def _headers(psk: str | None) -> dict:
+    h = {"Content-Type": "application/json"}
+    psk = psk or os.getenv("AITHER_MESH_PSK", "")
+    if psk:
+        h["Authorization"] = f"Bearer {psk}"
+        h["X-Mesh-PSK"] = psk
+    return h
+
+
+async def onboard(
+    conductor_url: str, node_id: str, wg_public_key: str,
+    role: str = "worker", external_ip: str | None = None,
+    external_port: int = WG_PORT, storage_tiers: list[str] | None = None,
+    psk: str | None = None,
+) -> dict:
+    """POST /v1/mesh/onboard to the Conductor. Returns the parsed response
+    (carries ``overlay_ip`` / ``aithernet_ip`` + assigned node id)."""
+    import httpx
+    payload = {
+        "node_id": node_id, "wg_public_key": wg_public_key, "role": role,
+        "external_port": external_port,
+        "storage_tiers": storage_tiers or ["warm", "cold"],
+    }
+    if external_ip:
+        payload["external_ip"] = external_ip
+    url = conductor_url.rstrip("/") + "/v1/mesh/onboard"
+    async with httpx.AsyncClient(timeout=30.0, verify=_verify()) as c:
+        r = await c.post(url, json=payload, headers=_headers(psk))
+        r.raise_for_status()
+        return r.json()
+
+
+async def fetch_server_pubkey(aithernet_url: str, psk: str | None = None) -> tuple[str, str]:
+    """GET /aithernet/topology → (server_public_key, server_endpoint)."""
+    import httpx
+    url = aithernet_url.rstrip("/") + "/aithernet/topology"
+    async with httpx.AsyncClient(timeout=20.0, verify=_verify()) as c:
+        r = await c.get(url, headers=_headers(psk))
+        r.raise_for_status()
+        data = r.json()
+    pub = data.get("server_public_key") or data.get("public_key") or ""
+    endpoint = data.get("server_endpoint") or data.get("endpoint") or ""
+    return pub, endpoint
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# WireGuard interface config + bring-up
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _wg_conf(private_key: str, overlay_ip: str, server_pubkey: str,
+             server_endpoint: str, psk: str | None = None) -> str:
+    lines = [
+        "[Interface]",
+        f"PrivateKey = {private_key}",
+        f"Address = {overlay_ip}/16",
+        "",
+        "[Peer]",
+        f"PublicKey = {server_pubkey}",
+    ]
+    if psk:
+        lines.append(f"PresharedKey = {psk}")
+    lines += [
+        f"Endpoint = {server_endpoint}",
+        f"AllowedIPs = {MESH_CIDR}",
+        "PersistentKeepalive = 25",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def _conf_dir() -> Path:
+    if _is_windows():
+        return Path(os.getenv("PROGRAMDATA", r"C:\ProgramData")) / "AitherMesh"
+    return Path("/etc/wireguard")
+
+
+def write_config(iface: str, conf: str) -> Path:
+    d = _conf_dir()
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+    except PermissionError as exc:
+        raise RuntimeError(f"cannot write WireGuard config to {d}: {exc} "
+                           "(run with sufficient privileges)") from exc
+    path = d / f"{iface}.conf"
+    path.write_text(conf, encoding="utf-8")
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+    return path
+
+
+def bring_up(iface: str, conf_path: Path) -> str:
+    """Bring the tunnel up. wg-quick on Linux/macOS; wireguard tunnel service on
+    Windows. Returns the command's combined output (idempotent-ish: a re-up after
+    an existing tunnel is treated as success)."""
+    if _is_windows():
+        wgexe = shutil.which("wireguard") or shutil.which("wireguard.exe")
+        if not wgexe:
+            raise RuntimeError("WireGuard for Windows not found (wireguard.exe).")
+        r = subprocess.run([wgexe, "/installtunnelservice", str(conf_path)],
+                           capture_output=True, text=True)
+        return (r.stdout + r.stderr).strip()
+    wgq = _wg_quick()
+    if not wgq:
+        raise RuntimeError("wg-quick not found (install wireguard-tools).")
+    r = subprocess.run([wgq, "up", str(conf_path)], capture_output=True, text=True)
+    out = (r.stdout + r.stderr).strip()
+    if r.returncode != 0 and "already exists" not in out.lower():
+        raise RuntimeError(f"wg-quick up failed: {out}")
+    return out
+
+
+def status(iface: str = DEFAULT_IFACE) -> str:
+    wg = _wg()
+    if not wg:
+        return "wg tool not found"
+    r = subprocess.run([wg, "show", iface], capture_output=True, text=True)
+    return (r.stdout + r.stderr).strip() or f"{iface}: no such interface"
+
+
+def has_handshake(iface: str = DEFAULT_IFACE) -> bool:
+    """True once the tunnel has completed at least one handshake."""
+    wg = _wg()
+    if not wg:
+        return False
+    r = subprocess.run([wg, "show", iface, "latest-handshakes"],
+                       capture_output=True, text=True)
+    for line in r.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[1].isdigit() and int(parts[1]) > 0:
+            return True
+    return False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Orchestration
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def join(
+    conductor_url: str, node_id: str | None = None, role: str = "worker",
+    aithernet_url: str | None = None, iface: str = DEFAULT_IFACE,
+    external_ip: str | None = None, psk: str | None = None,
+) -> dict:
+    """Run the full onboarding and return a report.
+
+    ``aithernet_url`` defaults to the conductor host on :8125. ``node_id``
+    defaults to the SDK's stable node id. Idempotent-ish: a node that re-runs
+    join simply re-registers its pubkey and re-ups the interface.
+    """
+    from adk.fleet_enroll import _generate_node_id
+    node_id = node_id or _generate_node_id()
+    priv, pub = generate_keypair()
+    logger.info("mesh: onboarding node %s (role=%s) via %s", node_id, role, conductor_url)
+    resp = await onboard(conductor_url, node_id, pub, role=role,
+                         external_ip=external_ip, psk=psk)
+    overlay_ip = (resp.get("overlay_ip") or resp.get("aithernet_ip")
+                  or resp.get("address") or "")
+    if not overlay_ip:
+        raise RuntimeError(f"Conductor returned no overlay_ip: {resp}")
+
+    # AitherNet topology (server pubkey + endpoint). Default to the conductor
+    # host on the AitherNet control port when not given explicitly.
+    if not aithernet_url:
+        from urllib.parse import urlparse
+        host = urlparse(conductor_url).hostname or "localhost"
+        scheme = urlparse(conductor_url).scheme or "https"
+        aithernet_url = f"{scheme}://{host}:8125"
+    server_pub, server_endpoint = await fetch_server_pubkey(aithernet_url, psk=psk)
+    if not server_endpoint:
+        # Fall back to the conductor host on the standard WG port.
+        from urllib.parse import urlparse
+        host = urlparse(conductor_url).hostname or "localhost"
+        server_endpoint = f"{host}:{WG_PORT}"
+    if not server_pub:
+        raise RuntimeError("AitherNet topology returned no server_public_key")
+
+    conf = _wg_conf(priv, overlay_ip, server_pub, server_endpoint, psk=psk)
+    conf_path = write_config(iface, conf)
+    up_out = bring_up(iface, conf_path)
+    report = {
+        "node_id": resp.get("node_id_assigned") or node_id,
+        "overlay_ip": overlay_ip, "iface": iface,
+        "server_endpoint": server_endpoint, "config": str(conf_path),
+        "up_output": up_out, "handshake": has_handshake(iface),
+    }
+    logger.info("mesh: joined as %s (overlay_ip=%s, handshake=%s)",
+                report["node_id"], overlay_ip, report["handshake"])
+    return report
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CLI
+# ─────────────────────────────────────────────────────────────────────────────
+
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+    import asyncio
+    logging.basicConfig(
+        level=os.environ.get("AITHER_LOG_LEVEL", "INFO"),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    p = argparse.ArgumentParser("adk.mesh", description="AitherMesh onboarding")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    pj = sub.add_parser("join", help="onboard this node into the WireGuard overlay")
+    pj.add_argument("--conductor", default=os.getenv(
+        "AITHER_CONDUCTOR_URL", "https://aitheros-conductor:8193"))
+    pj.add_argument("--aithernet", default=os.getenv("AITHER_AITHERNET_URL", ""))
+    pj.add_argument("--node-id", default=os.getenv("AITHER_NODE_ID", ""))
+    pj.add_argument("--role", default=os.getenv("AITHER_MESH_ROLE", "worker"))
+    pj.add_argument("--iface", default=DEFAULT_IFACE)
+    pj.add_argument("--external-ip", default=os.getenv("AITHER_EXTERNAL_IP", ""))
+
+    sub.add_parser("status", help="show WireGuard status").add_argument(
+        "--iface", default=DEFAULT_IFACE)
+
+    args = p.parse_args(argv)
+    if args.cmd == "join":
+        report = asyncio.run(join(
+            conductor_url=args.conductor, node_id=args.node_id or None,
+            role=args.role, aithernet_url=args.aithernet or None,
+            iface=args.iface, external_ip=args.external_ip or None))
+        print(json.dumps(report, indent=2))
+        return 0 if report.get("handshake") else 2
+    if args.cmd == "status":
+        print(status(args.iface))
+        return 0
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

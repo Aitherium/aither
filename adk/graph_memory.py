@@ -656,7 +656,7 @@ class GraphMemory:
             try:
                 rows = conn.execute(
                     "SELECT id, label, content, node_type, tags, role, confidence, "
-                    "tier, importance, embedding FROM nodes WHERE synced = 0 "
+                    "tier, importance, embedding, metadata FROM nodes WHERE synced = 0 "
                     "ORDER BY updated_at DESC LIMIT ?", (limit,),
                 ).fetchall()
             except sqlite3.OperationalError:
@@ -672,8 +672,13 @@ class GraphMemory:
                 c2.commit()
             pushed = len(ok_ids)
             failed = len(rows) - pushed
+            # Replicate the edge topology alongside the nodes (best-effort). Edges
+            # are cheap + idempotent, so we push the full set each sync rather than
+            # tracking per-edge synced state.
+            if ok_ids:
+                await self._qdrant_push_edges()
         else:
-            for nid, label, content, ntype, tags_json, role, conf, tier, imp, _emb in rows:
+            for nid, label, content, ntype, tags_json, role, conf, tier, imp, _emb, _md in rows:
                 try:
                     tags = json.loads(tags_json) if tags_json else []
                 except Exception:  # noqa: BLE001
@@ -737,11 +742,37 @@ class GraphMemory:
         import uuid
         return str(uuid.uuid5(uuid.NAMESPACE_URL, f"{self._tenant_id}:{node_id}"))
 
+    def _qdrant_headers(self) -> dict:
+        """Auth header for a Qdrant that requires it. A PUBLICLY-exposed dataplane
+        (e.g. behind the gateway/cloudflared so remote swarm agents can reach it)
+        MUST be api-key protected — set ``AITHER_FLEET_QDRANT_API_KEY``. Empty for
+        a network-internal Qdrant. Qdrant reads the ``api-key`` header."""
+        key = os.environ.get("AITHER_FLEET_QDRANT_API_KEY", "").strip()
+        return {"api-key": key} if key else {}
+
+    @staticmethod
+    def _qdrant_verify():
+        """TLS ``verify=`` for Qdrant calls. Uses the SDK's canonical policy —
+        trusts the AitherNet internal CA bundle when installed (so an internal-TLS
+        or cloudflared-exposed Qdrant verifies), else system trust. A plain-HTTP
+        local Qdrant is unaffected (verify is ignored on http://)."""
+        try:
+            from adk._tls import tls_verify
+            return tls_verify()
+        except Exception:  # noqa: BLE001 — never break a sync call on TLS policy
+            return True
+
+    def _edges_collection(self) -> str:
+        """Companion collection holding EDGES (scroll-enumerable). Edges carry no
+        semantic vector, so they live apart from nodes — mixing dummy vectors into
+        the node collection would poison cosine search."""
+        return f"{self._fleet_collection}_edges"
+
     async def _qdrant_push_nodes(self, rows) -> list:
         """Upsert node rows (incl. their embeddings) as Qdrant points. Returns
         the node_ids confirmed written. Best-effort; never raises."""
         points, ok_ids, dim = [], [], None
-        for nid, label, content, ntype, tags_json, role, conf, tier, imp, emb in rows:
+        for nid, label, content, ntype, tags_json, role, conf, tier, imp, emb, md_json in rows:
             vec = _blob_to_embed(emb) if emb else []
             if not vec:
                 continue  # a node with no embedding can't be a Qdrant point
@@ -752,6 +783,10 @@ class GraphMemory:
                 tags = json.loads(tags_json) if tags_json else []
             except Exception:  # noqa: BLE001
                 tags = []
+            try:
+                meta = json.loads(md_json) if md_json else {}
+            except Exception:  # noqa: BLE001
+                meta = {}
             points.append({
                 "id": self._qdrant_point_id(nid), "vector": vec,
                 "payload": {
@@ -760,6 +795,10 @@ class GraphMemory:
                     "content": content, "node_type": ntype, "tags": tags,
                     "role": role, "confidence": conf, "tier": tier,
                     "importance": imp, "source_agent": self._agent,
+                    # Carry the node's metadata so cross-agent pull restores the
+                    # full record (goal_id/task_index/reinforcement/… ) — without
+                    # it the sync silently dropped everything in metadata.
+                    "metadata": meta,
                     "synced_from": "adk_graph_memory",
                 },
             })
@@ -769,15 +808,17 @@ class GraphMemory:
         try:
             import httpx
             col = self._fleet_collection
-            async with httpx.AsyncClient(timeout=20.0) as c:
-                r = await c.get(f"{self._qdrant_url}/collections/{col}")
+            hdr = self._qdrant_headers()
+            async with httpx.AsyncClient(timeout=20.0, verify=self._qdrant_verify()) as c:
+                r = await c.get(f"{self._qdrant_url}/collections/{col}", headers=hdr)
                 if r.status_code != 200:
                     await c.put(
                         f"{self._qdrant_url}/collections/{col}",
-                        json={"vectors": {"size": dim, "distance": "Cosine"}})
+                        json={"vectors": {"size": dim, "distance": "Cosine"}},
+                        headers=hdr)
                 r = await c.put(
                     f"{self._qdrant_url}/collections/{col}/points?wait=true",
-                    json={"points": points})
+                    json={"points": points}, headers=hdr)
                 return ok_ids if r.status_code in (200, 201) else []
         except Exception as exc:  # noqa: BLE001
             logger.debug("qdrant push failed (non-fatal): %s", exc)
@@ -789,12 +830,13 @@ class GraphMemory:
         try:
             import httpx
             col = self._fleet_collection
-            async with httpx.AsyncClient(timeout=15.0) as c:
+            async with httpx.AsyncClient(timeout=15.0, verify=self._qdrant_verify()) as c:
                 r = await c.post(
                     f"{self._qdrant_url}/collections/{col}/points/scroll",
                     json={"limit": limit, "with_payload": True,
                           "filter": {"must": [{"key": "tenant_id",
-                                     "match": {"value": self._tenant_id}}]}})
+                                     "match": {"value": self._tenant_id}}]}},
+                    headers=self._qdrant_headers())
                 if r.status_code != 200:
                     return 0
                 pts = r.json().get("result", {}).get("points", []) or []
@@ -815,7 +857,7 @@ class GraphMemory:
                     content=pl.get("content") or "", tags=pl.get("tags") or [],
                     importance=float(pl.get("importance", 0.5) or 0.5),
                     role=pl.get("role"), confidence=pl.get("confidence"),
-                    tier=pl.get("tier"))
+                    tier=pl.get("tier"), metadata=pl.get("metadata") or {})
                 with self._connect() as c2:
                     c2.execute(
                         "UPDATE nodes SET synced = 1 WHERE id = ?", (node.id,))
@@ -823,6 +865,104 @@ class GraphMemory:
                 restored += 1
             except Exception as exc:  # noqa: BLE001
                 logger.debug("qdrant rehydrate node failed: %s", exc)
+        # Rehydrate the EXPLICIT edge topology too (nodes-only left agents with
+        # only text-re-derived edges — the original graph structure was lost).
+        try:
+            edges = await self._qdrant_pull_edges()
+            if edges:
+                logger.debug("qdrant rehydrated %d edges", edges)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("qdrant edge pull failed (non-fatal): %s", exc)
+        return restored
+
+    async def _qdrant_push_edges(self) -> int:
+        """Replicate local EDGES to the companion Qdrant collection so a pulling
+        agent restores the exact graph topology, not just re-derived text edges.
+        Edges have no semantic vector → a dummy size-1 Dot-space point, scrolled
+        (never searched). Deterministic id per (tenant, src, rel, tgt) = idempotent.
+        Best-effort; never raises."""
+        with self._connect() as conn:
+            try:
+                rows = conn.execute(
+                    "SELECT source_id, target_id, relation, weight FROM edges"
+                ).fetchall()
+            except sqlite3.OperationalError:
+                return 0
+        if not rows:
+            return 0
+        points = []
+        for sid, tid, rel, w in rows:
+            pid = str(uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                f"{self._tenant_id}:edge:{sid}:{rel}:{tid}"))
+            points.append({
+                "id": pid, "vector": [0.0],
+                "payload": {
+                    "tenant_id": self._tenant_id,
+                    "workspace_id": self._workspace_id,
+                    "source_id": sid, "target_id": tid, "relation": rel,
+                    "weight": float(w or 1.0),
+                    "synced_from": "adk_graph_memory",
+                },
+            })
+        col = self._edges_collection()
+        try:
+            import httpx
+            hdr = self._qdrant_headers()
+            async with httpx.AsyncClient(timeout=20.0, verify=self._qdrant_verify()) as c:
+                r = await c.get(f"{self._qdrant_url}/collections/{col}", headers=hdr)
+                if r.status_code != 200:
+                    # Dot space tolerates the zero vector (Cosine would reject a
+                    # zero-norm point); we only scroll, so distance is irrelevant.
+                    await c.put(
+                        f"{self._qdrant_url}/collections/{col}",
+                        json={"vectors": {"size": 1, "distance": "Dot"}},
+                        headers=hdr)
+                r = await c.put(
+                    f"{self._qdrant_url}/collections/{col}/points?wait=true",
+                    json={"points": points}, headers=hdr)
+                return len(points) if r.status_code in (200, 201) else 0
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("qdrant edge push failed (non-fatal): %s", exc)
+            return 0
+
+    async def _qdrant_pull_edges(self, limit: int = 5000) -> int:
+        """Scroll the tenant's edges back and restore each locally — but ONLY when
+        BOTH endpoints already exist locally. Node ids are deterministic
+        md5(label:type) so they're portable across agents; an edge whose endpoints
+        weren't pulled is skipped (never fabricate a dangling edge)."""
+        col = self._edges_collection()
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=15.0, verify=self._qdrant_verify()) as c:
+                r = await c.post(
+                    f"{self._qdrant_url}/collections/{col}/points/scroll",
+                    json={"limit": limit, "with_payload": True,
+                          "filter": {"must": [{"key": "tenant_id",
+                                     "match": {"value": self._tenant_id}}]}},
+                    headers=self._qdrant_headers())
+                if r.status_code != 200:
+                    return 0
+                pts = r.json().get("result", {}).get("points", []) or []
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("qdrant edge scroll failed (non-fatal): %s", exc)
+            return 0
+        restored = 0
+        for p in pts:
+            pl = p.get("payload", {}) or {}
+            if pl.get("synced_from") != "adk_graph_memory":
+                continue
+            sid, tid, rel = pl.get("source_id"), pl.get("target_id"), pl.get("relation")
+            if not (sid and tid and rel):
+                continue
+            if not (await self.get_node(sid) and await self.get_node(tid)):
+                continue  # endpoint missing locally — don't fabricate a dangling edge
+            try:
+                await self.add_edge(
+                    sid, tid, rel, weight=float(pl.get("weight", 1.0) or 1.0))
+                restored += 1
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("edge rehydrate failed: %s", exc)
         return restored
 
     async def fleet_pull(self, query: str = "*", limit: int = 500) -> int:

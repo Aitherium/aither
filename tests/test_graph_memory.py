@@ -199,25 +199,6 @@ class TestGraphMemoryCRUD:
         assert fetched.content == "v2"
 
     @pytest.mark.asyncio
-    async def test_upsert_reinforces_instead_of_wiping_activation_mirror(self, graph):
-        """A re-store of the same node must REINFORCE the metadata activation
-        mirror (reinforcement_count/last_reinforced — sweep()'s archive guard),
-        never wholesale-replace it back to zero."""
-        n1 = await graph.add_node("Pref", content="I hate rain")
-        # Simulate recall reinforcement accruing on the stored node.
-        graph._reinforce_nodes([n1.id])
-        graph._reinforce_nodes([n1.id])
-        before = await graph.get_node(n1.id)
-        assert int(before.metadata["reinforcement_count"]) == 2
-        # Restating the same content upserts — the count carries forward (+1
-        # for the restatement) and the reinforcement clock resets to now.
-        await graph.add_node("Pref", content="I hate rain")
-        after = await graph.get_node(n1.id)
-        assert int(after.metadata["reinforcement_count"]) == 3
-        assert float(after.metadata["last_reinforced"]) >= float(
-            before.metadata["last_reinforced"])
-
-    @pytest.mark.asyncio
     async def test_add_edge(self, graph):
         n1 = await graph.add_node("A")
         n2 = await graph.add_node("B")

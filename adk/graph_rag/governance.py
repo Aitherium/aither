@@ -37,7 +37,6 @@ from adk.graph_memory import cosine_similarity
 class MutationType(str, Enum):
     STORE = "store"          # new fact
     SUPERSEDE = "supersede"  # existing fact replaced by a newer/authoritative one
-    UPDATE = "update"        # in-place re-tier/re-role (promote) — content unchanged
     FORGET = "forget"        # removed (reversible via tombstone)
     RECOVER = "recover"      # a forgotten fact restored
     ROLLBACK = "rollback"    # a mutation undone
@@ -264,28 +263,6 @@ class TombstoneStore:
     def all(self) -> list[dict]:
         with self._lock:
             return list(self._tombs.values())
-
-    def purge(self, tombstone_id: str) -> bool:
-        """HARD-DELETE a tombstone: the snapshot (content, metadata, any edge
-        capture) is irrecoverably removed and the persisted file is rewritten
-        without it. This is the true-deletion endpoint for knowledge that has
-        decayed past its retention window (see ``adk.memory_wiki.prune``) —
-        after a purge, ``recover()`` returns None forever. Returns True when a
-        tombstone was removed."""
-        with self._lock:
-            if tombstone_id not in self._tombs:
-                return False
-            del self._tombs[tombstone_id]
-            if self._persist:
-                self._path.parent.mkdir(parents=True, exist_ok=True)
-                tmp = self._path.with_suffix(self._path.suffix + ".tmp")
-                with tmp.open("w", encoding="utf-8") as fh:
-                    for rec in self._tombs.values():
-                        fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
-                    fh.flush()
-                    os.fsync(fh.fileno())
-                tmp.replace(self._path)
-        return True
 
 
 class StableNodeID:
