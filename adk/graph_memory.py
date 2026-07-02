@@ -217,7 +217,12 @@ def _embed_to_blob(embedding: list[float]) -> bytes:
 
 
 def _blob_to_embed(blob: bytes) -> list[float]:
-    """Unpack BLOB back to float list."""
+    """Unpack BLOB back to float list. Returns [] on a corrupt/truncated blob
+    (length not a multiple of 4) instead of raising struct.error into search()."""
+    if not blob or len(blob) % 4 != 0:
+        if blob:
+            logger.warning("corrupt embedding blob (%d bytes, not /4) — skipping", len(blob))
+        return []
     n = len(blob) // 4
     return list(struct.unpack(f'{n}f', blob))
 
@@ -300,7 +305,33 @@ class GraphMemory:
         agent_name: str = "default",
         embed_model: str = _EMBED_MODEL,
         ollama_url: str = "",
+        embedder: Optional[Any] = None,
     ):
+        # Optional injected async embedder `async (text) -> vector`. When set it
+        # takes priority over the built-in Ollama path — this is how an app/agent
+        # routes graph embeddings through ITS model (e.g. the appliance's vLLM
+        # nomic-embed), instead of assuming a local Ollama. Falls back to
+        # Ollama/feature-hash only if the injected embedder is absent or fails.
+        #
+        # When NO embedder is injected, default to the canonical adk.embeddings
+        # provider (self-resolving: local vLLM → Ollama → gateway → auto-deploy →
+        # CPU/hash), so every agent shares ONE portable 768-d embedding space.
+        # Opt out with AITHER_GRAPH_EMBEDDER=legacy to keep the raw Ollama→hash path.
+        self._embedder = embedder
+        if self._embedder is None and os.getenv(
+            "AITHER_GRAPH_EMBEDDER", "adk"
+        ).strip().lower() != "legacy":
+            try:
+                from adk.embeddings import get_default_embedder
+                self._embedder = get_default_embedder()
+            except Exception as exc:  # noqa: BLE001 — degrade to legacy Ollama/hash
+                logger.debug("adk.embeddings default embedder unavailable: %s", exc)
+                self._embedder = None
+        # Dimension guard — the index is pinned to the dim of the FIRST embedding
+        # written; a later embedder producing a different dim (e.g. 768-d vLLM vs
+        # 384-d hash) is refused rather than silently mixed (poisons cosine sim).
+        self._embed_dim: int | None = None
+        self._dim_warned = False
         if db_path is None:
             data_dir = Path(
                 os.getenv("AITHER_DATA_DIR", os.path.expanduser("~/.aither"))
@@ -391,6 +422,10 @@ class GraphMemory:
                 );
                 CREATE TABLE IF NOT EXISTS schema_version (
                     version INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS meta (
+                    key TEXT PRIMARY KEY,
+                    value TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_nodes_type ON nodes(node_type);
                 CREATE INDEX IF NOT EXISTS idx_nodes_agent ON nodes(source_agent);
@@ -1230,9 +1265,23 @@ class GraphMemory:
     # ─── Embeddings ─────────────────────────────────────────────────────
 
     async def _embed(self, text: str) -> list[float]:
-        """Get embedding for text. Tries Ollama, falls back to feature hashing."""
+        """Get an embedding. Priority: injected embedder (the app's model — e.g.
+        the appliance/fleet vLLM nomic-embed) → Ollama → feature-hash.
+
+        DIMENSION SAFETY: when an embedder was INJECTED, a failure returns [] (skip
+        this node's embedding) rather than falling back to a DIFFERENT-dimension
+        model. Mixing dims in one index (e.g. 768-d vLLM with 384-d hash) silently
+        poisons cosine similarity — never do it. The legacy Ollama→hash path is
+        unchanged only when no embedder is injected."""
+        if self._embedder is not None:
+            try:
+                vec = await self._embedder(text)
+                return self._guard_dim(list(vec) if vec else [])
+            except Exception as exc:
+                logger.debug("injected embedder failed (skip embed, not mixing dims): %s", exc)
+                return []
         if self._ollama_available is False:
-            return _fallback_embed(text)
+            return self._guard_dim(_fallback_embed(text))
 
         try:
             import httpx
@@ -1246,14 +1295,60 @@ class GraphMemory:
                     embedding = data.get("embedding", [])
                     if embedding:
                         self._ollama_available = True
-                        return embedding
+                        return self._guard_dim(embedding)
         except Exception:
             pass
 
         if self._ollama_available is None:
             self._ollama_available = False
             logger.info("Ollama embeddings unavailable — using feature hashing fallback")
-        return _fallback_embed(text)
+        return self._guard_dim(_fallback_embed(text))
+
+    def _guard_dim(self, vec: list[float]) -> list[float]:
+        """Enforce a single embedding dimension per index. The first non-empty
+        vector pins the dim (persisted in ``meta``); any later vector of a
+        different dim is refused (``[]``) rather than mixed — mixing 768-d and
+        384-d vectors in one store silently corrupts cosine similarity."""
+        if not vec:
+            return []
+        d = len(vec)
+        if self._embed_dim is None:
+            self._embed_dim = self._pin_dim(d)
+        if self._embed_dim is not None and d != self._embed_dim:
+            if not self._dim_warned:
+                logger.warning(
+                    "graph %s: embedding dim %d != index dim %d — skipping embedding "
+                    "(dimension mismatch; re-index to switch models)",
+                    self._agent, d, self._embed_dim,
+                )
+                self._dim_warned = True
+            return []
+        return vec
+
+    def _pin_dim(self, d: int) -> int:
+        """Return the index's committed embedding dim, pinning it to ``d`` on first
+        write. Atomic and race-safe across concurrent processes on the same db:
+        ``BEGIN IMMEDIATE`` serialises writers, ``INSERT OR IGNORE`` lets the first
+        winner set the value, and the read-back inside the same transaction returns
+        the AUTHORITATIVE committed value (never a dim we failed to persist). Only a
+        genuine storage error degrades to ``d`` in-memory for this process alone."""
+        try:
+            with self._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute(
+                    "INSERT OR IGNORE INTO meta (key, value) VALUES ('embed_dim', ?)",
+                    (str(d),),
+                )
+                row = conn.execute(
+                    "SELECT value FROM meta WHERE key = 'embed_dim'"
+                ).fetchone()
+                conn.commit()
+                if row and row[0]:
+                    return int(row[0])
+                return d
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("embed_dim pin failed (using %d in-memory): %s", d, exc)
+            return d
 
     # ─── Auto-Edge Detection ────────────────────────────────────────────
 

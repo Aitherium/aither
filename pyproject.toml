@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "aither-adk"
-version = "2.13.2"
+version = "2.13.3"
 description = "Build AI agents with real memory + faculties on any backend, local or cloud. Open-core: free local runtime with typed memory, knowledge graph, code graph and ReAct; paid tiers (portal.aitherium.com) unlock fleets, channels, reasoning and marketplace packs."
 readme = "README.md"
 license = {file = "LICENSE"}

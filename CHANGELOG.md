@@ -2,6 +2,14 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [2.13.3] - 2026-07-02
+
+### Added
+- **Canonical self-deploying embeddings provider** (`adk.embeddings`): one embedding provider for the whole SDK so vectors are portable across scopes (platform / tenant / sovereign) — same model + dimension everywhere. Pinned to `nomic-embed-text` (768-d; the vLLM `--served-model-name` for nomic-embed-text-v1.5). Lazy, single-flight resolution chain: explicit `AITHER_EMBEDDINGS_URL` → local vLLM (`:8209` then `:8120`, HTTPS-then-HTTP) → local Ollama → gateway (`AITHER_GATEWAY_EMBEDDINGS_URL`) → auto-deploy a local vLLM embeddings container if a GPU + Docker are present (opt out with `AITHER_EMBED_AUTODEPLOY=0`) → CPU sentence-transformers (384-d, degraded) → feature-hash (384-d, degraded, always works). Every batch is dimension-tagged so callers never silently mix 768-d and 384-d vectors. `get_default_embedder()`, `embed_texts()`, `embed_one()`, `get_provider()`, `reset_provider()`.
+
+### Changed
+- **`GraphMemory` now defaults its embedder to the canonical provider** (opt out with `AITHER_GRAPH_EMBEDDER=legacy`), so every adk agent shares one 768-d space. Added a meta-table dimension guard: the index is pinned to its first embedding's dimension and later different-dimension vectors are refused (kills 768↔384 mixing that silently poisons cosine similarity).
+
 ## [2.13.2] - 2026-07-01
 
 ### Added

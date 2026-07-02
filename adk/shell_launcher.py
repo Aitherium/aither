@@ -155,14 +155,23 @@ def _download_binary(version: str = "latest") -> Path:
     require_checksum = require_checksum_env not in ("0", "false", "no")
 
     print(f"Fetching release info from {_REPO}...")
+    # Shell releases have used two tag prefixes over time: "shell-v*" (current,
+    # from release-aithershell) and "shell-cli-v*" (release-shell-cli). Accept both.
     try:
         if version != "latest":
-            api_url = (
-                f"https://api.github.com/repos/{_REPO}/releases/tags/shell-cli-v{version}"
-            )
-            resp = httpx.get(api_url, follow_redirects=True, timeout=30)
-            resp.raise_for_status()
-            release = resp.json()
+            release = None
+            for tag_prefix in ("shell-v", "shell-cli-v"):
+                api_url = (
+                    f"https://api.github.com/repos/{_REPO}/releases/tags/"
+                    f"{tag_prefix}{version}"
+                )
+                resp = httpx.get(api_url, follow_redirects=True, timeout=30)
+                if resp.status_code == 200:
+                    release = resp.json()
+                    break
+            if not release:
+                print(f"No shell release found for version {version}")
+                sys.exit(1)
         else:
             api_url = f"https://api.github.com/repos/{_REPO}/releases?per_page=20"
             resp = httpx.get(api_url, follow_redirects=True, timeout=30)
@@ -170,11 +179,11 @@ def _download_binary(version: str = "latest") -> Path:
             release = None
             for r in resp.json():
                 tag = r.get("tag_name", "")
-                if tag.startswith("shell-cli-v") and not r.get("draft"):
+                if tag.startswith(("shell-v", "shell-cli-v")) and not r.get("draft"):
                     release = r
                     break
             if not release:
-                print("No shell-cli release found")
+                print("No shell release found")
                 sys.exit(1)
     except httpx.HTTPStatusError as e:
         print(f"Failed to fetch release: {e}")
@@ -182,10 +191,12 @@ def _download_binary(version: str = "latest") -> Path:
 
     asset_url = None
     checksums_url = None
+    # Checksum manifest name differs by release channel: checksums.sha256
+    # (shell-cli releases) vs SHA256SUMS.txt (shell-v releases). Same format.
     for asset in release.get("assets", []):
         if asset["name"] == name:
             asset_url = asset["browser_download_url"]
-        elif asset["name"] == "checksums.sha256":
+        elif asset["name"] in ("checksums.sha256", "SHA256SUMS.txt"):
             checksums_url = asset["browser_download_url"]
 
     if not asset_url:
@@ -245,7 +256,7 @@ def _download_binary(version: str = "latest") -> Path:
             )
     else:
         if require_checksum:
-            print("Error: checksums.sha256 not found in release")
+            print("Error: no checksum manifest (checksums.sha256 / SHA256SUMS.txt) in release")
             if dest.exists():
                 try:
                     dest.unlink()
