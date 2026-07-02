@@ -31,6 +31,7 @@ Usage:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -306,6 +307,10 @@ class GraphMemory:
         embed_model: str = _EMBED_MODEL,
         ollama_url: str = "",
         embedder: Optional[Any] = None,
+        tenant_id: Optional[str] = None,
+        workspace_id: Optional[str] = None,
+        fleet_url: Optional[str] = None,
+        auto_sync: Optional[bool] = None,
     ):
         # Optional injected async embedder `async (text) -> vector`. When set it
         # takes priority over the built-in Ollama path — this is how an app/agent
@@ -349,6 +354,61 @@ class GraphMemory:
             _raw = "http://" + _raw
         self._ollama_url = _raw.rstrip("/")
         self._ollama_available: bool | None = None  # Lazy detect
+
+        # ── Fleet / per-tenant dataplane sync ───────────────────────────────
+        # Replicate the local graph to a per-tenant dataplane (Qdrant/Nexus) so
+        # a sovereign agent's memory is DURABLE + REHYDRATABLE. Local SQLite is
+        # the SOURCE OF TRUTH; sync is best-effort catch-up (push unsynced nodes,
+        # pull to rehydrate a fresh instance). Same env contract as adk.memory's
+        # KV fleet-sync, but a SEPARATE collection so graph nodes and KV entries
+        # never mix. Enable by setting AITHER_FLEET_MEMORY_URL (auto) or
+        # AITHER_FLEET_SYNC=true.
+        # Explicit args override env — REQUIRED for a multi-tenant host process
+        # (e.g. hosted garg) where AITHER_TENANT_ID can't be a process-wide env;
+        # the caller passes the per-request tenant. Sovereign single-tenant
+        # runtimes just set the env and pass nothing.
+        self._tenant_id = (
+            tenant_id if tenant_id is not None
+            else os.environ.get("AITHER_TENANT_ID", "")
+        )
+        self._workspace_id = (
+            workspace_id if workspace_id is not None
+            else os.environ.get("AITHER_WORKSPACE_ID", "")
+        )
+        self._fleet_url = (
+            fleet_url if fleet_url is not None
+            else os.environ.get("AITHER_FLEET_MEMORY_URL", "")
+        )
+        # Sync is ON BY DEFAULT — a sovereign agent's memory is meant to be
+        # durable in its dataplane, so this "just works" like the canonical
+        # embeddings provider. `auto` (default) = enabled; ONLY
+        # AITHER_FLEET_SYNC=false|0|off|no disables. When no explicit target is
+        # set we INFER one (local Nexus :8122, or the gateway in cloud mode).
+        # Push is always best-effort — if the target is unreachable it fails
+        # silently and the local SQLite graph remains fully functional.
+        _fleet_flag = os.environ.get("AITHER_FLEET_SYNC", "auto").strip().lower()
+        self._fleet_enabled = _fleet_flag not in ("false", "0", "off", "no")
+        if not self._fleet_url and self._fleet_enabled:
+            cloud_mode = os.environ.get("AITHER_CLOUD_MODE", "")
+            if cloud_mode in ("cloud_first", "cloud_only"):
+                gw = os.environ.get("AITHER_GATEWAY_URL", "https://gateway.aitherium.com")
+                self._fleet_url = f"{gw}/v1/memory"
+            else:
+                self._fleet_url = "http://localhost:8122"
+        self._fleet_collection = os.environ.get(
+            "AITHER_FLEET_GRAPH_COLLECTION", "graph_memory"
+        )
+        self._fleet_auth_token = os.environ.get("AITHER_API_KEY", "")
+        # Auto-replicate new nodes to the dataplane after every ingest (on by
+        # default). Runs as a tracked BACKGROUND task so ingest never blocks;
+        # call drain_sync() to await it (tests / graceful shutdown).
+        self._auto_sync = (
+            auto_sync if auto_sync is not None
+            else os.environ.get("AITHER_GRAPH_AUTOSYNC", "true").strip().lower()
+            not in ("false", "0", "off", "no")
+        )
+        self._sync_tasks: set = set()
+
         self._init_db()
 
         # Self-maintaining unified memory (flag-gated, additive). When
@@ -380,7 +440,7 @@ class GraphMemory:
                 logger.debug("unified-memory governance init failed: %s", exc)
                 self._governed = None
 
-    _SCHEMA_VERSION = 3
+    _SCHEMA_VERSION = 4
 
     def _init_db(self):
         with self._connect() as conn:
@@ -401,7 +461,8 @@ class GraphMemory:
                     metadata TEXT DEFAULT '{}',
                     role TEXT DEFAULT 'fact',
                     confidence REAL DEFAULT 0.7,
-                    tier TEXT DEFAULT 'persistent'
+                    tier TEXT DEFAULT 'persistent',
+                    synced INTEGER DEFAULT 0
                 );
                 CREATE TABLE IF NOT EXISTS edges (
                     source_id TEXT NOT NULL,
@@ -434,6 +495,7 @@ class GraphMemory:
                 CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_id);
                 CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_id);
                 CREATE INDEX IF NOT EXISTS idx_keywords ON keywords(keyword);
+                CREATE INDEX IF NOT EXISTS idx_nodes_synced ON nodes(synced);
             """)
             self._migrate(conn)
 
@@ -463,6 +525,13 @@ class GraphMemory:
                     conn.execute(ddl)
                 except sqlite3.OperationalError:
                     pass
+        if current < 4:
+            # v4: per-tenant dataplane sync — track which nodes have been
+            # replicated to the fleet/dataplane. Migration-safe ALTER.
+            try:
+                conn.execute("ALTER TABLE nodes ADD COLUMN synced INTEGER DEFAULT 0")
+            except sqlite3.OperationalError:
+                pass
         conn.execute("DELETE FROM schema_version")
         conn.execute("INSERT INTO schema_version (version) VALUES (?)", (self._SCHEMA_VERSION,))
         conn.commit()
@@ -474,6 +543,227 @@ class GraphMemory:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
         return conn
+
+    # ─── Fleet / per-tenant dataplane sync ──────────────────────────────
+    # Replicate the local graph to a per-tenant dataplane (Qdrant/Nexus) so a
+    # sovereign agent's memory is durable + rehydratable across restarts and
+    # hosting boundaries (hosted-dev ↔ appliance). Local SQLite is the source
+    # of truth; every call here is best-effort and MUST NOT raise into ingest.
+
+    def _fleet_headers(self) -> dict:
+        headers = {"Content-Type": "application/json"}
+        if self._fleet_auth_token:
+            headers["Authorization"] = f"Bearer {self._fleet_auth_token}"
+        if self._tenant_id:
+            headers["X-Tenant-ID"] = self._tenant_id
+        return headers
+
+    @staticmethod
+    def _fleet_verify():
+        """TLS verify for fleet calls. The fleet dataplane (Nexus) serves
+        internal-TLS with a private CA — ``verify=True`` (system trust) would
+        REJECT it, so honor a CA-bundle PATH when the runtime provides one
+        (``AITHER_CA_BUNDLE`` / ``AITHER_TLS_CA``). Falls back to a bool
+        (``AITHER_TLS_VERIFY``, default True). Never returns False silently
+        unless explicitly disabled for a plain-HTTP dev Nexus."""
+        ca = os.getenv("AITHER_CA_BUNDLE") or os.getenv("AITHER_TLS_CA", "")
+        if ca and os.path.exists(ca):
+            return ca
+        return os.getenv("AITHER_TLS_VERIFY", "true").lower() != "false"
+
+    async def _fleet_push_node(
+        self, node_id: str, label: str, content: str, node_type: str,
+        tags: list, role, confidence, tier, importance,
+    ) -> bool:
+        """Push one graph node to the per-tenant dataplane (best-effort).
+
+        Mirrors adk.memory's KV ``/ingest`` contract. The node's content+label
+        is re-embedded by the dataplane in the SAME canonical 768-d space, so
+        vectors stay portable. Returns True on 200/201.
+        """
+        if not self._fleet_enabled or not self._fleet_url:
+            return False
+        try:
+            import httpx
+
+            payload = {
+                "content": content or label,
+                "title": label,
+                "source_type": "graph",
+                "content_type": "graph_node",
+                "collection": self._fleet_collection,
+                "metadata": {
+                    "node_id": node_id,
+                    "node_type": node_type,
+                    "tags": tags,
+                    "role": role,
+                    "confidence": confidence,
+                    "tier": tier,
+                    "importance": importance,
+                    "source_agent": self._agent,
+                    "tenant_id": self._tenant_id,
+                    "workspace_id": self._workspace_id,
+                    "synced_from": "adk_graph_memory",
+                },
+            }
+            ingest_url = self._fleet_url.rstrip("/") + "/ingest"
+            async with httpx.AsyncClient(
+                timeout=8.0,
+                verify=self._fleet_verify(),
+            ) as client:
+                resp = await client.post(
+                    ingest_url, json=payload, headers=self._fleet_headers(),
+                )
+                return resp.status_code in (200, 201)
+        except Exception as exc:  # noqa: BLE001 — non-fatal, local is source of truth
+            logger.debug("graph fleet push failed (non-fatal): %s", exc)
+            return False
+
+    async def fleet_sync_pending(self) -> int:
+        """Count local nodes not yet replicated to the dataplane."""
+        with self._connect() as conn:
+            try:
+                row = conn.execute(
+                    "SELECT COUNT(*) FROM nodes WHERE synced = 0"
+                ).fetchone()
+                return int(row[0]) if row else 0
+            except sqlite3.OperationalError:
+                return 0
+
+    async def fleet_push_all_nodes(self, limit: int = 200) -> dict:
+        """Push unsynced local nodes to the per-tenant dataplane (catch-up).
+
+        Call after an ingest (fire-and-forget) to replicate new memory. Local
+        SQLite stays the source of truth; a node is marked ``synced`` only on a
+        confirmed push. Returns ``{pushed, failed, pending, enabled}``.
+        """
+        if not self._fleet_enabled or not self._fleet_url:
+            return {"pushed": 0, "failed": 0, "pending": 0, "enabled": False}
+        with self._connect() as conn:
+            try:
+                rows = conn.execute(
+                    "SELECT id, label, content, node_type, tags, role, confidence, "
+                    "tier, importance FROM nodes WHERE synced = 0 "
+                    "ORDER BY updated_at DESC LIMIT ?", (limit,),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                return {"pushed": 0, "failed": 0, "pending": 0, "enabled": True}
+        pushed = failed = 0
+        for nid, label, content, ntype, tags_json, role, conf, tier, imp in rows:
+            try:
+                tags = json.loads(tags_json) if tags_json else []
+            except Exception:  # noqa: BLE001
+                tags = []
+            ok = await self._fleet_push_node(
+                nid, label, content, ntype, tags, role, conf, tier, imp,
+            )
+            if ok:
+                with self._connect() as c2:
+                    c2.execute("UPDATE nodes SET synced = 1 WHERE id = ?", (nid,))
+                    c2.commit()
+                pushed += 1
+            else:
+                failed += 1
+        return {
+            "pushed": pushed, "failed": failed,
+            "pending": await self.fleet_sync_pending(), "enabled": True,
+        }
+
+    async def fleet_pull(self, query: str = "*", limit: int = 500) -> int:
+        """Best-effort SEMANTIC top-up from the dataplane — NOT the restore path.
+
+        ⚠️ Verified live against AitherNexus: the dataplane exposes only
+        ``/ingest`` (push) + ``/search`` (semantic) — there is NO enumerate/scroll
+        endpoint, and ``/search`` does not reliably return just-ingested docs
+        (empty result right after ingest). So this CANNOT fully rehydrate a
+        fresh instance. The dataplane's job is DURABILITY + cross-agent RAG
+        search, not cold restore.
+
+        The authoritative rehydration path for a fresh/restarted sovereign
+        runtime is the SQLite ``.db`` carry via ``adk.sync`` (Strata) — exact
+        nodes/edges/embeddings. Use THAT to restore; use this only to opportunistically
+        pull query-relevant nodes another agent contributed. Returns nodes pulled.
+        """
+        if not self._fleet_enabled or not self._fleet_url:
+            return 0
+        try:
+            import httpx
+
+            search_url = self._fleet_url.rstrip("/") + "/search"
+            payload: dict = {
+                "query": query, "limit": limit,
+                "collection": self._fleet_collection,
+            }
+            if self._tenant_id:
+                payload["tenant_id"] = self._tenant_id
+            async with httpx.AsyncClient(
+                timeout=15.0,
+                verify=self._fleet_verify(),
+            ) as client:
+                resp = await client.post(
+                    search_url, json=payload, headers=self._fleet_headers(),
+                )
+                if resp.status_code != 200:
+                    return 0
+                data = resp.json()
+                hits = data.get("results", data.get("hits", [])) or []
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("graph fleet pull failed (non-fatal): %s", exc)
+            return 0
+        restored = 0
+        for h in hits:
+            meta = h.get("metadata", h.get("payload", {})) or {}
+            if meta.get("synced_from") != "adk_graph_memory":
+                continue
+            label = h.get("title") or meta.get("label") or ""
+            content = h.get("content") or h.get("text") or ""
+            if not label:
+                continue
+            try:
+                node = await self.add_node(
+                    label=label,
+                    node_type=meta.get("node_type", "entity"),
+                    content=content,
+                    tags=meta.get("tags") or [],
+                    importance=float(meta.get("importance", 0.5) or 0.5),
+                    role=meta.get("role"),
+                    confidence=meta.get("confidence"),
+                    tier=meta.get("tier"),
+                )
+                # Already in the dataplane → mark synced (don't echo it back).
+                with self._connect() as c2:
+                    c2.execute(
+                        "UPDATE nodes SET synced = 1 WHERE id = ?", (node.id,),
+                    )
+                    c2.commit()
+                restored += 1
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("rehydrate node failed (non-fatal): %s", exc)
+        return restored
+
+    def _maybe_autosync(self) -> None:
+        """Fire a best-effort background replication of unsynced nodes.
+
+        Called automatically after ingest (on by default) so apps NEVER have to
+        remember to sync. Runs as a tracked background task — never blocks
+        ingest. Use :meth:`drain_sync` to await completion (tests / shutdown).
+        No running loop (a sync caller) → skipped; they can call
+        :meth:`fleet_push_all_nodes` explicitly.
+        """
+        if not (self._auto_sync and self._fleet_enabled and self._fleet_url):
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        task = loop.create_task(self.fleet_push_all_nodes())
+        self._sync_tasks.add(task)
+        task.add_done_callback(self._sync_tasks.discard)
+
+    async def drain_sync(self) -> None:
+        """Await any in-flight background sync tasks (tests / graceful shutdown)."""
+        if self._sync_tasks:
+            await asyncio.gather(*list(self._sync_tasks), return_exceptions=True)
 
     # ─── Core CRUD ──────────────────────────────────────────────────────
 
@@ -520,14 +810,34 @@ class GraphMemory:
         with self._connect() as conn:
             # Upsert node
             existing = conn.execute(
-                "SELECT id, access_count, content FROM nodes WHERE id = ?", (node_id,)
+                "SELECT id, access_count, content, metadata FROM nodes WHERE id = ?",
+                (node_id,)
             ).fetchone()
 
             if existing:
+                # Re-storing the same content must REINFORCE, not reset: the
+                # metadata column carries the activation mirror accrued by
+                # recall (_reinforce_nodes: reinforcement_count/last_reinforced
+                # — sweep()'s archive guard and the scorer's freshness math).
+                # A wholesale replace made restating a preference WIPE its
+                # protection; instead merge — count carries forward (+1 for
+                # the restatement itself) and the reinforcement clock resets
+                # to now.
+                merged_md = dict(metadata or {})
+                try:
+                    old_md = json.loads(existing[3] or "{}")
+                except (ValueError, TypeError):
+                    old_md = {}
+                old_rc = int(old_md.get("reinforcement_count", 0) or 0)
+                if old_rc or "last_reinforced" in old_md:
+                    new_rc = int(merged_md.get("reinforcement_count", 0) or 0)
+                    merged_md["reinforcement_count"] = max(old_rc, new_rc) + 1
+                    merged_md["last_reinforced"] = now
+                metadata = merged_md
                 conn.execute(
                     "UPDATE nodes SET content = ?, tags = ?, updated_at = ?, "
                     "access_count = ?, embedding = ?, importance = ?, metadata = ?, "
-                    "role = ?, confidence = ?, tier = ? WHERE id = ?",
+                    "role = ?, confidence = ?, tier = ?, synced = 0 WHERE id = ?",
                     (content, json.dumps(tags), now, (existing[1] or 0) + 1,
                      _embed_to_blob(embedding) if embedding else None,
                      importance, json.dumps(metadata or {}), role, conf, tier, node_id),
@@ -867,6 +1177,7 @@ class GraphMemory:
         node_type: str | None = None,
         include_stale: bool = False,
         now: float | None = None,
+        reinforce: bool = False,
     ) -> list[GraphNode]:
         """Authority + spreading-activation recall.
 
@@ -876,6 +1187,13 @@ class GraphMemory:
         ephemeral memory decays out. Each returned node carries its authority
         labels in ``metadata['_authority_labels']``. Falls back to :meth:`search`
         if the unified scorer is unavailable.
+
+        ``reinforce=True`` (opt-in; default False = zero writes, existing callers
+        byte-identical) makes recall REINFORCING: every RETURNED node gets
+        ``reinforcement_count += 1`` and ``last_reinforced = now`` persisted in
+        its metadata mirror — the exact fields the scorer's freshness /
+        reinforcement-bonus math reads — so recalled memories decay slower and
+        unrecalled ones age out (see :meth:`sweep`).
         """
         if not query.strip():
             return []
@@ -883,7 +1201,14 @@ class GraphMemory:
             from adk.graph_rag.activation_scoring import get_scorer
             from adk.unified_contract import Role
         except Exception:
-            return await self.search(query, limit=limit, node_type=node_type)
+            # Degraded recall must NOT drop the reinforcement contract too —
+            # the write path (_reinforce_nodes) has no scorer dependency, and
+            # silently skipping it here let actively-recalled nodes decay to
+            # the sweep exactly when scoring was already degraded.
+            nodes = await self.search(query, limit=limit, node_type=node_type)
+            if reinforce and nodes:
+                self._reinforce_nodes([n.id for n in nodes], now=now)
+            return nodes
 
         now = now if now is not None else time.time()
         scorer = get_scorer()
@@ -938,14 +1263,48 @@ class GraphMemory:
             scored.append((bd.combined, nid, rec))
         scored.sort(key=lambda x: -x[0])
 
+        selected = scored[:limit]
+        if reinforce and selected:
+            # Reinforce-on-recall BEFORE fetching the output nodes so the
+            # returned metadata already carries the bumped values.
+            self._reinforce_nodes([nid for _c, nid, _r in selected], now=now)
+
         out: list[GraphNode] = []
-        for _combined, nid, rec in scored[:limit]:
+        for _combined, nid, rec in selected:
             node = await self.get_node(nid)
             if node:
                 node.metadata = dict(node.metadata or {})
                 node.metadata["_authority_labels"] = scorer.labels(rec, now)
                 out.append(node)
         return out
+
+    def _reinforce_nodes(self, node_ids: list[str], now: float | None = None) -> None:
+        """Bump ``reinforcement_count``/``last_reinforced`` in each node's
+        metadata mirror — the fields :meth:`_node_to_record` feeds the activation
+        scorer, making the MemoryRecord reinforcement contract LIVE. One UPDATE
+        per node inside a single WAL transaction. Only runs when a caller opts
+        in (``recall_with_activation(..., reinforce=True)``)."""
+        now = now if now is not None else time.time()
+        try:
+            with self._connect() as conn:
+                for nid in node_ids:
+                    row = conn.execute(
+                        "SELECT metadata FROM nodes WHERE id = ?", (nid,)
+                    ).fetchone()
+                    if not row:
+                        continue
+                    try:
+                        md = json.loads(row[0] or "{}")
+                    except ValueError:
+                        md = {}
+                    md["reinforcement_count"] = int(md.get("reinforcement_count", 0) or 0) + 1
+                    md["last_reinforced"] = now
+                    conn.execute(
+                        "UPDATE nodes SET metadata = ? WHERE id = ?",
+                        (json.dumps(md), nid),
+                    )
+        except Exception as exc:  # non-fatal — recall must never fail on reinforce
+            logger.debug("reinforce-on-recall failed (non-fatal): %s", exc)
 
     def _apply_cascade(self, plan: dict, trigger_id: str = "") -> None:
         """Apply a supersession cascade plan as neighbour metadata hints
@@ -1053,6 +1412,233 @@ class GraphMemory:
                 logger.debug("supersede cascade failed (non-fatal): %s", exc)
 
         return new_node
+
+    # ─── Memory maintenance (opt-in primitives; nothing calls them
+    #     automatically, so default behaviour is byte-identical) ──────────
+
+    def _governance_stores(self):
+        """``(ledger, tombstones)`` for maintenance ops — the governed pair when
+        ``AITHER_UNIFIED_MEMORY`` is on/shadow, else lazily-opened persistent
+        stores beside the db, so :meth:`sweep` archives stay reversible even
+        with the flag off. Returns ``(None, None)`` if governance is unavailable
+        (in which case sweep refuses to delete — never an irreversible drop)."""
+        if self._governed is not None:
+            return self._governed.ledger, self._governed.tombstones
+        try:
+            from adk.graph_rag.governance import (
+                GovernanceArtifacts,
+                MutationLedger,
+                TombstoneStore,
+            )
+            arts = GovernanceArtifacts.beside(self._db_path)
+            return (
+                MutationLedger(arts.ledger_path, persist=True),
+                TombstoneStore(arts.tombstone_path, persist=True),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("governance stores unavailable: %s", exc)
+            return None, None
+
+    def sweep(
+        self,
+        now: float | None = None,
+        archive_below: float = 0.05,
+        max_nodes: int | None = None,
+        dry_run: bool = False,
+        preserve_roles: Any = None,
+    ) -> dict:
+        """Enforce read-time decay at rest: archive (tombstone + FORGET-ledger +
+        remove) every node that is past its tier TTL, scored below
+        ``archive_below`` (tier freshness ``e^(-λ·Δt)`` × reinforcement bonus —
+        the EXISTING MemoryRecord math), and weakly reinforced
+        (``reinforcement_count <= 1``). PERMANENT-tier nodes are immune, and so
+        is any node whose ``role`` is in ``preserve_roles`` (a caller-owned
+        exemption — e.g. a durable preference store passes
+        ``{"preference","identity","correction"}`` so prefs lose rank but never
+        silently die). When ``max_nodes`` is set and live nodes exceed it, the
+        lowest-scored overflow is additionally archived (never PERMANENT/preserved).
+
+        Archives are REVERSIBLE: each node is snapshot into the governance
+        ``TombstoneStore`` first (``TombstoneStore.recover(tombstone_id)``
+        returns the snapshot; ids in the returned ``tombstones`` map) — a node
+        is never deleted without a tombstone. The snapshot includes the node's
+        edge rows (``snap["edges"]``) so a recover can re-add its graph
+        connectivity; embeddings are re-derived on re-store. ``dry_run=True``
+        returns the would-archive list without acting.
+
+        Returns ``{examined, archived, kept, skipped_permanent,
+        skipped_preserved, would_archive, tombstones}``.
+        """
+        from adk.unified_contract import TIER_TTL_SECONDS, MemoryRecord, Tier
+
+        now = now if now is not None else time.time()
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id, label, node_type, content, tags, tier, role, "
+                "confidence, importance, created_at, updated_at, metadata, "
+                "source_agent, source_session FROM nodes"
+            ).fetchall()
+
+        examined = len(rows)
+        skipped_permanent = 0
+        skipped_preserved = 0
+        preserved = {str(x).strip().lower() for x in (preserve_roles or ())}
+        candidates: list[tuple[str, dict]] = []   # to archive
+        live: list[tuple[float, str, dict]] = []  # (score, id, snapshot) survivors
+
+        for r in rows:
+            nid = r[0]
+            tier = (r[5] or "persistent").strip().lower()
+            try:
+                md = json.loads(r[11] or "{}")
+            except ValueError:
+                md = {}
+            snapshot = {
+                "id": nid, "label": r[1], "node_type": r[2], "content": r[3],
+                "tags": r[4], "tier": tier, "role": r[6], "confidence": r[7],
+                "importance": r[8], "created_at": r[9], "updated_at": r[10],
+                "metadata": md, "source_agent": r[12], "source_session": r[13],
+            }
+            if tier == Tier.PERMANENT.value:
+                skipped_permanent += 1
+                continue
+            if preserved and (r[6] or "").strip().lower() in preserved:
+                skipped_preserved += 1
+                continue  # caller-exempt role — never archived, never overflow-pressured
+            last = float(md.get("last_reinforced", r[10] or r[9] or now) or now)
+            reinf = int(md.get("reinforcement_count", 0) or 0)
+            try:
+                rec = MemoryRecord(
+                    content="", tier=tier, last_reinforced=last,
+                    reinforcement_count=reinf,
+                )
+            except ValueError:  # unknown tier string → neutral persistent
+                rec = MemoryRecord(
+                    content="", last_reinforced=last, reinforcement_count=reinf,
+                )
+            # The EXISTING tier math: freshness = e^(-λ·Δt), reinforcement-adjusted.
+            score = rec.freshness(now) * (1.0 + rec.reinforcement_bonus())
+            ttl = TIER_TTL_SECONDS.get(rec.tier)
+            past_ttl = ttl is not None and (now - last) > ttl
+            if past_ttl and score < archive_below and reinf <= 1:
+                candidates.append((nid, snapshot))
+            else:
+                live.append((score, nid, snapshot))
+
+        # Overflow pressure: archive the lowest-scored survivors beyond max_nodes.
+        if max_nodes is not None and len(live) > max_nodes:
+            live.sort(key=lambda t: t[0])
+            candidates.extend(
+                (nid, snap) for _s, nid, snap in live[: len(live) - max_nodes]
+            )
+
+        stats: dict[str, Any] = {
+            "examined": examined,
+            "archived": 0,
+            "kept": examined - skipped_permanent - len(candidates),
+            "skipped_permanent": skipped_permanent,
+            "skipped_preserved": skipped_preserved,
+            "would_archive": [nid for nid, _ in candidates],
+            "tombstones": {},
+        }
+        if dry_run:
+            return stats
+
+        ledger, tombs = self._governance_stores()
+        for nid, snap in candidates:
+            if tombs is None:
+                continue  # never delete without a tombstone (reversibility)
+            # Snapshot the node's edges too — the DELETEs below drop them, and
+            # a recover() without them restores content but silently loses the
+            # graph connectivity spreading activation depends on.
+            try:
+                with self._connect() as conn:
+                    erows = conn.execute(
+                        "SELECT source_id, target_id, relation, weight FROM edges "
+                        "WHERE source_id = ? OR target_id = ?", (nid, nid),
+                    ).fetchall()
+                if erows:
+                    snap["edges"] = [
+                        {"source_id": e[0], "target_id": e[1],
+                         "relation": e[2], "weight": e[3]} for e in erows]
+            except Exception as exc:  # noqa: BLE001 — edge capture is best-effort
+                logger.debug("sweep edge snapshot failed for %s: %s", nid, exc)
+            try:
+                tomb_id = tombs.entomb(snap, reason="sweep: decayed past tier TTL")
+            except Exception as exc:  # noqa: BLE001 — keep the node instead
+                logger.debug("sweep entomb failed for %s — kept: %s", nid, exc)
+                continue
+            if ledger is not None:
+                try:
+                    from adk.graph_rag.governance import MutationType
+                    ledger.record(
+                        MutationType.FORGET, node_id=nid, before=snap,
+                        source=f"graph:{self._agent}", reason="sweep",
+                        related_ids=[tomb_id],
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("sweep ledger failed for %s: %s", nid, exc)
+            with self._connect() as conn:
+                conn.execute(
+                    "DELETE FROM edges WHERE source_id = ? OR target_id = ?",
+                    (nid, nid),
+                )
+                conn.execute("DELETE FROM keywords WHERE node_id = ?", (nid,))
+                conn.execute("DELETE FROM nodes WHERE id = ?", (nid,))
+            stats["archived"] += 1
+            stats["tombstones"][nid] = tomb_id
+        stats["kept"] = examined - skipped_permanent - stats["archived"]
+        return stats
+
+    def promote(
+        self, node_id: str, tier: str | None = None, role: str | None = None,
+    ) -> bool:
+        """Re-tier / re-role a node IN PLACE — updates the ``tier``/``role``
+        columns plus the metadata mirror without delete+re-store, so edges,
+        embedding, keywords and ledger history survive. Returns True when the
+        node was updated; False for a missing node, no-op args, or an invalid
+        tier/role. Ledgers an UPDATE entry when governance is on."""
+        if tier is None and role is None:
+            return False
+        try:
+            from adk.unified_contract import Role as _Role, Tier as _Tier
+            if tier is not None:
+                tier = _Tier(str(tier).strip().lower()).value
+            if role is not None:
+                role = _Role(str(role).strip().lower()).value
+        except ValueError:
+            logger.debug("promote(%s): invalid tier/role (%r/%r)", node_id, tier, role)
+            return False
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT tier, role, metadata FROM nodes WHERE id = ?", (node_id,)
+            ).fetchone()
+            if not row:
+                return False
+            try:
+                md = json.loads(row[2] or "{}")
+            except ValueError:
+                md = {}
+            before = {"id": node_id, "tier": row[0], "role": row[1]}
+            new_tier = tier if tier is not None else (row[0] or "persistent")
+            new_role = role if role is not None else (row[1] or "fact")
+            md["tier"] = new_tier
+            md["role"] = new_role
+            conn.execute(
+                "UPDATE nodes SET tier = ?, role = ?, metadata = ? WHERE id = ?",
+                (new_tier, new_role, json.dumps(md), node_id),
+            )
+        if self._governed is not None:
+            try:
+                from adk.graph_rag.governance import MutationType
+                self._governed.ledger.record(
+                    MutationType.UPDATE, node_id=node_id, before=before,
+                    after={"id": node_id, "tier": new_tier, "role": new_role},
+                    source=f"graph:{self._agent}", reason="promote",
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("promote ledger failed (non-fatal): %s", exc)
+        return True
 
     # ─── Hybrid Search ──────────────────────────────────────────────────
 
@@ -1185,6 +1771,9 @@ class GraphMemory:
 
         if count:
             logger.debug("Ingested %d nodes from session %s", count, session_id[:8])
+        # Replicate the new nodes to the per-tenant dataplane (background,
+        # best-effort, on by default). Both ingest_text and this path inherit it.
+        self._maybe_autosync()
         return count
 
     async def ingest_text(self, text: str, source: str = "unknown") -> int:

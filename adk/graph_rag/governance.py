@@ -37,6 +37,7 @@ from adk.graph_memory import cosine_similarity
 class MutationType(str, Enum):
     STORE = "store"          # new fact
     SUPERSEDE = "supersede"  # existing fact replaced by a newer/authoritative one
+    UPDATE = "update"        # in-place re-tier/re-role (promote) — content unchanged
     FORGET = "forget"        # removed (reversible via tombstone)
     RECOVER = "recover"      # a forgotten fact restored
     ROLLBACK = "rollback"    # a mutation undone

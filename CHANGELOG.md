@@ -2,6 +2,16 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [2.13.4] - 2026-07-02
+
+### Added
+- **Memory-maintenance primitives on `GraphMemory`** (all opt-in; default behaviour byte-identical):
+  - **Reinforce-on-recall**: `recall_with_activation(..., reinforce=True)` bumps `reinforcement_count`/`last_reinforced` on every RETURNED node's metadata mirror (one UPDATE per node, WAL-safe) — making the `MemoryRecord` reinforcement fields the activation scorer reads LIVE. Default `False` = zero writes.
+  - **`sweep(now, archive_below=0.05, max_nodes=None, dry_run=False)`**: read-time decay enforced at rest — archives nodes past their tier TTL with freshness×reinforcement score below `archive_below` and `reinforcement_count <= 1`; `max_nodes` additionally archives the lowest-scored overflow. PERMANENT tier immune. Every archive is a reversible governance tombstone (`TombstoneStore.recover`) + a FORGET ledger entry; a node is never deleted without a tombstone. `dry_run` returns the would-archive list without acting.
+  - **`promote(node_id, tier=?, role=?)`**: re-tier/re-role a node IN PLACE (tier/role columns + metadata mirror) — edges, embedding and ledger history survive; ledgers an UPDATE entry when governance is on.
+- `MutationType.UPDATE` ledger entry kind (in-place re-tier/re-role).
+- **Per-tenant dataplane sync for `GraphMemory`** — replicate the local graph to a per-tenant vector dataplane (Nexus/Qdrant) so a sovereign agent's memory is durable + rehydratable across restarts and hosting boundaries. `fleet_push_all_nodes()` (catch-up), `fleet_pull()` (best-effort semantic top-up), `fleet_sync_pending()`, and auto-sync on ingest (`_maybe_autosync` + `drain_sync()`). **On by default** (`AITHER_FLEET_SYNC=auto`; only `false/0/off` disables) with an inferred target (local Nexus `:8122` or the gateway in cloud mode) and a SEPARATE collection (`AITHER_FLEET_GRAPH_COLLECTION`, default `graph_memory`) from the KV memory sync. New `GraphMemory(tenant_id=, workspace_id=, fleet_url=, auto_sync=)` constructor args override env (required for multi-tenant host processes). Node `synced` column + schema v4 migration. TLS verify is CA-bundle-aware (`AITHER_CA_BUNDLE`) for the internal-TLS mesh. Local SQLite stays the source of truth; every sync path is best-effort and never raises into ingest.
+
 ## [2.13.3] - 2026-07-02
 
 ### Added
