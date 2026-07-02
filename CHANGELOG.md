@@ -2,6 +2,11 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [2.13.6] - 2026-07-02
+
+### Added
+- **Qdrant backend for GraphMemory dataplane sync — TRUE two-way, verified live.** Set `AITHER_FLEET_QDRANT_URL` and the sync uses Qdrant (`upsert` + `scroll` + filtered `search`) instead of Nexus. This is what actually delivers cross-agent memory sharing: a node is upserted with its OWN embedding under a deterministic per-(tenant,node) point id (idempotent re-push), and `fleet_pull` reliably SCROLLS a tenant's points back — the enumerate Nexus lacks (its `/search` doesn't return ingested docs and `/export` needs lancedb, which has a hard dependency conflict in the fleet). **Proven live with 2 agents:** agent-1 ingests → auto-syncs to the tenant dataplane; a fresh agent-2 in the same tenant `fleet_pull`s all of agent-1's nodes and can search them; a different tenant pulls nothing (isolation). Dimension-safe (never mixes vector dims in a collection). Local SQLite stays source of truth; best-effort, never raises.
+
 ## [2.13.5] - 2026-07-02
 
 ### Fixed

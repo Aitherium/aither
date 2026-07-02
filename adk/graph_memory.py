@@ -399,6 +399,16 @@ class GraphMemory:
             "AITHER_FLEET_GRAPH_COLLECTION", "graph_memory"
         )
         self._fleet_auth_token = os.environ.get("AITHER_API_KEY", "")
+        # Qdrant backend (RELIABLE two-way): when AITHER_FLEET_QDRANT_URL is set it
+        # takes over from the Nexus /ingest path. Nexus can't reliably enumerate
+        # (its /search doesn't return ingested docs and /export needs lancedb),
+        # so cross-agent rehydration was impossible; Qdrant's `scroll` enumerates a
+        # tenant's points exactly. Points are upserted with the node's OWN
+        # embedding under a deterministic per-(tenant,node) id (idempotent);
+        # fleet_pull scrolls the tenant's points back. Verified live.
+        self._qdrant_url = os.environ.get(
+            "AITHER_FLEET_QDRANT_URL", "").strip().rstrip("/")
+        self._fleet_backend = "qdrant" if self._qdrant_url else "nexus"
         # Auto-replicate new nodes to the dataplane after every ingest (on by
         # default). Runs as a tracked BACKGROUND task so ingest never blocks;
         # call drain_sync() to await it (tests / graceful shutdown).
@@ -640,33 +650,45 @@ class GraphMemory:
         SQLite stays the source of truth; a node is marked ``synced`` only on a
         confirmed push. Returns ``{pushed, failed, pending, enabled}``.
         """
-        if not self._fleet_enabled or not self._fleet_url:
+        if not self._fleet_enabled or not (self._fleet_url or self._qdrant_url):
             return {"pushed": 0, "failed": 0, "pending": 0, "enabled": False}
         with self._connect() as conn:
             try:
                 rows = conn.execute(
                     "SELECT id, label, content, node_type, tags, role, confidence, "
-                    "tier, importance FROM nodes WHERE synced = 0 "
+                    "tier, importance, embedding FROM nodes WHERE synced = 0 "
                     "ORDER BY updated_at DESC LIMIT ?", (limit,),
                 ).fetchall()
             except sqlite3.OperationalError:
                 return {"pushed": 0, "failed": 0, "pending": 0, "enabled": True}
         pushed = failed = 0
-        for nid, label, content, ntype, tags_json, role, conf, tier, imp in rows:
-            try:
-                tags = json.loads(tags_json) if tags_json else []
-            except Exception:  # noqa: BLE001
-                tags = []
-            ok = await self._fleet_push_node(
-                nid, label, content, ntype, tags, role, conf, tier, imp,
-            )
-            if ok:
-                with self._connect() as c2:
+        if self._fleet_backend == "qdrant":
+            # Batch upsert to Qdrant (reliable enumerate on pull). Mark synced
+            # only for the ids the batch confirmed.
+            ok_ids = await self._qdrant_push_nodes(rows)
+            with self._connect() as c2:
+                for nid in ok_ids:
                     c2.execute("UPDATE nodes SET synced = 1 WHERE id = ?", (nid,))
-                    c2.commit()
-                pushed += 1
-            else:
-                failed += 1
+                c2.commit()
+            pushed = len(ok_ids)
+            failed = len(rows) - pushed
+        else:
+            for nid, label, content, ntype, tags_json, role, conf, tier, imp, _emb in rows:
+                try:
+                    tags = json.loads(tags_json) if tags_json else []
+                except Exception:  # noqa: BLE001
+                    tags = []
+                ok = await self._fleet_push_node(
+                    nid, label, content, ntype, tags, role, conf, tier, imp,
+                )
+                if ok:
+                    with self._connect() as c2:
+                        c2.execute(
+                            "UPDATE nodes SET synced = 1 WHERE id = ?", (nid,))
+                        c2.commit()
+                    pushed += 1
+                else:
+                    failed += 1
         if pushed:
             await self._notify_synced(pushed)
         return {
@@ -708,21 +730,112 @@ class GraphMemory:
         except Exception as exc:  # noqa: BLE001
             logger.debug("graph.synced notify failed (non-fatal): %s", exc)
 
+    # ── Qdrant backend (reliable two-way: upsert + scroll) ───────────────
+    def _qdrant_point_id(self, node_id: str) -> str:
+        """Deterministic per-(tenant,node) Qdrant point id — a re-push of the
+        same node overwrites in place (idempotent), never duplicates."""
+        import uuid
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, f"{self._tenant_id}:{node_id}"))
+
+    async def _qdrant_push_nodes(self, rows) -> list:
+        """Upsert node rows (incl. their embeddings) as Qdrant points. Returns
+        the node_ids confirmed written. Best-effort; never raises."""
+        points, ok_ids, dim = [], [], None
+        for nid, label, content, ntype, tags_json, role, conf, tier, imp, emb in rows:
+            vec = _blob_to_embed(emb) if emb else []
+            if not vec:
+                continue  # a node with no embedding can't be a Qdrant point
+            dim = dim or len(vec)
+            if len(vec) != dim:
+                continue  # never mix dims in one collection
+            try:
+                tags = json.loads(tags_json) if tags_json else []
+            except Exception:  # noqa: BLE001
+                tags = []
+            points.append({
+                "id": self._qdrant_point_id(nid), "vector": vec,
+                "payload": {
+                    "node_id": nid, "tenant_id": self._tenant_id,
+                    "workspace_id": self._workspace_id, "label": label,
+                    "content": content, "node_type": ntype, "tags": tags,
+                    "role": role, "confidence": conf, "tier": tier,
+                    "importance": imp, "source_agent": self._agent,
+                    "synced_from": "adk_graph_memory",
+                },
+            })
+            ok_ids.append(nid)
+        if not points:
+            return []
+        try:
+            import httpx
+            col = self._fleet_collection
+            async with httpx.AsyncClient(timeout=20.0) as c:
+                r = await c.get(f"{self._qdrant_url}/collections/{col}")
+                if r.status_code != 200:
+                    await c.put(
+                        f"{self._qdrant_url}/collections/{col}",
+                        json={"vectors": {"size": dim, "distance": "Cosine"}})
+                r = await c.put(
+                    f"{self._qdrant_url}/collections/{col}/points?wait=true",
+                    json={"points": points})
+                return ok_ids if r.status_code in (200, 201) else []
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("qdrant push failed (non-fatal): %s", exc)
+            return []
+
+    async def _qdrant_pull(self, limit: int = 1000) -> int:
+        """Rehydrate by SCROLLING the tenant's points from Qdrant — the reliable
+        enumerate Nexus lacks. Re-adds each node locally (marked synced)."""
+        try:
+            import httpx
+            col = self._fleet_collection
+            async with httpx.AsyncClient(timeout=15.0) as c:
+                r = await c.post(
+                    f"{self._qdrant_url}/collections/{col}/points/scroll",
+                    json={"limit": limit, "with_payload": True,
+                          "filter": {"must": [{"key": "tenant_id",
+                                     "match": {"value": self._tenant_id}}]}})
+                if r.status_code != 200:
+                    return 0
+                pts = r.json().get("result", {}).get("points", []) or []
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("qdrant pull failed (non-fatal): %s", exc)
+            return 0
+        restored = 0
+        for p in pts:
+            pl = p.get("payload", {}) or {}
+            if pl.get("synced_from") != "adk_graph_memory":
+                continue
+            label = pl.get("label") or ""
+            if not label:
+                continue
+            try:
+                node = await self.add_node(
+                    label=label, node_type=pl.get("node_type", "entity"),
+                    content=pl.get("content") or "", tags=pl.get("tags") or [],
+                    importance=float(pl.get("importance", 0.5) or 0.5),
+                    role=pl.get("role"), confidence=pl.get("confidence"),
+                    tier=pl.get("tier"))
+                with self._connect() as c2:
+                    c2.execute(
+                        "UPDATE nodes SET synced = 1 WHERE id = ?", (node.id,))
+                    c2.commit()
+                restored += 1
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("qdrant rehydrate node failed: %s", exc)
+        return restored
+
     async def fleet_pull(self, query: str = "*", limit: int = 500) -> int:
-        """Best-effort SEMANTIC top-up from the dataplane — NOT the restore path.
+        """Rehydrate the local graph from the per-tenant dataplane.
 
-        ⚠️ Verified live against AitherNexus: the dataplane exposes only
-        ``/ingest`` (push) + ``/search`` (semantic) — there is NO enumerate/scroll
-        endpoint, and ``/search`` does not reliably return just-ingested docs
-        (empty result right after ingest). So this CANNOT fully rehydrate a
-        fresh instance. The dataplane's job is DURABILITY + cross-agent RAG
-        search, not cold restore.
-
-        The authoritative rehydration path for a fresh/restarted sovereign
-        runtime is the SQLite ``.db`` carry via ``adk.sync`` (Strata) — exact
-        nodes/edges/embeddings. Use THAT to restore; use this only to opportunistically
-        pull query-relevant nodes another agent contributed. Returns nodes pulled.
+        With the QDRANT backend (``AITHER_FLEET_QDRANT_URL``): reliably SCROLLS the
+        tenant's points back — real two-way sync, verified live. With the Nexus
+        backend it degrades to a best-effort semantic top-up (Nexus can't
+        enumerate; for cold restore use the SQLite ``.db`` carry via ``adk.sync``).
+        Returns nodes pulled.
         """
+        if self._fleet_backend == "qdrant" and self._qdrant_url:
+            return await self._qdrant_pull(limit=max(limit, 1000))
         if not self._fleet_enabled or not self._fleet_url:
             return 0
         try:
