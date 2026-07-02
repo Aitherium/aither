@@ -589,8 +589,11 @@ class GraphMemory:
             payload = {
                 "content": content or label,
                 "title": label,
-                "source_type": "graph",
-                "content_type": "graph_node",
+                # NB: source_type/content_type are VALIDATED enums on AitherNexus —
+                # "graph"/"graph_node" are rejected (500). Use the accepted values;
+                # the graph provenance is carried in metadata.synced_from instead.
+                "source_type": "manual",
+                "content_type": "text",
                 "collection": self._fleet_collection,
                 "metadata": {
                     "node_id": node_id,
@@ -664,10 +667,46 @@ class GraphMemory:
                 pushed += 1
             else:
                 failed += 1
+        if pushed:
+            await self._notify_synced(pushed)
         return {
             "pushed": pushed, "failed": failed,
             "pending": await self.fleet_sync_pending(), "enabled": True,
         }
+
+    async def _notify_synced(self, count: int) -> None:
+        """Broadcast that this agent just replicated ``count`` new nodes to the
+        tenant dataplane — so OTHER agents in the same tenant/swarm can PULL the
+        fresh data (push-based awareness instead of polling) and deconflict work
+        in flight. Best-effort; no-op unless ``AITHER_FLEET_EVENTS_URL`` is set
+        (a Flux/Chronicle events ingress reachable from the agent, e.g. via the
+        gateway). This is the two-way seam: push replicates, this event tells the
+        swarm to reconcile."""
+        url = os.getenv("AITHER_FLEET_EVENTS_URL", "").strip()
+        if not url or count <= 0:
+            return
+        try:
+            import httpx
+            async with httpx.AsyncClient(
+                timeout=5.0, verify=self._fleet_verify()
+            ) as c:
+                await c.post(
+                    url.rstrip("/") + "/events",
+                    json={
+                        "event_type": "graph.synced",
+                        "source": f"adk_graph_memory:{self._agent}",
+                        "data": {
+                            "tenant_id": self._tenant_id,
+                            "workspace_id": self._workspace_id,
+                            "agent": self._agent,
+                            "collection": self._fleet_collection,
+                            "count": count,
+                        },
+                    },
+                    headers=self._fleet_headers(),
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("graph.synced notify failed (non-fatal): %s", exc)
 
     async def fleet_pull(self, query: str = "*", limit: int = 500) -> int:
         """Best-effort SEMANTIC top-up from the dataplane — NOT the restore path.

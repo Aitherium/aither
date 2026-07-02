@@ -2,6 +2,17 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [2.13.5] - 2026-07-02
+
+### Fixed
+- **CRITICAL — GraphMemory dataplane sync push was 100% failing.** `_fleet_push_node` sent `source_type="graph"` / `content_type="graph_node"`, which AitherNexus rejects as invalid enums (HTTP 500) — so NO graph node ever replicated in 2.13.4. Now sends the accepted `source_type="manual"` / `content_type="text"` (graph provenance is carried in `metadata.synced_from`). **Verified live** against a fleet Nexus: a 4-node ingest replicates with `pending==0` and the collection count reflects it.
+
+### Added
+- **Swarm-awareness notification** — on a successful sync batch, `GraphMemory` emits a best-effort `graph.synced` event (tenant/workspace/agent/collection/count) to `AITHER_FLEET_EVENTS_URL` so OTHER agents in the tenant/swarm can pull the fresh data and deconflict in-flight work (push-based awareness instead of polling). No-op unless the env is set.
+
+### Known limitation
+- Cross-agent **rehydration** (`fleet_pull`) is only reliable when the fleet Nexus is backed by lancedb (persistent + exportable). An in-memory Nexus stores on `/ingest` but neither its `/search` nor `/export` returns the docs — two-way read needs the persistent Nexus.
+
 ## [2.13.4] - 2026-07-02
 
 ### Added
