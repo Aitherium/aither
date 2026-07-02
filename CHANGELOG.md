@@ -2,6 +2,13 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [2.13.2] - 2026-07-01
+
+### Added
+- **Session persistence**: AitherShell now auto-saves the active session_id to `~/.aither/config.yaml` after each chat turn and auto-restores it on the next shell launch. Multi-turn conversations survive across restarts — the messages were always persisted in SQLite + JSON, only the session pointer was missing.
+- `/new` command to start a fresh session (clears saved session_id).
+- `/sessions` command to list recent sessions with agent name, message count, and timestamp. Resume any with `/resume <id>`.
+
 ## [2.13.1] - 2026-07-01
 
 ### Fixed

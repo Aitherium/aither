@@ -151,6 +151,8 @@ class AitherREPL:
                 "/artifacts             List all artifacts from this session\n"
                 "/get N [path]          Download artifact #N (default: current dir)\n"
                 "/clear                 Clear history\n"
+                "/new                   Start a fresh session\n"
+                "/sessions              List recent sessions\n"
                 "/resume <session_id>   Resume a previous session\n"
                 "/research <question>   Research a question (web + report)\n"
                 "/exit, /quit           Exit shell\n\n"
@@ -185,6 +187,18 @@ class AitherREPL:
             except Exception:
                 pass
             return f"Resumed session {session_id}"
+        elif command == "new":
+            old_id = self.config.session_id or "(none)"
+            self.config.session_id = None
+            self.config.last_session_id = None
+            try:
+                from adk.shell.config import save_config
+                save_config(self.config)
+            except Exception:
+                pass
+            return f"Started fresh session (previous: {old_id})"
+        elif command == "sessions":
+            return self._list_sessions()
         elif command == "research":
             if len(parts) < 2 or not parts[1].strip():
                 return "Usage: /research <question>"
@@ -216,6 +230,43 @@ class AitherREPL:
             size_str = f"  {size:,} bytes" if size else ""
             lines.append(f"  #{i:2d}  {name}  [{atype}]{size_str}")
         lines.append("\n  Use /get N to download (e.g. /get 1)")
+        return "\n".join(lines)
+
+    def _list_sessions(self) -> str:
+        """List recent conversation sessions from disk."""
+        from pathlib import Path
+        import json as _json
+
+        conv_dir = Path.home() / ".aither" / "conversations"
+        if not conv_dir.is_dir():
+            return "No saved sessions found."
+
+        sessions = []
+        for f in conv_dir.glob("*.json"):
+            try:
+                data = _json.loads(f.read_text(encoding="utf-8"))
+                sid = data.get("session_id", f.stem)
+                agent = data.get("agent_name", "?")
+                msgs = data.get("messages", [])
+                updated = data.get("updated_at", 0)
+                sessions.append((updated, sid, agent, len(msgs)))
+            except Exception:
+                continue
+
+        if not sessions:
+            return "No saved sessions found."
+
+        sessions.sort(reverse=True)  # newest first
+        current = self.config.session_id or ""
+        lines = [f"\n  Recent sessions ({len(sessions)} total):\n"]
+        for updated, sid, agent, count in sessions[:15]:
+            import datetime
+            ts = datetime.datetime.fromtimestamp(updated).strftime("%Y-%m-%d %H:%M") if updated else "?"
+            marker = " <-- current" if sid == current else ""
+            lines.append(f"  {sid}  {agent:12s}  {count:3d} msgs  {ts}{marker}")
+        if len(sessions) > 15:
+            lines.append(f"  ... and {len(sessions) - 15} more")
+        lines.append(f"\n  Resume with: /resume <session_id>")
         return "\n".join(lines)
 
     async def _download_artifact(self, arg: str) -> None:
@@ -470,6 +521,17 @@ class AitherREPL:
             if self._thinking_active:
                 print("\033[0m", end="", flush=True)
                 self._thinking_active = False
+            # Auto-persist session_id so the next shell launch resumes this
+            # conversation automatically (the messages are already on disk in
+            # SQLite + JSON; only the session_id pointer was missing).
+            if session_id:
+                self.config.session_id = session_id
+                self.config.last_session_id = session_id
+                try:
+                    from adk.shell.config import save_config
+                    save_config(self.config)
+                except Exception:
+                    pass
             self._generating = False
             self._active_session = None
 
@@ -488,6 +550,15 @@ class AitherREPL:
 
         print(f"Welcome to AitherShell {self.config.url}")
         print("Type /help for commands, Ctrl+C to cancel active generation\n")
+
+        # Auto-restore last session so multi-turn context carries across restarts
+        if not self.config.session_id and getattr(self.config, "last_session_id", None):
+            self.config.session_id = self.config.last_session_id
+            print(
+                f"  Resumed session {self.config.session_id}"
+                f"  (type /new for a fresh session)\n",
+                file=sys.stderr,
+            )
 
         # Run input reader and processor concurrently
         input_task = asyncio.create_task(self._input_loop())
