@@ -59,10 +59,10 @@ def verify_bytes(
     Never raises — returns False on any error.
     """
     try:
+        from cryptography.exceptions import InvalidSignature
         from cryptography.hazmat.primitives.asymmetric.ed25519 import (
             Ed25519PublicKey,
         )
-        from cryptography.exceptions import InvalidSignature
 
         pub_hex = public_key_hex or get_pack_public_key()
         if not pub_hex:

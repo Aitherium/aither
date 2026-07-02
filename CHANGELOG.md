@@ -2,6 +2,18 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [2.14.0] - 2026-07-02
+
+### Added
+- **`adk.memory_wiki` — LyraWiki-style self-managed semantic knowledge** (opt-in; nothing constructs it by default): `MemoryWiki(graph_memory)` maintains curated wiki ARTICLES as `wiki_article` nodes (title/slug, LLM-owned markdown with `[[wikilinks]]`, embedding, durable tier, `CONSOLIDATED_FROM` edges to source memories, governance-ledgered revisions).
+  - `consolidate(llm, since=, budget=)` clusters unconsolidated episodic/fact nodes (embedding + keyword), drafts/UPDATEs articles via the INJECTED llm callable (`str -> str` or `messages -> str`, sync or async — no hard model dependency), cites source node ids, marks contradicted sources superseded, then DEMOTES consolidated sources to a fast-decay tier via `promote()` (represented knowledge doesn't need raw copies).
+  - `lint(llm=None)` — deterministic health checks (orphan wikilinks, empty/stale articles, live-but-contradicted pairs) + an optional LLM audit pass.
+  - `prune(relevance_floor=0.05, hard_delete_after_days=14)` — article relevance = tier freshness × reinforcement (reinforce-on-recall) + link-degree to LIVE memories; below the floor → reversible governance tombstone; entombed past the window → **HARD-DELETE** (the tombstone snapshot itself is purged — content and embedding irrecoverable; the true-deletion path). A node is never deleted without a tombstone first.
+  - `recall(query, limit)` — article-first RAG (curated articles rank above raw nodes) that reinforces returned articles.
+- **`adk.routines` — agent heartbeat + self-programmed routines**: `RoutineStore` is a durable registry (`~/.aither/routines/{agent}.json`, `AITHER_DATA_DIR`-aware, injectable path) of cron-scheduled self-prompts `{name, cron, instruction, enabled, last_run, last_result, tags}` that rehydrates into the existing `adk.cron.CronScheduler` on `start()`. A fire runs `agent.chat(instruction)` with the agent's full toolset — the agent programs its future self with its own adk. Guardrails: `max_routines` (12), a 5-minute min fire interval per routine, a per-fire timeout, and every result ledgered (truncated) to `last_result`. Direct-callable routines (`register_direct`) fire a bound method instead of a self-prompt. Self-management tools (`routine_create/list/update/pause/resume/delete/run_now`) ship as OpenAI tool defs + handlers (`build_routine_tools` / `register_routine_tools` / `routine_tool_defs`); the handlers ONLY touch the RoutineStore — they can never modify agent config or safety-relevant settings (the leash principle).
+- **`AitherAgent(routines=True, memory_maintenance=True)`** (both default **False** → the default agent is byte-identical): `routines=True` builds the RoutineStore + scheduler, registers the self-management tools, and starts the heartbeat lazily on the first `chat()` (or via explicit `start_routines()`). `memory_maintenance=True` registers DEFAULT routines — `wiki_consolidate` (every 2 h), `wiki_lint` / `wiki_prune` / `graph_sweep` (daily) — as DIRECT method fires so memory upkeep runs even on tiny models, while staying visible/manageable via `routine_list`.
+- `TombstoneStore.purge(tombstone_id)` — the hard-delete endpoint: irrecoverably removes a tombstone snapshot and rewrites the persisted store without it (consumed by `memory_wiki.prune`).
+
 ## [2.13.6] - 2026-07-02
 
 ### Added

@@ -139,6 +139,8 @@ class AitherAgent:
         phonehome: bool = False,
         builtin_tools: bool = True,
         load_packs: bool = False,
+        memory_maintenance: bool = False,
+        routines: bool = False,
     ):
         self.config = config or Config.from_env()
 
@@ -372,6 +374,31 @@ class AitherAgent:
 
         # Filter out tools that can't work in current deployment context
         self._filter_unavailable_tools()
+
+        # ── Self-programmed routines + memory-maintenance heartbeat ─────────
+        # Both flags default OFF → the default agent is byte-identical (no
+        # store, no scheduler, no extra tools). Follows the _learn_after /
+        # skills precedent: additive, non-fatal, opt-in.
+        self._routine_store = None
+        self._memory_wiki = None
+        self._routines_started = False
+        self._memory_maintenance = bool(memory_maintenance)
+        if routines or memory_maintenance:
+            try:
+                from adk.routines import RoutineStore, register_routine_tools
+                self._routine_store = RoutineStore(
+                    agent_name=self.name, fire=self._routine_fire,
+                )
+                # Self-management tools: the agent can create/inspect/manage
+                # its own schedules just by being asked. LEASH: the handlers
+                # only touch the RoutineStore — they can never modify agent
+                # config or safety-relevant settings.
+                register_routine_tools(self, self._routine_store)
+                if memory_maintenance:
+                    self._register_maintenance_routines()
+            except Exception as exc:
+                logger.debug("routines init failed (non-fatal): %s", exc)
+                self._routine_store = None
 
     def _check_agent_license(self, load_packs: bool) -> None:
         """Verify this agent identity is licensed and custom agents are allowed.
@@ -683,6 +710,114 @@ class AitherAgent:
         except Exception:
             pass
 
+    # ── Routines heartbeat + self-managed memory maintenance (opt-in) ──────
+
+    async def _routine_fire(self, instruction: str) -> str:
+        """A self-prompt routine fire: the agent chats with its FUTURE self's
+        instruction, full toolset available (self-programming with its own adk)."""
+        resp = await self.chat(instruction)
+        return getattr(resp, "content", "") or ""
+
+    def _get_memory_wiki(self):
+        """Lazily build the MemoryWiki over this agent's graph memory."""
+        if self._memory_wiki is None and self._graph is not None:
+            try:
+                from adk.memory_wiki import MemoryWiki
+                self._memory_wiki = MemoryWiki(self._graph)
+            except Exception as exc:
+                logger.debug("memory wiki init failed (non-fatal): %s", exc)
+        return self._memory_wiki
+
+    async def _wiki_llm(self, prompt: str) -> str:
+        """str -> str llm adapter the MemoryWiki consolidation injects — the
+        agent maintains its memory with its OWN model."""
+        resp = await self.llm.chat(
+            [Message(role="user", content=prompt)],
+            temperature=0.2, max_tokens=1600,
+        )
+        return strip_internal_tags(getattr(resp, "content", "") or "")
+
+    def _register_maintenance_routines(self) -> None:
+        """Register the DEFAULT memory-maintenance routines (wiki consolidate /
+        lint / prune + graph sweep) as DIRECT method fires — they run even on
+        tiny models, yet stay visible/manageable via routine_list."""
+        store = self._routine_store
+        if store is None:
+            return
+
+        async def _wiki_consolidate() -> str:
+            wiki = self._get_memory_wiki()
+            if wiki is None:
+                return "skipped: no graph memory"
+            return json.dumps(await wiki.consolidate(self._wiki_llm), default=str)
+
+        async def _wiki_lint() -> str:
+            wiki = self._get_memory_wiki()
+            if wiki is None:
+                return "skipped: no graph memory"
+            return json.dumps(await wiki.lint(), default=str)
+
+        async def _wiki_prune() -> str:
+            wiki = self._get_memory_wiki()
+            if wiki is None:
+                return "skipped: no graph memory"
+            return json.dumps(await wiki.prune(), default=str)
+
+        def _graph_sweep() -> str:
+            if self._graph is None:
+                return "skipped: no graph memory"
+            return json.dumps(self._graph.sweep(
+                preserve_roles={"preference", "identity", "correction"},
+            ), default=str)
+
+        try:
+            store.register_direct(
+                "wiki_consolidate", _wiki_consolidate, cron="0 */2 * * *",
+                instruction="Consolidate raw episodic memory into wiki articles "
+                            "(direct memory-maintenance fire).",
+                tags=["memory", "maintenance"],
+            )
+            store.register_direct(
+                "wiki_lint", _wiki_lint, cron="30 3 * * *",
+                instruction="Health-check the memory wiki: orphan links, empty/"
+                            "stale articles, contradictions (direct fire).",
+                tags=["memory", "maintenance"],
+            )
+            store.register_direct(
+                "wiki_prune", _wiki_prune, cron="45 3 * * *",
+                instruction="Prune decayed wiki knowledge: tombstone below the "
+                            "relevance floor, hard-delete past retention (direct fire).",
+                tags=["memory", "maintenance"],
+            )
+            store.register_direct(
+                "graph_sweep", _graph_sweep, cron="15 3 * * *",
+                instruction="Sweep decayed graph memories past their tier TTL "
+                            "into reversible tombstones (direct fire).",
+                tags=["memory", "maintenance"],
+            )
+        except Exception as exc:
+            logger.debug("maintenance routine registration failed: %s", exc)
+
+    async def start_routines(self) -> None:
+        """Explicitly start the routines heartbeat (otherwise it starts lazily
+        on the first chat). No-op when the routines flag is off."""
+        if self._routine_store is None or self._routines_started:
+            return
+        self._routines_started = True
+        try:
+            await self._routine_store.start()
+        except Exception as exc:
+            logger.warning("routine heartbeat start failed (non-fatal): %s", exc)
+
+    async def stop_routines(self) -> None:
+        """Stop the routines heartbeat (graceful shutdown)."""
+        if self._routine_store is not None and self._routines_started:
+            try:
+                await self._routine_store.stop()
+            except Exception:
+                pass
+            self._routines_started = False
+
     async def _companion_grounding_repair(self, content: str, message: str, sid: str) -> str:
         """OUTPUT-side never-fabricate backstop (companion turns). When the reply
         plausibly claims shared history, ONE LLM pass checks it against the agent's
@@ -749,6 +884,12 @@ class AitherAgent:
         """Send a message and get a response. Uses tools if available."""
         sid = session_id or self._session_id
         _chat_start = time.perf_counter()
+
+        # Opt-in routines heartbeat: start the scheduler lazily on the first
+        # chat. The started flag is set BEFORE awaiting so routine fires that
+        # re-enter chat() can never recurse into start(). No-op by default.
+        if self._routine_store is not None and not self._routines_started:
+            await self.start_routines()
 
         # Default-on prompt caching: the system prompt + tool schema form a stable
         # prefix reused across every ReAct iteration (and every turn/user), so
