@@ -1344,6 +1344,10 @@ class AitherAgent:
                             "provided function calling format. Do not describe the "
                             "call — actually invoke it. Try again."
                         )))
+                        # Force it at the API level too — a text nudge alone let the
+                        # model acknowledge the tool by name in prose again without
+                        # actually invoking it (reproduced live against qwen3.6-27b).
+                        _tool_choice = "required"
                         continue
 
                 # Turn-1 tool-call steering: if LLM didn't use tools on first
@@ -1351,13 +1355,17 @@ class AitherAgent:
                 # an action (not just chatting), inject steering and retry once.
                 # Heuristic: steer if tool_choice was explicitly set, or if the
                 # message contains action verbs typical of tool-requiring tasks.
+                # No effort floor here — this is a correctness safety net, not a
+                # premium feature; gating it at effort>=6 meant default-effort
+                # chat calls (effort_int=5) never got steered at all (verified
+                # live: default call returned bare "file_read" text, tool_calls=[]).
                 if (_loop_idx == 0 and tools_schema and not _steered_once
-                        and _effort_int >= 6
                         and _should_steer_tool_use(message, _tool_choice)):
                     _steered_once = True
                     logger.debug("[REACT] Turn-1 no tool call — injecting steering retry")
                     messages.append(Message(role="assistant", content=resp.content or ""))
                     messages.append(Message(role="system", content=_TOOL_STEERING_MSG))
+                    _tool_choice = "required"
                     continue
 
                 # No tool calls — we have the final answer
@@ -1763,9 +1771,28 @@ class AitherAgent:
             except Exception:
                 pass
 
-        # If agent has tools, fall back to sync (tool loops can't stream)
+        # If agent has tools, fall back to sync (tool loops can't stream).
+        # Bounded with a timeout: an SSE HTTP handler awaiting this generator
+        # must never hang the connection forever if the underlying model
+        # doesn't cleanly terminate a tool-calling round-trip (observed live:
+        # a small non-tool-tuned Ollama model left a streaming request open
+        # indefinitely, with zero bytes sent, while the equivalent raw
+        # non-streaming a.llm.chat() call — which bypasses the tool loop
+        # entirely — completed in 1-2s).
         if self._tools.list_tools():
-            resp = await self.chat(message, history=history, session_id=sid, **kwargs)
+            try:
+                resp = await asyncio.wait_for(
+                    self.chat(message, history=history, session_id=sid, **kwargs),
+                    timeout=60.0,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "chat_stream() tool-loop fallback timed out after 60s "
+                    "for agent %s — yielding a timeout notice instead of "
+                    "hanging the connection", self.name,
+                )
+                yield "I'm sorry, that took too long to process. Please try again."
+                return
             yield resp.content
             return
 

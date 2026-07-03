@@ -2,6 +2,62 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [2.14.3] - 2026-07-03
+
+### Fixed
+
+All four bugs below were found by actually booting `adk run` against a real
+chat model and driving a real tool-calling request end-to-end (not inferred
+from reading the code) — each one silently broke the "local agent uses its
+configured model and its tools actually work" path.
+
+- **`AITHER_MODEL` / `config.model` silently ignored by the OpenAI-compatible
+  backend**: `LLMRouter.__init__` never read `config.model` into `self._model`
+  unless the caller passed `model=` directly to the constructor — which nothing
+  did. Every explicit model choice (env var, config file) was dropped, the
+  provider fell back to a hardcoded per-backend default (`gpt-4o-mini` for the
+  `openai` backend), and an unrecognized model name got silently remapped
+  server-side to the wrong backing model. Concretely: setting
+  `AITHER_MODEL=aither-orchestrator` had no effect — every request actually
+  went to a different model that was never meant to be called directly and
+  can't reliably use tools.
+- **`OPENAI_BASE_URL` ignored for explicit `--backend`/`AITHER_LLM_BACKEND`
+  selection**: `LLMRouter._auto_detect()`'s explicit-backend branch hardcoded
+  `base_url=None` when constructing the provider, instead of reading
+  `config.openai_base_url` (which two other call sites in the same file
+  already did correctly). Any self-hosted OpenAI-compatible endpoint
+  (MicroScheduler, vLLM, LM Studio) configured via `OPENAI_BASE_URL` was
+  silently ignored in favor of `https://api.openai.com/v1`.
+- **Tool-call steering never engaged on default-effort chat**: the retry that
+  nudges a model back into structured tool-calling when it responds with prose
+  instead of a function call was gated behind `effort >= 6`. Default `effort`
+  for a plain `agent.chat(message)` call resolves to `5`, so the safety net —
+  built specifically for this failure mode — never fired for default requests.
+  Also now forces `tool_choice="required"` on the retry instead of relying on a
+  text nudge alone.
+- **Every non-string builtin-tool parameter silently typed as `"string"` in
+  the generated tool schema**: `builtin_tools.py` uses
+  `from __future__ import annotations`, so `_extract_parameters()` in
+  `tools.py` was reading postponed (string) type hints (`"int"`, not `int`)
+  straight out of `fn.__annotations__`, which never matched
+  `_type_to_schema`'s type-object keys and silently fell through to
+  `{"type": "string"}`. Every builtin tool with an `int`/`float`/`bool`/`list`
+  parameter was affected — e.g. `file_read(start_line: int, end_line: int)`
+  advertised both as strings, so a model correctly calling the tool with
+  `"start_line": "0"` crashed the actual implementation with
+  `unsupported operand type(s) for -: 'str' and 'int'`. Fixed by resolving
+  hints through `typing.get_type_hints()` instead of the raw annotations dict.
+  `_coerce_arguments()` — the runtime safety net that's supposed to coerce a
+  model-supplied `"0"` string into `0` before a tool call executes — had the
+  exact same raw-`__annotations__` bug and silently no-opped for every builtin
+  tool; fixed the same way.
+- **Streaming tool-loop could hang a connection forever**: `chat_stream()`'s
+  fallback to the sync tool loop (tool calls can't stream token-by-token) had
+  no timeout, so a model that didn't cleanly terminate a tool-calling round
+  trip left the SSE connection open indefinitely with zero bytes sent. Bounded
+  with a 60s `asyncio.wait_for`; on timeout the stream yields a clear message
+  instead of hanging.
+
 ## [2.14.2] - 2026-07-03
 
 ### Fixed

@@ -117,7 +117,14 @@ class LLMRouter:
     ):
         self._provider_name: str = ""
         self._provider: LLMProvider | None = None
-        self._model = model
+        # config.model (AITHER_MODEL) must win when the caller didn't pin an
+        # explicit model — otherwise every config/env model choice is silently
+        # dropped and providers fall back to their static per-backend default
+        # (e.g. "gpt-4o-mini"), which upstream routers may then remap to an
+        # arbitrary model that was never meant to be called directly (verified
+        # live: an unrecognized model name got silently remapped to a non-
+        # tool-calling model on the shared fleet backend).
+        self._model = model or (getattr(config, "model", "") if config else "") or None
         self._config = config
         # OQ16 lever 2 — opt-in response cache. OFF unless a ResponseCache is passed
         # here AND a call sets cacheable=True; default behavior is unchanged. Skipping
@@ -518,8 +525,12 @@ class LLMRouter:
                 "gemini": getattr(self._config, "gemini_api_key", ""),
             }
             api_key = key_for.get(explicit, "") or os.getenv(f"{explicit.upper()}_API_KEY", "")
+            base_url_for = {
+                "openai": getattr(self._config, "openai_base_url", "") or os.getenv("OPENAI_BASE_URL", ""),
+            }
+            explicit_base_url = base_url_for.get(explicit, "") or None
             try:
-                p = self._create_provider(explicit, base_url=None, api_key=api_key)
+                p = self._create_provider(explicit, base_url=explicit_base_url, api_key=api_key)
                 self._provider_name = explicit
                 logger.info(
                     "Using explicit backend '%s' (model=%s)",
@@ -660,7 +671,9 @@ class LLMRouter:
     def _log_cost(self, resp, provider_name: str = "") -> None:
         """Append a cost entry to ~/.aither/cloud_costs.jsonl for local tracking."""
         import json as _json
+        import os
         from datetime import datetime, timezone
+        from pathlib import Path
         try:
             data_dir = self._config.data_dir if self._config else os.path.expanduser("~/.aither")
             log_path = Path(data_dir) / "cloud_costs.jsonl"

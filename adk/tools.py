@@ -232,7 +232,15 @@ def _coerce_arguments(fn: Callable, arguments: dict) -> dict:
     everything else untouched. Never raises — returns the args as-is on any problem.
     """
     try:
-        hints = getattr(fn, "__annotations__", {}) or {}
+        # Same postponed-annotations issue as _extract_parameters: modules with
+        # `from __future__ import annotations` store hints as strings, so a raw
+        # `__annotations__` lookup never matches _coerce_value's real type-object
+        # checks and this coercion silently no-ops for every builtin tool.
+        import typing
+        try:
+            hints = typing.get_type_hints(fn) or {}
+        except Exception:
+            hints = getattr(fn, "__annotations__", {}) or {}
         params = inspect.signature(fn).parameters
     except (TypeError, ValueError):
         return arguments
@@ -279,7 +287,20 @@ def _coerce_value(value, hint):
 def _extract_parameters(fn: Callable) -> dict:
     """Extract JSON Schema parameters from function signature and type hints."""
     sig = inspect.signature(fn)
-    hints = getattr(fn, "__annotations__", {})
+    # `get_type_hints` (not raw `__annotations__`) is required: modules using
+    # `from __future__ import annotations` (e.g. builtin_tools.py) store hints
+    # as unevaluated strings ("int", not the int type), so a raw dict lookup
+    # against _type_to_schema's type-object keys always misses and silently
+    # degrades every non-str param to {"type": "string"} — verified live: this
+    # broke file_read's start_line/end_line (declared `int`), causing the model
+    # to pass "0"/"1" strings straight into `start_line - 1` and crash with
+    # "unsupported operand type(s) for -: 'str' and 'int'" on every call that
+    # used them.
+    import typing
+    try:
+        hints = typing.get_type_hints(fn)
+    except Exception:
+        hints = getattr(fn, "__annotations__", {})
 
     properties: dict[str, Any] = {}
     required: list[str] = []
