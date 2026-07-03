@@ -2,6 +2,21 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [2.14.1] - 2026-07-02
+
+### Added
+- **Account-tied licensing via device-flow login** — `adk login` now persists the account
+  license returned by the device-flow handshake to `~/.aither/license.json` (base64
+  `license_key` → `{payload, signature}` envelope), so entitlements from the authenticated
+  account carry into every later `adk` invocation without re-auth. Pairs with the fleet-side
+  node tool-pack gate that grants packs by plan-tier rank.
+- **`can_use_formbridge` / `can_use_untether` entitlements** (PROFESSIONAL+ rank ≥ 3) backing
+  the FormBridge and UNTETHER agent tool-packs.
+
+### Fixed
+- `adk` CLI: guard the optional `memory_graph` singleton (was a latent `NameError` on the
+  `/stats`, `/memory`, and save paths when memory was not constructed).
+
 ## [2.14.0] - 2026-07-02
 
 ### Added

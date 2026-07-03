@@ -890,6 +890,39 @@ def _device_flow_login(identity_url: str, client_name: str = "adk") -> dict:
     raise RuntimeError("Timed out waiting for approval. Run `adk login` again.")
 
 
+def _save_account_license(result: dict) -> str:
+    """Persist the account's signed license from a login result to
+    ``~/.aither/license.json`` so LicenseManager gates packs on the user's real
+    AitherIdentity/ACTA entitlements. Returns the tier (or "" if none/failed).
+
+    The ``license_key`` from AitherIdentity is the base64 outer envelope
+    (base64(json({payload, signature}))); LicenseManager's file path expects the
+    decoded {payload, signature} envelope. Fail-soft: a bad/absent key just leaves
+    the runtime on its prior tier (COMMUNITY) — never blocks login.
+    """
+    import base64 as _b64
+    import json as _json
+    from pathlib import Path as _Path
+
+    license_key = (result.get("license_key") or "").strip()
+    if not license_key:
+        return ""
+    try:
+        envelope = _json.loads(_b64.b64decode(license_key).decode("utf-8"))
+        if not (isinstance(envelope, dict) and "payload" in envelope and "signature" in envelope):
+            return ""
+        lic_path = _Path.home() / ".aither" / "license.json"
+        lic_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = lic_path.with_suffix(".json.tmp")
+        tmp.write_text(_json.dumps(envelope), encoding="utf-8")
+        tmp.replace(lic_path)
+        return str(result.get("tier") or "")
+    except Exception as exc:  # never break login over license persistence
+        import logging as _logging
+        _logging.getLogger("adk.cli").debug("license persistence skipped: %s", exc)
+        return ""
+
+
 def cmd_login(args) -> int:
     """Authenticate with Aitherium — device flow, email/password, or API key."""
     import json as _json
@@ -966,6 +999,14 @@ def cmd_login(args) -> int:
             config_update["username"] = user["username"]
     save_saved_config(config_update)
 
+    # Persist the account's Ed25519 license so pack entitlements (can_use_formbridge,
+    # can_use_untether, can_use_computer_use, ...) flow from the USER'S AitherIdentity
+    # account into this runtime. AitherIdentity's device-flow already fetches it from
+    # ACTA (/v1/billing/license) and returns it here — previously it was dropped, so
+    # LicenseManager fell back to COMMUNITY (free) and every premium pack gated closed.
+    # LicenseManager reads ~/.aither/license.json as the {payload, signature} envelope.
+    license_tier = _save_account_license(result)
+
     eps = _persist_workspace_endpoints(identity_url)
     _persist_shell_auth(identity_url, eps, result)
 
@@ -973,6 +1014,8 @@ def cmd_login(args) -> int:
     print()
     print(f"  Logged in{' as ' + username if username else ''}!")
     print("  Token saved to ~/.aither/config.json")
+    if license_tier:
+        print(f"  License saved → tier '{license_tier}' (pack entitlements active)")
     if eps:
         print(f"  Workspace endpoints configured → {eps['api_url']} (inference + MCP)")
     print()
@@ -5422,6 +5465,7 @@ def cmd_start(args):
 
     # ── Step 3: Index codebase (if applicable) ────────────────────
     code_graph = None
+    memory_graph = None  # pre-existing REPL /stats,/memory refs were undefined (NameError)
     if lang == "Python" and py_count > 0:
         from adk.faculties.code_graph import CodeGraph
         code_graph = CodeGraph()
@@ -5541,15 +5585,19 @@ def cmd_start(args):
                     print(f"  Code index: {len(code_graph.chunks):,} chunks, "
                           f"{code_graph.total_files} files, "
                           f"{code_graph.memory_usage_mb:.1f}MB")
-                ms = memory_graph.get_stats()
-                print(f"  Memory:     {ms['nodes']} memories, {ms['edges']} connections")
+                if memory_graph:
+                    ms = memory_graph.get_stats()
+                    print(f"  Memory:     {ms['nodes']} memories, {ms['edges']} connections")
                 print(f"  Workspace:  {target}")
                 continue
 
             if user_input.lower() == "/memory":
-                ms = memory_graph.get_stats()
-                print(f"  Nodes: {ms['nodes']}, Edges: {ms['edges']}, "
-                      f"Embeddings: {ms['embeddings_cached']}")
+                if memory_graph:
+                    ms = memory_graph.get_stats()
+                    print(f"  Nodes: {ms['nodes']}, Edges: {ms['edges']}, "
+                          f"Embeddings: {ms['embeddings_cached']}")
+                else:
+                    print("  (memory graph not initialized)")
                 continue
 
             if user_input.lower() == "/forget":
@@ -5588,7 +5636,8 @@ def cmd_start(args):
     # Save memory on exit (suppress noisy HMAC warnings)
     logging = __import__("logging")
     logging.getLogger("adk.faculties").setLevel(logging.ERROR)
-    memory_graph.save()
+    if memory_graph:
+        memory_graph.save()
     print("  Memory saved. Goodbye!")
     return 0
 

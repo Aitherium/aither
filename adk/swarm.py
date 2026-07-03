@@ -270,35 +270,55 @@ async def _claim_task(goal_id: str, index: int, agent_id: str) -> bool:
 # LLM helper (offload to DeepSeek / Anthropic / gateway per env)
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def _llm(system: str, user: str, effort: int, backend: str = "") -> str:
-    """One-shot chat through the SDK router. ``backend`` (deepseek/anthropic/
-    gateway/…) forces a provider; empty = auto-detect (env keys). Keeps the
-    swarm offloading to DeepSeek/Anthropic 'as much as possible' via env."""
+def _backend_default() -> str:
+    """Swarm-wide default brain backend. ``SWARM_BACKEND`` (deepseek|gateway|
+    anthropic|…) sets it fleet-wide; empty = LLMRouter auto-detect."""
+    return os.environ.get("SWARM_BACKEND", "").strip()
+
+
+async def _llm(system: str, user: str, effort: int, backend: str = "",
+               model: str = "") -> str:
+    """One-shot chat through the SDK router.
+
+    ``backend`` (deepseek|gateway|anthropic|…) forces a provider; empty falls
+    back to ``SWARM_BACKEND`` then LLMRouter auto-detect. ``model`` pins the
+    model for THIS call (e.g. workers=deepseek-chat, synthesizer=deepseek-reasoner,
+    or fleet aither-orchestrator/aither-reasoning) — so the brain is configurable
+    per role without code changes. ``gateway`` routes through mcp.aitherium.com /
+    MicroScheduler with an aither_sk key (fleet inference)."""
     from adk.llm import LLMRouter, Message
     try:
         from adk.config import Config
         cfg = Config.from_env()
     except Exception:  # noqa: BLE001 — env-only is fine in CI
         cfg = None
-    # Explicit gateway target (MicroScheduler / mcp.aitherium.com) takes priority
-    # so every LLM call routes THROUGH the scheduler (never bypass it) and works
-    # in CI without a host API key — LLMRouter's gateway auto-detect otherwise
-    # needs a truthy key. An explicit --backend still wins over this.
+    backend = backend or _backend_default()
     gw = os.environ.get("AITHER_GATEWAY_URL", "").strip().rstrip("/")
-    if not backend and gw:
-        base = gw if gw.endswith("/v1") else gw + "/v1"
+    # gateway backend (explicit) OR a bare AITHER_GATEWAY_URL with no other backend
+    # → route THROUGH the scheduler/gateway (never bypass it); works without a host
+    # key (LLMRouter's gateway auto-detect needs a truthy key, this doesn't).
+    if backend == "gateway" or (not backend and gw):
+        base = (gw or "https://mcp.aitherium.com").rstrip("/")
+        base = base if base.endswith("/v1") else base + "/v1"
         router = LLMRouter(
             provider="openai", base_url=base,
             api_key=os.environ.get("AITHER_API_KEY", "") or "internal",
-            model=os.environ.get("AITHER_SWARM_MODEL", "aither-orchestrator"),
+            model=(model or os.environ.get("AITHER_SWARM_MODEL", "aither-orchestrator")),
             config=cfg,
         )
     else:
-        router = LLMRouter(provider=(backend or None), config=cfg)
+        # Explicit provider (deepseek/anthropic/openai/…): LLMRouter's constructor
+        # builds the provider immediately and does NOT read the key from config,
+        # so pass the matching env key through (else the call is unauthenticated).
+        _key_env = {"deepseek": "DEEPSEEK_API_KEY", "anthropic": "ANTHROPIC_API_KEY",
+                    "openai": "OPENAI_API_KEY", "gemini": "GEMINI_API_KEY"}
+        api_key = os.environ.get(_key_env.get(backend, ""), "") if backend else ""
+        router = LLMRouter(provider=(backend or None), api_key=(api_key or None),
+                           model=(model or None), config=cfg)
     resp = await router.chat(
         [Message(role="system", content=system),
          Message(role="user", content=user)],
-        effort=effort,
+        model=(model or None), effort=effort,
     )
     return (resp.content or "").strip()
 
@@ -332,6 +352,7 @@ async def plan(goal: str, n_tasks: int = 6, effort: int = 6, backend: str = "") 
         _PLAN_SYS,
         f"Goal: {goal}\n\nProduce about {n_tasks} parallel subtasks as a JSON array.",
         effort=effort, backend=backend,
+        model=os.environ.get("SWARM_WORKER_MODEL", ""),
     )
     tasks = _parse_task_list(out, goal, n_tasks)
     written = await write_task_ledger(goal, tasks)
@@ -401,7 +422,8 @@ async def worker(goal: str, agent_id: str, effort: int = 5, backend: str = "",
         prompt = claimed.get("prompt", "")
         logger.info("%s claimed task %d: %s", agent_id, idx, prompt[:80])
         answer = await _llm(_WORKER_SYS, f"Goal: {goal}\n\nSubtask: {prompt}",
-                            effort=effort, backend=backend)
+                            effort=effort, backend=backend,
+                            model=os.environ.get("SWARM_WORKER_MODEL", ""))
         node = await gm.add_node(
             label=f"finding:{gid}:{idx}",
             node_type="finding",
@@ -475,6 +497,7 @@ async def synthesize(goal: str, effort: int = 8, backend: str = "") -> dict:
     answer = await _llm(
         _SYNTH_SYS, f"Original goal: {goal}\n\nAgent findings:\n{context}",
         effort=effort, backend=backend,
+        model=os.environ.get("SWARM_SYNTH_MODEL", ""),
     )
     # Record the synthesized answer back to the graph (durable + shareable).
     await gm.add_node(

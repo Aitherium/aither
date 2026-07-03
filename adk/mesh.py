@@ -11,9 +11,9 @@ capability so `adk mesh join` works anywhere aither-adk runs:
   4. write the wg config + bring the interface up (wg-quick / wireguard.exe)
   5. verify the handshake (``wg show``)
 
-Once up, the node reaches internal services at their mesh addresses
-(``aither-vllm-embeddings``, ``aitheros-flux``, ``aitheros-qdrant`` …) exactly
-like any fleet peer — which is how a swarm runner talks back to the fleet.
+Once up, the node reaches internal services at their mesh addresses (the
+embeddings endpoint, the event bus, the vector store, …) exactly like any
+fleet peer — which is how a swarm runner talks back to the fleet.
 
 Auth: the node's WireGuard public key registered through the Conductor is the
 identity. A pre-shared key (``AITHER_MESH_PSK``) is sent as a bearer challenge
