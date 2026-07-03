@@ -2,6 +2,15 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [2.14.2] - 2026-07-03
+
+### Fixed
+- **AitherShell session amnesia**: the REPL generated a fresh `session_id` for
+  EVERY message, so conversation history never followed across turns (the
+  server stored each turn under a different session). One stable id is now
+  minted per shell run; `/resume` and `/new` semantics unchanged, and the
+  cross-restart auto-restore of the last session now actually works.
+
 ## [2.14.1] - 2026-07-02
 
 ### Added

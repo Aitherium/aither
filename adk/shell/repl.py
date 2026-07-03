@@ -462,11 +462,16 @@ class AitherREPL:
 
     async def _run_generation(self, user_input: str) -> None:
         """Stream a chat request. Non-blocking — _input_loop keeps running."""
-        # Use config.session_id if set, otherwise generate a new one
-        if self.config.session_id:
-            session_id = self.config.session_id
-        else:
-            session_id = str(uuid4())
+        # STABLE session for the whole shell run. The old code generated a
+        # fresh uuid4 PER MESSAGE when config.session_id was unset — every
+        # turn was a brand-new server-side session, so conversation history
+        # never followed ([session_context] history_chars=0 on follow-ups,
+        # live-observed 2026-07-02). Generate once, stick to it; /resume and
+        # /new still override by setting/clearing config.session_id.
+        if not self.config.session_id:
+            self.config.session_id = str(uuid4())
+            self.config.last_session_id = self.config.session_id
+        session_id = self.config.session_id
         self._generating = True
         self._active_session = session_id
         self._thinking_active = False
