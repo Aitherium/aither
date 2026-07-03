@@ -5,17 +5,33 @@ This is the ONE client that all AitherOS tools should use.
 AitherShell, AitherDesktop, AitherConnect, ADK — all import from here.
 """
 
+import json
 import os
 import uuid
-import json
-from typing import Optional, AsyncIterator, Dict, Any, List
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, List, Optional
 
 import httpx
 
 from adk.client._models import (
-    ChatRequest, ChatResponse, ChatMetadata, ToolCall,
-    WillInfo, AgentInfo, ServiceHealth,
+    AgentInfo,
+    ChatMetadata,
+    ChatRequest,
+    ChatResponse,
+    ServiceHealth,
+    ToolCall,
+    WillInfo,
 )
+
+if TYPE_CHECKING:
+    from adk.client.services.a2a import A2AClient
+    from adk.client.services.context import ContextClient
+    from adk.client.services.conversations import ConversationClient
+    from adk.client.services.data_plane import DataPlaneClient
+    from adk.client.services.expeditions import ExpeditionClient
+    from adk.client.services.strata import StrataClient
+    from adk.client.services.voice import VoiceClient
+    from adk.portal import PortalClient
 
 
 class AitherResponse:
@@ -92,6 +108,7 @@ class AitherClient:
         timeout: float = 120.0,
         api_key: Optional[str] = None,
         tenant_id: Optional[str] = None,
+        mcp_url: Optional[str] = None,
     ):
         self.url = (url or os.environ.get("AITHER_URL")
                     or os.environ.get("AITHER_ORCHESTRATOR_URL")
@@ -111,6 +128,8 @@ class AitherClient:
         self._data_plane_url = os.environ.get(
             "AITHER_DATAPLANE_URL", "http://localhost:8170",
         ).rstrip("/")
+        self._mcp_url = (mcp_url or os.environ.get("AITHER_MCP_URL")
+                         or "https://mcp.aitherium.com").rstrip("/")
         self.session_id = session_id or str(uuid.uuid4())
         self.timeout = timeout
         self.api_key = api_key or os.environ.get("AITHER_API_KEY", "")
@@ -125,6 +144,8 @@ class AitherClient:
         self._expeditions: Optional["ExpeditionClient"] = None
         self._voice: Optional["VoiceClient"] = None
         self._conversations: Optional["ConversationClient"] = None
+        self._portal: Optional["PortalClient"] = None
+        self._discovered_tools: Optional[List[Dict[str, Any]]] = None
 
     def _auth_headers(self) -> Dict[str, str]:
         """Build auth headers for requests."""
@@ -143,10 +164,42 @@ class AitherClient:
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(
-                timeout=self.timeout,
-                headers=self._auth_headers(),
-            )
+            # Build httpx client with device cert support if available.
+            client_kwargs: Dict[str, Any] = {
+                "timeout": self.timeout,
+                "headers": self._auth_headers(),
+            }
+
+            # Check for enrolled device cert (mTLS).
+            cert_path = os.environ.get("AITHER_NODE_CERT")
+            if not cert_path:
+                try:
+                    from adk.sync import device_identity
+                    cert_tuple = device_identity.load_device_cert()
+                    if cert_tuple:
+                        cert_path = cert_tuple  # (cert_path, key_path) tuple
+                except Exception:
+                    cert_path = None
+
+            if cert_path:
+                client_kwargs["cert"] = cert_path
+                # Trust the internal CA for HTTPS (mTLS setup implies internal
+                # CA trust).
+                try:
+                    from lib.security.TLSConfig import get_internal_httpx_verify
+                    # Inject AitherOS path if needed
+                    import sys
+                    adk_dir = Path(__file__).parent.parent.parent  # aither-adk/
+                    aitheros_dir = adk_dir.parent / "AitherOS"
+                    if aitheros_dir.is_dir() and str(aitheros_dir) not in sys.path:
+                        sys.path.insert(0, str(aitheros_dir))
+                    from lib.security.TLSConfig import get_internal_httpx_verify
+                    client_kwargs["verify"] = get_internal_httpx_verify()
+                except Exception:
+                    # Fall back to system CA verification
+                    pass
+
+            self._client = httpx.AsyncClient(**client_kwargs)
         return self._client
 
     async def close(self):
@@ -263,6 +316,161 @@ class AitherClient:
         )
         return resp.status_code == 200
 
+    # -- Tool Discovery -------------------------------------------------------
+
+    async def auto_discover_tools(
+        self, refresh: bool = False
+    ) -> List[Dict[str, Any]]:
+        """Discover available tools from the MCP gateway.
+
+        Fetches the tool manifest (list of tool names, descriptions, and input
+        schemas) from the configured MCP URL and caches the result in-memory.
+        Tools are filtered server-side by tier and permissions.
+
+        Args:
+            refresh: If True, bypass the in-memory cache and fetch fresh
+                     from the server.
+
+        Returns:
+            A list of tool definitions, each with keys:
+            - name (str): Tool identifier
+            - description (str): Human-readable description
+            - parameters (dict): JSON Schema for input arguments
+                (usually under 'properties' key)
+
+        Raises:
+            Exception: If the MCP gateway is unreachable or returns an error.
+
+        Example:
+            tools = await client.auto_discover_tools()
+            for tool in tools:
+                print(f"{tool['name']}: {tool['description']}")
+        """
+        if self._discovered_tools is not None and not refresh:
+            return self._discovered_tools
+
+        client = await self._get_client()
+        manifest_url = f"{self._mcp_url}/tools/manifest"
+
+        resp = await client.get(manifest_url)
+        if resp.status_code == 401:
+            raise ValueError(
+                "Authentication failed (401) when fetching MCP manifest. "
+                "Verify AITHER_API_KEY is set."
+            )
+        if resp.status_code == 403:
+            raise ValueError(
+                "Access denied (403) when fetching MCP manifest. "
+                "Your tier may not have access to MCP tools."
+            )
+        if resp.status_code != 200:
+            raise Exception(
+                f"MCP gateway returned {resp.status_code}: {resp.text[:200]}"
+            )
+
+        data = resp.json()
+        # Manifest can be {tools: [...]} or a raw list
+        tools = data.get("tools", data) if isinstance(data, dict) else data
+        if not isinstance(tools, list):
+            tools = []
+
+        self._discovered_tools = tools
+        return tools
+
+    async def call_discovered_tool(
+        self, name: str, **kwargs
+    ) -> str:
+        """Call a tool that was discovered via auto_discover_tools().
+
+        Dispatches through the MCP gateway using the existing auth headers.
+        The tool must have been returned by auto_discover_tools() or this
+        method will raise an error.
+
+        Args:
+            name: The tool identifier (must match a discovered tool).
+            **kwargs: Arguments to pass to the tool (matches the tool's
+                     input schema 'properties').
+
+        Returns:
+            The tool's result as a string.
+
+        Raises:
+            ValueError: If the tool was not discovered or no tools have been
+                       discovered yet.
+            Exception: If the MCP gateway returns an error.
+
+        Example:
+            await client.auto_discover_tools()
+            result = await client.call_discovered_tool(
+                "explore_code", query="agent dispatch"
+            )
+            print(result)
+        """
+        if self._discovered_tools is None:
+            raise ValueError(
+                "No tools discovered yet. Call auto_discover_tools() first."
+            )
+
+        # Verify the tool exists in the discovered set
+        tool_names = {t.get("name") for t in self._discovered_tools}
+        if name not in tool_names:
+            raise ValueError(
+                f"Tool '{name}' not in discovered tools. "
+                f"Available: {', '.join(sorted(tool_names)[:5])}..."
+            )
+
+        # Call through MCP gateway using the standard JSON-RPC protocol
+        client = await self._get_client()
+        payload = {
+            "jsonrpc": "2.0",
+            "method": "tools/call",
+            "params": {"name": name, "arguments": kwargs or {}},
+            "id": 1,
+        }
+
+        resp = await client.post(f"{self._mcp_url}/mcp", json=payload)
+
+        if resp.status_code == 401:
+            raise ValueError(
+                "Authentication failed (401) when calling MCP tool. "
+                "Verify AITHER_API_KEY is set."
+            )
+        if resp.status_code == 402:
+            raise ValueError(
+                "Insufficient token balance (402) for this tool call."
+            )
+        if resp.status_code == 403:
+            raise ValueError(
+                f"Tool '{name}' not allowed for your tier."
+            )
+        if resp.status_code != 200:
+            raise Exception(
+                f"MCP gateway returned {resp.status_code}: {resp.text[:200]}"
+            )
+
+        data = resp.json()
+
+        # Check for JSON-RPC error
+        if "error" in data:
+            err = data["error"]
+            raise Exception(
+                f"MCP error {err.get('code', -1)}: {err.get('message', '')}"
+            )
+
+        # Extract text content from the result
+        result = data.get("result", {})
+        if isinstance(result, dict) and "content" in result:
+            parts = result["content"]
+            texts = [
+                p.get("text", str(p)) if isinstance(p, dict) else str(p)
+                for p in parts
+            ]
+            return "\n".join(texts)
+        elif isinstance(result, str):
+            return result
+        else:
+            return json.dumps(result, default=str)
+
     # -- System ---------------------------------------------------------------
 
     async def health(self) -> ServiceHealth:
@@ -342,6 +550,16 @@ class AitherClient:
             from adk.client.services.voice import VoiceClient
             self._voice = VoiceClient(self._voice_url, self._get_client)
         return self._voice
+
+    @property
+    def portal(self) -> "PortalClient":
+        """portal.aitherium.com marketplace client — browse/search/install
+        agent, skill, and tool packs. Shares this client's resolved api_key
+        so both agree on which credential is in use."""
+        if self._portal is None:
+            from adk.portal import PortalClient
+            self._portal = PortalClient(api_key=self.api_key or None)
+        return self._portal
 
     @property
     def conversations(self) -> "ConversationClient":

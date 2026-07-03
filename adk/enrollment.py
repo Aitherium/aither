@@ -195,6 +195,71 @@ async def heartbeat_loop(
             log.debug("Heartbeat error: %s", e)
 
 
+async def _request_device_cert(
+    base_url: str,
+    token: str,
+    node_id: str,
+    tenant_id: str,
+) -> Dict[str, Any]:
+    """Request a device mTLS client cert from the identity service.
+
+    After successful node registration, the client can request a client cert
+    for mTLS authentication to AitherOS services. The cert is bound to the
+    tenant+node (CN = devcert--<tenant>--<node>) so the cloud derives the
+    tenant cryptographically instead of from a spoofable header.
+
+    Args:
+        base_url: Control-plane base (Identity service)
+        token: Bearer token from the enrollment response
+        node_id: Node identifier
+        tenant_id: Tenant ID from the enrollment response
+
+    Returns:
+        ``{"success": bool, "mtls": {...}, "error": str}`` — never raises.
+        On success, mtls is ``{certificate, private_key, chain}``.
+    """
+    if not token or not tenant_id:
+        return {"success": False, "error": "missing token or tenant_id"}
+
+    try:
+        import httpx
+
+        from adk.sync import device_identity
+
+        base = base_url.rstrip("/")
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        payload = {"node_id": node_id, "tenant_id": tenant_id}
+
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                f"{base}/v1/nodes/mtls-cert", json=payload, headers=headers
+            )
+
+        if resp.status_code != 200:
+            detail = resp.text[:200]
+            log.warning("mtls-cert request HTTP %s: %s", resp.status_code, detail)
+            return {"success": False, "error": f"HTTP {resp.status_code}: {detail}"}
+
+        data = resp.json()
+        mtls_bundle = data.get("mtls", {}) or {}
+        if not mtls_bundle or not mtls_bundle.get("certificate"):
+            log.debug("No device cert in response (best-effort; device will use bearer-token auth)")
+            return {"success": False, "error": "no cert in response"}
+
+        # Persist the cert locally
+        try:
+            device_identity.save_enrolled_identity(mtls_bundle)
+            log.info("Device mTLS cert enrolled and persisted")
+            return {"success": True, "mtls": mtls_bundle}
+        except Exception as e:
+            log.warning("Failed to persist device cert: %s", e)
+            return {"success": False, "error": f"cert persistence failed: {e}"}
+
+    except Exception as e:
+        log.debug("Device cert request failed (best-effort): %s", e)
+        return {"success": False, "error": str(e)}
+
+
 async def rich_enroll(
     base_url: str,
     token: str,
@@ -236,6 +301,11 @@ async def rich_enroll(
         workspace = data.get("workspace", {}) or {}
         _save_workspace(workspace)
 
+        # After successful registration, request a device client cert (best-effort).
+        tenant_id = data.get("tenant_id", "")
+        cert_result = await _request_device_cert(base, token, node_id, tenant_id)
+        cert_enrolled = cert_result.get("success", False)
+
         if enable_heartbeat:
             try:
                 asyncio.create_task(heartbeat_loop(base, token, node_id))
@@ -243,15 +313,21 @@ async def rich_enroll(
                 # No running loop (sync context) — caller can start it later.
                 log.debug("No event loop for heartbeat; skipping background task")
 
-        log.info("Enrolled endpoint %s (tenant=%s)", node_id, data.get("tenant_id", ""))
+        log.info("Enrolled endpoint %s (tenant=%s, cert_enrolled=%s)",
+                 node_id, tenant_id, cert_enrolled)
         return {
             "enrolled": True,
             "node_id": node_id,
-            "tenant_id": data.get("tenant_id", ""),
+            "tenant_id": tenant_id,
             "workspace_id": data.get("workspace_id", ""),
             "workspace": workspace,
             "registration": reg,
+            "cert_enrolled": cert_enrolled,
             "_enrolled_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            # Tenant-scoped capability token (identity_nodes.py's /v1/nodes/register
+            # now mints one) — lets this node self-service its OWN gateway API key
+            # afterward instead of reusing the enrolling user's own access token.
+            "bearer_token": data.get("bearer_token", ""),
         }
     except Exception as e:
         log.warning("Rich enrollment failed: %s", e)

@@ -74,6 +74,7 @@ def create_app(
             await _register_with_gateway()
             await _sync_secrets()
             await _join_aithernet()
+            await _rich_enroll_identity()
             await _init_chat_relay()
             await _init_mail_relay()
             await _init_relay_client()
@@ -1248,6 +1249,43 @@ def create_app(
         except (ImportError, RuntimeError, OSError, ConnectionError, httpx.HTTPError) as exc:
             logger.debug("AitherNet join failed (non-fatal): %s", exc)
 
+    async def _rich_enroll_identity():
+        """Register with AitherIdentity's rich node spine (separate from the AitherNet
+        mesh relay joined by _join_aithernet, above — that's presence/messaging; this
+        is identity + capability-token issuance). On success, mints a tenant-scoped
+        bearer_token and self-services a real avk_... gateway key via AitherSecrets,
+        replacing the node's reliance on the user's own access token for follow-up
+        calls. Non-fatal: enrollment.rich_enroll() never raises.
+        """
+        if not config.aither_api_key:
+            return
+        try:
+            import platform
+            from adk import enrollment
+            from adk import fleet_enroll
+
+            idp_url = os.getenv("AITHER_IDP_URL", os.getenv("AITHER_IDP_BASE_URL", "https://idp.aitherium.com"))
+            relay = _state.get("relay")
+            node_id = relay.node_id if relay else os.getenv("AITHER_NODE_NAME", "") or platform.node()
+
+            result = await enrollment.rich_enroll(
+                idp_url, config.aither_api_key, node_id, enable_heartbeat=True,
+            )
+            if not result.get("enrolled"):
+                logger.debug("Identity enrollment skipped/failed (non-fatal): %s", result.get("error"))
+                return
+
+            logger.info(
+                "Identity-enrolled with AitherNet as %s (tenant=%s)",
+                node_id[:12], result.get("tenant_id", ""),
+            )
+
+            bearer_token = result.get("bearer_token", "")
+            if bearer_token:
+                await fleet_enroll._self_mint_gateway_key(bearer_token, node_id)
+        except (ImportError, RuntimeError, OSError, ConnectionError, httpx.HTTPError) as exc:
+            logger.debug("Identity enrollment failed (non-fatal): %s", exc)
+
     def _detect_node_capabilities() -> list[str]:
         """Detect what this node can do."""
         caps = ["chat", "tools", "mcp", "a2a", "irc", "smtp"]
@@ -2149,7 +2187,14 @@ async def _stream_agent_response(agent, message: str, history: list[dict], model
                 ],
             }
             yield f"data: {json.dumps(data)}\n\n"
-    except (RuntimeError, OSError, ConnectionError) as exc:
+    except Exception as exc:  # noqa: BLE001 — this is the terminal SSE error
+        # boundary; any uncaught exception here (observed live: httpx.HTTPStatusError
+        # from a backend rejecting a tool-calling request, e.g. an Ollama model that
+        # doesn't support the tools schema) must surface as a clear error chunk to
+        # the client, not crash the generator and leave the HTTP response hanging
+        # with zero bytes sent ("(no response)" client-side, indistinguishable from
+        # a real hang). A narrower (RuntimeError, OSError, ConnectionError) catch
+        # here previously let exactly this class of error through uncaught.
         logger.error("Streaming error: %s", exc)
         data = {
             "id": chat_id,

@@ -224,10 +224,50 @@ class AitherNetRelay:
                 "Registered on AitherNet as %s (node_id=%s)",
                 self.node_name, self._node_id[:12],
             )
+
+            bearer_token = data.get("bearer_token", "")
+            if bearer_token:
+                await self._self_mint_key(bearer_token)
+
             return data
         except Exception as e:
             logger.warning(f"AitherNet registration failed: {e}")
             return {"ok": False, "error": str(e)}
+
+    async def _self_mint_key(self, bearer_token: str) -> None:
+        """Self-service mint a node-scoped avk_ gateway key via AitherSecrets.
+
+        Called right after a successful /v1/nodes/register that returns a
+        tenant-scoped capability ``bearer_token`` (see identity_nodes.py's
+        register_node). Trades that token for a real, revocable ``avk_...``
+        key from AitherSecrets and switches this client to use it for all
+        subsequent calls — replacing whatever access token the node started
+        with. Best-effort: on any failure the node just keeps using its
+        original ``self.api_key``.
+
+        AitherSecrets (8111) is local-only (no public tunnel route) by
+        design, so this always targets the local vault, not the gateway
+        hostname — a remote (non-local) node would need a gateway-side proxy
+        for /api-keys, which doesn't exist yet.
+        """
+        secrets_url = os.getenv("AITHER_SECRETS_URL", "http://localhost:8111")
+        try:
+            from adk._tls import tls_verify
+            async with httpx.AsyncClient(timeout=15.0, verify=tls_verify()) as client:
+                resp = await client.post(
+                    f"{secrets_url.rstrip('/')}/api-keys",
+                    json={"name": f"node-{self._node_id}", "scopes": ["endpoint:secrets"]},
+                    headers={"Authorization": f"Bearer {bearer_token}"},
+                )
+            if resp.status_code == 200:
+                minted = resp.json().get("api_key", "")
+                if minted:
+                    self.api_key = minted
+                    logger.info("Node self-minted its own gateway key (node_id=%s)", self._node_id[:12])
+                    return
+            logger.debug("Self-mint key failed (HTTP %s): %s", resp.status_code, resp.text[:200])
+        except Exception as e:
+            logger.debug("Self-mint key failed: %s", e)
 
     async def heartbeat(self) -> bool:
         """Send a single heartbeat to maintain presence."""

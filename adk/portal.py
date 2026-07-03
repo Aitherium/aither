@@ -157,3 +157,134 @@ class PortalClient:
         body = {"spec": spec, "endpoint": endpoint}
         return await self._request("POST", "/v1/agents/register-local", json=body)
 
+    # ---- marketplace: browse / discover / apply --------------------------
+    #
+    # Programmatic equivalent of the `adk pack` / `adk explore` CLI commands
+    # (see adk/cli.py:_cmd_pack, :_load_pack_catalog) so a local agent loop
+    # can browse and install agent/skill/tool packs without shelling out.
+    # Marketplace endpoints live on portal.aitherium.com specifically, which
+    # may differ from self.config.base_url (that defaults to the ACTA/agent
+    # API host) — resolved the same way the CLI does.
+
+    def _marketplace_base_url(self) -> str:
+        return (
+            os.environ.get("AITHER_PORTAL_URL")
+            or os.environ.get("AITHER_ELYSIUM_URL")
+            or "https://portal.aitherium.com"
+        ).rstrip("/")
+
+    async def list_packs(self) -> list[dict[str, Any]]:
+        """List all agent/skill/tool packs in the marketplace catalog.
+
+        Tries the live catalog endpoint first, falls back to the bundled
+        offline snapshot (``adk/data/packs_catalog.json``) so this always
+        returns something, even offline — same fallback chain as
+        ``adk pack list``.
+        """
+        base = self._marketplace_base_url()
+        try:
+            import httpx
+
+            async with httpx.AsyncClient(timeout=self.config.timeout) as client:
+                for path in ("/api/v1/catalog/packs", "/v1/packs/catalog"):
+                    resp = await client.get(f"{base}{path}")
+                    if resp.status_code == 200:
+                        return resp.json().get("packs", [])
+        except Exception as e:  # noqa: BLE001
+            _log.debug("portal.list_packs.live_failed", extra={"error": str(e)})
+
+        try:
+            from pathlib import Path
+
+            bundled = Path(__file__).parent / "data" / "packs_catalog.json"
+            if bundled.exists():
+                import json as _json
+
+                return _json.loads(bundled.read_text(encoding="utf-8")).get("packs", [])
+        except Exception as e:  # noqa: BLE001
+            _log.debug("portal.list_packs.bundled_failed", extra={"error": str(e)})
+        return []
+
+    async def search_packs(self, query: str) -> list[dict[str, Any]]:
+        """Search the pack catalog by name, description, id, or tag."""
+        q = query.lower()
+        return [
+            p
+            for p in await self.list_packs()
+            if q in p.get("name", "").lower()
+            or q in p.get("description", "").lower()
+            or q in p.get("id", "").lower()
+            or any(q in tag.lower() for tag in p.get("tags", []))
+        ]
+
+    def _marketplace_headers(self) -> dict[str, str]:
+        headers = {"Content-Type": "application/json"}
+        token = self.config.api_key
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+            headers["X-Aither-Api-Key"] = token
+        return headers
+
+    async def negotiate_pack(
+        self, pack_id: str, offer_credits: int, rationale: str = ""
+    ) -> dict[str, Any]:
+        """Negotiate a price for a paid pack. Returns a decision, and a
+        ``negotiation_token`` to redeem via :meth:`purchase_pack` if accepted."""
+        import httpx
+
+        base = self._marketplace_base_url()
+        body = {
+            "listing_id": pack_id,
+            "offer_credits": int(offer_credits),
+            "rationale": rationale,
+        }
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                f"{base}/v1/marketplace/negotiate",
+                json=body,
+                headers=self._marketplace_headers(),
+            )
+            return resp.json() if resp.content else {}
+
+    async def purchase_pack(
+        self, pack_id: str, negotiation_token: str | None = None
+    ) -> dict[str, Any]:
+        """Purchase a pack listing (no-op cost for free packs)."""
+        import httpx
+
+        base = self._marketplace_base_url()
+        body: dict[str, Any] = {"listing_id": pack_id}
+        if negotiation_token:
+            body["negotiation_token"] = negotiation_token
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(
+                f"{base}/v1/marketplace/purchase",
+                json=body,
+                headers=self._marketplace_headers(),
+            )
+            data = resp.json() if resp.content else {}
+            data.setdefault("_status_code", resp.status_code)
+            return data
+
+    def install_pack(self, pack_id: str) -> str:
+        """Download, verify, and apply an already-licensed pack.
+
+        Synchronous — delegates to :class:`~adk.shell.plugins.builtins.packs.PacksPlugin`,
+        the same download→:mod:`adk.pack_verifier`-verify→extract path
+        ``adk pack sync``/``adk pack buy --install`` use, so packs land in
+        ``~/.aitheros/packs`` and are immediately usable by local agent loops.
+        """
+        from adk.shell.plugins.builtins.packs import PacksPlugin
+
+        plugin = PacksPlugin()
+        plugin._base_url = self._marketplace_base_url()
+        token = self.config.api_key
+        if token:
+            tenant_id = (
+                self.config.credentials.user.get("tenant_id")
+                if self.config.credentials
+                else None
+            ) or os.environ.get("AITHER_TENANT_ID")
+            plugin.auth.set_auth(token, tenant_id)
+        return plugin._sync([pack_id] if pack_id else [])
+

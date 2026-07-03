@@ -322,6 +322,40 @@ async def _heartbeat_loop(
         log.warning("Heartbeat loop setup failed: %s", e)
 
 
+async def _self_mint_gateway_key(bearer_token: str, node_id: str) -> str:
+    """Trade a tenant-scoped capability bearer_token for a real avk_... gateway key.
+
+    Calls AitherSecrets' self-service POST /api-keys (identity_nodes.py's
+    register_node mints the bearer_token this consumes). AitherSecrets is
+    local-only (no public tunnel route), so this always targets the local
+    vault. Best-effort: returns "" on any failure, never raises.
+    """
+    try:
+        import httpx
+
+        from adk._tls import tls_verify
+        secrets_url = os.environ.get("AITHER_SECRETS_URL", "http://localhost:8111")
+        async with httpx.AsyncClient(timeout=15.0, verify=tls_verify()) as client:
+            resp = await client.post(
+                f"{secrets_url.rstrip('/')}/api-keys",
+                json={"name": f"node-{node_id}", "scopes": ["endpoint:secrets"]},
+                headers={"Authorization": f"Bearer {bearer_token}"},
+            )
+        if resp.status_code == 200:
+            minted = resp.json().get("api_key", "")
+            if minted:
+                log.info("Node self-minted its own gateway key: %s", node_id)
+                return minted
+        else:
+            log.debug(
+                "Self-service key mint failed (HTTP %s) — falling back to user token: %s",
+                resp.status_code, resp.text[:200],
+            )
+    except Exception as e:  # noqa: BLE001 — self-service is additive, must not block enrollment
+        log.debug("Self-service key mint failed — falling back to user token: %s", e)
+    return ""
+
+
 async def enroll_on_boot(
     genesis_url: Optional[str] = None,
     portal_url: Optional[str] = None,
@@ -417,9 +451,21 @@ async def enroll_on_boot(
         rich = {"enrolled": False, "error": str(e)}
 
     if rich.get("enrolled"):
+        # Self-service a node-scoped gateway key using the capability token
+        # /v1/nodes/register just minted, instead of persisting the enrolling
+        # USER's own access token as this node's long-lived credential (the
+        # prior behavior below, api_key=api_key) — a real, separate
+        # over-broad-credential issue this fixes at the same time.
+        node_api_key = api_key
+        bearer_token = rich.get("bearer_token", "")
+        if bearer_token:
+            minted = await _self_mint_gateway_key(bearer_token, node_id)
+            if minted:
+                node_api_key = minted
+
         _save_node_auth({
             "node_id": node_id,
-            "api_key": api_key,
+            "api_key": node_api_key,
             "hub_url": portal_url,
             "tenant_slug": _extract_tenant_slug(),
             "mode": "rich",
