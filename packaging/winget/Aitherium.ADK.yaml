@@ -32,7 +32,7 @@ Installers:
   - Architecture: x64
     InstallerType: exe
     InstallerUrl: https://aitherium.com/download/aither-adk-2.14.2-win64.exe
-    InstallerSha256: PLACEHOLDER_SHA256
+    InstallerSha256: 8EDC0C9B25BBBCF889D39078ABE726E55C94C5217085013F703BB13F5D8965AC
     InstallerSwitches:
       Silent: /S
       SilentWithProgress: /S
