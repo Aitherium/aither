@@ -7860,6 +7860,12 @@ def _register_commands(sub):
     d_node.add_argument("--hub", default="https://portal.aitherium.com",
                          help="Hub URL for federation (default: portal.aitherium.com)")
     d_node.add_argument("--tenant", help="Tenant slug for federation registration")
+    d_node.add_argument("--federate", action="store_true",
+                         help="Also start AitherFederate (port 8094) — agent-fleet "
+                              "registration, product-catalog sync, and knowledge "
+                              "ingestion routing to portal.aitherium.com. Requires "
+                              "--portal-token or AITHER_PORTAL_TOKEN.")
+    d_node.add_argument("--portal-token", help="AITHER_PORTAL_TOKEN for --federate (or set env var)")
 
     # aither deploy core
     d_core = deploy_sub.add_parser("core", help="Core services (Node, Pulse, Watch, Genesis, Veil)")

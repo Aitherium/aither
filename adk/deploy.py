@@ -64,10 +64,46 @@ GITHUB_RELEASES = "https://github.com/Aitherium/AitherOS/releases/latest/downloa
 AITHER_DIR = Path.home() / ".aither"
 REGISTRY = "ghcr.io/aitherium"
 
-# Compose file URLs (private repo — requires auth)
+# Compose file URLs — used only as an opt-in override (AITHER_COMPOSE_SOURCE=github)
+# for advanced users who want bleeding-edge config. The private AitherOS monorepo
+# these point at requires auth this client never sends, so it 404s for anyone else —
+# the DEFAULT path is the bundled copy shipped inside this package (see
+# _bundled_compose_path below), which needs no network access at all for the config
+# step, only for the (public) GHCR image pull that follows it.
 COMPOSE_NODE_URL = f"{GITHUB_RAW}/.DEPLOYMENT/compose/docker-compose.node.yml"
 COMPOSE_NODE_ADK_URL = f"{GITHUB_RAW}/.DEPLOYMENT/compose/docker-compose.node-adk.yml"
 COMPOSE_FULL_URL = f"{GITHUB_RAW}/.DEPLOYMENT/compose/docker-compose.aitheros.yml"
+
+
+def _bundled_compose_path(name: str) -> Path:
+    """Path to a compose file bundled inside this package (adk/deploy/compose/*.yml —
+    force-included into the wheel, see pyproject.toml). This is the default source for
+    `adk deploy node`'s config (including its optional --federate profile) — no
+    network fetch needed."""
+    return Path(__file__).parent / "deploy" / "compose" / name
+
+
+def _resolve_compose_file(name: str, url: str, dest: Path, dry_run: bool) -> bool:
+    """Get a compose file to `dest`: bundled copy by default, or a live download from
+    `url` if AITHER_COMPOSE_SOURCE=github is explicitly set (advanced/dev override).
+    Returns True on success."""
+    if os.environ.get("AITHER_COMPOSE_SOURCE", "").strip().lower() == "github":
+        return _download(url, dest, dry_run)
+    bundled = _bundled_compose_path(name)
+    if not bundled.exists():
+        # Dev checkout without the force-included file materialized (e.g. running
+        # from source pre-build) — fall back to the network path rather than fail.
+        warn(f"Bundled compose file not found at {bundled} — falling back to download")
+        return _download(url, dest, dry_run)
+    if dry_run:
+        info(f"Would use bundled compose file: {bundled}")
+        info(f"  -> {dest}")
+        return True
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(bundled.read_bytes())
+    info(f"Using bundled compose file: {bundled}")
+    info(f"  -> {dest}")
+    return True
 
 # Gateway for auth validation
 GATEWAY_URL = "https://gateway.aitherium.com"
@@ -823,6 +859,8 @@ def deploy_adk_node(
     sovereign: bool = False,
     hub_url: str = "https://portal.aitherium.com",
     tenant: Optional[str] = None,
+    federate: bool = False,
+    portal_token: Optional[str] = None,
 ) -> int:
     """Deploy ADK-native node: ADK server + Ollama + optional profiles.
 
@@ -848,6 +886,12 @@ def deploy_adk_node(
     if not api_key:
         return 1
 
+    fed_token = portal_token or os.environ.get("AITHER_PORTAL_TOKEN", "")
+    if federate and not fed_token:
+        err("--federate requires AITHER_PORTAL_TOKEN — get one from your Aitherium portal account")
+        print(f"  {dim('Set it via --portal-token, or export AITHER_PORTAL_TOKEN=...')}")
+        return 1
+
     if dry_run:
         print(f"  {yellow('DRY RUN -- no changes will be made')}\n")
 
@@ -868,12 +912,12 @@ def deploy_adk_node(
         if not _require_ghcr_login(api_key, dry_run):
             return 1
 
-    # -- Step 2: Download compose file ----------------------------------------
-    step(2, total_steps, "Downloading ADK compose configuration")
+    # -- Step 2: Compose configuration -----------------------------------------
+    step(2, total_steps, "Preparing ADK compose configuration")
 
     compose_file = AITHER_DIR / "docker-compose.node-adk.yml"
-    if not _download(COMPOSE_NODE_ADK_URL, compose_file, dry_run):
-        err("Failed to download compose file")
+    if not _resolve_compose_file("docker-compose.node-adk.yml", COMPOSE_NODE_ADK_URL, compose_file, dry_run):
+        err("Failed to prepare compose file")
         return 1
 
     # -- Step 3: Pull and start -----------------------------------------------
@@ -889,29 +933,33 @@ def deploy_adk_node(
     if dashboard:
         profiles.append("dashboard")
         info("Profile: dashboard (workspace app on port 3000)")
+    if federate:
+        profiles.append("federate")
+        info("Profile: federate (AitherFederate bridge to portal.aitherium.com on :8094)")
 
     if not profiles:
         info("Profile: default (ADK server + Ollama)")
 
     # Resource estimates
-    ram_mb = 768 + (1024 if gpu else 0) + (512 if memory else 0) + (768 if dashboard else 0)
-    disk_gb = 2.0 + (2.0 if gpu else 0) + (0.5 if memory else 0) + (1.0 if dashboard else 0)
+    ram_mb = 768 + (1024 if gpu else 0) + (512 if memory else 0) + (768 if dashboard else 0) + (512 if federate else 0)
+    disk_gb = 2.0 + (2.0 if gpu else 0) + (0.5 if memory else 0) + (1.0 if dashboard else 0) + (1.0 if federate else 0)
     print()
     info(f"Estimated resources: ~{ram_mb / 1024:.1f} GB RAM, ~{disk_gb:.0f} GB disk (images)")
     print()
 
-    env = os.environ.copy()
-    env["ADK_IMAGE_TAG"] = tag
-    env["AITHEROS_IMAGE_TAG"] = tag
-    env["AITHEROS_REGISTRY"] = REGISTRY
-
-    # Wire vLLM URL into ADK server if gpu profile is active
-    if gpu:
-        env.setdefault("VLLM_URL", "http://vllm:8120")
-
-    # Wire Spirit URL into ADK server if memory profile is active
-    if memory:
-        env.setdefault("AITHER_SPIRIT_URL", "http://spirit:8087")
+    # _docker_compose's subprocess inherits the real process env (no env= passed
+    # through) — must set on os.environ itself, not a discarded local copy.
+    if not dry_run:
+        os.environ["ADK_IMAGE_TAG"] = tag
+        os.environ["AITHEROS_IMAGE_TAG"] = tag
+        os.environ["AITHEROS_REGISTRY"] = REGISTRY
+        if gpu:
+            os.environ.setdefault("VLLM_URL", "http://vllm:8120")
+        if memory:
+            os.environ.setdefault("AITHER_SPIRIT_URL", "http://spirit:8087")
+        if federate:
+            os.environ["AITHER_PORTAL_TOKEN"] = fed_token
+            os.environ["AITHER_PORTAL_URL"] = hub_url
 
     rc = _docker_compose(compose_file, profiles, "pull", dry_run, timeout=600)
     if rc != 0:
@@ -930,10 +978,14 @@ def deploy_adk_node(
         info("Would check: http://localhost:8080/health (ADK server)")
         if dashboard:
             info("Would check: http://localhost:3000 (Workspace dashboard)")
+        if federate:
+            info("Would check: http://localhost:8094/health (AitherFederate)")
     else:
         endpoints = [(8080, "ADK server")]
         if dashboard:
             endpoints.append((3000, "Workspace dashboard"))
+        if federate:
+            endpoints.append((8094, "AitherFederate"))
 
         for port, name in endpoints:
             if _health_check(f"http://localhost:{port}/health", timeout=90, compose_file=compose_file):
@@ -974,6 +1026,8 @@ def deploy_adk_node(
         info(f"Spirit:      {cyan('http://localhost:8087')}")
     if dashboard:
         info(f"Dashboard:   {cyan('http://localhost:3000')}")
+    if federate:
+        info(f"Federate:    {cyan('http://localhost:8094')}")
     print()
     info("Manage:")
     info(f"  Logs:  {cyan(f'docker compose -f {compose_file} logs -f')}")
@@ -1004,11 +1058,20 @@ def deploy_node(
     hub_url: str = "https://portal.aitherium.com",
     tenant: Optional[str] = None,
     storefront: bool = False,
+    federate: bool = False,
+    portal_token: Optional[str] = None,
 ) -> int:
     """Deploy AitherNode (MCP server) + Genesis orchestrator via Docker Compose.
 
     Downloads the node compose file from GitHub and starts the containers with
     selected profile flags. Requires a valid Aitherium API key.
+
+    `federate` is distinct from `sovereign`: `sovereign` makes a one-shot API call
+    to register this deployment with the hub (saves fed_node_id/fed_api_key to
+    .env.federation). `federate` starts the actual AitherFederate container
+    (port 8094) — an ongoing local bridge other services can call for fleet
+    registration, product-catalog sync, and knowledge ingestion routing. Requires
+    AITHER_PORTAL_TOKEN (via --portal-token or the env var) when set.
 
     Resource estimates:
         Base:      ~2 GB RAM,  ~4 GB disk (images)
@@ -1016,6 +1079,7 @@ def deploy_node(
         + Memory:  +512 MB RAM, +500 MB disk
         + Dashboard: +512 MB RAM, +1 GB disk
         + Mesh:    +256 MB RAM
+        + Federate: +512 MB RAM, +1 GB disk
 
     Returns:
         Exit code (0 = success, 1 = failure).
@@ -1028,6 +1092,12 @@ def deploy_node(
     # Auth gate
     api_key = _require_auth(api_key_arg)
     if not api_key:
+        return 1
+
+    fed_token = portal_token or os.environ.get("AITHER_PORTAL_TOKEN", "")
+    if federate and not fed_token:
+        err("--federate requires AITHER_PORTAL_TOKEN — get one from your Aitherium portal account")
+        print(f"  {dim('Set it via --portal-token, or export AITHER_PORTAL_TOKEN=...')}")
         return 1
 
     if dry_run:
@@ -1051,12 +1121,12 @@ def deploy_node(
     if not _require_ghcr_login(api_key, dry_run):
         return 1
 
-    # -- Step 2: Download compose file ----------------------------------------
-    step(2, total_steps, "Downloading compose configuration")
+    # -- Step 2: Compose configuration -----------------------------------------
+    step(2, total_steps, "Preparing compose configuration")
 
     compose_file = AITHER_DIR / "docker-compose.node.yml"
-    if not _download(COMPOSE_NODE_URL, compose_file, dry_run):
-        err("Failed to download compose file")
+    if not _resolve_compose_file("docker-compose.node.yml", COMPOSE_NODE_URL, compose_file, dry_run):
+        err("Failed to prepare compose file")
         return 1
 
     # -- Step 3: Pull and start -----------------------------------------------
@@ -1078,21 +1148,31 @@ def deploy_node(
     if storefront:
         profiles.append("storefront")
         info("Profile: storefront (public storefront + landing pages)")
+    if federate:
+        profiles.append("federate")
+        info("Profile: federate (AitherFederate bridge to portal.aitherium.com on :8094)")
 
     if not profiles:
         info("Profile: default (Node + Genesis)")
 
     # Resource estimates
-    ram_gb = 2.0 + (1.0 if gpu else 0) + (0.5 if dashboard else 0) + (0.25 if mesh else 0) + (0.5 if storefront else 0) + (0.5 if memory else 0)
-    disk_gb = 4.0 + (2.0 if gpu else 0) + (1.0 if dashboard else 0) + (0.5 if storefront else 0) + (0.5 if memory else 0)
+    ram_gb = 2.0 + (1.0 if gpu else 0) + (0.5 if dashboard else 0) + (0.25 if mesh else 0) + (0.5 if storefront else 0) + (0.5 if memory else 0) + (0.5 if federate else 0)
+    disk_gb = 4.0 + (2.0 if gpu else 0) + (1.0 if dashboard else 0) + (0.5 if storefront else 0) + (0.5 if memory else 0) + (1.0 if federate else 0)
     print()
     info(f"Estimated resources: ~{ram_gb:.1f} GB RAM, ~{disk_gb:.0f} GB disk (images)")
     print()
 
-    # Set environment variables for the compose file
-    env = os.environ.copy()
-    env["AITHEROS_IMAGE_TAG"] = tag
-    env["AITHEROS_REGISTRY"] = REGISTRY
+    # Set environment variables for the compose file. _docker_compose's subprocess
+    # inherits the real process env (no env= is passed through), so these must be
+    # set on os.environ itself, not a discarded local copy (that was a pre-existing
+    # bug here — harmless while every var had a `:-default` in the compose file, but
+    # AITHER_PORTAL_TOKEN below is a *required* compose var with no default).
+    if not dry_run:
+        os.environ["AITHEROS_IMAGE_TAG"] = tag
+        os.environ["AITHEROS_REGISTRY"] = REGISTRY
+        if federate:
+            os.environ["AITHER_PORTAL_TOKEN"] = fed_token
+            os.environ["AITHER_PORTAL_URL"] = hub_url
 
     # Pull images
     rc = _docker_compose(compose_file, profiles, "pull", dry_run, timeout=600)
@@ -1114,6 +1194,8 @@ def deploy_node(
         info("Would check: http://localhost:8001/health (Genesis)")
         if dashboard:
             info("Would check: http://localhost:3000 (AitherVeil)")
+        if federate:
+            info("Would check: http://localhost:8094/health (AitherFederate)")
     else:
         endpoints = [
             (8080, "AitherNode"),
@@ -1121,6 +1203,8 @@ def deploy_node(
         ]
         if dashboard:
             endpoints.append((3000, "AitherVeil"))
+        if federate:
+            endpoints.append((8094, "AitherFederate"))
 
         all_healthy = True
         for port, name in endpoints:
@@ -1173,6 +1257,8 @@ def deploy_node(
     info(f"Genesis:    {cyan('http://localhost:8001')}")
     if dashboard:
         info(f"Dashboard:  {cyan('http://localhost:3000')}")
+    if federate:
+        info(f"Federate:   {cyan('http://localhost:8094')}")
     if sovereign and not dry_run:
         info(f"Federation: {cyan(hub_url)} (tenant: {tenant or 'default'})")
     print()
@@ -3591,6 +3677,8 @@ def cmd_deploy_component(args) -> int:
         sovereign = getattr(args, "sovereign", False)
         hub_url = getattr(args, "hub", "https://portal.aitherium.com")
         tenant_arg = getattr(args, "tenant", None)
+        federate_flag = getattr(args, "federate", False)
+        portal_token_arg = getattr(args, "portal_token", None)
 
         # ADK-native node (Tier 2, lightweight) is the new default
         # --genesis flag opts into the full Genesis stack
@@ -3600,12 +3688,14 @@ def cmd_deploy_component(args) -> int:
             rc = deploy_node(dry_run=dry_run, tag=tag, gpu=gpu,
                              dashboard=dashboard, mesh=mesh, memory=memory_flag,
                              api_key_arg=api_key,
-                             sovereign=sovereign, hub_url=hub_url, tenant=tenant_arg)
+                             sovereign=sovereign, hub_url=hub_url, tenant=tenant_arg,
+                             federate=federate_flag, portal_token=portal_token_arg)
         else:
             rc = deploy_adk_node(dry_run=dry_run, tag=tag, gpu=gpu,
                                  dashboard=dashboard, memory=memory_flag,
                                  api_key_arg=api_key,
-                                 sovereign=sovereign, hub_url=hub_url, tenant=tenant_arg)
+                                 sovereign=sovereign, hub_url=hub_url, tenant=tenant_arg,
+                                 federate=federate_flag, portal_token=portal_token_arg)
 
         # Co-deploy addons if --addons specified
         addons_str = getattr(args, "addons", None)
