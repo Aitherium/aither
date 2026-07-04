@@ -55,14 +55,19 @@ class ToolPackManifest:
     mcp_tools: list[str] = field(default_factory=list)
 
     @property
-    def package(self) -> str:
-        """The importable package that exposes ``register()`` — the parent of the
-        first ``tool_modules`` entry (``lib.agents.packs.structuredml.tools`` ->
-        ``lib.agents.packs.structuredml``), else derived from the dir name."""
-        if self.tool_modules:
-            head = self.tool_modules[0]
-            return head.rsplit(".", 1)[0] if "." in head else head
-        return self.path.name
+    def package_candidates(self) -> list[str]:
+        """Dotted paths that MIGHT expose ``register()``, most-specific first.
+        Handles both pack conventions: ``tool_modules`` pointing at a submodule
+        (register lives in the parent package's __init__, e.g. aitherbrowser) OR
+        at the package itself (register in that package, e.g. deep_research)."""
+        out: list[str] = []
+        for head in self.tool_modules:
+            if head and head not in out:
+                out.append(head)                      # the module as given
+            parent = head.rsplit(".", 1)[0] if "." in head else head
+            if parent and parent not in out:
+                out.append(parent)                    # its parent package
+        return out
 
 
 def _default_dirs(extra_dirs: list[Path] | None) -> list[Path]:
@@ -224,12 +229,20 @@ class ToolPackLoader:
 
     @staticmethod
     def _import_pack(manifest: ToolPackManifest):
-        # 1. normal import (package on sys.path, e.g. lib.agents.packs.<id>)
-        try:
-            return importlib.import_module(manifest.package)
-        except Exception as exc:
-            logger.debug("tool_pack_loader: import %s failed (%s); trying file path",
-                         manifest.package, exc)
+        # 1. normal import — try each candidate, return the first with register()
+        first = None
+        for cand in manifest.package_candidates:
+            try:
+                mod = importlib.import_module(cand)
+            except Exception as exc:
+                logger.debug("tool_pack_loader: import %s failed (%s)", cand, exc)
+                continue
+            if first is None:
+                first = mod
+            if callable(getattr(mod, "register", None)):
+                return mod
+        if first is not None:
+            return first  # importable but no register() — caller reports it
         # 2. load __init__.py by file path (marketplace packs not on sys.path)
         init = manifest.path / "__init__.py"
         if not init.is_file():

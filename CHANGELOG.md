@@ -2,6 +2,44 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [2.14.5] - 2026-07-04
+
+### Added
+
+- **`adk.reasoning.mcts` — generic Monte-Carlo Tree Search library.** A reusable
+  MCTS engine (ported from the internal `UnifiedMCTS`, with all internal couplings
+  removed) that any agent can drive over its own environment:
+  - `MCTSEnvironment` protocol (`get_state_hash` / `get_actions` / `step` /
+    `evaluate` / `clone`) — implement it and search.
+  - Three **optional, default-off** model seams — `TransitionModel`, `PolicyModel`
+    (PUCT priors), `ValueModel` — so a learned world-model / policy / value can be
+    injected without touching the core; with all three `None` the engine is a plain
+    UCT search.
+  - `ObservedTransitionModel` adapter — a cheap online lookup world-model (hit =
+    exact stored transition; miss = identity + negative "unknown" reward +
+    `is_uncertain`, biasing exploration toward learning), with JSONL save/load for
+    cross-run reuse.
+  - `UnifiedMCTS(config).search(env)` returns an `MCTSResult` (best action, value,
+    confidence, principal-variation path) and an optional `MCTSTrace`
+    (visit-distribution policy target) for distillation.
+- **Self-bootstrapping agent machinery.** Build an agent from a declarative spec
+  instead of bespoke wiring:
+  - `adk.bootstrap.build_agent_from_spec(path) -> (AitherAgent, RunCtx)` — resolves
+    prompts, activates required/optional tool packs, and carries a `memory_map`
+    (a `node_type -> (role, tier)` override for memory writes, never a gate).
+  - `adk.prompts.PromptBridge` — resolves an agent's prompt bindings from files
+    (relative to the spec) or `AitherPrompts` dot-keys (optional import).
+  - `adk.packs.PackActivator` — eager activation of installed tool packs by name
+    over `register_tool_packs`; a required pack that registers zero tools raises
+    `PackUnavailable`, optional packs soft-degrade.
+  - `python -m adk.bootstrap.generic_agent <spec.yaml>` inspects a spec (resolved
+    name, activated packs + tool counts, prompt keys, memory map) without running a
+    live loop.
+- **`deep_research` tool pack** — a full multi-engine web-research workflow as
+  `dr_*` agent tools (keyless search, page fetch + cache, site mirror, a citable
+  findings knowledge graph, and markdown/PDF/DOCX report generation), activatable
+  by name via the tool-pack loader.
+
 ## [2.14.4] - 2026-07-04
 
 ### Added

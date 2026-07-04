@@ -60,4 +60,10 @@ __all__ = [
     "DEFAULT_HINTS",
     "SpeculativeBackend",
     "SpeculativeStats",
+    "UnifiedMCTS",
+    "MCTSConfig",
+    "MCTSResult",
+    "MCTSEnvironment",
 ]
+
+from .mcts import UnifiedMCTS, MCTSConfig, MCTSResult, MCTSEnvironment  # noqa: E402,F401

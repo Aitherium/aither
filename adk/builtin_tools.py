@@ -1787,6 +1787,48 @@ def timeseries_forecast(series: list[float], horizon: int) -> str:
     )
 
 
+def tabular_teach(
+    task: str, labeled_rows: list[dict[str, Any]], target: str, mode: str = "classify"
+) -> str:
+    """Teach a tabular task new labeled examples so it adapts to new data.
+
+    Accumulates a per-task support set (kept under YOUR tenant) and only keeps the
+    new rows if held-out accuracy doesn't regress (accept-or-rollback). This is how
+    an agent gets better at a classification/regression task over time WITHOUT any
+    training run — next `tabular_classify` on the same task can reuse what was taught.
+
+    Args:
+        task: A stable task name (e.g. "lead-scoring"); namespaced under your tenant.
+        labeled_rows: New labeled examples; each a dict of features INCLUDING the target column.
+        target: Name of the target column present in labeled_rows.
+        mode: "classify" (default) or "regress".
+    """
+    import httpx
+
+    url = f"{_genesis_url()}/ml/teach"
+    payload = {"task": task, "labeled_rows": labeled_rows, "target": target, "mode": mode}
+    try:
+        _tls = os.getenv("AITHER_TLS_VERIFY", "true").lower() != "false"
+        with httpx.Client(timeout=90.0, verify=_tls) as c:
+            resp = c.post(url, json=payload)
+            if resp.status_code >= 400:
+                try:
+                    detail = resp.json().get("detail", resp.text)
+                except Exception:  # noqa: BLE001
+                    detail = resp.text
+                return json.dumps({"error": f"HTTP {resp.status_code}: {detail}"})
+            return _cap_response(resp.json())
+    except Exception as e:  # noqa: BLE001 - surface transport errors to the agent
+        return json.dumps({"error": str(e)})
+
+
+def _genesis_url() -> str:
+    url = os.getenv("AITHER_GENESIS_URL", "http://localhost:8001").strip()
+    if not url.lower().startswith(("http://", "https://")):
+        return "http://localhost:8001"
+    return url
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Registration
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1803,7 +1845,7 @@ TOOL_CATEGORIES: dict = {
     "code": [code_search, code_symbols],
     "repowise": [repowise_search],
     "swarm": [swarm_code],
-    "structured_ml": [tabular_classify, tabular_regress, timeseries_forecast],
+    "structured_ml": [tabular_classify, tabular_regress, timeseries_forecast, tabular_teach],
     "graph": [],  # populated lazily by _init_graph_tools()
     "safety": [escalate_to_human, check_safety_gate],
     "workspace": [],  # populated lazily by _init_workspace_tools()

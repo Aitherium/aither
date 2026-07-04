@@ -22,7 +22,9 @@ from adk.core.capability import Capability
 def test_structured_ml_category_holds_the_three_tools():
     fns = bt.TOOL_CATEGORIES["structured_ml"]
     names = {f.__name__ for f in fns}
-    assert names == {"tabular_classify", "tabular_regress", "timeseries_forecast"}
+    assert names == {
+        "tabular_classify", "tabular_regress", "timeseries_forecast", "tabular_teach"
+    }
 
 
 def test_analyst_identity_enables_structured_ml():
@@ -88,6 +90,24 @@ def test_timeseries_forecast_posts_expected_body(monkeypatch):
     assert out["horizon"] == 2
     assert seen["url"].endswith("/timeseries/forecast")
     assert seen["body"] == {"series": [1.0, 2.0, 3.0], "horizon": 2}
+
+
+def test_tabular_teach_posts_to_genesis(monkeypatch):
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"promoted": True, "accuracy": 0.9})
+
+    _mock_httpx(monkeypatch, handler)
+    out = json.loads(
+        bt.tabular_teach(task="lead-scoring", labeled_rows=[{"x": 1, "y": "a"}], target="y")
+    )
+    assert out["promoted"] is True
+    # teach is STATEFUL/tenant-scoped → goes to Genesis /ml/teach, not the service.
+    assert seen["url"].endswith("/ml/teach")
+    assert seen["body"]["task"] == "lead-scoring" and seen["body"]["mode"] == "classify"
 
 
 def test_tabular_regress_posts_expected_body(monkeypatch):
