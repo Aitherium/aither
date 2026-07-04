@@ -488,11 +488,14 @@ def _sync_entitled_packs_quiet() -> None:
         print(f"  packs: {first_line[1] if len(first_line) > 1 else first_line[0]}")
 
 
-def cmd_up(args):
+def cmd_stack(args):
     """Start the consumer stack (Room + Ollama) as native processes.
 
     Supervises AitherRoom (:8350) and Ollama (:11434) as foreground processes
     with health checks, crash restarts, and graceful shutdown on Ctrl+C.
+
+    (Formerly ``adk up``; that name now brings up a connected agent — see cmd_up.
+    This behaviour lives under ``adk stack``.)
     """
     from adk.process_supervisor import ProcessSpec, ProcessSupervisor, resolve_room_launch_target
 
@@ -574,6 +577,338 @@ def cmd_up(args):
     print("Starting AitherOS consumer stack...")
     print()
     supervisor.supervise(specs, interval=10)
+
+
+def cmd_up(args):
+    """One command: run a persistent agent connected to your AitherOS fleet.
+
+    Brings up ``aither-serve`` (single agent, identity ``aither`` by default),
+    opens a secure Cloudflare quick-tunnel so the fleet can reach it, registers
+    with the portal, and installs an autostart entry so it survives reboot.
+
+    Two modes:
+    - Interactive (a human at a terminal): minimal prompts, device-flow browser login.
+    - Non-interactive (``--yes`` / not a TTY): ZERO prompts — everything from flags,
+      env, and saved config; emits a machine-readable JSON status line. This is the
+      path an autonomous agent uses to stand itself up unattended.
+
+    By default the agent is DETACHED (the terminal is freed). ``--foreground`` blocks.
+    Companions: ``adk status`` (state), ``adk down`` (stop + remove autostart).
+    """
+    import base64
+    import getpass
+    import re
+    import secrets as _secrets
+    import socket
+
+    import httpx
+
+    from adk import agent_daemon as daemon
+
+    non_interactive = bool(getattr(args, "yes", False)) or not sys.stdin.isatty()
+    offline = (os.environ.get("AITHER_OFFLINE", "").lower() in ("1", "true", "yes")
+               or bool(getattr(args, "offline", False)))
+    identity = getattr(args, "identity", None) or "aither"
+    name = (getattr(args, "name", "") or "").strip() or re.sub(
+        r"[^a-z0-9_-]", "-", f"{socket.gethostname()}-adk".lower())
+    port = getattr(args, "port", None) or 8080
+    foreground = bool(getattr(args, "foreground", False))
+    persist = not getattr(args, "no_persist", False)
+    force = bool(getattr(args, "force", False))
+    dry_run = bool(getattr(args, "dry_run", False))
+    require_register = bool(getattr(args, "require_register", False))
+    provider = (getattr(args, "provider", "") or "").strip().lower()
+    approval = getattr(args, "approve", None) or "file_write,shell_exec,shell"
+    will_register = not getattr(args, "no_register", False) and not offline
+
+    def _fail(code: int, error: str, hint: str = "") -> int:
+        obj = {"ok": False, "error": error, "error_code": code}
+        if hint:
+            obj["hint"] = hint
+        if non_interactive:
+            print(json.dumps(obj))
+        else:
+            print(f"  [x] {error}")
+            if hint:
+                print(f"      {hint}")
+        return code
+
+    # ── Idempotency: already running? ──
+    existing = daemon.read_status()
+    if existing and daemon.pid_alive(existing.get("server_pid")):
+        if force:
+            daemon.kill_pid(existing.get("tunnel_pid"))
+            daemon.kill_pid(existing.get("server_pid"))
+            daemon.clear_status()
+        else:
+            existing["ok"] = True
+            existing["already_running"] = True
+            if non_interactive:
+                print(json.dumps(existing))
+            else:
+                print(f"  [+] Agent already running on :{existing.get('port')} "
+                      f"(pid {existing.get('server_pid')}). "
+                      "Use --force to restart, or 'adk down' to stop.")
+            return 0
+
+    # ── Backend: local auto-detect, else a cloud provider key ──
+    try:
+        from adk.shell_launcher import _preflight_check
+        have_backend, _backend_desc = _preflight_check()
+    except (ImportError, RuntimeError, OSError):
+        have_backend, _backend_desc = (False, "")
+
+    if not have_backend:
+        if not provider:
+            keys = _load_provider_keys()
+            for p in ("deepseek", "openai", "anthropic"):
+                if keys.get(p) or os.environ.get(_KNOWN_PROVIDERS[p]["env"]):
+                    provider = p
+                    break
+            if not provider and not non_interactive:
+                provider = (input("  Model provider [deepseek/openai/anthropic]: ")
+                            .strip().lower() or "deepseek")
+            provider = provider or "deepseek"
+        if provider not in _KNOWN_PROVIDERS:
+            return _fail(2, f"unknown provider '{provider}'",
+                         f"known: {', '.join(sorted(_KNOWN_PROVIDERS))}")
+        env_name = _KNOWN_PROVIDERS[provider]["env"]
+        keys = _load_provider_keys()
+        key = keys.get(provider, "") or os.environ.get(env_name, "")
+        if not key:
+            if non_interactive:
+                return _fail(3, "no_backend",
+                             f"no local LLM detected and {env_name} not set — "
+                             f"set {env_name} or run 'adk setup' for a local model")
+            key = getpass.getpass(f"  {_KNOWN_PROVIDERS[provider]['label']} API key: ").strip()
+            if not key:
+                return _fail(3, "no_backend", "no key entered")
+            ok, msg = _test_provider_key(provider, key)
+            print(f"  [{'+' if ok else 'x'}] {msg}")
+            if not ok:
+                return _fail(3, "invalid_key", "key failed validation (not saved)")
+            keys[provider] = key
+            _save_provider_keys(keys)
+        os.environ[env_name] = key
+
+    # ── Portal token (for registration) ──
+    portal = (getattr(args, "portal", "") or "https://veil.aitherium.com").rstrip("/")
+    portal_token = ""
+    if will_register:
+        saved = load_saved_config()
+        portal_token = (getattr(args, "token", "") or os.environ.get("AITHER_PORTAL_TOKEN", "")
+                        or saved.get("api_key", "") or saved.get("access_token", ""))
+        if not portal_token:
+            if non_interactive:
+                # Can't run a browser device-flow unattended → degrade to local-only.
+                if require_register:
+                    return _fail(5, "no_portal_token",
+                                 "set AITHER_PORTAL_TOKEN or pass --token for unattended register")
+                will_register = False
+            else:
+                login_url = _resolve_identity_url(
+                    getattr(args, "login_url", "") or os.environ.get("AITHER_PORTAL_URL", "")
+                    or portal or _DEFAULT_IDENTITY_URL)
+                print(f"  Signing in at {login_url} …")
+                try:
+                    dev = _device_flow_login(login_url, client_name=f"adk-up:{name}")
+                    portal_token = dev.get("access_token", "") or dev.get("token", "")
+                except Exception as e:  # noqa: BLE001 — surface a clear next step
+                    return _fail(5, f"device-flow login failed: {e}",
+                                 "pass --token, run 'adk login', or use --no-register")
+                if portal_token:
+                    try:
+                        save_saved_config({"api_key": portal_token})
+                    except (OSError, ValueError):
+                        pass
+
+    # ── cloudflared availability ──
+    cf = _find_cloudflared() if will_register else None
+    if will_register and not cf:
+        if non_interactive:
+            return _fail(4, "cloudflared_missing", _cloudflared_install_hint().strip())
+        print("  cloudflared is not installed (needed for the secure tunnel):")
+        print(_cloudflared_install_hint())
+        print("  Or re-run with --no-register to run locally without a tunnel.")
+        return 4
+
+    # ── Callback bearer (the one secret the control plane presents back to us) ──
+    auth_token = getattr(args, "auth_token", "") or os.environ.get("AITHER_SERVER_API_KEY", "")
+    if not auth_token:
+        auth_token = base64.urlsafe_b64encode(_secrets.token_bytes(24)).decode().rstrip("=")
+
+    if dry_run:
+        plan = {"ok": True, "dry_run": True, "identity": identity, "name": name,
+                "port": port, "will_register": will_register, "offline": offline,
+                "detached": not foreground, "persist": persist,
+                "backend": "local" if have_backend else provider}
+        print(json.dumps(plan) if non_interactive else f"  [dry-run] {json.dumps(plan)}")
+        return 0
+
+    # ── Launch aither-serve (detached, logs to file) ──
+    daemon._ensure_dirs()
+    agent_log = daemon.LOG_DIR / "agent.log"
+    tunnel_log = daemon.LOG_DIR / "tunnel.log"
+    child_env = dict(os.environ)
+    child_env["AITHER_SERVER_API_KEY"] = auth_token
+    child_env["AITHER_TOOL_APPROVAL"] = approval or ""
+    if offline:
+        child_env["AITHER_OFFLINE"] = "1"
+    serve_argv = [sys.executable, "-m", "adk.server",
+                  "--port", str(port), "--identity", identity]
+    if provider:
+        serve_argv += ["--backend", provider]
+    if not non_interactive:
+        print(f"  Starting aither-serve ({provider or 'local'}, :{port}) …")
+    server_pid = daemon.spawn_detached(serve_argv, agent_log, env=child_env)
+
+    if not daemon.wait_for_health(port, timeout=60):
+        daemon.kill_pid(server_pid)
+        return _fail(1, "agent did not become healthy in 60s",
+                     f"see {agent_log}")
+    if not non_interactive:
+        print(f"  [+] Agent healthy on :{port}")
+
+    # ── Tunnel + register ──
+    public_url = None
+    tunnel_pid = None
+    registered = False
+    if will_register and cf:
+        tunnel_pid = daemon.spawn_detached(
+            [cf, "tunnel", "--url", f"http://localhost:{port}", "--no-autoupdate"],
+            tunnel_log)
+        public_url = daemon.tail_for_pattern(
+            tunnel_log, r"https://[a-z0-9-]+\.trycloudflare\.com", timeout=45)
+        if not public_url:
+            daemon.kill_pid(tunnel_pid)
+            tunnel_pid = None
+            if require_register:
+                daemon.kill_pid(server_pid)
+                return _fail(4, "tunnel_failed", f"no trycloudflare URL; see {tunnel_log}")
+            if not non_interactive:
+                print("  [!] Tunnel did not come up — running local-only (will retry via heartbeat).")
+        else:
+            if not non_interactive:
+                print(f"  [+] Tunnel live: {public_url}")
+            reg = (getattr(args, "register_url", "")
+                   or f"{portal}/api/genesis/v1/agent/fleet/register")
+            body = {"name": name, "invoke_url": public_url, "reach": "tunnel",
+                    "agent_type": "adk-agent", "token": auth_token,
+                    "model": getattr(args, "model", None) or "", "provider_hint": provider}
+            hdrs = {"Content-Type": "application/json"}
+            if portal_token:
+                hdrs["Authorization"] = f"Bearer {portal_token}"
+            try:
+                rr = httpx.post(reg, json=body, headers=hdrs, timeout=20)
+                registered = rr.status_code < 300
+                if not registered:
+                    if require_register:
+                        daemon.kill_pid(tunnel_pid)
+                        daemon.kill_pid(server_pid)
+                        return _fail(5, f"registration rejected ({rr.status_code})",
+                                     rr.text[:200])
+                    if not non_interactive:
+                        print(f"  [!] Registration returned {rr.status_code} — "
+                              "agent is up locally; heartbeat will retry.")
+            except (httpx.HTTPError, OSError) as e:
+                if require_register:
+                    daemon.kill_pid(tunnel_pid)
+                    daemon.kill_pid(server_pid)
+                    return _fail(5, f"registration failed: {e}")
+                if not non_interactive:
+                    print(f"  [!] Registration failed ({e}) — heartbeat will retry.")
+
+    # ── Persist (autostart) ──
+    autostart = None
+    if persist:
+        up_argv = _autostart_up_argv(identity, port, provider, offline)
+        autostart = daemon.install_autostart(up_argv)
+
+    # ── Status file (single source of truth for status/down) ──
+    status = {
+        "ok": True, "identity": identity, "name": name, "port": port,
+        "server_pid": server_pid, "tunnel_pid": tunnel_pid,
+        "invoke_url": public_url, "registered": registered,
+        "offline": offline, "detached": not foreground,
+        "backend": "local" if have_backend else provider,
+        "autostart": autostart, "portal": portal,
+        "log_path": str(agent_log),
+    }
+    daemon.write_status(status)
+
+    # ── Report ──
+    if non_interactive:
+        print(json.dumps({**status, "health": "healthy"}))
+    else:
+        print()
+        print("  [OK] Your agent is running.")
+        if public_url:
+            print(f"     Fleet: {portal}/portal/fleet")
+            print(f"     URL:   {public_url}")
+        print(f"     Logs:  {agent_log}")
+        print("     Stop:  adk down     Status: adk status")
+
+    if foreground:
+        if not non_interactive:
+            print("\n  Foreground mode — Ctrl+C to stop.")
+        try:
+            while daemon.pid_alive(server_pid):
+                time.sleep(2)
+        except KeyboardInterrupt:
+            print("\n  Stopping …")
+            daemon.kill_pid(tunnel_pid)
+            daemon.kill_pid(server_pid)
+            daemon.clear_status()
+    return 0
+
+
+def _autostart_up_argv(identity: str, port: int, provider: str, offline: bool) -> list[str]:
+    """Build the command the autostart entry re-runs at logon (unattended, detached)."""
+    argv = [sys.executable, "-m", "adk.cli", "up",
+            "--identity", identity, "--port", str(port), "--yes"]
+    if provider:
+        argv += ["--provider", provider]
+    if offline:
+        argv += ["--offline"]
+    return argv
+
+
+def cmd_down(args):
+    """Stop the running agent + tunnel and remove its autostart entry."""
+    from adk import agent_daemon as daemon
+
+    import httpx
+
+    st = daemon.read_status()
+    if not st:
+        print("  No agent is running (no status file).")
+        return 0
+
+    if daemon.kill_pid(st.get("tunnel_pid")):
+        print("  [+] Tunnel stopped.")
+    if daemon.kill_pid(st.get("server_pid")):
+        print("  [+] Agent stopped.")
+
+    # Best-effort deregister from the fleet.
+    if st.get("registered") and st.get("name"):
+        saved = load_saved_config()
+        token = saved.get("api_key", "") or os.environ.get("AITHER_PORTAL_TOKEN", "")
+        portal = (st.get("portal") or "https://veil.aitherium.com").rstrip("/")
+        try:
+            hdrs = {"Authorization": f"Bearer {token}"} if token else {}
+            httpx.request("DELETE",
+                          f"{portal}/api/genesis/v1/agent/agent-endpoints/{st['name']}",
+                          headers=hdrs, timeout=10)
+            print("  [+] Deregistered from the fleet.")
+        except (httpx.HTTPError, OSError):
+            pass
+
+    if not getattr(args, "keep_autostart", False):
+        if daemon.remove_autostart():
+            print("  [+] Autostart removed.")
+
+    daemon.clear_status()
+    return 0
 
 
 def cmd_register(args):
@@ -5339,8 +5674,40 @@ def cmd_quickstart_local(args):
 
 
 def cmd_status(args):
-    """Show backend and service status."""
+    """Show the running agent (adk up) plus backend and service status."""
     import asyncio
+
+    from adk import agent_daemon as daemon
+
+    # ── Local agent (from `adk up`) ──
+    st = daemon.read_status()
+    agent_state = None
+    if st:
+        alive = daemon.pid_alive(st.get("server_pid"))
+        healthy = daemon.wait_for_health(st.get("port", 8080), timeout=3) if alive else False
+        agent_state = {
+            **st,
+            "running": alive,
+            "health": "healthy" if healthy else ("stale" if not alive else "unhealthy"),
+            "tunnel_running": daemon.pid_alive(st.get("tunnel_pid")),
+        }
+
+    if getattr(args, "json", False):
+        print(json.dumps(agent_state or {"running": False}, indent=2))
+        return 0
+
+    if agent_state:
+        print("AitherADK Agent")
+        print("=" * 50)
+        icon = "+" if agent_state["running"] else "-"
+        print(f"  [{icon}] {agent_state.get('identity', 'aither'):12s} "
+              f":{agent_state.get('port')} ({agent_state['health']})")
+        if agent_state.get("invoke_url"):
+            print(f"      tunnel: {agent_state['invoke_url']} "
+                  f"({'up' if agent_state['tunnel_running'] else 'down'})")
+        print(f"      registered: {agent_state.get('registered')}   "
+              f"autostart: {agent_state.get('autostart') or 'no'}")
+        print()
 
     async def _status():
         import httpx
@@ -7716,12 +8083,46 @@ def _register_commands(sub):
     run_p.add_argument("--mesh", action="store_true",
                        help="Enable mesh hosting (advertise tools/inference to connected desktop)")
 
-    # adk up — supervise consumer stack
-    up_p = sub.add_parser("up", help="Start consumer stack (Room + Ollama) as native processes")
-    up_p.add_argument("--interval", type=int, default=10,
-                      help="Health check interval in seconds (default: 10)")
-    up_p.add_argument("--no-sync", action="store_true",
-                      help="Skip the license-driven pack sync before starting")
+    # adk up — one command: run a persistent, fleet-connected agent
+    up_p = sub.add_parser(
+        "up", help="Run a persistent agent connected to your AitherOS fleet (one command)")
+    up_p.add_argument("--identity", default="aither", help="Agent identity (default: aither)")
+    up_p.add_argument("--name", help="Fleet label for this agent (default: <hostname>-adk)")
+    up_p.add_argument("--provider", help="Cloud provider if no local LLM: deepseek/openai/anthropic")
+    up_p.add_argument("--model", help="Model name (default: the provider's default)")
+    up_p.add_argument("--port", type=int, default=8080, help="Local port for aither-serve (default: 8080)")
+    up_p.add_argument("--yes", "--non-interactive", action="store_true", dest="yes",
+                      help="Non-interactive: zero prompts, machine-readable JSON (for AI agents/CI)")
+    up_p.add_argument("--foreground", action="store_true",
+                      help="Block the terminal instead of detaching")
+    up_p.add_argument("--no-persist", action="store_true",
+                      help="Do not install a reboot-autostart entry")
+    up_p.add_argument("--force", action="store_true", help="Restart even if an agent is already running")
+    up_p.add_argument("--offline", action="store_true",
+                      help="Sovereign/local-only: no tunnel, no portal (or set AITHER_OFFLINE=1)")
+    up_p.add_argument("--no-register", action="store_true",
+                      help="Run locally only — no tunnel, no fleet registration")
+    up_p.add_argument("--require-register", action="store_true",
+                      help="Fail (non-zero) if the fleet registration cannot complete")
+    up_p.add_argument("--token", help="Portal token for registration (else 'adk login' / $AITHER_PORTAL_TOKEN)")
+    up_p.add_argument("--auth-token", help="Callback bearer the control plane presents back (minted if omitted)")
+    up_p.add_argument("--approve", help="Comma-list of tools that pause for approval (default: file_write,shell_exec,shell)")
+    up_p.add_argument("--portal", default="https://veil.aitherium.com", help="Control-plane base URL")
+    up_p.add_argument("--login-url", help="Device-flow login base URL")
+    up_p.add_argument("--register-url", help="Full fleet-register URL (overrides --portal)")
+    up_p.add_argument("--dry-run", action="store_true", help="Show what would happen without starting anything")
+
+    # adk down — stop the agent started by `adk up`
+    down_p = sub.add_parser("down", help="Stop the agent + tunnel and remove its autostart")
+    down_p.add_argument("--keep-autostart", action="store_true",
+                        help="Stop now but leave the reboot-autostart entry in place")
+
+    # adk stack — supervise the consumer stack (Room + Ollama); was `adk up`
+    stack_p = sub.add_parser("stack", help="Start the consumer stack (Room + Ollama) as native processes")
+    stack_p.add_argument("--interval", type=int, default=10,
+                         help="Health check interval in seconds (default: 10)")
+    stack_p.add_argument("--no-sync", action="store_true",
+                         help="Skip the license-driven pack sync before starting")
 
     # adk wizard — first-run setup
     wizard_p = sub.add_parser("wizard", help="First-run wizard — hardware detection, setup recommendations, auth token")
@@ -8050,7 +8451,9 @@ def _register_commands(sub):
     test_p.add_argument("--coverage", action="store_true", help="Show coverage report")
 
     # adk status
-    _ = sub.add_parser("status", help="Show backend and service status")
+    status_p = sub.add_parser("status", help="Show backend and service status")
+    status_p.add_argument("--json", action="store_true",
+                          help="Machine-readable JSON (agent state) for AI agents/CI")
 
     # adk publish — submit to Elysium marketplace
     publish_p = sub.add_parser("publish", help="Publish agent to Elysium marketplace")
@@ -8598,6 +9001,17 @@ def _cmd_mcp_status(args) -> int:
 
 def main():
     global _cached_parser
+    # Windows consoles default to a legacy code page (cp1252) that cannot encode
+    # the Unicode glyphs (arrows, box-drawing, emoji) the CLI prints — which
+    # otherwise crashes commands like `adk login` with UnicodeEncodeError AFTER
+    # they have already done their real work. Make all stdout/stderr writes
+    # encoding-safe up front (errors="replace" degrades an unencodable glyph to
+    # "?" instead of aborting). No-op where the stream can't be reconfigured.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+        except Exception:
+            pass
     parser = argparse.ArgumentParser(
         prog="adk",
         description="AitherADK — Build AI agent fleets with any LLM backend",
@@ -8621,6 +9035,10 @@ def main():
         cmd_run(args)
     elif args.command == "up":
         sys.exit(cmd_up(args))
+    elif args.command == "down":
+        sys.exit(cmd_down(args))
+    elif args.command == "stack":
+        sys.exit(cmd_stack(args))
     elif args.command == "wizard":
         from adk.setup_cli import cmd_wizard
         sys.exit(cmd_wizard(args))

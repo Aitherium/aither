@@ -3,7 +3,7 @@
 # Repo: https://github.com/microsoft/winget-pkgs
 
 PackageIdentifier: Aitherium.ADK
-PackageVersion: 2.14.3
+PackageVersion: 2.14.7
 PackageName: AitherADK
 Publisher: Aitherium
 License: Proprietary
@@ -31,8 +31,8 @@ PackageUrl: https://github.com/Aitherium/aither-adk
 Installers:
   - Architecture: x64
     InstallerType: exe
-    InstallerUrl: https://aitherium.com/download/aither-adk-2.14.3-win64.exe
-    InstallerSha256: 8EDC0C9B25BBBCF889D39078ABE726E55C94C5217085013F703BB13F5D8965AC
+    InstallerUrl: https://aitherium.com/download/aither-adk-2.14.7-win64.exe
+    InstallerSha256: PLACEHOLDER_SHA256
     InstallerSwitches:
       Silent: /S
       SilentWithProgress: /S

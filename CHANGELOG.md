@@ -2,6 +2,35 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [2.14.7] - 2026-07-04
+
+### Added
+
+- **`adk up` — one command to run a persistent, fleet-connected agent.** Collapses
+  the scattered onboarding surface (`host`/`quickstart`/`connect`/`login`/`setup`)
+  into a single command that starts `aither-serve` (single agent, identity `aither`
+  by default), opens a Cloudflare quick-tunnel for fleet reachability, registers with
+  the portal, and installs a reboot-persistent autostart entry (Windows Task Scheduler
+  / systemd-user / launchd). Detaches by default so the terminal is freed; `--foreground`
+  blocks. Reuses the existing device-flow login, cloudflared discovery, provider-key
+  store, and `_preflight_check` backend detection.
+- **Fully non-interactive path for autonomous agents.** `adk up --yes` (or any
+  non-TTY invocation) takes ZERO prompts — everything resolves from flags, env, and
+  saved config — and emits a single machine-readable JSON status line with meaningful
+  exit codes (`0` ok, `2` bad-input, `3` no-backend, `4` tunnel-missing, `5` register-failed).
+  Degrades to local-only (warn, not fail) when a portal token is absent unless
+  `--require-register` is set.
+- **`adk down` / `adk status --json` companions.** `down` stops the agent + tunnel,
+  best-effort deregisters, and removes the autostart entry; `status` reports the running
+  agent (liveness + `/health` + tunnel + registration), with `--json` for agents/CI.
+- **`adk stack`** — the previous `adk up` behaviour (supervise the Room + Ollama consumer
+  stack) now lives here; `adk up` is the connected-agent command.
+
+### Internal
+
+- New `adk/agent_daemon.py`: detached process spawn, status file
+  (`~/.aither/adk-up.json`), pid liveness/teardown, and cross-platform autostart install.
+
 ## [2.14.6] - 2026-07-04
 
 ### Added
