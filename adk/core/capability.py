@@ -22,6 +22,8 @@ class Capability(str, Enum):
 
     LLM_INFERENCE = "llm_inference"
     LLM_EMBED = "llm_embed"
+    # Non-LLM structured-data foundation models (TabFM tabular, TimesFM forecasting).
+    STRUCTURED_INFERENCE = "structured_inference"
 
     MEMORY_READ = "memory_read"
     MEMORY_WRITE = "memory_write"

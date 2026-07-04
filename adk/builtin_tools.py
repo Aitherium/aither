@@ -30,7 +30,7 @@ import tempfile
 import time
 from contextlib import redirect_stdout, redirect_stderr
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from adk.agent import AitherAgent
@@ -1664,6 +1664,130 @@ async def check_safety_gate(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Structured-data ML (TabFM tabular + TimesFM time-series) — zero-shot inference.
+# These are NON-LLM foundation models served by a structured-ML inference service
+# (default :8192). The tools POST directly to that service, resolved from the
+# AITHER_STRUCTURED_ML_URL env var (set this to your deployment's service URL).
+# The agent-side gate is pack-domain enablement — only identities with the
+# "structured_ml" category get these tools. "Training" here is in-context: hand
+# over a labeled support set, get predictions in one forward pass — no gradient step.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+_STRUCTURED_ML_DEFAULT_URL = "http://localhost:8192"
+
+
+def _structured_ml_url() -> str:
+    """Resolve the structured-ML service base URL from env, http/https only.
+
+    Defense-in-depth: reject any URL whose scheme isn't http/https so a mis-set
+    value can't redirect the tool to a file://, gopher:// (etc.) target. A
+    private/loopback host is allowed here (unlike web_fetch) — the inference
+    service is a trusted deployment endpoint set via AITHER_STRUCTURED_ML_URL.
+    """
+    url = os.getenv("AITHER_STRUCTURED_ML_URL", _STRUCTURED_ML_DEFAULT_URL).strip()
+    if not url.lower().startswith(("http://", "https://")):
+        return _STRUCTURED_ML_DEFAULT_URL
+    return url
+
+
+# Cap the JSON we hand back to the model — a big query batch can return a large
+# predictions/probabilities matrix that would bloat the agent's context. Beyond
+# this, we return a compact summary (counts + a small sample) instead of the raw
+# blob, and tell the agent how to narrow the request.
+_STRUCTURED_ML_MAX_RESP_CHARS = 20_000
+
+
+def _structured_ml_post(path: str, payload: dict, timeout: float = 90.0) -> str:
+    import httpx
+
+    url = f"{_structured_ml_url()}{path}"
+    try:
+        _tls = os.getenv("AITHER_TLS_VERIFY", "true").lower() != "false"
+        with httpx.Client(timeout=timeout, verify=_tls) as c:
+            resp = c.post(url, json=payload)
+            if resp.status_code >= 400:
+                try:
+                    detail = resp.json().get("detail", resp.text)
+                except Exception:  # noqa: BLE001 - fall back to raw body
+                    detail = resp.text
+                return json.dumps({"error": f"HTTP {resp.status_code}: {detail}"})
+            return _cap_response(resp.json())
+    except Exception as e:  # noqa: BLE001 - surface transport errors to the agent
+        return json.dumps({"error": str(e)})
+
+
+def _cap_response(data: dict) -> str:
+    """Serialise a service response, summarising it if it would bloat context."""
+    full = json.dumps(data)
+    if len(full) <= _STRUCTURED_ML_MAX_RESP_CHARS:
+        return full
+    preds = data.get("predictions") if isinstance(data, dict) else None
+    summary: dict = {
+        "truncated": True,
+        "note": (
+            "Response too large to return in full; showing a summary. Re-run on a "
+            "smaller batch of query_rows/series to get complete per-row output."
+        ),
+    }
+    if isinstance(preds, list):
+        summary["n_predictions"] = len(preds)
+        summary["predictions_sample"] = preds[:50]
+    else:
+        summary["keys"] = list(data.keys()) if isinstance(data, dict) else None
+    return json.dumps(summary)
+
+
+def tabular_classify(
+    support_rows: list[dict[str, Any]], target: str, query_rows: list[dict[str, Any]]
+) -> str:
+    """Classify tabular rows with TabFM (zero-shot in-context; up to 10 classes).
+
+    Hand over a few labeled examples as the support set and get predicted classes +
+    probabilities for the query rows — no training step. Use this to adapt to a new
+    labeled dataset on the fly instead of getting stuck.
+
+    Args:
+        support_rows: Labeled examples; each is a dict of features INCLUDING the target column.
+        target: Name of the label column present in support_rows.
+        query_rows: Rows (dicts of features) to classify.
+    """
+    return _structured_ml_post(
+        "/tabular/classify",
+        {"support_rows": support_rows, "target": target, "query_rows": query_rows},
+    )
+
+
+def tabular_regress(
+    support_rows: list[dict[str, Any]], target: str, query_rows: list[dict[str, Any]]
+) -> str:
+    """Predict a numeric target for tabular rows with TabFM (zero-shot in-context).
+
+    Args:
+        support_rows: Labeled examples; each is a dict of features INCLUDING the numeric target column.
+        target: Name of the numeric target column present in support_rows.
+        query_rows: Rows (dicts of features) to predict.
+    """
+    return _structured_ml_post(
+        "/tabular/regress",
+        {"support_rows": support_rows, "target": target, "query_rows": query_rows},
+    )
+
+
+def timeseries_forecast(series: list[float], horizon: int) -> str:
+    """Forecast future values of a time series with TimesFM (zero-shot).
+
+    Args:
+        series: History as a list of numbers. (Several series at once — a list of
+            lists — is also accepted by the service for batch forecasting.)
+        horizon: Number of future steps to forecast.
+    """
+    return _structured_ml_post(
+        "/timeseries/forecast", {"series": series, "horizon": horizon}
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Registration
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -1679,6 +1803,7 @@ TOOL_CATEGORIES: dict = {
     "code": [code_search, code_symbols],
     "repowise": [repowise_search],
     "swarm": [swarm_code],
+    "structured_ml": [tabular_classify, tabular_regress, timeseries_forecast],
     "graph": [],  # populated lazily by _init_graph_tools()
     "safety": [escalate_to_human, check_safety_gate],
     "workspace": [],  # populated lazily by _init_workspace_tools()
@@ -1694,6 +1819,7 @@ TOOL_CATEGORIES: dict = {
 # directly addresses Reddit pain ("I asked the agent what it did and it lied").
 IDENTITY_DEFAULTS = {
     "demiurge": ["file_io", "shell", "python", "web", "git", "code", "repowise", "swarm", "graph", "workspace", "safety", "self"],
+    "analyst": ["file_io", "web", "python", "code", "graph", "structured_ml", "workspace", "safety", "self"],
     "atlas": ["file_io", "web", "secrets", "code", "graph", "workspace", "safety", "self"],
     "aither": ["file_io", "shell", "python", "web", "secrets", "creative", "git", "code", "repowise", "swarm", "graph", "workspace", "safety", "self"],
     "lyra": ["file_io", "web", "graph", "workspace", "voice", "safety", "self"],

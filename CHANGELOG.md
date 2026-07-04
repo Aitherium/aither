@@ -2,6 +2,25 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [2.14.4] - 2026-07-04
+
+### Added
+
+- **`structured_ml` tool domain** — zero-shot structured-data inference for agents,
+  backed by TabFM (tabular classification/regression) and TimesFM (time-series
+  forecasting). Three tools:
+  - `tabular_classify(support_rows, target, query_rows)` — classify rows from a
+    labeled support set, in-context (no training step; up to 10 classes).
+  - `tabular_regress(support_rows, target, query_rows)` — predict a numeric target.
+  - `timeseries_forecast(series, horizon)` — forecast future values of a series.
+
+  The tools POST to a structured-ML inference service resolved from
+  `AITHER_STRUCTURED_ML_URL` (default `http://localhost:8192`), reject non-http(s)
+  URLs, and summarise oversized responses to protect the agent's context.
+- **`Capability.STRUCTURED_INFERENCE`** capability token and a new **`analyst`**
+  identity/pack that ships the `structured_ml` domain by default. The domain is
+  opt-in — only identities that enable the `structured_ml` category get the tools.
+
 ## [2.14.3] - 2026-07-03
 
 ### Fixed
