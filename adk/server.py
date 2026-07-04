@@ -20,7 +20,7 @@ from typing import Any
 import httpx
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
 
 from adk import __version__
 from adk.agent import AitherAgent, AgentResponse
@@ -31,6 +31,87 @@ from adk.metrics import get_metrics
 from adk.trace import TraceMiddleware, get_trace_id, new_trace
 
 logger = logging.getLogger("adk.server")
+
+
+# A tiny, self-contained streaming chat page the agent serves at "/" so a person
+# who ran `adk up` has somewhere to talk to it with live feedback (a "thinking…"
+# indicator + token-by-token streaming) instead of a 30-second blank wait. It
+# calls the agent's own gated /chat/stream; the callback bearer is read from the
+# URL fragment (#k=…), which the browser never sends to the server or logs, so
+# the inference endpoint stays authenticated (not an open, abusable proxy).
+_CHAT_HTML = r'''<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Aither Agent</title>
+<style>
+:root{color-scheme:light dark}
+*{box-sizing:border-box}
+body{margin:0;font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+ background:#0b0d10;color:#e6e8eb;display:flex;flex-direction:column;height:100vh}
+@media(prefers-color-scheme:light){body{background:#f6f7f9;color:#12141a}}
+header{padding:12px 16px;border-bottom:1px solid #2a2f37;font-weight:600;display:flex;
+ gap:8px;align-items:center}
+@media(prefers-color-scheme:light){header{border-color:#e2e5ea}}
+.dot{width:8px;height:8px;border-radius:50%;background:#3ba55d}
+#log{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:10px}
+.msg{max-width:760px;padding:10px 13px;border-radius:12px;white-space:pre-wrap;word-wrap:break-word}
+.user{align-self:flex-end;background:#2563eb;color:#fff;border-bottom-right-radius:3px}
+.assistant{align-self:flex-start;background:#1b2027;border-bottom-left-radius:3px}
+@media(prefers-color-scheme:light){.assistant{background:#eceef2}}
+.thinking{opacity:.7;font-style:italic}
+form{display:flex;gap:8px;padding:12px 16px;border-top:1px solid #2a2f37}
+@media(prefers-color-scheme:light){form{border-color:#e2e5ea}}
+#in{flex:1;padding:11px 13px;border-radius:10px;border:1px solid #2a2f37;background:#12151a;
+ color:inherit;font:inherit;resize:none}
+@media(prefers-color-scheme:light){#in{background:#fff;border-color:#cfd4dc}}
+button{padding:0 18px;border:0;border-radius:10px;background:#2563eb;color:#fff;font:inherit;
+ font-weight:600;cursor:pointer}button:disabled{opacity:.5;cursor:default}
+</style></head><body>
+<header><span class="dot"></span><span id="name">Aither Agent</span></header>
+<div id="log"></div>
+<form id="f"><textarea id="in" rows="1" placeholder="Message your agent…" autofocus></textarea>
+<button id="send">Send</button></form>
+<script>
+var log=document.getElementById('log'),input=document.getElementById('in'),
+ form=document.getElementById('f'),btn=document.getElementById('send');
+var key=(location.hash.match(/[#&]k=([^&]+)/)||[])[1]||'';
+var sid=localStorage.getItem('adk_sid')||('web-'+Math.random().toString(36).slice(2));
+localStorage.setItem('adk_sid',sid);
+function hdrs(h){h=h||{};if(key)h['Authorization']='Bearer '+decodeURIComponent(key);return h;}
+function bubble(role,text){var d=document.createElement('div');d.className='msg '+role;
+ d.textContent=text;log.appendChild(d);log.scrollTop=log.scrollHeight;return d;}
+fetch('/health').then(function(r){return r.json()}).then(function(j){
+ if(j&&j.agent)document.getElementById('name').textContent=j.agent;}).catch(function(){});
+function thinking(el){var i=0;el.classList.add('thinking');
+ var t=setInterval(function(){i=(i+1)%4;el.textContent='thinking'+Array(i+1).join('.');},400);
+ return t;}
+async function send(text){
+ bubble('user',text);
+ var el=bubble('assistant','');var tk=thinking(el);var got=false,acc='';
+ btn.disabled=true;
+ try{
+  var res=await fetch('/chat/stream',{method:'POST',headers:hdrs({'Content-Type':'application/json'}),
+   body:JSON.stringify({message:text,session_id:sid})});
+  if(!res.ok){clearInterval(tk);el.classList.remove('thinking');
+   el.textContent='⚠ '+res.status+(res.status===401?' — reopen this page from `adk up`':'');btn.disabled=false;return;}
+  var reader=res.body.getReader(),dec=new TextDecoder(),buf='';
+  while(true){var c=await reader.read();if(c.done)break;buf+=dec.decode(c.value,{stream:true});
+   var idx;while((idx=buf.indexOf('\n\n'))>=0){var frame=buf.slice(0,idx);buf=buf.slice(idx+2);
+    var line=frame.split('\n').filter(function(l){return l.indexOf('data:')===0})[0];if(!line)continue;
+    var d;try{d=JSON.parse(line.slice(5).trim())}catch(e){continue}
+    if(d.type==='token'){if(!got){got=true;clearInterval(tk);el.classList.remove('thinking');el.textContent=''}
+     acc+=(d.t||'');el.textContent=acc;log.scrollTop=log.scrollHeight}
+    else if(d.type==='answer'){if(!got){clearInterval(tk);el.classList.remove('thinking');got=true}
+     acc=d.answer||acc;el.textContent=acc;log.scrollTop=log.scrollHeight}
+    else if(d.type==='error'){clearInterval(tk);el.classList.remove('thinking');el.textContent='⚠ '+(d.error||'error')}}}
+ }catch(e){clearInterval(tk);el.classList.remove('thinking');el.textContent='⚠ '+e.message}
+ clearInterval(tk);el.classList.remove('thinking');if(!acc&&!el.textContent)el.textContent='(no response)';
+ btn.disabled=false;input.focus();
+}
+form.addEventListener('submit',function(e){e.preventDefault();var t=input.value.trim();
+ if(!t)return;input.value='';send(t)});
+input.addEventListener('keydown',function(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();
+ form.requestSubmit()}});
+</script></body></html>'''
 
 
 def create_app(
@@ -162,7 +243,10 @@ def create_app(
     # ─── Auth middleware (optional, enabled via AITHER_API_KEY or --api-key) ───
 
     _server_api_key = os.getenv("AITHER_SERVER_API_KEY", "")
-    _skip_auth_paths = {"/health", "/docs", "/openapi.json", "/metrics", "/demo", "/redoc"}
+    # "/" and "/chat" serve only the static chat page (no data); the page then
+    # authenticates to the gated /chat/stream with the bearer from its URL fragment.
+    _skip_auth_paths = {"/", "/chat", "/health", "/docs", "/openapi.json",
+                        "/metrics", "/demo", "/redoc"}
 
     # Valid caller types for header validation (prevents spoofing)
     _valid_caller_types = {"PLATFORM", "PUBLIC", "DEMO", "TENANT", "ANONYMOUS"}
@@ -327,6 +411,16 @@ def create_app(
             }
 
         return result
+
+    # ─── Built-in streaming chat page (so a human has somewhere to talk) ───
+
+    @app.get("/", response_class=HTMLResponse)
+    async def chat_page():
+        return HTMLResponse(_CHAT_HTML)
+
+    @app.get("/chat", response_class=HTMLResponse)
+    async def chat_page_alias():
+        return HTMLResponse(_CHAT_HTML)
 
     # ─── No-backend handler ───
 

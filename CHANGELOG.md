@@ -2,6 +2,31 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [2.14.8] - 2026-07-04
+
+### Added — `adk up` for normal humans (no API key, no prereqs, live chat)
+
+- **Hosted-brain default — no API key required.** When there's no local model and no
+  provider key, `adk up` signs in (device-flow) and routes inference through the gateway
+  using the portal token (`AITHER_LLM_BACKEND=gateway` + bearer). A non-technical user
+  never needs to obtain or paste an LLM API key. Explicit `--provider`/local model still
+  take precedence; unattended `--yes` with no token/backend fails cleanly (exit 3).
+- **cloudflared auto-download.** If the tunnel binary is missing, `adk up` downloads the
+  right platform asset to `~/.aither/bin` (SHA256-verified against the release; opt out with
+  `AITHER_CLOUDFLARED_REQUIRE_CHECKSUM=0`) instead of exiting with an install hint.
+- **Built-in streaming chat page.** The agent now serves a self-contained chat UI at `/`
+  (and `/chat`) with a live "thinking…" indicator and token-by-token streaming — so a human
+  has somewhere to talk to it with immediate feedback instead of a blank wait. `adk up` opens
+  it locally and passes the callback bearer in the URL fragment (`#k=…`), so `/chat/stream`
+  stays authenticated (not an open proxy) with nothing to paste.
+- **Human-readable failures.** `adk up` errors now carry a plain-English `next_action`
+  (kept machine-readable in `--yes` JSON).
+
+### Fixed
+
+- `adk up` chat link pointed at a non-existent `/settings/agent` route; it now points at the
+  agent's own streaming chat page.
+
 ## [2.14.7] - 2026-07-04
 
 ### Added

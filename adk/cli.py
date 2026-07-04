@@ -621,16 +621,20 @@ def cmd_up(args):
     approval = getattr(args, "approve", None) or "file_write,shell_exec,shell"
     will_register = not getattr(args, "no_register", False) and not offline
 
-    def _fail(code: int, error: str, hint: str = "") -> int:
+    def _fail(code: int, error: str, hint: str = "", next_action: str = "") -> int:
         obj = {"ok": False, "error": error, "error_code": code}
         if hint:
             obj["hint"] = hint
+        if next_action:
+            obj["next_action"] = next_action
         if non_interactive:
             print(json.dumps(obj))
         else:
             print(f"  [x] {error}")
             if hint:
                 print(f"      {hint}")
+            if next_action:
+                print(f"      -> {next_action}")
         return code
 
     # ── Idempotency: already running? ──
@@ -651,86 +655,130 @@ def cmd_up(args):
                       "Use --force to restart, or 'adk down' to stop.")
             return 0
 
-    # ── Backend: local auto-detect, else a cloud provider key ──
+    # ── Portal token (used for BOTH the hosted brain and registration) ──
+    portal = (getattr(args, "portal", "") or "https://veil.aitherium.com").rstrip("/")
+    saved = load_saved_config()
+    portal_token = (getattr(args, "token", "") or os.environ.get("AITHER_PORTAL_TOKEN", "")
+                    or saved.get("api_key", "") or saved.get("access_token", ""))
+
+    def _device_login(client: str) -> str:
+        login_url = _resolve_identity_url(
+            getattr(args, "login_url", "") or os.environ.get("AITHER_PORTAL_URL", "")
+            or portal or _DEFAULT_IDENTITY_URL)
+        print(f"  Signing in at {login_url} …")
+        dev = _device_flow_login(login_url, client_name=client)
+        tok = dev.get("access_token", "") or dev.get("token", "")
+        if tok:
+            try:
+                save_saved_config({"api_key": tok})
+            except (OSError, ValueError):
+                pass
+        return tok
+
+    # ── Backend: local model  >  a provider key  >  the hosted Aither brain ──
+    # The hosted-brain default means a normal human never needs an API key: if
+    # there's no local model and no provider key, we sign in (device-flow) and
+    # route inference through the gateway using the portal token.
     try:
         from adk.shell_launcher import _preflight_check
         have_backend, _backend_desc = _preflight_check()
     except (ImportError, RuntimeError, OSError):
         have_backend, _backend_desc = (False, "")
 
+    use_gateway = False
     if not have_backend:
-        if not provider:
-            keys = _load_provider_keys()
+        cand = provider
+        if not cand:
+            _pk = _load_provider_keys()
             for p in ("deepseek", "openai", "anthropic"):
-                if keys.get(p) or os.environ.get(_KNOWN_PROVIDERS[p]["env"]):
-                    provider = p
+                if _pk.get(p) or os.environ.get(_KNOWN_PROVIDERS[p]["env"]):
+                    cand = p
                     break
-            if not provider and not non_interactive:
-                provider = (input("  Model provider [deepseek/openai/anthropic]: ")
-                            .strip().lower() or "deepseek")
-            provider = provider or "deepseek"
-        if provider not in _KNOWN_PROVIDERS:
-            return _fail(2, f"unknown provider '{provider}'",
-                         f"known: {', '.join(sorted(_KNOWN_PROVIDERS))}")
-        env_name = _KNOWN_PROVIDERS[provider]["env"]
-        keys = _load_provider_keys()
-        key = keys.get(provider, "") or os.environ.get(env_name, "")
-        if not key:
+        if cand and cand not in _KNOWN_PROVIDERS:
+            return _fail(2, f"unknown provider '{cand}'",
+                         f"known: {', '.join(sorted(_KNOWN_PROVIDERS))}",
+                         next_action="re-run with a supported --provider, or omit it")
+        cand_key = ""
+        if cand:
+            cand_key = (_load_provider_keys().get(cand, "")
+                        or os.environ.get(_KNOWN_PROVIDERS[cand]["env"], ""))
+
+        if cand_key:
+            provider = cand
+            os.environ[_KNOWN_PROVIDERS[provider]["env"]] = cand_key
+        elif provider:
+            # Explicit --provider but no key for it.
+            env_name = _KNOWN_PROVIDERS[provider]["env"]
             if non_interactive:
                 return _fail(3, "no_backend",
-                             f"no local LLM detected and {env_name} not set — "
-                             f"set {env_name} or run 'adk setup' for a local model")
+                             f"provider '{provider}' selected but {env_name} is not set",
+                             next_action=f"set {env_name}, or omit --provider to use the hosted brain")
             key = getpass.getpass(f"  {_KNOWN_PROVIDERS[provider]['label']} API key: ").strip()
             if not key:
-                return _fail(3, "no_backend", "no key entered")
+                return _fail(3, "no_backend", "no key entered",
+                             next_action="paste your API key, or omit --provider for the hosted brain")
             ok, msg = _test_provider_key(provider, key)
             print(f"  [{'+' if ok else 'x'}] {msg}")
             if not ok:
-                return _fail(3, "invalid_key", "key failed validation (not saved)")
-            keys[provider] = key
-            _save_provider_keys(keys)
-        os.environ[env_name] = key
-
-    # ── Portal token (for registration) ──
-    portal = (getattr(args, "portal", "") or "https://veil.aitherium.com").rstrip("/")
-    portal_token = ""
-    if will_register:
-        saved = load_saved_config()
-        portal_token = (getattr(args, "token", "") or os.environ.get("AITHER_PORTAL_TOKEN", "")
-                        or saved.get("api_key", "") or saved.get("access_token", ""))
-        if not portal_token:
-            if non_interactive:
-                # Can't run a browser device-flow unattended → degrade to local-only.
-                if require_register:
-                    return _fail(5, "no_portal_token",
-                                 "set AITHER_PORTAL_TOKEN or pass --token for unattended register")
-                will_register = False
-            else:
-                login_url = _resolve_identity_url(
-                    getattr(args, "login_url", "") or os.environ.get("AITHER_PORTAL_URL", "")
-                    or portal or _DEFAULT_IDENTITY_URL)
-                print(f"  Signing in at {login_url} …")
+                return _fail(3, "invalid_key", "key failed validation (not saved)",
+                             next_action="check the key and try again")
+            _pk = _load_provider_keys()
+            _pk[provider] = key
+            _save_provider_keys(_pk)
+            os.environ[env_name] = key
+        else:
+            # No local model + no provider key → default to the hosted Aither brain.
+            if not portal_token and not offline:
+                if non_interactive:
+                    return _fail(3, "no_backend",
+                                 "no local model, no API key, and not signed in",
+                                 next_action="run 'adk login' (or set AITHER_PORTAL_TOKEN), "
+                                             "or 'adk setup' for a local model")
+                print("  No local model or API key found — using the hosted Aither brain "
+                      "(no key needed).")
                 try:
-                    dev = _device_flow_login(login_url, client_name=f"adk-up:{name}")
-                    portal_token = dev.get("access_token", "") or dev.get("token", "")
+                    portal_token = _device_login(f"adk-up:{name}")
                 except Exception as e:  # noqa: BLE001 — surface a clear next step
-                    return _fail(5, f"device-flow login failed: {e}",
-                                 "pass --token, run 'adk login', or use --no-register")
-                if portal_token:
-                    try:
-                        save_saved_config({"api_key": portal_token})
-                    except (OSError, ValueError):
-                        pass
+                    return _fail(3, f"sign-in failed: {e}", "",
+                                 next_action="run 'adk login', pass --provider + key, "
+                                             "or 'adk setup' for a local model")
+            if portal_token:
+                use_gateway = True
+                provider = "gateway"
+            else:
+                return _fail(3, "no_backend",
+                             "no local model and no hosted brain available",
+                             next_action="run 'adk setup' for a local model, "
+                                         "or drop --offline to use the hosted brain")
 
-    # ── cloudflared availability ──
-    cf = _find_cloudflared() if will_register else None
-    if will_register and not cf:
+    # ── Portal token for REGISTRATION (reuse the one above, or acquire) ──
+    if will_register and not portal_token:
         if non_interactive:
-            return _fail(4, "cloudflared_missing", _cloudflared_install_hint().strip())
-        print("  cloudflared is not installed (needed for the secure tunnel):")
-        print(_cloudflared_install_hint())
-        print("  Or re-run with --no-register to run locally without a tunnel.")
-        return 4
+            if require_register:
+                return _fail(5, "no_portal_token",
+                             "unattended registration needs a token",
+                             next_action="set AITHER_PORTAL_TOKEN or pass --token")
+            will_register = False
+        else:
+            try:
+                portal_token = _device_login(f"adk-up:{name}")
+            except Exception as e:  # noqa: BLE001 — surface a clear next step
+                return _fail(5, f"device-flow login failed: {e}", "",
+                             next_action="pass --token, run 'adk login', or use --no-register")
+            if not portal_token:
+                will_register = False
+
+    # ── cloudflared availability (auto-download if missing) ──
+    cf = None
+    if will_register:
+        cf = _find_cloudflared()
+        if not cf:
+            if not non_interactive:
+                print("  cloudflared not found — downloading it (one-time, ~50MB) …")
+            cf = _ensure_cloudflared()
+        if not cf:
+            return _fail(4, "cloudflared_missing", _cloudflared_install_hint().strip(),
+                         next_action="install cloudflared manually, or re-run with --no-register")
 
     # ── Callback bearer (the one secret the control plane presents back to us) ──
     auth_token = getattr(args, "auth_token", "") or os.environ.get("AITHER_SERVER_API_KEY", "")
@@ -754,12 +802,23 @@ def cmd_up(args):
     child_env["AITHER_TOOL_APPROVAL"] = approval or ""
     if offline:
         child_env["AITHER_OFFLINE"] = "1"
+    if use_gateway and portal_token:
+        # Route inference through the hosted Aither brain with the portal token —
+        # the router honours AITHER_LLM_BACKEND=gateway + AITHER_API_KEY (bearer).
+        child_env["AITHER_API_KEY"] = portal_token
+        child_env["AITHER_LLM_BACKEND"] = "gateway"
+        _eps = _derive_cloud_endpoints(_resolve_identity_url(
+            getattr(args, "login_url", "") or os.environ.get("AITHER_PORTAL_URL", "")
+            or portal or _DEFAULT_IDENTITY_URL))
+        if _eps and _eps.get("inference_url"):
+            child_env["AITHER_INFERENCE_URL"] = _eps["inference_url"]
     serve_argv = [sys.executable, "-m", "adk.server",
                   "--port", str(port), "--identity", identity]
-    if provider:
+    if provider and provider != "gateway":
         serve_argv += ["--backend", provider]
     if not non_interactive:
-        print(f"  Starting aither-serve ({provider or 'local'}, :{port}) …")
+        _brain = "hosted Aither brain" if use_gateway else (provider or "local")
+        print(f"  Starting agent ({_brain}, :{port}) …")
     server_pid = daemon.spawn_detached(serve_argv, agent_log, env=child_env)
 
     if not daemon.wait_for_health(port, timeout=60):
@@ -825,13 +884,16 @@ def cmd_up(args):
         autostart = daemon.install_autostart(up_argv)
 
     # ── Status file (single source of truth for status/down) ──
+    # The agent serves its own streaming chat page at "/" — that's where a human
+    # actually talks to it (live tokens, no 30s blank wait), reachable locally.
+    chat_url = f"http://127.0.0.1:{port}/"
     status = {
         "ok": True, "identity": identity, "name": name, "port": port,
         "server_pid": server_pid, "tunnel_pid": tunnel_pid,
         "invoke_url": public_url, "registered": registered,
         "offline": offline, "detached": not foreground,
         "backend": "local" if have_backend else provider,
-        "autostart": autostart, "portal": portal,
+        "autostart": autostart, "portal": portal, "chat_url": chat_url,
         "log_path": str(agent_log),
     }
     daemon.write_status(status)
@@ -845,8 +907,20 @@ def cmd_up(args):
         if public_url:
             print(f"     Fleet: {portal}/portal/fleet")
             print(f"     URL:   {public_url}")
+        print(f"     Chat:  {chat_url}")
         print(f"     Logs:  {agent_log}")
         print("     Stop:  adk down     Status: adk status")
+        # Open the chat page so a non-technical user has somewhere to talk to it.
+        # Interactive + detached only (never in --yes or blocking --foreground).
+        if not foreground:
+            try:
+                import webbrowser
+                # Pass the callback bearer in the URL fragment (#k=…) — the browser
+                # never sends it to the server or logs, so the chat page can call the
+                # gated /chat/stream without the user pasting a token.
+                webbrowser.open(f"{chat_url}#k={auth_token}")
+            except Exception:  # noqa: BLE001 — opening a browser is best-effort
+                pass
 
     if foreground:
         if not non_interactive:
@@ -866,7 +940,9 @@ def _autostart_up_argv(identity: str, port: int, provider: str, offline: bool) -
     """Build the command the autostart entry re-runs at logon (unattended, detached)."""
     argv = [sys.executable, "-m", "adk.cli", "up",
             "--identity", identity, "--port", str(port), "--yes"]
-    if provider:
+    # 'gateway' is the hosted-brain sentinel, not a real --provider — at reboot the
+    # saved portal token is re-resolved and the hosted brain is chosen again.
+    if provider and provider != "gateway":
         argv += ["--provider", provider]
     if offline:
         argv += ["--offline"]
@@ -2497,6 +2573,140 @@ def _cloudflared_install_hint() -> str:
     return ("  curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/"
             "download/cloudflared-linux-amd64 -o /usr/local/bin/cloudflared && "
             "chmod +x /usr/local/bin/cloudflared")
+
+
+def _cloudflared_asset() -> str | None:
+    """Map this platform to the cloudflared GitHub release asset name."""
+    import platform as _plat
+    sysname = _plat.system()
+    mach = _plat.machine().lower()
+    if sysname == "Windows":
+        if mach in ("x86", "i386", "i686"):
+            return "cloudflared-windows-386.exe"
+        return "cloudflared-windows-amd64.exe"
+    if sysname == "Linux":
+        if mach in ("aarch64", "arm64"):
+            return "cloudflared-linux-arm64"
+        if mach in ("armv7l", "armv6l", "arm"):
+            return "cloudflared-linux-arm"
+        return "cloudflared-linux-amd64"
+    if sysname == "Darwin":
+        if mach in ("arm64", "aarch64"):
+            return "cloudflared-darwin-arm64.tgz"
+        return "cloudflared-darwin-amd64.tgz"
+    return None
+
+
+def _parse_cloudflared_checksums(body: str) -> dict:
+    """Parse 'cloudflared-...: <sha256>' pairs from a cloudflared release body.
+
+    cloudflared publishes checksums as colon-separated lines inside a markdown code
+    block (NOT the space-separated ``checksums.sha256`` format the shell binary uses),
+    so this is deliberately its own parser.
+    """
+    out: dict[str, str] = {}
+    hexset = set("0123456789abcdefABCDEF")
+    for line in (body or "").splitlines():
+        s = line.strip().strip("`").strip()
+        if ":" not in s:
+            continue
+        name, _, digest = s.partition(":")
+        name = name.strip()
+        digest = digest.strip()
+        if name.startswith("cloudflared-") and len(digest) == 64 and set(digest) <= hexset:
+            out[name] = digest.lower()
+    return out
+
+
+def _ensure_cloudflared() -> str | None:
+    """Return a path to cloudflared, downloading it to ~/.aither/bin if missing.
+
+    Secure-by-default: verifies the published SHA256 and refuses to install without
+    one unless AITHER_CLOUDFLARED_REQUIRE_CHECKSUM=0. Returns None on any failure.
+    """
+    existing = _find_cloudflared()
+    if existing:
+        return existing
+
+    import hashlib
+    import shutil as _shutil
+    import stat as _stat
+
+    import httpx
+
+    asset = _cloudflared_asset()
+    if not asset:
+        import platform as _plat
+        print(f"  Unsupported platform for cloudflared auto-download: "
+              f"{_plat.system()} {_plat.machine()}")
+        return None
+
+    cache = Path.home() / ".aither" / "bin"
+    cache.mkdir(parents=True, exist_ok=True)
+    dest = cache / ("cloudflared.exe" if sys.platform == "win32" else "cloudflared")
+    require_ck = os.environ.get(
+        "AITHER_CLOUDFLARED_REQUIRE_CHECKSUM", "1").lower() not in ("0", "false", "no")
+    tmp = cache / (asset + ".part")
+
+    try:
+        rel = httpx.get(
+            "https://api.github.com/repos/cloudflare/cloudflared/releases/latest",
+            follow_redirects=True, timeout=30).json()
+        assets = {a["name"]: a["browser_download_url"] for a in rel.get("assets", [])}
+        url = assets.get(asset)
+        if not url:
+            print(f"  cloudflared asset '{asset}' not in the latest release.")
+            return None
+        checksums = _parse_cloudflared_checksums(rel.get("body", ""))
+
+        with httpx.stream("GET", url, follow_redirects=True, timeout=180) as dl:
+            dl.raise_for_status()
+            with open(tmp, "wb") as f:
+                for chunk in dl.iter_bytes(65536):
+                    f.write(chunk)
+
+        expected = checksums.get(asset)
+        if expected:
+            h = hashlib.sha256()
+            with open(tmp, "rb") as f:
+                for chunk in iter(lambda: f.read(65536), b""):
+                    h.update(chunk)
+            if h.hexdigest().lower() != expected:
+                tmp.unlink(missing_ok=True)
+                print("  cloudflared checksum verification FAILED — not installing.")
+                return None
+        elif require_ck:
+            tmp.unlink(missing_ok=True)
+            print("  No published checksum for cloudflared — refusing to install "
+                  "(set AITHER_CLOUDFLARED_REQUIRE_CHECKSUM=0 to override).")
+            return None
+
+        if asset.endswith(".tgz"):
+            import tarfile
+            import tempfile
+            with tempfile.TemporaryDirectory() as td:
+                with tarfile.open(tmp, "r:gz") as tf:
+                    tf.extractall(td)  # noqa: S202 — trusted cloudflare release asset
+                found = list(Path(td).rglob("cloudflared"))
+                if not found:
+                    tmp.unlink(missing_ok=True)
+                    print("  cloudflared archive did not contain the binary.")
+                    return None
+                _shutil.copy2(found[0], dest)
+            tmp.unlink(missing_ok=True)
+        else:
+            tmp.replace(dest)
+
+        if sys.platform != "win32":
+            dest.chmod(dest.stat().st_mode | _stat.S_IEXEC | _stat.S_IXGRP | _stat.S_IXOTH)
+        return str(dest)
+    except (httpx.HTTPError, OSError, KeyError, ValueError) as e:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        print(f"  cloudflared download failed: {e}")
+        return None
 
 
 def cmd_host(args):
