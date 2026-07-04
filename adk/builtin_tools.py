@@ -50,6 +50,14 @@ def _get_allowed_roots() -> list[str]:
     return _ALLOWED_ROOTS
 
 
+def set_allowed_roots(roots: list[str]) -> None:
+    """Explicit override of the agent's writable roots. Resets the memoized
+    cache so it takes effect immediately (env-only binding is a no-op after
+    the first file-tool call, which memoizes _ALLOWED_ROOTS)."""
+    global _ALLOWED_ROOTS
+    _ALLOWED_ROOTS = list(_DEFAULT_ALLOWED_ROOTS) + [r for r in roots if r]
+
+
 def _is_safe_path(path: str) -> bool:
     """Check if a path is within allowed roots."""
     try:

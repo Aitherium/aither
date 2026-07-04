@@ -2,6 +2,32 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [2.14.6] - 2026-07-04
+
+### Added
+
+- **`adk.preflight` — self-bootstrap capability probe.** `run_preflight(agent,
+  spec)` wakes an agent up knowing what it is actually plugged into: a bounded
+  (1.5s) parallel `LivenessProbe` over the router's resolved backends
+  (primary/reasoning), the embeddings winner, remote MCP tools, the structured-ML
+  / `/ml/teach` endpoints, and voice — returning an honest `CapabilityReport`.
+  Status vocabulary distinguishes reachability from entitlement
+  (`OK`/`MISSING`/`UNREACHABLE`/`AUTH`/`TIER_DENIED`/`UNSUPPORTED`), a hosted slot
+  never prints a bare `OK`, and a required-but-unsatisfied slot aborts before the
+  loop instead of blind-firing. Headless task/rules resolution + an allowed-roots
+  policy binding (`builtin_tools.set_allowed_roots`, which resets the memoized
+  cache so the override actually enforces).
+- **Multimodal (image) messages.** `Message.content` now accepts an OpenAI-style
+  content-part list (`str | list[dict]`), passed through verbatim to the
+  OpenAI-compatible body (gateway / vLLM / OpenAI). New `adk.llm.multimodal`
+  helpers — `image_message()`, `image_content_parts()`, `to_image_url()` — build
+  the parts and encode local image bytes/paths into `data:` URIs.
+- **Real vision preflight probe.** The vision slot is no longer unconditionally
+  `UNSUPPORTED`: it sends a discriminable image (a solid red square) and requires
+  the model to name the color, so a blind/text-only model cannot false-pass. `OK`
+  only on a real round-trip; `AUTH` on 401/403; `UNSUPPORTED` when there is no
+  OpenAI-compatible provider or the model cannot see the image.
+
 ## [2.14.5] - 2026-07-04
 
 ### Added

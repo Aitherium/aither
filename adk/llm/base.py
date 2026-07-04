@@ -19,7 +19,13 @@ logger = logging.getLogger("adk.llm.base")
 class Message:
     """A single message in a conversation."""
     role: str  # "system", "user", "assistant", "tool"
-    content: str
+    # Usually a plain string. For MULTIMODAL requests it may be an OpenAI-style
+    # content-part list, e.g. [{"type": "text", "text": ...},
+    # {"type": "image_url", "image_url": {"url": <data-URI or http>}}]. The list
+    # is passed through verbatim by messages_to_dicts to the OpenAI-compatible
+    # body, so it only works on that provider family (gateway / vLLM / OpenAI) —
+    # build one with adk.llm.multimodal.image_message().
+    content: str | list[dict]
     name: str | None = None
     tool_call_id: str | None = None
     tool_calls: list | None = None
