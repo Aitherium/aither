@@ -309,19 +309,24 @@ def _tailscale_up(
         "--authkey", auth_key,
         "--hostname", hostname,
     ]
+
+    def _redact(text: str) -> str:
+        # Never let the auth key reach logs/exceptions (subprocess errors echo
+        # the full argv, and tailscale may print the key on failure).
+        return text.replace(auth_key, "***REDACTED***") if auth_key else text
+
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-        out = (r.stdout + r.stderr).strip()
+        out = _redact((r.stdout + r.stderr).strip())
         if r.returncode != 0:
             logger.warning(
                 "[_tailscale_up] tailscale up returned %d: %s",
                 r.returncode, out)
         return out
     except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(
-            f"tailscale up timed out (30s): {exc}") from exc
+        raise RuntimeError("tailscale up timed out (30s)") from None
     except Exception as exc:
-        raise RuntimeError(f"tailscale up failed: {exc}") from exc
+        raise RuntimeError(f"tailscale up failed: {_redact(str(exc))}") from None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -390,11 +395,25 @@ async def join(
     if not overlay_ip:
         raise RuntimeError(f"Conductor returned no overlay_ip: {resp}")
 
+    # SELF-SERVICE AUTOMATION: the conductor auto-issues a headscale key + URL
+    # for NAT'd nodes in the onboard response, so the customer never has to
+    # obtain or set one. If the response carries a key, switch to the headscale
+    # transport automatically (an explicit --transport/env still forces it too).
+    resp_hs_key = (resp.get("headscale_auth_key") or "").strip()
+    resp_hs_url = (resp.get("headscale_url") or "").strip()
+    if resp_hs_key and not use_headscale:
+        use_headscale = True
+        logger.info(
+            "mesh: conductor issued a headscale key for %s — joining via "
+            "Headscale automatically (NAT-friendly)", node_id)
+
     if use_headscale:
-        # Headscale transport: bring up Tailscale tunnel instead of raw WG
-        hs_url = headscale_url or os.getenv(
-            "AITHER_HEADSCALE_URL", "https://headscale.aitherium.com")
-        hs_key = headscale_auth_key or os.getenv("AITHER_HEADSCALE_AUTH_KEY", "")
+        # Headscale transport: bring up Tailscale tunnel instead of raw WG.
+        # Key/URL precedence: explicit arg > env > conductor-issued (auto).
+        hs_url = headscale_url or os.getenv("AITHER_HEADSCALE_URL", "") \
+            or resp_hs_url or "https://headscale.aitherium.com"
+        hs_key = headscale_auth_key or os.getenv("AITHER_HEADSCALE_AUTH_KEY", "") \
+            or resp_hs_key
         if not hs_key:
             logger.warning(
                 "[join] Headscale transport requested but AITHER_HEADSCALE_AUTH_KEY "

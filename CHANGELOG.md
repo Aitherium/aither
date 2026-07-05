@@ -2,6 +2,18 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [2.17.1] - 2026-07-05
+
+### Fully self-service mesh join — no customer key handling
+
+- **Auto-join headscale off the onboard response.** The conductor now auto-issues a
+  headscale pre-auth key for NAT'd nodes and returns it in the `/v1/mesh/onboard`
+  response; `mesh.join` consumes it and brings up the tunnel automatically. A customer
+  runs one command — they never mint, fetch, or set a headscale key. Explicit
+  `--headscale-key`/`AITHER_HEADSCALE_AUTH_KEY` still take precedence.
+- **Security:** `_tailscale_up` now redacts the auth key from all logs and exceptions
+  (a failed `tailscale up` previously echoed the full argv, leaking the key into logs).
+
 ## [2.17.0] - 2026-07-05
 
 ### Added — Headscale mesh transport + local Qdrant + AitherConnect onboarding

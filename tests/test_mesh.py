@@ -212,3 +212,88 @@ class TestHeadscaleTailscaleUp:
         assert "aitheros-" not in " ".join(cmd)
         # Public hostname is preserved
         assert "headscale.aitherium.com" in " ".join(cmd)
+
+
+class TestSelfServiceAutoJoin:
+    """The conductor auto-issues a headscale key in the onboard response so the
+    customer never handles one; adk must auto-join headscale off that response."""
+
+    @pytest.mark.asyncio
+    async def test_join_auto_uses_conductor_issued_key(self, monkeypatch):
+        import adk.mesh as m
+
+        monkeypatch.delenv("AITHER_MESH_TRANSPORT", raising=False)
+        monkeypatch.delenv("AITHER_HEADSCALE_AUTH_KEY", raising=False)
+        # Onboard returns an auto-issued headscale key + url (NAT'd node).
+        async def fake_onboard(*a, **k):
+            return {
+                "overlay_ip": "10.77.9.9",
+                "node_id_assigned": "n1",
+                "headscale_auth_key": "conductor-issued-key",
+                "headscale_url": "https://headscale.aitherium.com",
+            }
+        monkeypatch.setattr(m, "onboard", fake_onboard)
+        monkeypatch.setattr(m, "generate_keypair", lambda: ("priv", "pub"))
+        captured = {}
+        def fake_up(url, key, host):
+            captured.update(url=url, key=key, host=host)
+            return "Success."
+        monkeypatch.setattr(m, "_tailscale_up", fake_up)
+
+        # No transport flag, no env — must still pick headscale because the
+        # conductor issued a key (the whole self-service point).
+        report = await m.join("https://conductor.aitherium.com", node_id="n1")
+        assert report["transport"] == "headscale"
+        assert captured["key"] == "conductor-issued-key"
+        assert captured["url"] == "https://headscale.aitherium.com"
+
+    @pytest.mark.asyncio
+    async def test_join_stays_wireguard_without_issued_key(self, monkeypatch):
+        import adk.mesh as m
+
+        monkeypatch.delenv("AITHER_MESH_TRANSPORT", raising=False)
+        monkeypatch.delenv("AITHER_HEADSCALE_AUTH_KEY", raising=False)
+
+        async def fake_onboard(*a, **k):
+            return {"overlay_ip": "10.77.1.1", "node_id_assigned": "n2"}
+        monkeypatch.setattr(m, "onboard", fake_onboard)
+        monkeypatch.setattr(m, "generate_keypair", lambda: ("priv", "pub"))
+        # Stub the raw-WireGuard chain so the default path completes.
+        monkeypatch.setattr(m, "fetch_server_pubkey",
+                            _async_return(("srvpub", "1.2.3.4:51820")))
+        monkeypatch.setattr(m, "_wg_conf", lambda *a, **k: "conf")
+        monkeypatch.setattr(m, "write_config", lambda *a, **k: "/tmp/wg.conf")
+        monkeypatch.setattr(m, "bring_up", lambda *a, **k: "up")
+        monkeypatch.setattr(m, "has_handshake", lambda *a, **k: True)
+        monkeypatch.setattr(m, "_tailscale_up",
+                            lambda *a, **k: pytest.fail("should not use headscale"))
+        report = await m.join("https://conductor.aitherium.com", node_id="n2")
+        assert report["transport"] == "wireguard"
+
+
+class TestTailscaleKeyRedaction:
+    """The auth key must never leak into logs/exceptions."""
+
+    @patch("shutil.which", return_value="/usr/bin/tailscale")
+    @patch("subprocess.run")
+    def test_timeout_does_not_leak_key(self, mock_run, _which):
+        import subprocess
+        mock_run.side_effect = subprocess.TimeoutExpired(
+            cmd=["tailscale", "up", "--authkey", "SUPERSECRETKEY"], timeout=30)
+        with pytest.raises(RuntimeError) as ei:
+            _tailscale_up("https://headscale.aitherium.com", "SUPERSECRETKEY", "h")
+        assert "SUPERSECRETKEY" not in str(ei.value)
+
+    @patch("shutil.which", return_value="/usr/bin/tailscale")
+    @patch("subprocess.run")
+    def test_generic_error_does_not_leak_key(self, mock_run, _which):
+        mock_run.side_effect = OSError("boom SUPERSECRETKEY in argv")
+        with pytest.raises(RuntimeError) as ei:
+            _tailscale_up("https://headscale.aitherium.com", "SUPERSECRETKEY", "h")
+        assert "SUPERSECRETKEY" not in str(ei.value)
+
+
+def _async_return(value):
+    async def _f(*a, **k):
+        return value
+    return _f
