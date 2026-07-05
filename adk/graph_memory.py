@@ -968,10 +968,16 @@ class GraphMemory:
     async def fleet_pull(self, query: str = "*", limit: int = 500) -> int:
         """Rehydrate the local graph from the per-tenant dataplane.
 
-        With the QDRANT backend (``AITHER_FLEET_QDRANT_URL``): reliably SCROLLS the
-        tenant's points back — real two-way sync, verified live. With the Nexus
-        backend it degrades to a best-effort semantic top-up (Nexus can't
-        enumerate; for cold restore use the SQLite ``.db`` carry via ``adk.sync``).
+        TIERING:
+        - LOCAL (Qdrant, ``AITHER_FLEET_QDRANT_URL`` set): Reliable two-way sync via
+          scroll enumeration. Full rehydration on fresh instance. Recommended for
+          working-set + cross-agent sync. Requires ``adk stack qdrant`` (or external
+          Qdrant with API key).
+        - CLOUD (Nexus, fallback): Best-effort semantic search only. Degrades to
+          append-only RAG (can't enumerate full collection). Use for durable cloud
+          storage under cloud_sync SKU; not suitable for cross-agent rehydration.
+          For cold restore, carry the SQLite ``.db`` via ``adk.sync``.
+
         Returns nodes pulled.
         """
         if self._fleet_backend == "qdrant" and self._qdrant_url:

@@ -184,17 +184,11 @@ class AitherClient:
             if cert_path:
                 client_kwargs["cert"] = cert_path
                 # Trust the internal CA for HTTPS (mTLS setup implies internal
-                # CA trust).
+                # CA trust). Use adk's own TLS resolver — the public package must
+                # not reach into the AitherOS monorepo (lib.security.*).
                 try:
-                    from lib.security.TLSConfig import get_internal_httpx_verify
-                    # Inject AitherOS path if needed
-                    import sys
-                    adk_dir = Path(__file__).parent.parent.parent  # aither-adk/
-                    aitheros_dir = adk_dir.parent / "AitherOS"
-                    if aitheros_dir.is_dir() and str(aitheros_dir) not in sys.path:
-                        sys.path.insert(0, str(aitheros_dir))
-                    from lib.security.TLSConfig import get_internal_httpx_verify
-                    client_kwargs["verify"] = get_internal_httpx_verify()
+                    from adk._tls import tls_verify
+                    client_kwargs["verify"] = tls_verify()
                 except Exception:
                     # Fall back to system CA verification
                     pass

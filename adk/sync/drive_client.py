@@ -42,12 +42,11 @@ def _get_filestate():
     return _FILESTATE
 
 
-# Trust the internal AitherOS CA for HTTPS.
+# Trust the internal CA for HTTPS via adk's own TLS resolver — the public
+# package must not reach into the AitherOS monorepo (lib.security.*).
 try:
-    # Try importing from AitherOS first
-    sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent / "AitherOS"))
-    from lib.security.TLSConfig import get_internal_httpx_verify
-    _TLS_VERIFY = get_internal_httpx_verify()
+    from adk._tls import tls_verify
+    _TLS_VERIFY = tls_verify()
 except Exception:  # noqa: BLE001
     _TLS_VERIFY = True
 

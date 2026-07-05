@@ -31,9 +31,11 @@ import logging
 import os
 import platform
 import shutil
+import socket
 import subprocess
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 logger = logging.getLogger("adk.mesh")
 
@@ -70,6 +72,42 @@ def generate_keypair() -> tuple[str, str]:
     pub = subprocess.run([wg, "pubkey"], input=priv, capture_output=True,
                          text=True, check=True).stdout.strip()
     return priv, pub
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Conductor URL resolution (internal hostname fallback)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _resolve_conductor_url(default_url: str) -> str:
+    """Resolve the conductor URL. If the default internal hostname does not
+    resolve, fall back to the public conductor.aitherium.com endpoint.
+
+    This allows seamless operation both in-fleet (where aitheros-conductor:8193
+    is reachable on the mesh) and for customer boxes (where only the public
+    tunnel conductor.aitherium.com is available).
+
+    Args:
+        default_url: The internal default (e.g., https://aitheros-conductor:8193)
+
+    Returns:
+        The default if the hostname resolves, otherwise the public fallback.
+    """
+    try:
+        parsed = urlparse(default_url)
+        hostname = parsed.hostname or "localhost"
+        # Try to resolve the hostname; if it succeeds, use default.
+        socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+        return default_url
+    except (socket.gaierror, OSError):
+        # Hostname resolution failed (customer box, not on the fleet mesh) — fall
+        # back to the PUBLIC Cloudflare-tunnel endpoint. The tunnel serves the
+        # onboard API on 443, NOT the internal :8193, so the public URL carries
+        # no port (a :8193 here would hit a dead port and defeat the fallback).
+        fallback = "https://conductor.aitherium.com"
+        logger.info(
+            "Conductor hostname %s not resolvable; falling back to %s",
+            urlparse(default_url).hostname, fallback)
+        return fallback
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -228,6 +266,65 @@ def has_handshake(iface: str = DEFAULT_IFACE) -> bool:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Headscale transport (NAT-friendly alternative to raw WireGuard)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _tailscale() -> str | None:
+    """Find the tailscale binary."""
+    return shutil.which("tailscale") or shutil.which("tailscale.exe")
+
+
+def _tailscale_up(
+    headscale_url: str, auth_key: str, hostname: str,
+) -> str:
+    """Bring up a Tailscale tunnel for Headscale mesh transport.
+
+    When raw WireGuard is not viable (e.g., NAT'd customer boxes), Tailscale
+    provides a NAT-traversal layer. The tunnel joins the same mesh CIDR
+    (10.77.0.0/16) via the Headscale control plane.
+
+    Args:
+        headscale_url: Headscale control server URL (e.g.,
+            https://headscale.aitherium.com). The node's overlay_ip is still
+            assigned by the Conductor; Headscale provides the tunnel transport.
+        auth_key: Pre-generated Headscale auth key (passed by the node runner).
+        hostname: Desired hostname in the tailnet (e.g., aither-cloud-{node_id}).
+
+    Returns:
+        Combined stdout+stderr from tailscale up (for diagnostics).
+
+    Raises:
+        RuntimeError if tailscale binary not found or the command fails.
+    """
+    ts = _tailscale()
+    if not ts:
+        raise RuntimeError(
+            "Tailscale 'tailscale' tool not found. Install tailscale "
+            "(https://tailscale.com/download) or use raw WireGuard transport.")
+
+    # Build tailscale up flags: --login-server (Headscale), --authkey, --hostname
+    cmd = [
+        ts, "up",
+        "--login-server", headscale_url,
+        "--authkey", auth_key,
+        "--hostname", hostname,
+    ]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        out = (r.stdout + r.stderr).strip()
+        if r.returncode != 0:
+            logger.warning(
+                "[_tailscale_up] tailscale up returned %d: %s",
+                r.returncode, out)
+        return out
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"tailscale up timed out (30s): {exc}") from exc
+    except Exception as exc:
+        raise RuntimeError(f"tailscale up failed: {exc}") from exc
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Orchestration
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -235,15 +332,55 @@ async def join(
     conductor_url: str, node_id: str | None = None, role: str = "worker",
     aithernet_url: str | None = None, iface: str = DEFAULT_IFACE,
     external_ip: str | None = None, psk: str | None = None,
+    headscale: bool = False, headscale_url: str | None = None,
+    headscale_auth_key: str | None = None,
 ) -> dict:
     """Run the full onboarding and return a report.
 
     ``aithernet_url`` defaults to the conductor host on :8125. ``node_id``
     defaults to the SDK's stable node id. Idempotent-ish: a node that re-runs
     join simply re-registers its pubkey and re-ups the interface.
+
+    **Transport Modes**
+
+    **Raw WireGuard** (default): Requires the node to have a public UDP:51820
+    endpoint. Works on:
+    - Dedicated hardware in data centers (OptiPlex, DGX)
+    - Cloud instances with public IPs (Vast.ai)
+    - Direct network access (on-premises appliances)
+
+    **Headscale** (NAT-friendly): When ``headscale=True`` or
+    ``AITHER_MESH_TRANSPORT=headscale``, the node joins via Tailscale's
+    Headscale control plane instead of raw WireGuard. This enables:
+    - Customer boxes behind NAT/firewalls
+    - Home lab setups with dynamic IPs
+    - Constrained networks (CGNAT, restrictive corporate firewalls)
+
+    The Headscale URL defaults to the public endpoint
+    (https://headscale.aitherium.com); override with ``AITHER_HEADSCALE_URL``.
+    The auth key must be pre-generated on the Headscale server and passed as
+    ``AITHER_HEADSCALE_AUTH_KEY`` or via ``headscale_auth_key`` param.
+
+    **Constraint**: The Conductor still assigns the overlay_ip (mesh address).
+    Headscale provides only the tunnel transport layer; the node operates at
+    the mesh CIDR (10.77.0.0/16) regardless of transport.
     """
     from adk.fleet_enroll import _generate_node_id
     node_id = node_id or _generate_node_id()
+
+    # Resolve transport mode: explicit param, env var, or default to raw WireGuard
+    use_headscale = headscale or (
+        os.getenv("AITHER_MESH_TRANSPORT", "").lower() == "headscale"
+    )
+    if use_headscale:
+        logger.info(
+            "mesh: joining via Headscale transport (NAT-friendly) for %s",
+            node_id)
+    else:
+        logger.info(
+            "mesh: joining via raw WireGuard transport for %s (requires public "
+            "UDP:51820 endpoint)", node_id)
+
     priv, pub = generate_keypair()
     logger.info("mesh: onboarding node %s (role=%s) via %s", node_id, role, conductor_url)
     resp = await onboard(conductor_url, node_id, pub, role=role,
@@ -253,6 +390,39 @@ async def join(
     if not overlay_ip:
         raise RuntimeError(f"Conductor returned no overlay_ip: {resp}")
 
+    if use_headscale:
+        # Headscale transport: bring up Tailscale tunnel instead of raw WG
+        hs_url = headscale_url or os.getenv(
+            "AITHER_HEADSCALE_URL", "https://headscale.aitherium.com")
+        hs_key = headscale_auth_key or os.getenv("AITHER_HEADSCALE_AUTH_KEY", "")
+        if not hs_key:
+            logger.warning(
+                "[join] Headscale transport requested but AITHER_HEADSCALE_AUTH_KEY "
+                "not provided; falling back to raw WireGuard")
+            use_headscale = False
+        else:
+            hs_hostname = f"aither-{node_id}"
+            try:
+                hs_out = _tailscale_up(hs_url, hs_key, hs_hostname)
+                report = {
+                    "node_id": resp.get("node_id_assigned") or node_id,
+                    "overlay_ip": overlay_ip,
+                    "transport": "headscale",
+                    "headscale_url": hs_url,
+                    "hostname": hs_hostname,
+                    "tailscale_output": hs_out,
+                }
+                logger.info(
+                    "mesh: joined via Headscale as %s (overlay_ip=%s)",
+                    report["node_id"], overlay_ip)
+                return report
+            except RuntimeError as exc:
+                logger.warning(
+                    "[join] Headscale transport failed (%s); falling back to "
+                    "raw WireGuard", exc)
+                use_headscale = False
+
+    # Raw WireGuard transport (default or fallback)
     # AitherNet topology (server pubkey + endpoint). Default to the conductor
     # host on the AitherNet control port when not given explicitly.
     if not aithernet_url:
@@ -275,6 +445,7 @@ async def join(
     report = {
         "node_id": resp.get("node_id_assigned") or node_id,
         "overlay_ip": overlay_ip, "iface": iface,
+        "transport": "wireguard",
         "server_endpoint": server_endpoint, "config": str(conf_path),
         "up_output": up_out, "handshake": has_handshake(iface),
     }
@@ -296,16 +467,29 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser("adk.mesh", description="AitherMesh onboarding")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    pj = sub.add_parser("join", help="onboard this node into the WireGuard overlay")
-    pj.add_argument("--conductor", default=os.getenv(
-        "AITHER_CONDUCTOR_URL", "https://aitheros-conductor:8193"))
+    pj = sub.add_parser("join", help="onboard this node into the mesh overlay")
+    # Resolve conductor URL: internal docker hostname falls back to public endpoint
+    default_conductor = os.getenv(
+        "AITHER_CONDUCTOR_URL", "https://aitheros-conductor:8193")
+    resolved_conductor = _resolve_conductor_url(default_conductor)
+    pj.add_argument("--conductor", default=resolved_conductor)
     pj.add_argument("--aithernet", default=os.getenv("AITHER_AITHERNET_URL", ""))
     pj.add_argument("--node-id", default=os.getenv("AITHER_NODE_ID", ""))
     pj.add_argument("--role", default=os.getenv("AITHER_MESH_ROLE", "worker"))
     pj.add_argument("--iface", default=DEFAULT_IFACE)
     pj.add_argument("--external-ip", default=os.getenv("AITHER_EXTERNAL_IP", ""))
+    # Transport selection: raw WireGuard (default) or Headscale (NAT-friendly)
+    pj.add_argument("--headscale", action="store_true",
+        default=os.getenv("AITHER_MESH_TRANSPORT", "").lower() == "headscale",
+        help="Use Headscale tunnel transport instead of raw WireGuard (for NAT'd networks)")
+    pj.add_argument("--headscale-url",
+        default=os.getenv("AITHER_HEADSCALE_URL", "https://headscale.aitherium.com"),
+        help="Headscale control server URL (default: https://headscale.aitherium.com)")
+    pj.add_argument("--headscale-key",
+        default=os.getenv("AITHER_HEADSCALE_AUTH_KEY", ""),
+        help="Headscale pre-generated auth key (from AITHER_HEADSCALE_AUTH_KEY)")
 
-    sub.add_parser("status", help="show WireGuard status").add_argument(
+    sub.add_parser("status", help="show mesh transport status").add_argument(
         "--iface", default=DEFAULT_IFACE)
 
     args = p.parse_args(argv)
@@ -313,9 +497,12 @@ def main(argv: list[str] | None = None) -> int:
         report = asyncio.run(join(
             conductor_url=args.conductor, node_id=args.node_id or None,
             role=args.role, aithernet_url=args.aithernet or None,
-            iface=args.iface, external_ip=args.external_ip or None))
+            iface=args.iface, external_ip=args.external_ip or None,
+            headscale=getattr(args, "headscale", False),
+            headscale_url=getattr(args, "headscale_url", None),
+            headscale_auth_key=getattr(args, "headscale_key", "")))
         print(json.dumps(report, indent=2))
-        return 0 if report.get("handshake") else 2
+        return 0 if report.get("handshake") or report.get("transport") == "headscale" else 2
     if args.cmd == "status":
         print(status(args.iface))
         return 0

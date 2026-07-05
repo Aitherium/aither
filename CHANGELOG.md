@@ -2,6 +2,35 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [2.17.0] - 2026-07-05
+
+### Added — Headscale mesh transport + local Qdrant + AitherConnect onboarding
+
+- **Headscale NAT-friendly mesh transport.** When raw WireGuard UDP:51820 is not
+  viable (customer boxes behind NAT, corporate firewalls, CGNAT), `adk mesh join
+  --headscale` routes the mesh tunnel through Tailscale's Headscale control plane.
+  The overlay IP is still Conductor-assigned (10.77.0.0/16); Headscale provides
+  only the transport layer. Configured via `AITHER_MESH_TRANSPORT=headscale`,
+  `AITHER_HEADSCALE_URL` (default: https://headscale.aitherium.com), and
+  `AITHER_HEADSCALE_AUTH_KEY` (pre-generated key). Automatic fallback to raw
+  WireGuard if Headscale setup fails.
+- **Local Qdrant vector DB provisioning.** `adk stack` now provisions Qdrant
+  locally when `AITHER_VECTOR_DB=qdrant` is set, enabling offline-first RAG
+  without external dependencies. Tiered: local Qdrant in-fleet, cloud Nexus
+  for enterprise multi-tenant deployments.
+- **Conductor URL public fallback.** `adk mesh join` resolves the internal
+  `aitheros-conductor:8193` hostname; if unreachable (e.g., self-hosted nodes),
+  it falls back to the public `conductor.aitherium.com:8193` endpoint,
+  eliminating bootstrap configuration friction.
+
+### Documentation
+
+- **Self-hosting runbook.** New `docs/SELF_HOSTING.md` covers deploying AitherOS
+  on customer infrastructure with Qdrant + mesh + AitherConnect onboarding.
+- **Mesh transport constraints documented.** Raw WireGuard requires public
+  UDP:51820 endpoint (cloud instances, dedicated hardware); Headscale for
+  NAT'd networks. Noted in CLI help and module docstrings.
+
 ## [2.15.0] - 2026-07-04
 
 ### Added — built-in web admin console + portal-profile settings sync

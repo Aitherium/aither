@@ -496,7 +496,32 @@ def cmd_stack(args):
 
     (Formerly ``adk up``; that name now brings up a connected agent — see cmd_up.
     This behaviour lives under ``adk stack``.)
+
+    Services:
+    - default: Room + Ollama (default)
+    - qdrant: Local Qdrant for graph memory (requires Docker)
     """
+    # Handle "adk stack qdrant" for Qdrant provisioning
+    service = getattr(args, "service", "default") or "default"
+    if service == "qdrant":
+        print()
+        print("Provisioning local Qdrant for graph memory...")
+        success, url, api_key = _provision_qdrant()
+        if success:
+            print(f"  [+] Qdrant URL: {url}")
+            print(f"  [+] API key saved to ~/.aither/config.yaml")
+            print()
+            print("  Configuration:")
+            print(f"    AITHER_FLEET_QDRANT_URL={url}")
+            print(f"    AITHER_FLEET_QDRANT_API_KEY={api_key}")
+            print()
+            print("  Ready to use in graph_memory. Run 'adk status' to verify.")
+            return 0
+        # Provisioning failed — a non-zero exit so the caller/CI can detect it
+        # (gate finding: never report a failed setup as success).
+        print("  [!] Qdrant provisioning failed. Manual setup required.")
+        return 1
+
     from adk.process_supervisor import ProcessSpec, ProcessSupervisor, resolve_room_launch_target
 
     # Converge entitled packs first so the agent comes up with everything the
@@ -985,6 +1010,63 @@ def cmd_down(args):
 
     daemon.clear_status()
     return 0
+
+
+def _provision_qdrant() -> tuple[bool, str, str]:
+    """Provision local Qdrant for adk stack.
+
+    Generates/loads API key from config, starts container if needed.
+    Returns (success, url, api_key).
+    """
+    import secrets
+    import subprocess
+
+    saved = load_saved_config()
+    api_key = saved.get("qdrant_api_key", "").strip()
+
+    # Generate if missing
+    if not api_key:
+        api_key = secrets.token_urlsafe(32)
+        save_saved_config({"qdrant_api_key": api_key})
+        print(f"  [+] Generated Qdrant API key")
+
+    # Start the container, VERIFYING the start actually succeeded — a failed
+    # `docker start` must not be reported as success (gate finding).
+    try:
+        subprocess.run(
+            ["docker", "inspect", "aitheros-workspace-qdrant"],
+            capture_output=True, timeout=5, check=False
+        )
+        start = subprocess.run(
+            ["docker", "start", "aitheros-workspace-qdrant"],
+            capture_output=True, timeout=5, check=False
+        )
+        if start.returncode != 0:
+            print(f"  [!] Failed to start Qdrant: {start.stderr.decode(errors='replace').strip()}")
+            print(f"      AITHER_FLEET_QDRANT_URL=http://localhost:6333")
+            print(f"      AITHER_FLEET_QDRANT_API_KEY={api_key}")
+            return False, "", api_key
+        print("  [+] Qdrant container is running")
+    except (OSError, subprocess.TimeoutExpired):
+        # Docker not available; just return config for manual setup
+        print("  [!] Docker not available; set env manually:")
+        print(f"      AITHER_FLEET_QDRANT_URL=http://localhost:6333")
+        print(f"      AITHER_FLEET_QDRANT_API_KEY={api_key}")
+        return False, "", api_key
+
+    # Set env for this process + child processes — but a customer's explicit
+    # AITHER_FLEET_QDRANT_URL/API_KEY takes precedence (gate finding: don't
+    # clobber a pre-existing setup).
+    url = "http://localhost:6333"
+    if not os.environ.get("AITHER_FLEET_QDRANT_URL"):
+        os.environ["AITHER_FLEET_QDRANT_URL"] = url
+    if not os.environ.get("AITHER_FLEET_QDRANT_API_KEY"):
+        os.environ["AITHER_FLEET_QDRANT_API_KEY"] = api_key
+    save_saved_config({
+        "qdrant_url": url,
+        "qdrant_api_key": api_key,
+    })
+    return True, url, api_key
 
 
 def cmd_register(args):
@@ -5921,6 +6003,8 @@ def cmd_status(args):
 
     async def _status():
         import httpx
+        from adk.config import load_saved_config
+
         checks = {
             "Genesis": os.environ.get("AITHER_URL", "http://localhost:8001"),
             "vLLM": os.environ.get("AITHER_VLLM_URL", os.environ.get("VLLM_URL", "http://localhost:8200")),
@@ -5928,12 +6012,26 @@ def cmd_status(args):
             "AitherNode": "http://localhost:8090",
             "Gateway": os.environ.get("AITHER_GATEWAY_URL", "https://gateway.aitherium.com"),
         }
+
+        # Add Qdrant if configured
+        qdrant_url = os.environ.get("AITHER_FLEET_QDRANT_URL", "")
+        if not qdrant_url:
+            try:
+                saved = load_saved_config()
+                qdrant_url = saved.get("qdrant_url", "")
+            except Exception:
+                pass
+        if qdrant_url:
+            checks["Qdrant"] = qdrant_url
+
         print("AitherADK Backend Status")
         print("=" * 50)
         for name, url in checks.items():
             try:
                 async with httpx.AsyncClient(timeout=3.0) as c:
                     hp = "/api/tags" if name == "Ollama" else "/health"
+                    if name == "Qdrant":
+                        hp = "/healthz"
                     r = await c.get(f"{url.rstrip('/')}{hp}")
                     status = "UP" if r.status_code == 200 else f"HTTP {r.status_code}"
             except Exception:
@@ -5953,20 +6051,29 @@ def cmd_status(args):
                 pass
 
         # API key check
+        saved = {}
+        try:
+            saved = load_saved_config()
+        except Exception:
+            pass
+
         api_key = os.environ.get("AITHER_API_KEY", "")
         if api_key:
-            print(f"\n  API Key: {api_key[:16]}...{api_key[-4:]}")
+            print(f"\n  Portal API Key: {api_key[:16]}...{api_key[-4:]}")
+        elif saved.get("api_key"):
+            print(f"\n  Portal API Key (saved): {saved['api_key'][:16]}...")
         else:
-            saved = {}
-            try:
-                from adk.config import load_saved_config
-                saved = load_saved_config()
-            except Exception:
-                pass
-            if saved.get("api_key"):
-                print(f"\n  API Key (saved): {saved['api_key'][:16]}...")
-            else:
-                print("\n  No API key. Run: adk connect --api-key <key>")
+            print("\n  Portal: No API key. Run: adk connect --api-key <key>")
+
+        # Qdrant API key check
+        qdrant_key = os.environ.get("AITHER_FLEET_QDRANT_API_KEY", "")
+        if qdrant_key:
+            print(f"  Qdrant API Key: {qdrant_key[:16]}...{qdrant_key[-4:]}")
+        elif saved.get("qdrant_api_key"):
+            print(f"  Qdrant API Key (saved): {saved['qdrant_api_key'][:16]}...")
+        else:
+            if qdrant_url:
+                print("  Qdrant: No API key configured. Run: adk stack qdrant")
 
     asyncio.run(_status())
     return 0
@@ -8329,6 +8436,8 @@ def _register_commands(sub):
 
     # adk stack — supervise the consumer stack (Room + Ollama); was `adk up`
     stack_p = sub.add_parser("stack", help="Start the consumer stack (Room + Ollama) as native processes")
+    stack_p.add_argument("service", nargs="?", default="default",
+                         help="Service to start: default (Room+Ollama), qdrant (local Qdrant)")
     stack_p.add_argument("--interval", type=int, default=10,
                          help="Health check interval in seconds (default: 10)")
     stack_p.add_argument("--no-sync", action="store_true",
