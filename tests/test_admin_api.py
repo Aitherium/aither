@@ -158,6 +158,72 @@ class TestRedaction:
         assert "leaky-token-here" not in joined
 
 
+class TestConfigSurface:
+    def test_config_includes_effective(self):
+        c = _make_client()
+        r = c.get("/admin/config", headers=AUTH)
+        assert r.status_code == 200
+        body = r.json()
+        assert "effective" in body and isinstance(body["effective"], dict)
+        # Effective config surfaces far more than the writable allowlist.
+        assert len(body["effective"]) > len(body["writable_fields"])
+
+    def test_effective_config_masks_secrets(self):
+        from dataclasses import dataclass
+
+        from adk.admin_api import _dump_effective_config
+
+        @dataclass
+        class Cfg:
+            openai_api_key: str = "sk-supersecretvalue123"
+            model: str = "gpt-4o"
+        dumped = _dump_effective_config(Cfg())
+        assert dumped["openai_api_key"] == "sk-s...e123"
+        assert dumped["model"] == "gpt-4o"
+
+
+class TestConsoleMetaAndCli:
+    def test_meta(self):
+        c = _make_client()
+        r = c.get("/admin/meta", headers=AUTH)
+        assert r.status_code == 200
+        assert "version" in r.json() and r.json()["cli_enabled"] is True
+
+    def test_cli_commands_listed(self):
+        c = _make_client()
+        r = c.get("/admin/cli/commands", headers=AUTH)
+        assert r.status_code == 200
+        assert r.json()["total"] > 0
+
+    def test_cli_exec_rejects_unknown_command(self):
+        c = _make_client()
+        r = c.post("/admin/cli/exec", headers=AUTH, json={"command": "rm -rf /", "args": []})
+        assert r.status_code == 400
+        assert "unknown command" in r.json()["error"]
+
+    def test_cli_disabled_returns_403(self):
+        with patch.dict(os.environ, {"AITHER_ADMIN_CLI": "0"}, clear=False):
+            c = _make_client()
+            assert c.get("/admin/cli/commands", headers=AUTH).status_code == 403
+            assert c.post("/admin/cli/exec", headers=AUTH,
+                          json={"command": "status", "args": []}).status_code == 403
+
+    def test_cli_requires_auth(self):
+        c = _make_client()
+        assert c.post("/admin/cli/exec", json={"command": "status"}).status_code == 401
+
+    def test_routes_introspection(self):
+        """API explorer uses /admin/routes (openapi.json 500s on this server)."""
+        c = _make_client()
+        r = c.get("/admin/routes", headers=AUTH)
+        assert r.status_code == 200
+        routes = r.json()["routes"]
+        assert r.json()["total"] > 20
+        paths = {x["path"] for x in routes}
+        assert "/admin/config" in paths and "/health" in paths
+        assert all("method" in x and "path" in x for x in routes)
+
+
 class TestGraphAndSessions:
     def test_graph_search_no_graph(self):
         c = _make_client(graph=None)

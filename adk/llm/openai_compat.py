@@ -5,11 +5,28 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from typing import AsyncIterator
 
 import httpx
 
 logger = logging.getLogger("adk.llm.openai")
+
+
+def _chat_template_kwargs() -> dict | None:
+    """Optional server-side chat-template kwargs (vLLM), e.g. disabling Qwen3
+    thinking mode: set ADK_CHAT_TEMPLATE_KWARGS='{"enable_thinking": false}'.
+    Without this, thinking-tuned models can burn the whole max_tokens budget on
+    reasoning and return an EMPTY content string."""
+    raw = os.getenv("ADK_CHAT_TEMPLATE_KWARGS", "").strip()
+    if not raw:
+        return None
+    try:
+        val = json.loads(raw)
+        return val if isinstance(val, dict) else None
+    except Exception:  # noqa: BLE001
+        logger.warning("ADK_CHAT_TEMPLATE_KWARGS is not valid JSON; ignoring")
+        return None
 
 _MAX_RETRIES = 3
 # Transient statuses worth retrying: rate limit (429), Anthropic "overloaded"
@@ -100,16 +117,39 @@ class OpenAIProvider(LLMProvider):
         api_key: str = "",
         default_model: str = "gpt-4o-mini",
         timeout: float = 120.0,
+        ctk_by_model: dict[str, dict] | None = None,
     ):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.default_model = default_model
         self._timeout = timeout
+        # Per-model chat_template_kwargs: keys are case-insensitive substrings of
+        # a model id (e.g. "qwen" -> {"enable_thinking": False}). Resolved per
+        # call so a qwen reasoning model and a gemma vision model on the SAME
+        # provider (the gateway serves both) get different template args, instead
+        # of one global ADK_CHAT_TEMPLATE_KWARGS env applied to every request.
+        self._ctk_by_model = {k.lower(): v for k, v in (ctk_by_model or {}).items()}
+
+    def _resolve_ctk(self, model: str | None) -> dict | None:
+        """chat_template_kwargs for this model: the per-model map wins, else the
+        global ADK_CHAT_TEMPLATE_KWARGS env (back-compat)."""
+        if self._ctk_by_model and model:
+            ml = model.lower()
+            for key, ctk in self._ctk_by_model.items():
+                if key in ml:
+                    return ctk
+        return _chat_template_kwargs()
 
     def _headers(self) -> dict[str, str]:
         h: dict[str, str] = {"Content-Type": "application/json"}
         if self.api_key:
             h["Authorization"] = f"Bearer {self.api_key}"
+            # Aitherium identity keys (aither_...) also send X-API-Key, matching
+            # the gateway/MCP auth contract (adk/mcp.py MCPAuth.headers). Tenant
+            # scoping is enforced server-side from the key (HMAC), not a client
+            # header. Non-aither keys (openai/deepseek) are unaffected.
+            if self.api_key.startswith("aither_"):
+                h["X-API-Key"] = self.api_key
         return h
 
     def _client(self) -> httpx.AsyncClient:
@@ -152,6 +192,9 @@ class OpenAIProvider(LLMProvider):
         if repetition_penalty is not None:
             # OpenAI uses frequency_penalty; vLLM accepts repetition_penalty
             payload["frequency_penalty"] = repetition_penalty - 1.0  # normalize: 1.3 -> 0.3
+        _ctk = self._resolve_ctk(model)
+        if _ctk:
+            payload["chat_template_kwargs"] = _ctk
 
         start = _timer()
         async with self._client() as client:
@@ -232,6 +275,9 @@ class OpenAIProvider(LLMProvider):
             payload["top_p"] = top_p
         if repetition_penalty is not None:
             payload["frequency_penalty"] = repetition_penalty - 1.0
+        _ctk = self._resolve_ctk(model)
+        if _ctk:
+            payload["chat_template_kwargs"] = _ctk
 
         async with self._client() as client:
             async with client.stream(

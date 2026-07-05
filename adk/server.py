@@ -609,6 +609,14 @@ def create_app(
     except ImportError as exc:
         logger.warning("admin console API unavailable: %s", exc)
 
+    # ISO Factory bridge (/admin/factory/*) — shells to the monorepo factory CLI
+    # across the wheel boundary; no-op where the factory isn't present.
+    try:
+        from adk.admin_factory import register_admin_factory_routes
+        register_admin_factory_routes(app, state=_state)
+    except ImportError as exc:
+        logger.warning("factory bridge unavailable: %s", exc)
+
     # ─── No-backend handler ───
 
     @app.get("/demo")

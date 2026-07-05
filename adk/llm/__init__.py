@@ -87,6 +87,13 @@ _EFFORT_MODELS = {
 _GATEWAY_INFERENCE_URL = "https://mcp.aitherium.com/v1"
 _DEMO_URL = "https://demo.aitherium.com"
 
+# Per-model chat_template_kwargs applied on the OpenAI-compatible family. qwen3.6
+# MUST run with thinking disabled (an enabled thinking pass burns ~15 min and
+# returns empty content). Keyed by case-insensitive model-id substring, so it
+# holds whether qwen is served via the gateway or a local vLLM, and a non-qwen
+# model (e.g. gemma4 vision) on the same provider is unaffected.
+_DEFAULT_CTK_BY_MODEL = {"qwen": {"enable_thinking": False}}
+
 # llmfit-derived model cache (populated lazily)
 _llmfit_models: dict[str, str] | None = None
 _llmfit_checked: bool = False
@@ -178,6 +185,7 @@ class LLMRouter:
                 base_url=gateway_url,
                 api_key=api_key or "",
                 default_model=self._model or "aither-orchestrator",
+                ctk_by_model=_DEFAULT_CTK_BY_MODEL,
             )
         elif name == "ollama":
             from .ollama import OllamaProvider
@@ -193,6 +201,7 @@ class LLMRouter:
                 base_url=base_url or default_url,
                 api_key=api_key or "",
                 default_model=self._model or default_model,
+                ctk_by_model=_DEFAULT_CTK_BY_MODEL,
             )
         elif name == "anthropic":
             from .anthropic import AnthropicProvider
