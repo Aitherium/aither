@@ -137,6 +137,44 @@ def _mask_config(cfg: dict) -> dict:
     return out
 
 
+def _json_safe(v: Any) -> Any:
+    """Coerce a config field value into something JSON-serializable."""
+    if v is None or isinstance(v, (str, int, float, bool)):
+        return v
+    if isinstance(v, (list, tuple)):
+        return [_json_safe(x) for x in v]
+    if isinstance(v, dict):
+        return {str(k): _json_safe(x) for k, x in v.items()}
+    return str(v)
+
+
+def _dump_effective_config(cfg: Any) -> dict:
+    """Dump the full live Config (all fields) with secret values masked.
+
+    Surfaces the *effective* runtime configuration — every field, not just the
+    subset that was written to config.yaml — so the console can show a human the
+    complete picture. Secret-looking fields are masked; writable ones are flagged
+    by the caller against _CONFIG_ALLOWLIST.
+    """
+    if cfg is None:
+        return {}
+    fields = getattr(cfg, "__dataclass_fields__", None)
+    names = list(fields.keys()) if fields else [
+        k for k in vars(cfg) if not k.startswith("_")
+    ]
+    out: dict = {}
+    for name in names:
+        try:
+            val = getattr(cfg, name)
+        except AttributeError:
+            continue
+        if isinstance(val, str) and val and _SECRET_HINT.search(name):
+            out[name] = _mask_key(val)
+        else:
+            out[name] = _json_safe(val)
+    return out
+
+
 # ── SSRF guard for user-supplied MCP server URLs (Athena finding #2) ──
 
 
@@ -233,6 +271,25 @@ def _agent_log_path() -> Path:
     return Path.home() / ".aither" / "logs" / "agent.log"
 
 
+# ── Per-pack settings (namespaced under packs_settings.<id> in saved config) ──
+# A pack UI sees ONLY its own settings through the bridge — never the global
+# config, sessions, or other packs' settings (owner requirement: pack scoping).
+
+
+def _load_pack_settings(pack_id: str) -> dict:
+    cfg = load_saved_config()
+    all_settings = cfg.get("packs_settings") or {}
+    s = all_settings.get(pack_id) if isinstance(all_settings, dict) else None
+    return dict(s) if isinstance(s, dict) else {}
+
+
+def _save_pack_settings(pack_id: str, settings: dict) -> None:
+    cfg = load_saved_config()
+    all_settings = dict(cfg.get("packs_settings") or {})
+    all_settings[pack_id] = dict(settings)
+    save_saved_config({"packs_settings": all_settings})
+
+
 AgentGetter = Callable[..., Awaitable[Any]]
 
 
@@ -271,13 +328,19 @@ def register_admin_routes(
     @app.get("/admin/config")
     async def admin_get_config():
         saved = load_saved_config()
+        effective = _dump_effective_config(state.get("config"))
         return {
+            # Values persisted to ~/.aither/config.yaml (masked).
             "config": _mask_config(saved),
+            # The FULL effective runtime Config — every field, not just saved
+            # ones — so the console surfaces the complete picture.
+            "effective": effective,
             "writable_fields": sorted(_CONFIG_ALLOWLIST),
             "note": (
                 "Only writable_fields may be PATCHed. Backend base URLs, keys, "
                 "and pack dirs are managed via /admin/llm/* and /admin/mcp/* — "
-                "not free-form config — for safety."
+                "not free-form config — for safety. Non-writable fields are shown "
+                "read-only; change them via env/startup."
             ),
         }
 
@@ -409,28 +472,49 @@ def register_admin_routes(
 
     # ── Packs ─────────────────────────────────────────────────────────────
 
+    def _discover_manifests() -> dict[str, Any]:
+        """Discovered pack manifests keyed by id ({} when the loader is absent)."""
+        try:
+            from adk.tool_pack_loader import get_tool_pack_loader
+            return dict(get_tool_pack_loader().discover())
+        except (ImportError, RuntimeError, AttributeError):
+            return {}
+
+    def _pack_summary(m: Any, enabled: set[str], active_tools: list[str]) -> dict:
+        ui_tabs = getattr(m, "ui_tabs", []) or []
+        return {
+            "id": m.id,
+            "name": m.name,
+            "version": m.version,
+            "category": m.category,
+            "tier": m.tier,
+            "description": m.description,
+            "icon": getattr(m, "icon", ""),
+            "tags": list(getattr(m, "tags", []) or []),
+            "skills": list(getattr(m, "skills", []) or []),
+            "mcp_tools": list(m.mcp_tools or []),
+            "entitlements": list(m.entitlements or []),
+            "min_tier": m.min_tier,
+            "deprecated": bool(getattr(m, "deprecated", False)),
+            "redirect_to": getattr(m, "redirect_to", ""),
+            "has_ui": bool(ui_tabs),
+            "ui_tabs": ui_tabs,
+            "enabled": m.id in enabled,
+            "live_tool_count": sum(1 for t in active_tools if m.tool_matches(t)),
+        }
+
     @app.get("/admin/packs")
     async def admin_packs_list():
         agent = await get_agent()
         active_tools = [t.name for t in agent._tools.list_tools()]
-        packs: list[dict] = []
-        try:
-            from adk.tool_pack_loader import get_tool_pack_loader
-            loader = get_tool_pack_loader()
-            discover = getattr(loader, "discover", None) or getattr(loader, "discover_packs", None)
-            manifests = discover() if callable(discover) else []
-            for m in manifests:
-                packs.append({
-                    "id": getattr(m, "id", None),
-                    "name": getattr(m, "name", None),
-                    "version": getattr(m, "version", None),
-                    "category": getattr(m, "category", None),
-                    "tier": getattr(m, "tier", None),
-                })
-        except (ImportError, RuntimeError, AttributeError):
-            pass
         saved = load_saved_config()
         enabled = list(saved.get("required_packs") or [])
+        enabled_set = set(enabled)
+        packs = [
+            _pack_summary(m, enabled_set, active_tools)
+            for m in _discover_manifests().values()
+        ]
+        packs.sort(key=lambda p: ((0 if p["enabled"] else 1), str(p["id"])))
         return {"active_tool_count": len(active_tools), "enabled_packs": enabled, "available": packs}
 
     @app.post("/admin/packs/enable")
@@ -483,6 +567,239 @@ def register_admin_routes(
         return {"status": "reloaded" if reloaded else "noop",
                 "tools_before": before, "tools_after": after,
                 "tools_added": max(0, after - before)}
+
+    # ── Pack detail / settings / pack-scoped tool invocation ─────────────
+    # NOTE: static /admin/packs/* routes above are registered BEFORE these
+    # parameterized ones (FastAPI matches in registration order).
+
+    @app.get("/admin/packs/{pack_id}")
+    async def admin_pack_detail(pack_id: str):
+        m = _discover_manifests().get(pack_id)
+        if m is None:
+            return JSONResponse(status_code=404, content={"error": "pack_not_found"})
+        agent = await get_agent()
+        saved = load_saved_config()
+        enabled_set = set(saved.get("required_packs") or [])
+        live_tools = [
+            {"name": t.name, "description": (t.description or "").strip()[:300]}
+            for t in agent._tools.list_tools() if m.tool_matches(t.name)
+        ]
+        out = _pack_summary(m, enabled_set, [t["name"] for t in live_tools])
+        out.update({
+            "live_tools": live_tools,
+            "persona_fragment_count": len(m.persona_fragments or []),
+            "pricing": dict(getattr(m, "pricing", {}) or {}),
+            "settings": _mask_config(_load_pack_settings(pack_id)),
+        })
+        return out
+
+    @app.get("/admin/packs/{pack_id}/settings")
+    async def admin_pack_settings_get(pack_id: str):
+        if _discover_manifests().get(pack_id) is None:
+            return JSONResponse(status_code=404, content={"error": "pack_not_found"})
+        return {"pack": pack_id, "settings": _mask_config(_load_pack_settings(pack_id))}
+
+    @app.patch("/admin/packs/{pack_id}/settings")
+    async def admin_pack_settings_patch(pack_id: str, request: Request):
+        if _discover_manifests().get(pack_id) is None:
+            return JSONResponse(status_code=404, content={"error": "pack_not_found"})
+        body = await request.json()
+        patch = body.get("settings", body) if isinstance(body, dict) else None
+        if not isinstance(patch, dict):
+            return JSONResponse(status_code=400, content={"error": "expected an object"})
+        current = _load_pack_settings(pack_id)
+        for k, v in patch.items():
+            key = str(k)[:64]
+            if v is None:
+                current.pop(key, None)
+            elif isinstance(v, str) and len(v) > 2000:
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": "value_too_long", "field": key, "max": 2000},
+                )
+            elif isinstance(v, (str, int, float, bool)):
+                # Pack settings are scalars only — no nested config, no lists —
+                # so a pack UI cannot smuggle structured payloads into config.yaml.
+                current[key] = v
+            else:
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": "scalar_values_only", "field": key},
+                )
+        if len(current) > 50:
+            return JSONResponse(status_code=400, content={"error": "too_many_settings (max 50)"})
+        _save_pack_settings(pack_id, current)
+        await _push_settings()
+        return {"ok": True, "pack": pack_id, "settings": _mask_config(current)}
+
+    @app.post("/admin/packs/{pack_id}/tools/{tool_name}/invoke")
+    async def admin_pack_tool_invoke(pack_id: str, tool_name: str, request: Request):
+        """Invoke one of *pack_id*'s own tools — the pack-UI bridge's only door.
+
+        The sandboxed pack iframe never holds the bearer; the console parent
+        calls this with its token. Ownership (tool ∈ pack's mcp_tools patterns)
+        is enforced HERE, server-side — the parent's client-side check is UX
+        only. The call runs inside the pack's data scope (see adk.pack_scope):
+        file tools are jailed to ~/.aither/packs/<id>/data and any session_id
+        is namespaced so pack activity never touches the owner's chat sessions.
+        """
+        import asyncio
+
+        from adk.pack_scope import pack_scope, valid_pack_id
+
+        if not valid_pack_id(pack_id):
+            return JSONResponse(status_code=400, content={"error": "invalid_pack_id"})
+        m = _discover_manifests().get(pack_id)
+        if m is None:
+            return JSONResponse(status_code=404, content={"error": "pack_not_found"})
+        saved = load_saved_config()
+        if pack_id not in (saved.get("required_packs") or []):
+            return JSONResponse(status_code=403,
+                                content={"error": "pack_not_enabled", "pack": pack_id})
+        if not m.tool_matches(tool_name):
+            return JSONResponse(status_code=403,
+                                content={"error": "tool_not_in_pack",
+                                         "tool": tool_name, "pack": pack_id})
+        # Athena gate: a hostile manifest could declare broad globs (e.g.
+        # "file_*") to claim adk BUILT-IN tools and reach owner data through
+        # the bridge. Packs may only bridge-invoke tools they brought — the
+        # built-in surface is never pack-invokable, regardless of manifest.
+        try:
+            from adk import builtin_tools as _bt
+            if callable(getattr(_bt, tool_name, None)):
+                return JSONResponse(
+                    status_code=403,
+                    content={"error": "builtin_tool_not_bridgeable", "tool": tool_name})
+        except ImportError:
+            pass
+        try:
+            body = await request.json()
+        except (ValueError, RuntimeError):
+            body = {}
+        args = body.get("args", {}) if isinstance(body, dict) else {}
+        if not isinstance(args, dict):
+            return JSONResponse(status_code=400, content={"error": "args must be an object"})
+        # Long-running research tools need more than a web timeout; cap at 10 min.
+        try:
+            timeout = min(600.0, max(1.0, float(body.get("timeout", 120))))
+        except (TypeError, ValueError):
+            timeout = 120.0
+        sid = args.get("session_id")
+        if isinstance(sid, str) and sid and not sid.startswith(f"pack-{pack_id}-"):
+            args["session_id"] = f"pack-{pack_id}-{sid}"
+
+        agent = await get_agent()
+        if not any(t.name == tool_name for t in agent._tools.list_tools()):
+            return JSONResponse(
+                status_code=404,
+                content={"error": "tool_not_registered", "tool": tool_name,
+                         "hint": "pack tools may be entitlement-gated or not yet reloaded"})
+        try:
+            with pack_scope(pack_id):
+                result = await asyncio.wait_for(
+                    agent._tools.execute(tool_name, args), timeout=timeout)
+        except asyncio.TimeoutError:
+            return JSONResponse(status_code=504,
+                                content={"error": "tool_timeout", "timeout_seconds": timeout})
+        except Exception as exc:  # noqa: BLE001 — surface, never crash the console
+            return JSONResponse(status_code=500,
+                                content={"error": "tool_failed", "detail": _scrub(str(exc))[:400]})
+        truncated = False
+        if isinstance(result, str) and len(result) > 262_144:  # 256 KiB cap
+            result = result[:262_144]
+            truncated = True
+        parsed: Any = result
+        if isinstance(result, str):
+            try:
+                parsed = json.loads(result)
+            except (ValueError, TypeError):
+                parsed = result
+        return {"ok": True, "pack": pack_id, "tool": tool_name,
+                "result": parsed, "truncated": truncated}
+
+    # ── Aitherium pack catalog (server-side proxy, fail-soft offline) ─────
+    # The console's "Available from Aitherium" section. Proxied here so the
+    # browser needs no CORS exception and the portal token never reaches the
+    # page. Service packs (e.g. media-forge) only exist in this catalog — the
+    # local loader can never discover them.
+
+    _catalog_cache: dict[str, Any] = {"data": None, "at": 0.0}
+    _CATALOG_TTL = 3600.0
+    # The catalog lives on Genesis behind the portal; deployments differ in
+    # which proxy prefix is mounted, so probe the known shapes in order.
+    _CATALOG_PATHS = (
+        "/api/packs/catalog",
+        "/v1/packs/catalog",
+        "/api/bridge/genesis/api/v1/catalog/packs",
+    )
+
+    @app.get("/admin/catalog/packs")
+    async def admin_catalog_packs():
+        import httpx as _httpx
+
+        now = time.time()
+        if _catalog_cache["data"] is not None and now - _catalog_cache["at"] < _CATALOG_TTL:
+            return _catalog_cache["data"]
+        # Lazy import — settings_sync imports this module at load time.
+        try:
+            from adk.settings_sync import _default_portal_url, _resolve_token
+            token = _resolve_token()
+            portal = _default_portal_url()
+        except ImportError:
+            token, portal = "", ""
+        if not token or not portal:
+            return {"packs": [], "offline": True,
+                    "note": "no portal token — sign in with `adk login` to browse the catalog"}
+        installed = set(_discover_manifests())
+        last_err = ""
+        try:
+            async with _httpx.AsyncClient(timeout=10) as client:
+                for path in _CATALOG_PATHS:
+                    try:
+                        resp = await client.get(
+                            f"{portal}{path}",
+                            headers={"Authorization": f"Bearer {token}"})
+                    except _httpx.HTTPError as exc:
+                        last_err = str(exc)
+                        continue
+                    if resp.status_code != 200:
+                        last_err = f"HTTP {resp.status_code} on {path}"
+                        continue
+                    try:
+                        data = resp.json()
+                    except ValueError:
+                        last_err = f"non-JSON on {path}"
+                        continue
+                    raw = data.get("packs") if isinstance(data, dict) else None
+                    if not isinstance(raw, list):
+                        last_err = f"unexpected shape on {path}"
+                        continue
+                    packs = []
+                    for p in raw:
+                        if not isinstance(p, dict):
+                            continue
+                        packs.append({
+                            "id": p.get("id"),
+                            "name": p.get("name"),
+                            "type": p.get("type") or p.get("category"),
+                            "version": p.get("version"),
+                            "description": (str(p.get("description") or ""))[:400],
+                            "tier": p.get("tier"),
+                            "icon": p.get("icon"),
+                            "pricing": p.get("pricing") if isinstance(p.get("pricing"), dict) else {},
+                            "licensed": bool(p.get("licensed", False)),
+                            "installed": bool(p.get("installed", False)) or p.get("id") in installed,
+                            "local": p.get("id") in installed,
+                        })
+                    out = {"packs": packs, "offline": False, "source": path,
+                           "portal": portal, "count": len(packs)}
+                    _catalog_cache["data"] = out
+                    _catalog_cache["at"] = now
+                    return out
+        except Exception as exc:  # noqa: BLE001 — catalog is advisory, never raise
+            last_err = str(exc)
+        return {"packs": [], "offline": True,
+                "note": _scrub(f"catalog unreachable ({last_err[:120]})")}
 
     # ── Sessions ──────────────────────────────────────────────────────────
 
@@ -640,7 +957,116 @@ def register_admin_routes(
         return {"ok": True, "removed": server_id,
                 "note": "registered tools persist until restart"}
 
+    # ── Console meta (capabilities the UI adapts to) ──────────────────────
+
+    @app.get("/admin/meta")
+    async def admin_meta():
+        from adk import __version__
+        agent = None
+        try:
+            agent = await get_agent()
+        except (ImportError, RuntimeError, OSError, ConnectionError):
+            pass
+        return {
+            "version": __version__,
+            "agent": getattr(agent, "name", None),
+            "cli_enabled": _cli_enabled(),
+            "settings_sync": state.get("settings_sync") is not None,
+        }
+
+    # ── API explorer route list ──────────────────────────────────────────
+    # Introspects the live route table instead of /openapi.json — the server
+    # uses `from __future__ import annotations`, which leaves `request: Request`
+    # params as unresolved ForwardRefs and makes FastAPI's schema generation
+    # 500. The route table is always available and is all the explorer needs.
+
+    @app.get("/admin/routes")
+    async def admin_routes():
+        from fastapi.routing import APIRoute
+        out = []
+        for r in app.routes:
+            if not isinstance(r, APIRoute):
+                continue
+            summary = r.summary or ((getattr(r.endpoint, "__doc__", "") or "").strip().split("\n")[0])
+            for m in sorted(r.methods or []):
+                if m in ("HEAD", "OPTIONS"):
+                    continue
+                out.append({"method": m, "path": r.path, "summary": summary})
+        out.sort(key=lambda x: (x["path"], x["method"]))
+        return {"routes": out, "total": len(out)}
+
+    # ── Interactive CLI (bearer-gated + manifest-restricted + disable-able) ──
+    # An interactive CLI reachable over the public tunnel is powerful, so it is
+    # (a) gated by the same bearer as everything else, (b) restricted to the ADK
+    # command manifest — NEVER arbitrary shell (args are passed as a list, no
+    # shell=True), and (c) independently disable-able via AITHER_ADMIN_CLI=0.
+
+    @app.get("/admin/cli/commands")
+    async def admin_cli_commands():
+        if not _cli_enabled():
+            return JSONResponse(status_code=403, content=_cli_disabled_body())
+        try:
+            from adk.cli import build_command_manifest
+            manifest = build_command_manifest()
+        except (ImportError, RuntimeError) as exc:
+            return JSONResponse(status_code=500, content={"error": _scrub(str(exc))})
+        return {"commands": manifest, "total": len(manifest)}
+
+    @app.post("/admin/cli/exec")
+    async def admin_cli_exec(request: Request):
+        if not _cli_enabled():
+            return JSONResponse(status_code=403, content=_cli_disabled_body())
+        import asyncio
+        import subprocess
+
+        body = await request.json()
+        command = (body.get("command") or "").strip()
+        args = body.get("args") or []
+        if not command:
+            return JSONResponse(status_code=400, content={"error": "command is required"})
+        if not isinstance(args, list):
+            return JSONResponse(status_code=400, content={"error": "args must be a list"})
+        try:
+            from adk.cli import build_command_manifest
+            valid = {c["name"] for c in build_command_manifest()}
+        except (ImportError, RuntimeError) as exc:
+            return JSONResponse(status_code=500, content={"error": _scrub(str(exc))})
+        if command not in valid:
+            return JSONResponse(
+                status_code=400,
+                content={"error": f"unknown command '{command}'", "valid": sorted(valid)},
+            )
+        # List args, no shell=True → no shell injection; only manifest commands run.
+        cmd = [sys.executable, "-m", "adk.cli", command] + [str(a) for a in args]
+        try:
+            result = await asyncio.to_thread(
+                subprocess.run, cmd, capture_output=True, text=True, timeout=120,
+            )
+        except subprocess.TimeoutExpired:
+            return JSONResponse(status_code=504, content={"error": "command timed out (120s)"})
+        except FileNotFoundError:
+            return JSONResponse(status_code=500, content={"error": "python not found"})
+        return {
+            "command": command,
+            "args": args,
+            "stdout": _scrub(result.stdout),
+            "stderr": _scrub(result.stderr),
+            "returncode": result.returncode,
+        }
+
 
 def _scrub(text: str) -> str:
     """Scrub secrets from any free-text (error strings, model previews)."""
     return _redact_log_line(text or "")
+
+
+def _cli_enabled() -> bool:
+    """The console CLI is on by default; set AITHER_ADMIN_CLI=0 to disable it."""
+    return os.getenv("AITHER_ADMIN_CLI", "1").strip().lower() not in ("0", "false", "off", "no")
+
+
+def _cli_disabled_body() -> dict:
+    return {
+        "error": "cli_disabled",
+        "detail": "The admin console CLI is disabled on this agent (AITHER_ADMIN_CLI=0).",
+    }

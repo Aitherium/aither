@@ -61,6 +61,29 @@ def _load_webui() -> str | None:
     return html
 
 
+_PACK_SDK_CACHE: str | None = None
+
+
+def _load_pack_sdk() -> str | None:
+    """Load the pack-UI bridge SDK (adk/webui/pack_sdk.js), packaged like the console."""
+    global _PACK_SDK_CACHE
+    if _PACK_SDK_CACHE is not None:
+        return _PACK_SDK_CACHE or None
+    try:
+        from importlib.resources import files
+        js = (files("adk") / "webui" / "pack_sdk.js").read_text(encoding="utf-8")
+    except (FileNotFoundError, ModuleNotFoundError, OSError):
+        try:
+            path = os.path.join(os.path.dirname(__file__), "webui", "pack_sdk.js")
+            with open(path, encoding="utf-8") as fh:
+                js = fh.read()
+        except OSError:
+            _PACK_SDK_CACHE = ""
+            return None
+    _PACK_SDK_CACHE = js
+    return js
+
+
 # A tiny, self-contained streaming chat page the agent serves at "/" so a person
 # who ran `adk up` has somewhere to talk to it with live feedback (a "thinking…"
 # indicator + token-by-token streaming) instead of a 30-second blank wait. It
@@ -271,7 +294,10 @@ def create_app(
         CORSMiddleware,
         allow_origins=_cors_origins or ["http://localhost:3000", "http://localhost:8080"],
         allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-        allow_headers=["*"],
+        # Athena: no wildcard — only the headers our clients actually send. A
+        # permissive list widens what a whitelisted-origin page can do cross-site.
+        allow_headers=["Authorization", "Content-Type", "Accept",
+                       "X-Caller-Type", "X-Request-ID", "X-Tenant-ID", "X-Workspace-ID"],
     )
 
     # Trace ID middleware — generates/propagates X-Request-ID on every request
@@ -295,6 +321,19 @@ def create_app(
     _skip_auth_paths = {"/", "/chat", "/ui", "/health", "/docs", "/openapi.json",
                         "/metrics", "/demo", "/redoc"}
 
+    def _is_pack_ui_asset(path: str) -> bool:
+        """Pack-UI static assets are unauthenticated like the console shell at "/".
+
+        The console mounts pack UIs in sandboxed iframes with NO token — that is
+        the security model: the bearer never enters pack code — so the iframe
+        cannot send an Authorization header for its own HTML/JS/CSS. The asset
+        route only serves files from an enabled pack's declared assets dir, and
+        every privileged action still goes through the bearer-gated
+        /admin/packs/*/tools/*/invoke bridge. Deliberately narrow match: the
+        pack-UI prefix and the bridge SDK, nothing else under /packs/.
+        """
+        return path == "/packs/_sdk.js" or (path.startswith("/packs/") and "/ui/" in path)
+
     # Valid caller types for header validation (prevents spoofing)
     _valid_caller_types = {"PLATFORM", "PUBLIC", "DEMO", "TENANT", "ANONYMOUS"}
 
@@ -305,7 +344,7 @@ def create_app(
         Validates X-Caller-Type header to prevent header-spoofing attacks.
         External requests cannot claim PLATFORM caller type.
         """
-        if request.url.path in _skip_auth_paths:
+        if request.url.path in _skip_auth_paths or _is_pack_ui_asset(request.url.path):
             return await call_next(request)
 
         # Validate X-Caller-Type if present (prevent spoofing)
@@ -481,6 +520,83 @@ def create_app(
     async def chat_page_minimal():
         # Back-compat: the original lightweight streaming chat page.
         return HTMLResponse(_CHAT_HTML)
+
+    # ─── Pack UI assets + bridge SDK (sandboxed-iframe plugin system) ───
+    # A pack may declare a `ui:` block in its .toolpack.yaml; the console then
+    # mounts its page as <iframe sandbox="allow-scripts allow-forms"> (opaque
+    # origin, NO token). These static routes are auth-skipped like "/" itself;
+    # everything privileged goes through the bearer-gated invoke bridge.
+
+    _PACK_ASSET_TYPES = {
+        ".html": "text/html; charset=utf-8", ".js": "text/javascript",
+        ".css": "text/css", ".json": "application/json", ".svg": "image/svg+xml",
+        ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+        ".gif": "image/gif", ".webp": "image/webp", ".ico": "image/x-icon",
+        ".woff": "font/woff", ".woff2": "font/woff2", ".txt": "text/plain",
+        ".map": "application/json",
+    }
+
+    @app.get("/packs/_sdk.js")
+    async def pack_sdk_js():
+        js = _load_pack_sdk()
+        if js is None:
+            return JSONResponse(status_code=404, content={"error": "sdk_asset_missing"})
+        return PlainTextResponse(js, media_type="text/javascript",
+                                 headers={"X-Content-Type-Options": "nosniff"})
+
+    @app.get("/packs/{pack_id}/ui/{asset_path:path}")
+    async def pack_ui_asset(pack_id: str, asset_path: str):
+        """Serve a static file from an ENABLED pack's declared ui assets dir.
+
+        Fail-closed everywhere: unknown pack → 404; pack not enabled → 403;
+        no ui block → 404; any path that resolves outside the assets dir
+        (traversal, absolute, drive-qualified, symlink escape) → 403.
+        """
+        from adk.config import load_saved_config as _lsc
+        from adk.pack_scope import valid_pack_id
+
+        if not valid_pack_id(pack_id):
+            return JSONResponse(status_code=400, content={"error": "invalid_pack_id"})
+        try:
+            from adk.tool_pack_loader import get_tool_pack_loader
+            manifest = get_tool_pack_loader().discover().get(pack_id)
+        except (ImportError, RuntimeError):
+            manifest = None
+        if manifest is None:
+            return JSONResponse(status_code=404, content={"error": "pack_not_found"})
+        if pack_id not in (_lsc().get("required_packs") or []):
+            return JSONResponse(status_code=403, content={"error": "pack_not_enabled"})
+        assets_dir = manifest.ui_assets_dir
+        if assets_dir is None or not assets_dir.is_dir():
+            return JSONResponse(status_code=404, content={"error": "pack_has_no_ui"})
+
+        rel = (asset_path or "index.html").replace("\\", "/")
+        if rel.endswith("/") or rel == "":
+            rel += "index.html"
+        # Reject traversal/absolute forms before touching the filesystem…
+        if rel.startswith("/") or ".." in rel.split("/") or ":" in rel:
+            return JSONResponse(status_code=403, content={"error": "invalid_asset_path"})
+        try:
+            target = (assets_dir / rel).resolve()
+            # …and verify the RESOLVED path (catches symlink escapes).
+            if not target.is_relative_to(assets_dir.resolve()):
+                return JSONResponse(status_code=403, content={"error": "invalid_asset_path"})
+        except (OSError, ValueError):
+            return JSONResponse(status_code=403, content={"error": "invalid_asset_path"})
+        if not target.is_file():
+            return JSONResponse(status_code=404, content={"error": "asset_not_found"})
+        if target.stat().st_size > 5_000_000:
+            return JSONResponse(status_code=413, content={"error": "asset_too_large"})
+        media = _PACK_ASSET_TYPES.get(target.suffix.lower(), "application/octet-stream")
+        from fastapi.responses import FileResponse
+        return FileResponse(
+            target, media_type=media,
+            headers={
+                "X-Content-Type-Options": "nosniff",
+                # Only the console (same origin) may frame pack pages.
+                "Content-Security-Policy": "frame-ancestors 'self'",
+                "Cache-Control": "no-cache",
+            })
 
     # ─── Admin/settings console API (all under /admin/*, bearer-gated) ───
     # Registered as a function (not an APIRouter) so the handlers can close over

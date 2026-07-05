@@ -53,6 +53,62 @@ class ToolPackManifest:
     min_tier: str = ""
     persona_fragments: list[str] = field(default_factory=list)
     mcp_tools: list[str] = field(default_factory=list)
+    icon: str = ""
+    tags: list[str] = field(default_factory=list)
+    skills: list[str] = field(default_factory=list)
+    deprecated: bool = False
+    redirect_to: str = ""
+    pricing: dict = field(default_factory=dict)
+    # Optional pack-provided console UI: {"assets_dir": "ui", "tabs": [{"id",
+    # "title", "entry", "icon"}]}. Assets are served by the agent server and
+    # mounted in the admin console as a sandboxed iframe (never same-origin).
+    ui: dict = field(default_factory=dict)
+
+    def tool_matches(self, tool_name: str) -> bool:
+        """True if *tool_name* falls under this pack's declared ``mcp_tools``
+        patterns (trailing-``*`` glob or exact name). This is the authoritative
+        ownership check for the console's pack-scoped tool invocation."""
+        for pat in self.mcp_tools:
+            if pat.endswith("*"):
+                if pat[:-1] and tool_name.startswith(pat[:-1]):
+                    return True
+            elif tool_name == pat:
+                return True
+        return False
+
+    @property
+    def ui_tabs(self) -> list[dict]:
+        """Normalized pack UI tab declarations (empty when the pack has no UI)."""
+        tabs = self.ui.get("tabs") if isinstance(self.ui, dict) else None
+        out = []
+        for t in tabs or []:
+            if not isinstance(t, dict):
+                continue
+            entry = str(t.get("entry") or "index.html")
+            out.append({
+                "id": str(t.get("id") or "main"),
+                "title": str(t.get("title") or self.name or self.id),
+                "entry": entry,
+                "icon": str(t.get("icon") or self.icon or ""),
+            })
+        return out
+
+    @property
+    def ui_assets_dir(self) -> Path | None:
+        """Absolute, resolved assets dir for the pack UI, or None if undeclared."""
+        if not isinstance(self.ui, dict) or not self.ui:
+            return None
+        rel = str(self.ui.get("assets_dir") or "ui").strip().replace("\\", "/")
+        # A manifest must not point the asset server outside its own pack dir.
+        if rel.startswith(("/", "~")) or ".." in rel.split("/"):
+            return None
+        try:
+            base = (self.path / rel).resolve()
+            if base.is_relative_to(self.path.resolve()):
+                return base
+        except (OSError, ValueError):
+            pass
+        return None
 
     @property
     def package_candidates(self) -> list[str]:
@@ -147,15 +203,27 @@ class ToolPackLoader:
             v = data.get(key) or []
             return [str(x) for x in v] if isinstance(v, (list, tuple)) else [str(v)]
 
+        ui_block = data.get("ui")
+        pricing = data.get("pricing")
+        # Manifests use either legacy singular `entitlement:` or list `entitlements:`.
+        entitlements = _list("entitlements")
+        legacy = str(data.get("entitlement") or "").strip()
+        if legacy and legacy not in entitlements:
+            entitlements.append(legacy)
         return ToolPackManifest(
             id=pid, path=pack_dir, name=str(data.get("name") or pid),
             version=str(data.get("version") or ""), description=str(data.get("description") or ""),
             category=str(data.get("category") or "tool_packs"),
             tier=str(data.get("tier") or "free").lower(),
-            tool_modules=_list("tool_modules"), entitlements=_list("entitlements"),
+            tool_modules=_list("tool_modules"), entitlements=entitlements,
             require_all_entitlements=bool(data.get("require_all_entitlements", False)),
             min_tier=str(data.get("min_tier") or "").lower(),
-            persona_fragments=_list("persona_fragments"), mcp_tools=_list("mcp_tools"))
+            persona_fragments=_list("persona_fragments"), mcp_tools=_list("mcp_tools"),
+            icon=str(data.get("icon") or ""), tags=_list("tags"), skills=_list("skills"),
+            deprecated=bool(data.get("deprecated", False)),
+            redirect_to=str(data.get("redirect_to") or ""),
+            pricing=pricing if isinstance(pricing, dict) else {},
+            ui=ui_block if isinstance(ui_block, dict) else {})
 
     def load_packs(self, pack_ids: list[str] | None = None) -> list[ToolPackManifest]:
         self.discover()

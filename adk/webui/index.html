@@ -97,11 +97,14 @@
 <nav id="nav">
   <button data-tab="chat" class="active">Chat</button>
   <button data-tab="backend">Backend</button>
+  <button data-tab="config">Config</button>
   <button data-tab="packs">Packs</button>
   <button data-tab="sessions">Sessions</button>
   <button data-tab="logs">Logs</button>
   <button data-tab="graph">Graph</button>
   <button data-tab="mcp">MCP</button>
+  <button data-tab="cli">CLI</button>
+  <button data-tab="api">API</button>
 </nav>
 <main>
   <div id="authBanner" class="banner err" style="display:none">
@@ -144,9 +147,22 @@
   <!-- PACKS -->
   <section class="tab" id="tab-packs">
     <div class="card">
-      <div class="row"><h3 style="flex:1">Packs</h3>
+      <div class="row"><h3 style="flex:1">Installed packs</h3>
         <button class="btn ghost" id="btnReloadPacks">Reload</button></div>
       <div id="packsBody" class="muted">Loading…</div>
+    </div>
+    <div class="card" id="packDetail" style="display:none">
+      <div class="row"><h3 style="flex:1" id="packDetailTitle">Pack</h3>
+        <button class="btn ghost" id="btnClosePack">Close</button></div>
+      <div id="packDetailBody"></div>
+    </div>
+    <div class="card" id="catalogCard">
+      <div class="row"><h3 style="flex:1">Available from Aitherium</h3>
+        <button class="btn ghost" id="btnRefreshCatalog">Refresh</button></div>
+      <p class="muted" style="margin-top:0">The hosted pack catalog — includes managed
+        service packs (deployed on your Aitherium workspace, not this agent). Subscribe
+        and manage them in the portal marketplace.</p>
+      <div id="catalogBody" class="muted">Loading…</div>
     </div>
   </section>
 
@@ -208,6 +224,59 @@
         <button class="btn" id="btnMcpPrepare">Preview tools</button>
       </div>
       <div id="mcpPreview" style="display:none"></div>
+    </div>
+  </section>
+
+  <!-- CONFIG -->
+  <section class="tab" id="tab-config">
+    <div class="card">
+      <div class="row"><h3 style="flex:1">Effective configuration</h3>
+        <input id="cfgFilter" placeholder="filter…" style="max-width:200px">
+        <button class="btn ghost" id="btnRefreshCfg">Refresh</button></div>
+      <p class="muted" style="margin-top:0">Every runtime setting. Secrets are masked;
+        <span class="chip ok">writable</span> fields edit inline — the rest are read-only
+        (set via env/startup).</p>
+      <div id="cfgBody" class="muted">Loading…</div>
+    </div>
+  </section>
+
+  <!-- CLI -->
+  <section class="tab" id="tab-cli">
+    <div class="card">
+      <h3>Interactive CLI</h3>
+      <div class="banner warn">Runs <span class="mono">adk &lt;command&gt;</span> on the agent host
+        (manifest commands only — never arbitrary shell). Bearer-gated; disable with
+        <span class="mono">AITHER_ADMIN_CLI=0</span>.</div>
+      <pre id="cliOut" class="mono" style="min-height:34vh; max-height:52vh; overflow:auto">adk console — type a command and Run (↑/↓ for history). "help" lists commands.</pre>
+      <form id="cliForm" class="row" style="margin-top:10px">
+        <span class="mono" style="align-self:center">adk</span>
+        <input id="cliIn" list="cliCmds" placeholder="command args…  e.g. status  |  keys list" style="flex:1">
+        <datalist id="cliCmds"></datalist>
+        <button class="btn" id="cliRun">Run</button>
+      </form>
+    </div>
+  </section>
+
+  <!-- API EXPLORER -->
+  <section class="tab" id="tab-api">
+    <div class="card">
+      <div class="row"><h3 style="flex:1">API explorer</h3>
+        <input id="apiFilter" placeholder="filter path…" style="max-width:220px">
+        <button class="btn ghost" id="btnRefreshApi">Refresh</button></div>
+      <p class="muted" style="margin-top:0">Every endpoint this agent serves (from its own
+        OpenAPI schema). Calls go out with your bearer — including mutating ones, so mind
+        what you Send.</p>
+      <div id="apiList" style="max-height:34vh; overflow:auto"></div>
+    </div>
+    <div class="card" id="apiCaller" style="display:none">
+      <div class="row"><span class="chip" id="apiMethod"></span>
+        <span class="mono" id="apiPath" style="flex:1"></span>
+        <button class="btn ghost" id="apiClose">Close</button></div>
+      <div id="apiParams"></div>
+      <label>Request body (JSON, for POST/PATCH/PUT)</label>
+      <textarea id="apiBody" rows="4" class="mono" placeholder="{ }"></textarea>
+      <div class="row" style="margin-top:10px"><button class="btn" id="apiSend">Send</button></div>
+      <pre id="apiResp" style="display:none"></pre>
     </div>
   </section>
 </main>
@@ -347,34 +416,230 @@ $("btnTestLLM").onclick = async () => {
 };
 
 // ── PACKS ──
+// Enriched cards from /admin/packs (description, tools/skills, entitlements,
+// deprecation) + a detail drawer, plus dynamic console tabs for enabled packs
+// that declare a `ui:` block (mounted as sandboxed iframes — see bridge below).
+let packIndex = {};   // id -> pack summary (incl. mcp_tools for the bridge allowlist)
 loaders.packs = async () => {
   $("packsBody").textContent = "Loading…";
   try {
     const d = await api("/admin/packs");
-    const enabled = new Set(d.enabled_packs || []);
-    let html = `<p class="muted">${d.active_tool_count} tools active · ${d.enabled_packs.length} packs enabled</p>`;
-    (d.available.length ? d.available : d.enabled_packs.map((id) => ({ id, name: id }))).forEach((p) => {
-      const id = p.id || p.name; const on = enabled.has(id);
-      html += `<div class="list-item"><div class="meta"><div class="t">${esc(p.name || id)}</div>` +
-        `<div class="muted mono">${esc(id)}${p.version ? " · v" + esc(p.version) : ""}` +
-        `${p.tier ? " · " + esc(p.tier) : ""}</div></div>` +
-        `<button class="btn ${on ? "ghost" : ""}" data-pack="${esc(id)}" data-on="${on}">` +
-        `${on ? "Disable" : "Enable"}</button></div>`;
+    packIndex = {};
+    (d.available || []).forEach((p) => { if (p.id) packIndex[p.id] = p; });
+    let html = `<p class="muted">${d.active_tool_count} tools active · ${(d.enabled_packs || []).length} packs enabled</p>`;
+    if (!(d.available || []).length) html += '<span class="muted">No packs discovered. Point AITHER_TOOLPACK_DIRS at a packs directory.</span>';
+    (d.available || []).forEach((p) => {
+      const on = !!p.enabled;
+      const chips =
+        (p.tier ? `<span class="chip">${esc(p.tier)}</span>` : "") +
+        `<span class="chip">${p.live_tool_count || 0} tools live</span>` +
+        ((p.skills || []).length ? `<span class="chip">${p.skills.length} skills</span>` : "") +
+        (p.has_ui ? '<span class="chip ok">UI</span>' : "") +
+        (p.entitlements || []).map((e) => `<span class="chip warn">${esc(e)}</span>`).join("");
+      const dep = p.deprecated
+        ? `<div class="banner warn" style="margin:6px 0 0">DEPRECATED${p.redirect_to ? " — superseded by <b>" + esc(p.redirect_to) + "</b>" : ""}</div>`
+        : "";
+      html += `<div class="list-item"><div class="meta">` +
+        `<div class="t" style="cursor:pointer" data-detail="${esc(p.id)}">${esc(p.name || p.id)}</div>` +
+        `<div class="muted mono">${esc(p.id)}${p.version ? " · v" + esc(p.version) : ""}</div>` +
+        (p.description ? `<div class="muted" style="margin-top:2px">${esc(p.description).slice(0, 220)}</div>` : "") +
+        `<div style="margin-top:4px">${chips}</div>${dep}</div>` +
+        `<div class="row" style="flex:none">` +
+        `<button class="btn ghost" data-detail="${esc(p.id)}">Details</button>` +
+        `<button class="btn ${on ? "ghost" : ""}" data-pack="${esc(p.id)}" data-on="${on}">` +
+        `${on ? "Disable" : "Enable"}</button></div></div>`;
     });
-    $("packsBody").innerHTML = html || '<span class="muted">No packs found.</span>';
+    $("packsBody").innerHTML = html;
+    $("packsBody").querySelectorAll("[data-detail]").forEach((b) =>
+      b.onclick = () => openPackDetail(b.dataset.detail));
     $("packsBody").querySelectorAll("button[data-pack]").forEach((b) => b.onclick = async () => {
       const on = b.dataset.on === "true";
       try { await api("/admin/packs/" + (on ? "disable" : "enable"), { method: "POST",
         body: JSON.stringify({ pack: b.dataset.pack }) });
-        toast((on ? "Disabled " : "Enabled ") + b.dataset.pack); loaders.packs(); }
+        toast((on ? "Disabled " : "Enabled ") + b.dataset.pack);
+        await loaders.packs(); refreshPackTabs(); }
       catch (e) { toast("Failed: " + e.message); } });
+    refreshPackTabs();
   } catch (e) { $("packsBody").innerHTML = `<span class="banner err">${esc(e.message)}</span>`; }
+  loadCatalog();
 };
 $("btnReloadPacks").onclick = async () => {
   try { const r = await api("/admin/packs/reload", { method: "POST" });
     toast("Reloaded (+" + (r.tools_added || 0) + " tools)"); loaders.packs(); }
   catch (e) { toast("Failed: " + e.message); }
 };
+async function openPackDetail(id) {
+  $("packDetail").style.display = "block";
+  $("packDetailTitle").textContent = id;
+  $("packDetailBody").innerHTML = '<span class="spin"></span>';
+  try {
+    const p = await api("/admin/packs/" + encodeURIComponent(id));
+    $("packDetailTitle").textContent = p.name || id;
+    let html = "";
+    if (p.deprecated) html += `<div class="banner warn">DEPRECATED${p.redirect_to ? " — use <b>" + esc(p.redirect_to) + "</b> instead" : ""}</div>`;
+    if (p.description) html += `<p>${esc(p.description)}</p>`;
+    html += `<p class="muted mono">v${esc(p.version || "?")} · ${esc(p.category || "")} · tier ${esc(p.tier || "free")}` +
+      (p.min_tier ? ` · requires ${esc(p.min_tier)}` : "") + `</p>`;
+    if ((p.tags || []).length) html += `<div>${p.tags.map((t) => `<span class="chip">${esc(t)}</span>`).join("")}</div>`;
+    if ((p.entitlements || []).length)
+      html += `<label>Entitlements</label><div>${p.entitlements.map((e) => `<span class="chip warn">${esc(e)}</span>`).join("")}</div>`;
+    html += `<label>Live tools (${(p.live_tools || []).length})</label>`;
+    html += (p.live_tools || []).length
+      ? p.live_tools.map((t) => `<div class="list-item"><div class="meta"><div class="t mono">${esc(t.name)}</div>` +
+          `<div class="muted">${esc(t.description || "")}</div></div></div>`).join("")
+      : '<p class="muted">None registered — pack disabled, not reloaded, or its tools are entitlement-gated.</p>';
+    if ((p.mcp_tools || []).length)
+      html += `<label>Declared tool patterns</label><div class="mono muted">${p.mcp_tools.map(esc).join(", ")}</div>`;
+    if ((p.skills || []).length)
+      html += `<label>Skills</label><div>${p.skills.map((s) => `<span class="chip">${esc(s)}</span>`).join("")}</div>`;
+    if (p.persona_fragment_count) html += `<p class="muted">${p.persona_fragment_count} persona fragment(s) injected when enabled.</p>`;
+    $("packDetailBody").innerHTML = html;
+    $("packDetail").scrollIntoView({ behavior: "smooth" });
+  } catch (e) { $("packDetailBody").innerHTML = `<span class="banner err">${esc(e.message)}</span>`; }
+}
+$("btnClosePack").onclick = () => $("packDetail").style.display = "none";
+
+// ── Aitherium catalog (fail-soft: hides when offline) ──
+async function loadCatalog() {
+  try {
+    const d = await api("/admin/catalog/packs");
+    if (d.offline || !(d.packs || []).length) {
+      $("catalogCard").style.display = d.offline ? "none" : "block";
+      $("catalogBody").innerHTML = `<span class="muted">${esc(d.note || "No catalog entries.")}</span>`;
+      return;
+    }
+    $("catalogCard").style.display = "block";
+    $("catalogBody").innerHTML = d.packs.map((p) => {
+      const price = p.pricing && p.pricing.subscription_cents
+        ? "$" + (p.pricing.subscription_cents / 100).toFixed(0) + "/mo" : "";
+      const badges =
+        (p.type ? `<span class="chip">${esc(p.type)}</span>` : "") +
+        (p.tier ? `<span class="chip">${esc(p.tier)}</span>` : "") +
+        (price ? `<span class="chip">${esc(price)}</span>` : "") +
+        (p.licensed ? '<span class="chip ok">licensed</span>' : "") +
+        (p.local ? '<span class="chip ok">installed here</span>' : "");
+      return `<div class="list-item"><div class="meta"><div class="t">${esc(p.name || p.id)}</div>` +
+        `<div class="muted">${esc(p.description || "")}</div>` +
+        `<div style="margin-top:4px">${badges}</div></div></div>`;
+    }).join("") +
+      `<p class="muted" style="margin-top:8px">Subscribe / deploy in the ` +
+      `<a href="https://portal.aitherium.com/portal/marketplace/packs" target="_blank" rel="noopener">portal marketplace ↗</a></p>`;
+  } catch (e) {
+    $("catalogCard").style.display = "none";
+  }
+}
+$("btnRefreshCatalog").onclick = () => { $("catalogBody").textContent = "Loading…"; loadCatalog(); };
+
+// ── Pack UI tabs (sandboxed-iframe plugin system) ──
+// Enabled packs with a `ui:` block get their own console tab. The iframe is
+// sandbox="allow-scripts allow-forms" — NO allow-same-origin, NO token in the
+// URL: the page runs in an opaque origin and can only talk to us via
+// postMessage. We hold the bearer and relay allowlisted tool calls.
+const packFrames = new Map(); // contentWindow -> { packId }
+function packTabKey(packId, tabId) { return "packui-" + packId + "-" + tabId; }
+function refreshPackTabs() {
+  const wanted = {};
+  Object.values(packIndex).forEach((p) => {
+    if (!p.enabled || !(p.ui_tabs || []).length) return;
+    p.ui_tabs.forEach((t) => { wanted[packTabKey(p.id, t.id)] = { pack: p, tab: t }; });
+  });
+  // Remove tabs for disabled/vanished packs.
+  document.querySelectorAll("#nav button[data-packtab]").forEach((b) => {
+    if (!wanted[b.dataset.packtab]) {
+      const sec = $("tab-" + b.dataset.packtab);
+      if (sec) {
+        const fr = sec.querySelector("iframe");
+        if (fr && fr.contentWindow) packFrames.delete(fr.contentWindow);
+        sec.remove();
+      }
+      const wasActive = b.classList.contains("active");
+      b.remove();
+      if (wasActive) document.querySelector('#nav button[data-tab="packs"]').click();
+    }
+  });
+  // Add missing tabs.
+  Object.entries(wanted).forEach(([key, w]) => {
+    if (document.querySelector(`#nav button[data-packtab="${key}"]`)) return;
+    const btn = document.createElement("button");
+    btn.dataset.packtab = key;
+    btn.textContent = w.tab.title || w.pack.name || w.pack.id;
+    btn.onclick = () => activatePackTab(key, w);
+    document.getElementById("nav").appendChild(btn);
+    const sec = document.createElement("section");
+    sec.className = "tab";
+    sec.id = "tab-" + key;
+    document.querySelector("main").appendChild(sec);
+  });
+}
+function activatePackTab(key, w) {
+  document.querySelectorAll("#nav button").forEach((x) => x.classList.remove("active"));
+  document.querySelectorAll(".tab").forEach((x) => x.classList.remove("active"));
+  const btn = document.querySelector(`#nav button[data-packtab="${key}"]`);
+  if (btn) btn.classList.add("active");
+  const sec = $("tab-" + key);
+  sec.classList.add("active");
+  if (!sec.querySelector("iframe")) {
+    const fr = document.createElement("iframe");
+    // Security: sandbox = allow-scripts + allow-forms + allow-downloads only.
+    // Never allow-same-origin — the frame could reach into this page and read
+    // the bearer from memory.
+    fr.setAttribute("sandbox", "allow-scripts allow-forms allow-downloads");
+    fr.src = "/packs/" + encodeURIComponent(w.pack.id) + "/ui/" + (w.tab.entry || "index.html");
+    fr.dataset.pack = w.pack.id;
+    fr.style.cssText = "width:100%;height:calc(100vh - 140px);border:1px solid var(--line);border-radius:10px;background:var(--panel)";
+    sec.appendChild(fr);
+    fr.addEventListener("load", () => { if (fr.contentWindow) packFrames.set(fr.contentWindow, { packId: w.pack.id }); });
+    if (fr.contentWindow) packFrames.set(fr.contentWindow, { packId: w.pack.id });
+  }
+}
+function toolAllowed(tool, patterns) {
+  for (const pat of patterns || []) {
+    if (pat.endsWith("*")) { if (pat.length > 1 && tool.startsWith(pat.slice(0, -1))) return true; }
+    else if (tool === pat) return true;
+  }
+  return false;
+}
+window.addEventListener("message", async (ev) => {
+  const d = ev.data;
+  if (!d || d.aither !== true || !d.type) return;
+  // Only accept messages from iframes WE created — map lookup by source window.
+  const src = packFrames.get(ev.source);
+  if (!src) return;
+  const packId = src.packId;
+  const reply = (payload) => {
+    // targetOrigin must be "*": the sandboxed frame has an opaque origin. Safe
+    // because we address the exact source window and send no secrets.
+    try { ev.source.postMessage({ aither: true, type: "response", id: d.id, ...payload }, "*"); }
+    catch (_) {}
+  };
+  if (d.type === "notify") {
+    toast("[" + packId + "] " + String(d.message || "").slice(0, 200));
+    return;
+  }
+  if (d.type === "get-pack-info") {
+    try { reply({ result: await api("/admin/packs/" + encodeURIComponent(packId)) }); }
+    catch (e) { reply({ error: e.message }); }
+    return;
+  }
+  if (d.type === "invoke-tool") {
+    const tool = String(d.tool || "");
+    const manifest = packIndex[packId];
+    // Client-side pre-check (UX); the server re-validates authoritatively.
+    if (!manifest || !toolAllowed(tool, manifest.mcp_tools)) {
+      reply({ error: "tool_not_in_pack: " + tool }); return;
+    }
+    try {
+      const body = { args: d.args || {} };
+      if (d.timeout) body.timeout = d.timeout;
+      const r = await api("/admin/packs/" + encodeURIComponent(packId) +
+        "/tools/" + encodeURIComponent(tool) + "/invoke",
+        { method: "POST", body: JSON.stringify(body) });
+      reply({ result: r.result, truncated: !!r.truncated });
+    } catch (e) {
+      reply({ error: (e.body && (e.body.error || e.body.detail)) || e.message });
+    }
+  }
+});
 
 // ── SESSIONS ──
 loaders.sessions = async () => {
@@ -472,7 +737,154 @@ $("btnMcpPrepare").onclick = async () => {
   } catch (e) { box.innerHTML = `<span class="banner err">${esc(e.body && e.body.detail || e.message)}</span>`; }
 };
 
+// ── CONFIG ──
+let cfgCache = null;
+loaders.config = async () => {
+  $("cfgBody").textContent = "Loading…";
+  try {
+    const d = await api("/admin/config");
+    cfgCache = d; renderConfig();
+  } catch (e) { $("cfgBody").innerHTML = `<span class="banner err">${esc(e.message)}</span>`; }
+};
+function renderConfig() {
+  if (!cfgCache) return;
+  const writable = new Set(cfgCache.writable_fields || []);
+  const eff = cfgCache.effective || cfgCache.config || {};
+  const filter = ($("cfgFilter").value || "").toLowerCase();
+  const keys = Object.keys(eff).sort().filter((k) => !filter || k.toLowerCase().includes(filter));
+  if (!keys.length) { $("cfgBody").innerHTML = '<span class="muted">No matching keys.</span>'; return; }
+  $("cfgBody").innerHTML = keys.map((k) => {
+    const v = eff[k]; const w = writable.has(k);
+    const val = (v && typeof v === "object") ? JSON.stringify(v) : String(v);
+    const control = w
+      ? `<input data-cfg="${esc(k)}" value="${esc(val)}" style="max-width:260px">`
+      : `<span class="mono muted">${esc(val)}</span>`;
+    return `<div class="list-item"><div class="meta"><div class="t mono">${esc(k)}` +
+      `${w ? ' <span class="chip ok">writable</span>' : ''}</div></div>${control}</div>`;
+  }).join("") +
+    `<div class="row" style="margin-top:10px"><button class="btn" id="btnSaveCfg">Save writable changes</button></div>`;
+  $("btnSaveCfg").onclick = saveConfig;
+}
+async function saveConfig() {
+  const patch = {};
+  $("cfgBody").querySelectorAll("input[data-cfg]").forEach((i) => {
+    const k = i.dataset.cfg, orig = String((cfgCache.effective || {})[k]);
+    if (i.value !== orig) {
+      let v = i.value;
+      if (v === "true") v = true; else if (v === "false") v = false;
+      else if (v !== "" && !isNaN(Number(v)) && /^-?\d+(\.\d+)?$/.test(v)) v = Number(v);
+      patch[k] = v;
+    }
+  });
+  if (!Object.keys(patch).length) return toast("No changes");
+  try { await api("/admin/config", { method: "PATCH", body: JSON.stringify({ config: patch }) });
+    toast("Saved " + Object.keys(patch).join(", ")); loaders.config(); }
+  catch (e) { toast("Failed: " + (e.body && e.body.error || e.message)); }
+}
+$("btnRefreshCfg").onclick = () => loaders.config();
+$("cfgFilter").oninput = () => renderConfig();
+
+// ── CLI ──
+const cliHist = []; let cliHistIdx = -1;
+loaders.cli = async () => {
+  if ($("cliCmds").children.length) return;
+  try { const d = await api("/admin/cli/commands");
+    $("cliCmds").innerHTML = (d.commands || []).map((c) =>
+      `<option value="${esc(c.name)}">`).join(""); }
+  catch (e) { cliPrint("⚠ could not load commands: " + (e.body && e.body.detail || e.message)); }
+};
+function cliPrint(s) { const o = $("cliOut"); o.textContent += "\n" + s; o.scrollTop = o.scrollHeight; }
+$("cliForm").onsubmit = async (e) => {
+  e.preventDefault();
+  const raw = $("cliIn").value.trim(); if (!raw) return;
+  cliHist.push(raw); cliHistIdx = cliHist.length;
+  $("cliIn").value = ""; cliPrint("\n$ adk " + raw);
+  const parts = raw.split(/\s+/); const command = parts[0]; const args = parts.slice(1);
+  $("cliRun").disabled = true;
+  try {
+    const d = await api("/admin/cli/exec", { method: "POST",
+      body: JSON.stringify({ command, args }) });
+    if (d.stdout) cliPrint(d.stdout.replace(/\n$/, ""));
+    if (d.stderr) cliPrint(d.stderr.replace(/\n$/, ""));
+    cliPrint("[exit " + d.returncode + "]");
+  } catch (e) { cliPrint("⚠ " + (e.body && (e.body.detail || e.body.error) || e.message)); }
+  $("cliRun").disabled = false;
+};
+$("cliIn").addEventListener("keydown", (e) => {
+  if (e.key === "ArrowUp") { if (cliHistIdx > 0) { cliHistIdx--; $("cliIn").value = cliHist[cliHistIdx]; } e.preventDefault(); }
+  else if (e.key === "ArrowDown") { if (cliHistIdx < cliHist.length - 1) { cliHistIdx++; $("cliIn").value = cliHist[cliHistIdx]; }
+    else { cliHistIdx = cliHist.length; $("cliIn").value = ""; } e.preventDefault(); }
+});
+
+// ── API EXPLORER ──
+// Uses /admin/routes (route-table introspection) rather than /openapi.json,
+// which 500s on this server (from __future__ annotations → Request ForwardRefs).
+let apiRoutes = null;
+loaders.api = async () => {
+  if (apiRoutes) { renderApiList(); return; }
+  try { const d = await api("/admin/routes"); apiRoutes = d.routes || []; renderApiList(); }
+  catch (e) { $("apiList").innerHTML = `<span class="banner err">${esc(e.message)}</span>`; }
+};
+function renderApiList() {
+  const filter = ($("apiFilter").value || "").toLowerCase();
+  const rows = apiRoutes.filter((r) => !filter || r.path.toLowerCase().includes(filter)).map((r) => {
+    const m = r.method, color = m === "GET" ? "ok" : (m === "DELETE" ? "err" : "warn");
+    return `<div class="list-item" style="cursor:pointer" data-m="${m}" data-p="${esc(r.path)}">` +
+      `<div class="meta"><div class="t"><span class="chip ${color}">${m}</span> ` +
+      `<span class="mono">${esc(r.path)}</span></div>` +
+      `<div class="muted">${esc(r.summary || "")}</div></div></div>`;
+  });
+  $("apiList").innerHTML = rows.join("") || '<span class="muted">No endpoints match.</span>';
+  $("apiList").querySelectorAll("[data-p]").forEach((el) =>
+    el.onclick = () => openApiCaller(el.dataset.m, el.dataset.p));
+}
+$("apiFilter").oninput = () => apiRoutes && renderApiList();
+$("btnRefreshApi").onclick = () => { apiRoutes = null; loaders.api(); };
+let apiCur = null;
+function openApiCaller(method, path) {
+  apiCur = { method, path };
+  $("apiMethod").textContent = method;
+  $("apiMethod").className = "chip " + (method === "GET" ? "ok" : method === "DELETE" ? "err" : "warn");
+  $("apiPath").textContent = path;
+  const params = (path.match(/\{([^}]+)\}/g) || []).map((s) => s.slice(1, -1));
+  $("apiParams").innerHTML = params.length
+    ? "<label>Path parameters</label>" + params.map((p) =>
+        `<input data-param="${esc(p)}" placeholder="${esc(p)}" style="margin-bottom:6px">`).join("")
+    : "";
+  $("apiBody").style.display = (method === "GET" || method === "DELETE") ? "none" : "block";
+  $("apiResp").style.display = "none";
+  $("apiCaller").style.display = "block";
+  $("apiCaller").scrollIntoView({ behavior: "smooth" });
+}
+$("apiClose").onclick = () => $("apiCaller").style.display = "none";
+$("apiSend").onclick = async () => {
+  let path = apiCur.path;
+  $("apiParams").querySelectorAll("[data-param]").forEach((i) => {
+    path = path.replace("{" + i.dataset.param + "}", encodeURIComponent(i.value.trim())); });
+  const opts = { method: apiCur.method };
+  if (apiCur.method !== "GET" && apiCur.method !== "DELETE") {
+    const body = $("apiBody").value.trim();
+    if (body) { try { JSON.parse(body); } catch (_) { return toast("Body is not valid JSON"); } opts.body = body; }
+  }
+  const out = $("apiResp"); out.style.display = "block"; out.innerHTML = '<span class="spin"></span> sending…';
+  try {
+    const res = await fetch(path, { ...opts, headers: H() });
+    let text; try { text = JSON.stringify(await res.json(), null, 2); } catch (_) { text = await res.text(); }
+    out.textContent = res.status + " " + res.statusText + "\n\n" + text;
+  } catch (e) { out.textContent = "⚠ " + e.message; }
+};
+
 loadHealth();
+// Prefetch the pack list so enabled packs' UI tabs appear without visiting
+// the Packs tab first (needs the bearer; skipped when the page has no token).
+if (KEY) (async () => {
+  try {
+    const d = await api("/admin/packs");
+    packIndex = {};
+    (d.available || []).forEach((p) => { if (p.id) packIndex[p.id] = p; });
+    refreshPackTabs();
+  } catch (_) {}
+})();
 </script>
 </body>
 </html>

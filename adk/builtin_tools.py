@@ -59,7 +59,18 @@ def set_allowed_roots(roots: list[str]) -> None:
 
 
 def _is_safe_path(path: str) -> bool:
-    """Check if a path is within allowed roots."""
+    """Check if a path is within allowed roots.
+
+    When a pack scope is active (pack-UI bridge invocation), the ONLY allowed
+    root is that pack's data dir — fail-closed so a pack UI can never read the
+    owner's unrelated files through the built-in file tools.
+    """
+    try:
+        from adk.pack_scope import get_pack_scope, path_in_scope
+        if get_pack_scope() is not None:
+            return path_in_scope(path)
+    except ImportError:
+        pass
     try:
         resolved = str(Path(path).resolve())
         return any(resolved.startswith(str(Path(r).resolve())) for r in _get_allowed_roots())
@@ -151,6 +162,8 @@ def file_list(path: str = ".", pattern: str = "*") -> str:
     path: Directory path to list
     pattern: Glob pattern to filter (default: *)
     """
+    if not _is_safe_path(path):
+        return json.dumps({"error": f"Path outside allowed roots: {path}"})
     try:
         p = Path(path)
         if not p.is_dir():
@@ -174,6 +187,8 @@ def file_search(path: str, pattern: str, content_pattern: str = "") -> str:
     pattern: Glob pattern for filenames (e.g. '**/*.py')
     content_pattern: Optional text to search for inside matching files
     """
+    if not _is_safe_path(path):
+        return json.dumps({"error": f"Path outside allowed roots: {path}"})
     try:
         p = Path(path)
         matches = []

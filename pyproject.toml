@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "aither-adk"
-version = "2.15.0"
+version = "2.16.0"
 description = "Build AI agents with real memory + faculties on any backend, local or cloud. Open-core: free local runtime with typed memory, knowledge graph, code graph and ReAct; paid tiers (portal.aitherium.com) unlock fleets, channels, reasoning and marketplace packs."
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -141,6 +141,8 @@ packages = ["adk"]
 "agent.yaml" = "adk/workspace-agent.yaml"
 # Built-in admin/settings web console served by aither-serve at / and /ui.
 "adk/webui/index.html" = "adk/webui/index.html"
+# Pack-UI bridge SDK served at /packs/_sdk.js for sandboxed pack iframes.
+"adk/webui/pack_sdk.js" = "adk/webui/pack_sdk.js"
 # Bundled self-service deploy compose files (adk deploy node, both the default
 # ADK-native path and --genesis full-stack path, each with a --federate profile) —
 # ship versioned inside the package so `adk deploy node` needs no network fetch from
