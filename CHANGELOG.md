@@ -2,6 +2,40 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [2.15.0] - 2026-07-04
+
+### Added — built-in web admin console + portal-profile settings sync
+
+- **Web admin console.** The page `adk up` opens (served at `/` and `/ui`) is now a full,
+  self-contained console — Chat plus six admin tabs: **Backend** (view/switch LLM provider,
+  set keys, test connection), **Packs** (list/enable/disable/reload tool packs),
+  **Sessions** (browse/delete conversations), **Logs** (redacted agent-log tail),
+  **Graph** (knowledge-graph search/neighborhood/stats), and **MCP** (add/remove external
+  MCP servers). No build step, no CDN — a single packaged HTML asset. The original minimal
+  streaming chat page stays at `/chat` for back-compat.
+- **Admin API (`adk/admin_api.py`).** ~20 endpoints under `/admin/*`, all bearer-gated by the
+  existing middleware (never in `_skip_auth_paths`). Operates on the live agent — LLM backend
+  swap (`LLMRouter.switch_backend`), pack reload, and MCP registration take effect without a
+  restart.
+- **Settings sync (`adk/settings_sync.py`).** The user's portal profile is the source of
+  truth: on startup the agent pulls `preferences.adk` and applies it over the local
+  `~/.aither/config.yaml` cache; admin-console edits push a debounced snapshot back to
+  `PUT /api/settings/preferences`. Provider API keys and MCP auth headers are device-local
+  secrets and are never included in the pushed snapshot. Opt out with `AITHER_SETTINGS_SYNC=false`.
+
+### Security
+
+- **Timing-safe token comparison.** The server bearer check now uses `hmac.compare_digest`
+  (the token is reachable over the public tunnel; a byte-wise `!=` leaked it to timing attacks).
+- **MCP add is SSRF-guarded + confirmed.** Adding an external MCP server is a two-step
+  prepare→confirm flow; URLs resolving to loopback / private / link-local / metadata addresses
+  are rejected (override with `AITHER_ALLOW_PRIVATE_MCP=1` for trusted local servers).
+- **Config editor is allowlisted.** `PATCH /admin/config` writes only safe scalar prefs and
+  hard-denies fields that could execute code or redirect traffic at startup (e.g.
+  `aither_toolpack_dirs`, backend base URLs).
+- **Log tail is scrubbed.** Bearer tokens, `#k=` fragments, and `sk-`/`aither_sk_` keys are
+  redacted from the log-tail endpoint; the tunnel log is excluded.
+
 ## [2.14.8] - 2026-07-04
 
 ### Added — `adk up` for normal humans (no API key, no prereqs, live chat)

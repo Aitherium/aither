@@ -1,0 +1,478 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aither Agent — Console</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #fff; --ink: #1b2027; --muted: #6b7280;
+    --line: #e3e6ea; --accent: #2563eb; --accent-ink: #fff;
+    --ok: #16a34a; --warn: #d97706; --err: #dc2626; --chip: #eceef2;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1216; --panel: #171b21; --ink: #e8eaed; --muted: #9aa4b2;
+      --line: #262c34; --accent: #3b82f6; --accent-ink: #fff;
+      --ok: #22c55e; --warn: #f59e0b; --err: #f87171; --chip: #232830;
+    }
+  }
+  :root[data-theme="light"] {
+    --bg: #f6f7f9; --panel: #fff; --ink: #1b2027; --muted: #6b7280;
+    --line: #e3e6ea; --chip: #eceef2;
+  }
+  :root[data-theme="dark"] {
+    --bg: #0f1216; --panel: #171b21; --ink: #e8eaed; --muted: #9aa4b2;
+    --line: #262c34; --chip: #232830;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+    font: 14px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+  header { display: flex; align-items: center; gap: 10px; padding: 10px 16px;
+    border-bottom: 1px solid var(--line); background: var(--panel); position: sticky; top: 0; z-index: 5; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--ok); flex: none; }
+  .dot.off { background: var(--err); }
+  header b { font-weight: 600; }
+  header .sub { color: var(--muted); font-size: 12px; }
+  header .spacer { flex: 1; }
+  nav { display: flex; gap: 2px; padding: 0 10px; border-bottom: 1px solid var(--line);
+    background: var(--panel); overflow-x: auto; }
+  nav button { background: none; border: none; color: var(--muted); padding: 10px 14px;
+    font: inherit; cursor: pointer; border-bottom: 2px solid transparent; white-space: nowrap; }
+  nav button.active { color: var(--ink); border-bottom-color: var(--accent); }
+  main { max-width: 960px; margin: 0 auto; padding: 16px; }
+  .tab { display: none; }
+  .tab.active { display: block; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 16px; margin-bottom: 14px; }
+  .card h3 { margin: 0 0 10px; font-size: 15px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  label { display: block; font-size: 12px; color: var(--muted); margin: 8px 0 3px; }
+  input, select, textarea { background: var(--bg); color: var(--ink); border: 1px solid var(--line);
+    border-radius: 7px; padding: 8px 10px; font: inherit; width: 100%; }
+  button.btn { background: var(--accent); color: var(--accent-ink); border: none; border-radius: 7px;
+    padding: 8px 14px; font: inherit; cursor: pointer; }
+  button.btn.ghost { background: var(--chip); color: var(--ink); }
+  button.btn.danger { background: var(--err); }
+  button.btn:disabled { opacity: .55; cursor: default; }
+  .muted { color: var(--muted); }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
+  .chip { display: inline-block; background: var(--chip); border-radius: 20px; padding: 2px 9px;
+    font-size: 12px; margin: 2px 4px 2px 0; }
+  .chip.ok { color: var(--ok); } .chip.warn { color: var(--warn); } .chip.err { color: var(--err); }
+  pre { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px;
+    overflow-x: auto; white-space: pre-wrap; word-break: break-word; margin: 8px 0 0; }
+  .list-item { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin: 6px 0;
+    display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; }
+  .list-item .meta { min-width: 0; }
+  .list-item .meta .t { font-weight: 500; word-break: break-word; }
+  .banner { padding: 8px 12px; border-radius: 7px; margin-bottom: 10px; font-size: 13px; }
+  .banner.err { background: color-mix(in srgb, var(--err) 15%, transparent); color: var(--err); }
+  .banner.ok { background: color-mix(in srgb, var(--ok) 15%, transparent); color: var(--ok); }
+  .banner.warn { background: color-mix(in srgb, var(--warn) 15%, transparent); color: var(--warn); }
+  /* Chat */
+  #log { display: flex; flex-direction: column; gap: 10px; min-height: 40vh; }
+  .msg { padding: 9px 12px; border-radius: 10px; max-width: 88%; white-space: pre-wrap; word-break: break-word; }
+  .msg.user { background: var(--accent); color: #fff; align-self: flex-end; }
+  .msg.assistant { background: var(--chip); align-self: flex-start; }
+  .think::after { content: "…"; animation: dots 1.2s steps(4, end) infinite; }
+  @keyframes dots { 0%,20%{content:"";}40%{content:".";}60%{content:"..";}80%,100%{content:"...";} }
+  .spin { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--muted);
+    border-top-color: transparent; border-radius: 50%; animation: sp .7s linear infinite; vertical-align: -2px; }
+  @keyframes sp { to { transform: rotate(360deg); } }
+  .toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--ink);
+    color: var(--bg); padding: 9px 16px; border-radius: 8px; opacity: 0; transition: opacity .2s;
+    pointer-events: none; z-index: 20; max-width: 90vw; }
+  .toast.show { opacity: .95; }
+</style>
+</head>
+<body>
+<header>
+  <span class="dot" id="statusDot"></span>
+  <b id="agentName">Aither Agent</b>
+  <span class="sub" id="agentSub"></span>
+  <span class="spacer"></span>
+  <button class="btn ghost" id="themeToggle" title="Toggle theme">◐</button>
+</header>
+<nav id="nav">
+  <button data-tab="chat" class="active">Chat</button>
+  <button data-tab="backend">Backend</button>
+  <button data-tab="packs">Packs</button>
+  <button data-tab="sessions">Sessions</button>
+  <button data-tab="logs">Logs</button>
+  <button data-tab="graph">Graph</button>
+  <button data-tab="mcp">MCP</button>
+</nav>
+<main>
+  <div id="authBanner" class="banner err" style="display:none">
+    No access token in this page's URL. Reopen the page from <span class="mono">adk up</span>
+    (it appends <span class="mono">#k=…</span>) — admin actions need it.
+  </div>
+
+  <!-- CHAT -->
+  <section class="tab active" id="tab-chat">
+    <div id="log"></div>
+    <form id="chatForm" class="row" style="margin-top:12px">
+      <textarea id="chatIn" rows="1" placeholder="Message the agent…" style="flex:1"></textarea>
+      <button class="btn" id="chatSend">Send</button>
+    </form>
+  </section>
+
+  <!-- BACKEND -->
+  <section class="tab" id="tab-backend">
+    <div class="card">
+      <h3>Active backend</h3>
+      <div id="backendStatus" class="muted">Loading…</div>
+    </div>
+    <div class="card">
+      <h3>Switch / configure provider</h3>
+      <label>Provider</label>
+      <select id="provSel"></select>
+      <label>Model (optional)</label>
+      <input id="provModel" placeholder="e.g. gpt-4o, claude-opus-4-8">
+      <label>API key (stored locally, 0600 — leave blank to keep existing)</label>
+      <input id="provKey" type="password" placeholder="sk-…">
+      <div class="row" style="margin-top:12px">
+        <button class="btn" id="btnSaveKey">Save key</button>
+        <button class="btn ghost" id="btnSwitch">Switch backend</button>
+        <button class="btn ghost" id="btnTestLLM">Test connection</button>
+      </div>
+      <pre id="backendOut" style="display:none"></pre>
+    </div>
+  </section>
+
+  <!-- PACKS -->
+  <section class="tab" id="tab-packs">
+    <div class="card">
+      <div class="row"><h3 style="flex:1">Packs</h3>
+        <button class="btn ghost" id="btnReloadPacks">Reload</button></div>
+      <div id="packsBody" class="muted">Loading…</div>
+    </div>
+  </section>
+
+  <!-- SESSIONS -->
+  <section class="tab" id="tab-sessions">
+    <div class="card">
+      <div class="row"><h3 style="flex:1">Conversations</h3>
+        <button class="btn ghost" id="btnRefreshSessions">Refresh</button></div>
+      <div id="sessionsBody" class="muted">Loading…</div>
+    </div>
+    <div class="card" id="sessionDetail" style="display:none">
+      <div class="row"><h3 style="flex:1" id="sessionTitle">Session</h3>
+        <button class="btn ghost" id="btnCloseSession">Close</button></div>
+      <div id="sessionMessages"></div>
+    </div>
+  </section>
+
+  <!-- LOGS -->
+  <section class="tab" id="tab-logs">
+    <div class="card">
+      <div class="row">
+        <h3 style="flex:1">Agent log <span class="muted" style="font-weight:400">(secrets redacted)</span></h3>
+        <label style="margin:0"><input type="checkbox" id="logAuto" style="width:auto"> auto</label>
+        <button class="btn ghost" id="btnRefreshLogs">Refresh</button>
+      </div>
+      <pre id="logsBody" class="mono">Loading…</pre>
+    </div>
+  </section>
+
+  <!-- GRAPH -->
+  <section class="tab" id="tab-graph">
+    <div class="card">
+      <h3>Knowledge graph</h3>
+      <div id="graphStats" class="muted"></div>
+      <div class="row" style="margin-top:8px">
+        <input id="graphQ" placeholder="Search entities…" style="flex:1">
+        <button class="btn" id="btnGraphSearch">Search</button>
+      </div>
+      <div id="graphBody"></div>
+    </div>
+  </section>
+
+  <!-- MCP -->
+  <section class="tab" id="tab-mcp">
+    <div class="card">
+      <div class="row"><h3 style="flex:1">External MCP servers</h3>
+        <button class="btn ghost" id="btnRefreshMcp">Refresh</button></div>
+      <div id="mcpBody" class="muted">Loading…</div>
+    </div>
+    <div class="card">
+      <h3>Add a server</h3>
+      <p class="muted" style="margin-top:0">Its tools are injected into the agent's reasoning loop —
+        only add servers you trust. Localhost / private addresses are blocked by default.</p>
+      <label>URL</label>
+      <input id="mcpUrl" placeholder="https://example.com/mcp">
+      <label>Name (optional)</label>
+      <input id="mcpName" placeholder="My MCP server">
+      <div class="row" style="margin-top:12px">
+        <button class="btn" id="btnMcpPrepare">Preview tools</button>
+      </div>
+      <div id="mcpPreview" style="display:none"></div>
+    </div>
+  </section>
+</main>
+<div class="toast" id="toast"></div>
+
+<script>
+"use strict";
+// Bearer from URL fragment (#k=…) — the browser never sends the fragment to the
+// server, so the gated /admin/* + /chat/stream stay authenticated without the
+// token ever hitting server logs. Kept in memory ONLY (never localStorage).
+const KEY = (() => {
+  const m = /[#&]k=([^&]+)/.exec(location.hash || "");
+  return m ? decodeURIComponent(m[1]) : "";
+})();
+const $ = (id) => document.getElementById(id);
+const H = () => KEY ? { "Authorization": "Bearer " + KEY, "Content-Type": "application/json" }
+                    : { "Content-Type": "application/json" };
+let toastT = 0;
+function toast(msg) { const t = $("toast"); t.textContent = msg; t.classList.add("show");
+  clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove("show"), 2600); }
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, { ...opts, headers: { ...H(), ...(opts.headers || {}) } });
+  let body = null; try { body = await res.json(); } catch (_) {}
+  if (!res.ok) throw Object.assign(new Error((body && (body.error || body.detail)) || res.status),
+                                   { status: res.status, body });
+  return body;
+}
+function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s);
+  return d.innerHTML; }
+
+if (!KEY) $("authBanner").style.display = "block";
+
+// ── Theme toggle ──
+$("themeToggle").onclick = () => {
+  const cur = document.documentElement.getAttribute("data-theme");
+  const next = cur === "dark" ? "light" : cur === "light" ? "dark"
+    : (matchMedia("(prefers-color-scheme: dark)").matches ? "light" : "dark");
+  document.documentElement.setAttribute("data-theme", next);
+};
+
+// ── Tabs ──
+const loaders = {};
+document.querySelectorAll("#nav button").forEach((b) => {
+  b.onclick = () => {
+    document.querySelectorAll("#nav button").forEach((x) => x.classList.remove("active"));
+    document.querySelectorAll(".tab").forEach((x) => x.classList.remove("active"));
+    b.classList.add("active");
+    $("tab-" + b.dataset.tab).classList.add("active");
+    if (loaders[b.dataset.tab]) loaders[b.dataset.tab]();
+  };
+});
+
+// ── Health / header ──
+async function loadHealth() {
+  try {
+    const h = await (await fetch("/health")).json();
+    $("agentName").textContent = h.agent || "Aither Agent";
+    $("agentSub").textContent = (h.llm_backend || "") + " · v" + (h.version || "?");
+    document.title = (h.agent || "Aither") + " — Console";
+    $("statusDot").classList.remove("off");
+  } catch (_) { $("statusDot").classList.add("off"); }
+}
+
+// ── CHAT ──
+let sid = "web-" + Math.random().toString(36).slice(2);
+function bubble(role, text) { const d = document.createElement("div");
+  d.className = "msg " + role; d.textContent = text; $("log").appendChild(d);
+  $("log").scrollTop = $("log").scrollHeight; return d; }
+$("chatForm").onsubmit = async (e) => {
+  e.preventDefault();
+  const text = $("chatIn").value.trim(); if (!text) return;
+  $("chatIn").value = ""; bubble("user", text);
+  const el = bubble("assistant", ""); el.classList.add("think");
+  $("chatSend").disabled = true;
+  try {
+    const res = await fetch("/chat/stream", { method: "POST", headers: H(),
+      body: JSON.stringify({ message: text, session_id: sid }) });
+    if (!res.ok) { el.classList.remove("think");
+      el.textContent = "⚠ " + res.status + (res.status === 401 ? " — reopen from `adk up`" : ""); }
+    else {
+      const reader = res.body.getReader(); const dec = new TextDecoder(); let buf = "", acc = "";
+      for (;;) { const { value, done } = await reader.read(); if (done) break;
+        buf += dec.decode(value, { stream: true }); const parts = buf.split("\n\n"); buf = parts.pop();
+        for (const p of parts) { const line = p.split("\n").find((l) => l.startsWith("data:"));
+          if (!line) continue; let d; try { d = JSON.parse(line.slice(5).trim()); } catch (_) { continue; }
+          // Wire format from /chat/stream (server.py:_aitheros_stream): a FLAT
+          // JSON payload keyed by `type` — token text in `.t`, answer in `.answer`.
+          if (d.type === "token") { el.classList.remove("think"); acc += (d.t || ""); el.textContent = acc; }
+          else if (d.type === "answer") { el.classList.remove("think"); acc = d.answer || acc; el.textContent = acc; }
+          else if (d.type === "error") { el.classList.remove("think"); el.textContent = "⚠ " + (d.error || "error"); }
+          $("log").scrollTop = $("log").scrollHeight; } }
+    }
+  } catch (err) { el.classList.remove("think"); el.textContent = "⚠ " + err.message; }
+  $("chatSend").disabled = false;
+};
+$("chatIn").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("chatForm").requestSubmit(); } });
+
+// ── BACKEND ──
+loaders.backend = async () => {
+  $("backendStatus").textContent = "Loading…";
+  try {
+    const s = await api("/admin/llm/status");
+    const chips = s.providers.map((p) =>
+      `<span class="chip ${p.has_key ? "ok" : ""}">${esc(p.label)}${p.has_key ? " ✓" : ""}</span>`).join("");
+    $("backendStatus").innerHTML =
+      `Active: <b>${esc(s.active_backend)}</b>${s.model ? " · " + esc(s.model) : ""}<br>` +
+      `Local backend: ${s.local_backend_detected ? esc(s.local_backend || "yes") : "none detected"}` +
+      `<div style="margin-top:8px">${chips}</div>`;
+    const sel = $("provSel"); sel.innerHTML = "";
+    s.providers.forEach((p) => { const o = document.createElement("option");
+      o.value = p.id; o.textContent = p.label; sel.appendChild(o); });
+  } catch (e) { $("backendStatus").innerHTML = `<span class="banner err">${esc(e.message)}</span>`; }
+};
+$("btnSaveKey").onclick = async () => {
+  const provider = $("provSel").value, api_key = $("provKey").value.trim();
+  if (!api_key) return toast("Enter a key first");
+  try { const r = await api("/admin/llm/keys", { method: "POST",
+    body: JSON.stringify({ provider, api_key }) });
+    $("provKey").value = ""; toast("Key saved (" + r.key_preview + ")"); loaders.backend(); }
+  catch (e) { toast("Failed: " + e.message); }
+};
+$("btnSwitch").onclick = async () => {
+  const provider = $("provSel").value, model = $("provModel").value.trim() || undefined;
+  try { const r = await api("/admin/llm/switch", { method: "POST",
+    body: JSON.stringify({ provider, model }) });
+    toast("Switched to " + r.active_backend); loaders.backend(); }
+  catch (e) { toast("Failed: " + e.message); }
+};
+$("btnTestLLM").onclick = async () => {
+  const out = $("backendOut"); out.style.display = "block"; out.innerHTML = '<span class="spin"></span> testing…';
+  try { const r = await api("/admin/llm/test", { method: "POST",
+    body: JSON.stringify({ provider: $("provSel").value }) });
+    out.textContent = "✓ " + (r.response_preview || "ok"); }
+  catch (e) { out.textContent = "✗ " + (e.body && e.body.error || e.message); }
+};
+
+// ── PACKS ──
+loaders.packs = async () => {
+  $("packsBody").textContent = "Loading…";
+  try {
+    const d = await api("/admin/packs");
+    const enabled = new Set(d.enabled_packs || []);
+    let html = `<p class="muted">${d.active_tool_count} tools active · ${d.enabled_packs.length} packs enabled</p>`;
+    (d.available.length ? d.available : d.enabled_packs.map((id) => ({ id, name: id }))).forEach((p) => {
+      const id = p.id || p.name; const on = enabled.has(id);
+      html += `<div class="list-item"><div class="meta"><div class="t">${esc(p.name || id)}</div>` +
+        `<div class="muted mono">${esc(id)}${p.version ? " · v" + esc(p.version) : ""}` +
+        `${p.tier ? " · " + esc(p.tier) : ""}</div></div>` +
+        `<button class="btn ${on ? "ghost" : ""}" data-pack="${esc(id)}" data-on="${on}">` +
+        `${on ? "Disable" : "Enable"}</button></div>`;
+    });
+    $("packsBody").innerHTML = html || '<span class="muted">No packs found.</span>';
+    $("packsBody").querySelectorAll("button[data-pack]").forEach((b) => b.onclick = async () => {
+      const on = b.dataset.on === "true";
+      try { await api("/admin/packs/" + (on ? "disable" : "enable"), { method: "POST",
+        body: JSON.stringify({ pack: b.dataset.pack }) });
+        toast((on ? "Disabled " : "Enabled ") + b.dataset.pack); loaders.packs(); }
+      catch (e) { toast("Failed: " + e.message); } });
+  } catch (e) { $("packsBody").innerHTML = `<span class="banner err">${esc(e.message)}</span>`; }
+};
+$("btnReloadPacks").onclick = async () => {
+  try { const r = await api("/admin/packs/reload", { method: "POST" });
+    toast("Reloaded (+" + (r.tools_added || 0) + " tools)"); loaders.packs(); }
+  catch (e) { toast("Failed: " + e.message); }
+};
+
+// ── SESSIONS ──
+loaders.sessions = async () => {
+  $("sessionsBody").textContent = "Loading…";
+  try {
+    const d = await api("/admin/sessions");
+    if (!d.sessions.length) { $("sessionsBody").innerHTML = '<span class="muted">No conversations yet.</span>'; return; }
+    $("sessionsBody").innerHTML = d.sessions.map((s) =>
+      `<div class="list-item"><div class="meta"><div class="t mono">${esc(s.session_id)}</div>` +
+      `<div class="muted">${s.message_count} msgs · ${esc(s.agent_name || "")}</div></div><div class="row">` +
+      `<button class="btn ghost" data-open="${esc(s.session_id)}">Open</button>` +
+      `<button class="btn danger" data-del="${esc(s.session_id)}">Delete</button></div></div>`).join("");
+    $("sessionsBody").querySelectorAll("[data-open]").forEach((b) => b.onclick = () => openSession(b.dataset.open));
+    $("sessionsBody").querySelectorAll("[data-del]").forEach((b) => b.onclick = async () => {
+      try { await api("/admin/sessions/" + encodeURIComponent(b.dataset.del), { method: "DELETE" });
+        toast("Deleted"); loaders.sessions(); } catch (e) { toast("Failed: " + e.message); } });
+  } catch (e) { $("sessionsBody").innerHTML = `<span class="banner err">${esc(e.message)}</span>`; }
+};
+async function openSession(id) {
+  try {
+    const d = await api("/admin/sessions/" + encodeURIComponent(id));
+    $("sessionTitle").textContent = id;
+    $("sessionMessages").innerHTML = d.messages.map((m) =>
+      `<div class="list-item"><div class="meta"><div class="muted">${esc(m.role)}</div>` +
+      `<div>${esc(m.content)}</div></div></div>`).join("") || '<span class="muted">Empty.</span>';
+    $("sessionDetail").style.display = "block";
+    $("sessionDetail").scrollIntoView({ behavior: "smooth" });
+  } catch (e) { toast("Failed: " + e.message); }
+}
+$("btnCloseSession").onclick = () => $("sessionDetail").style.display = "none";
+$("btnRefreshSessions").onclick = () => loaders.sessions();
+
+// ── LOGS ──
+let logTimer = 0;
+loaders.logs = async () => {
+  try { const d = await api("/admin/logs/tail?n=300");
+    $("logsBody").textContent = (d.lines || []).join("\n") || "(empty)";
+    $("logsBody").scrollTop = $("logsBody").scrollHeight; }
+  catch (e) { $("logsBody").textContent = "⚠ " + e.message; }
+};
+$("btnRefreshLogs").onclick = () => loaders.logs();
+$("logAuto").onchange = (e) => { clearInterval(logTimer);
+  if (e.target.checked) logTimer = setInterval(loaders.logs, 3000); };
+
+// ── GRAPH ──
+loaders.graph = async () => {
+  try { const d = await api("/admin/graph/stats");
+    $("graphStats").textContent = d.note ? d.note : JSON.stringify(d.stats); }
+  catch (e) { $("graphStats").textContent = e.message; }
+};
+$("btnGraphSearch").onclick = async () => {
+  const q = $("graphQ").value.trim(); if (!q) return;
+  $("graphBody").innerHTML = '<span class="spin"></span>';
+  try { const d = await api("/admin/graph/search?q=" + encodeURIComponent(q));
+    if (!d.nodes || !d.nodes.length) { $("graphBody").innerHTML = '<p class="muted">No matches.</p>'; return; }
+    $("graphBody").innerHTML = d.nodes.map((n) =>
+      `<div class="list-item"><div class="meta"><div class="t">${esc(n.name || n.id || "?")}</div>` +
+      `<div class="muted mono">${esc(n.type || n.node_type || "")}</div>` +
+      `${n.content ? `<div>${esc(String(n.content).slice(0, 240))}</div>` : ""}</div></div>`).join("");
+  } catch (e) { $("graphBody").innerHTML = `<span class="banner err">${esc(e.message)}</span>`; }
+};
+
+// ── MCP ──
+loaders.mcp = async () => {
+  $("mcpBody").textContent = "Loading…";
+  try { const d = await api("/admin/mcp/servers");
+    if (!d.servers.length) { $("mcpBody").innerHTML = '<span class="muted">No external servers.</span>'; return; }
+    $("mcpBody").innerHTML = d.servers.map((s) =>
+      `<div class="list-item"><div class="meta"><div class="t">${esc(s.name || s.url)}</div>` +
+      `<div class="muted mono">${esc(s.url)}</div></div>` +
+      `<button class="btn danger" data-mcp="${esc(s.id)}">Remove</button></div>`).join("");
+    $("mcpBody").querySelectorAll("[data-mcp]").forEach((b) => b.onclick = async () => {
+      try { await api("/admin/mcp/servers/" + encodeURIComponent(b.dataset.mcp), { method: "DELETE" });
+        toast("Removed"); loaders.mcp(); } catch (e) { toast("Failed: " + e.message); } });
+  } catch (e) { $("mcpBody").innerHTML = `<span class="banner err">${esc(e.message)}</span>`; }
+};
+$("btnRefreshMcp").onclick = () => loaders.mcp();
+$("btnMcpPrepare").onclick = async () => {
+  const url = $("mcpUrl").value.trim(); if (!url) return toast("Enter a URL");
+  const box = $("mcpPreview"); box.style.display = "block"; box.innerHTML = '<span class="spin"></span> probing…';
+  try {
+    const d = await api("/admin/mcp/servers/prepare", { method: "POST",
+      body: JSON.stringify({ url, name: $("mcpName").value.trim() || undefined }) });
+    box.innerHTML = `<div class="banner warn">${esc(d.warning)}</div>` +
+      `<p><b>${d.tool_count}</b> tool(s):</p>` +
+      d.tools.map((t) => `<div class="list-item"><div class="meta"><div class="t">${esc(t.name)}</div>` +
+        `<div class="muted">${esc(t.description || "")}</div></div></div>`).join("") +
+      `<button class="btn" id="btnMcpConfirm">Confirm & add</button>`;
+    $("btnMcpConfirm").onclick = async () => {
+      try { const r = await api("/admin/mcp/servers/confirm", { method: "POST",
+        body: JSON.stringify({ confirm_token: d.confirm_token }) });
+        toast("Added (" + r.tools_registered + " tools)"); box.style.display = "none";
+        $("mcpUrl").value = ""; $("mcpName").value = ""; loaders.mcp(); }
+      catch (e) { toast("Failed: " + e.message); } };
+  } catch (e) { box.innerHTML = `<span class="banner err">${esc(e.body && e.body.detail || e.message)}</span>`; }
+};
+
+loadHealth();
+</script>
+</body>
+</html>

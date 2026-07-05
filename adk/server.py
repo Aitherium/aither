@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hmac
 import json
 import logging
 import os
@@ -31,6 +32,33 @@ from adk.metrics import get_metrics
 from adk.trace import TraceMiddleware, get_trace_id, new_trace
 
 logger = logging.getLogger("adk.server")
+
+_WEBUI_CACHE: str | None = None
+
+
+def _load_webui() -> str | None:
+    """Load the packaged admin-console SPA (adk/webui/index.html).
+
+    Shipped as package data in the wheel; read once and cached. Returns None if
+    the asset is missing so callers can fall back to the minimal chat page.
+    """
+    global _WEBUI_CACHE
+    if _WEBUI_CACHE is not None:
+        return _WEBUI_CACHE or None
+    try:
+        from importlib.resources import files
+        html = (files("adk") / "webui" / "index.html").read_text(encoding="utf-8")
+    except (FileNotFoundError, ModuleNotFoundError, OSError):
+        # Dev fallback: read from the source tree next to this module.
+        try:
+            html = (os.path.join(os.path.dirname(__file__), "webui", "index.html"))
+            with open(html, encoding="utf-8") as fh:
+                html = fh.read()
+        except OSError:
+            _WEBUI_CACHE = ""
+            return None
+    _WEBUI_CACHE = html
+    return html
 
 
 # A tiny, self-contained streaming chat page the agent serves at "/" so a person
@@ -174,6 +202,25 @@ def create_app(
         except (ImportError, RuntimeError, OSError):
             pass
 
+        # ── Settings sync: portal profile is the source of truth ──
+        # Pull the user's profile settings and apply them over the local cache,
+        # then keep the client on _state so admin-console mutations can push
+        # updates back up. Fail-soft: never blocks boot.
+        if not offline:
+            try:
+                from adk.settings_sync import build_client
+                _settings_sync = build_client()
+                if _settings_sync is not None:
+                    _state["settings_sync"] = _settings_sync
+                    try:
+                        a = await get_agent()
+                    except (ImportError, RuntimeError, OSError, ConnectionError):
+                        a = None
+                    result = await _settings_sync.pull_and_apply(a)
+                    logger.info("settings sync: pulled portal profile — %s", result)
+            except Exception as exc:  # noqa: BLE001 — sync is advisory
+                logger.warning("settings sync init failed (using local config): %s", exc)
+
         if not offline:
             # ── Elysium auto-reconnect + mesh hosting ──
             await _reconnect_elysium()
@@ -245,7 +292,7 @@ def create_app(
     _server_api_key = os.getenv("AITHER_SERVER_API_KEY", "")
     # "/" and "/chat" serve only the static chat page (no data); the page then
     # authenticates to the gated /chat/stream with the bearer from its URL fragment.
-    _skip_auth_paths = {"/", "/chat", "/health", "/docs", "/openapi.json",
+    _skip_auth_paths = {"/", "/chat", "/ui", "/health", "/docs", "/openapi.json",
                         "/metrics", "/demo", "/redoc"}
 
     # Valid caller types for header validation (prevents spoofing)
@@ -272,7 +319,9 @@ def create_app(
             # External requests cannot claim PLATFORM — that's internal-only
             if caller_type == "PLATFORM" and _server_api_key:
                 auth_header = request.headers.get("authorization", "")
-                if not auth_header.startswith("Bearer ") or auth_header[7:] != _server_api_key:
+                platform_tok = auth_header[7:] if auth_header.startswith("Bearer ") else ""
+                # hmac.compare_digest: constant-time, no early-exit timing leak over the tunnel
+                if not platform_tok or not hmac.compare_digest(platform_tok, _server_api_key):
                     return JSONResponse(
                         status_code=403,
                         content={"error": "PLATFORM caller type requires valid API key"},
@@ -284,7 +333,10 @@ def create_app(
         if not auth_header.startswith("Bearer "):
             return JSONResponse(status_code=401, content={"error": "Missing or invalid Authorization header"})
         token = auth_header[7:]
-        if token != _server_api_key:
+        # hmac.compare_digest: constant-time comparison — the bearer is reachable over
+        # the public trycloudflare tunnel, so a byte-by-byte `!=` would leak the token
+        # position-by-position to a timing attacker.
+        if not hmac.compare_digest(token, _server_api_key):
             return JSONResponse(status_code=401, content={"error": "Invalid API key"})
         return await call_next(request)
 
@@ -415,12 +467,31 @@ def create_app(
     # ─── Built-in streaming chat page (so a human has somewhere to talk) ───
 
     @app.get("/", response_class=HTMLResponse)
-    async def chat_page():
-        return HTMLResponse(_CHAT_HTML)
+    async def console_page():
+        # The page `adk up` opens is now the full admin console (Chat is its
+        # first tab). Falls back to the minimal chat page if the packaged asset
+        # is somehow missing.
+        return HTMLResponse(_load_webui() or _CHAT_HTML)
+
+    @app.get("/ui", response_class=HTMLResponse)
+    async def console_page_alias():
+        return HTMLResponse(_load_webui() or _CHAT_HTML)
 
     @app.get("/chat", response_class=HTMLResponse)
-    async def chat_page_alias():
+    async def chat_page_minimal():
+        # Back-compat: the original lightweight streaming chat page.
         return HTMLResponse(_CHAT_HTML)
+
+    # ─── Admin/settings console API (all under /admin/*, bearer-gated) ───
+    # Registered as a function (not an APIRouter) so the handlers can close over
+    # get_agent + _state and operate on the LIVE agent — backend swap, pack
+    # reload, and MCP registration all take effect without a restart. /admin is
+    # intentionally absent from _skip_auth_paths so _auth_middleware gates it.
+    try:
+        from adk.admin_api import register_admin_routes
+        register_admin_routes(app, get_agent=get_agent, state=_state)
+    except ImportError as exc:
+        logger.warning("admin console API unavailable: %s", exc)
 
     # ─── No-backend handler ───
 
