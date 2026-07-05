@@ -423,3 +423,88 @@ class TestCatalogFailSoft:
             assert c.get("/admin/catalog/packs").status_code == 401
         finally:
             _close(c)
+
+
+# ── Regression: packs with relative imports ────────────────────────────
+
+class TestPacksWithRelativeImports:
+    """Regression test for the latent bug where packs with relative imports
+    (from . import config, etc.) failed silently when loaded via file path
+    (marketplace-installed packs) because the loader did not create the spec
+    as a package (with submodule_search_locations)."""
+
+    def test_pack_with_relative_imports_registers(self, tmp_path):
+        """A pack with __init__.py that does 'from . import config' should
+        load and register successfully when loaded via file path."""
+        from adk.tool_pack_loader import ToolPackLoader
+
+        # Create a temporary pack with relative imports
+        pack_dir = tmp_path / "testpkg"
+        pack_dir.mkdir()
+
+        # .toolpack.yaml
+        (pack_dir / ".toolpack.yaml").write_text(
+            """
+id: testpkg
+name: Test Package
+version: 1.0.0
+description: A test pack with relative imports
+mcp_tools:
+  - test_tool
+tool_modules:
+  - testpkg
+""",
+            encoding="utf-8",
+        )
+
+        # config.py (imported relatively)
+        (pack_dir / "config.py").write_text(
+            """
+def get_setting():
+    return "test_value"
+""",
+            encoding="utf-8",
+        )
+
+        # __init__.py with relative import
+        (pack_dir / "__init__.py").write_text(
+            """
+from . import config
+
+def test_tool():
+    '''A test tool that uses config.'''
+    return config.get_setting()
+
+def register(registry):
+    # This only runs if the relative import succeeded
+    registry.register(test_tool)
+    return 1
+""",
+            encoding="utf-8",
+        )
+
+        # Discover and load the pack
+        loader = ToolPackLoader(extra_dirs=[tmp_path])
+        loader.discover()
+        manifests = loader.load_packs(["testpkg"])
+        assert len(manifests) == 1
+        manifest = manifests[0]
+
+        # Create a mock registry
+        class MockRegistry:
+            def __init__(self):
+                self.registered = []
+
+            def register(self, fn):
+                self.registered.append(fn)
+
+        registry = MockRegistry()
+
+        # Create a mock agent with the registry as its tools attribute
+        agent = MagicMock()
+        agent.tools = registry
+
+        # Register the pack - this should NOT fail
+        n = loader.register_on_adk_agent(manifest, agent)
+        # With the fix, the relative imports should succeed and register the tool
+        assert n == 1, f"Pack should register 1 tool, but got {n}"

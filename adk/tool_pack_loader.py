@@ -318,12 +318,36 @@ class ToolPackLoader:
                            manifest.id)
             return None
         try:
-            spec = importlib.util.spec_from_file_location(f"_toolpack_{manifest.id}", init)
+            # Create spec as a PACKAGE (with submodule_search_locations) so that
+            # relative imports within the pack (__init__.py → "from . import tools")
+            # can resolve. Register in sys.modules BEFORE exec_module so Python
+            # can find sibling modules during import.
+            mod_name = f"_toolpack_{manifest.id}"
+            spec = importlib.util.spec_from_file_location(
+                mod_name, init,
+                submodule_search_locations=[str(manifest.path)],
+            )
             module = importlib.util.module_from_spec(spec)
+            # Register in sys.modules BEFORE exec so relative imports can find siblings
+            import sys
+            sys.modules[mod_name] = module
             spec.loader.exec_module(module)  # type: ignore[union-attr]
             return module
         except Exception as exc:
             logger.warning("tool_pack_loader: file-load of %s failed: %s", manifest.id, exc)
+            # Clean up sys.modules on failure: remove main module and all submodules
+            try:
+                import sys
+                mod_name = f"_toolpack_{manifest.id}"
+                # Remove the main module
+                sys.modules.pop(mod_name, None)
+                # Remove all submodules (e.g., _toolpack_roboflow.tools, .config)
+                to_remove = [key for key in sys.modules
+                             if key.startswith(f"{mod_name}.")]
+                for key in to_remove:
+                    sys.modules.pop(key, None)
+            except Exception:
+                pass
             return None
 
 

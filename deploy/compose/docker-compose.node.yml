@@ -664,6 +664,10 @@ services:
     container_name: aitheros-workspace-qdrant
     profiles: ["dashboard"]
     restart: unless-stopped
+    ports:
+      - "${QDRANT_PORT:-6333}:6333"
+    environment:
+      QDRANT__SERVICE__API_KEY: ${QDRANT__SERVICE__API_KEY:-}
     volumes:
       - workspace-qdrant-data:/qdrant/storage
     healthcheck:
