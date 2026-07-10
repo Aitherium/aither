@@ -43,6 +43,7 @@ _AITHER_DIR = Path.home() / ".aither"
 _NODE_AUTH_FILE = _AITHER_DIR / "node_auth.json"
 _AGENTS_FILE = _AITHER_DIR / "agents.json"
 _AUTH_FILE = _AITHER_DIR / "auth.json"
+_CONFIG_FILE = _AITHER_DIR / "config.json"
 
 
 def _should_enroll() -> bool:
@@ -229,6 +230,46 @@ def _extract_tenant_slug() -> str:
         return username.lower().replace(" ", "-")
 
     return "personal"
+
+
+def _enable_session_sync_default() -> None:
+    """
+    Enable session sync by default in config.json after enrollment.
+
+    Persists AITHER_SESSION_SYNC=true in the config file, but respects
+    an explicit user opt-out if one is already set.
+
+    Idempotent: safe to call multiple times.
+    """
+    try:
+        _AITHER_DIR.mkdir(parents=True, exist_ok=True)
+
+        # Load existing config if present
+        config = {}
+        if _CONFIG_FILE.exists():
+            try:
+                config = json.loads(_CONFIG_FILE.read_text(encoding="utf-8"))
+            except Exception as e:
+                log.warning("Failed to read existing config: %s", e)
+
+        # Check for explicit opt-out (user has disabled it)
+        # If session_sync.enabled is explicitly False, respect it
+        if config.get("session_sync", {}).get("enabled") is False:
+            log.info("Session sync opt-out detected — not overriding")
+            return
+
+        # Set default to enabled
+        config.setdefault("session_sync", {})["enabled"] = True
+
+        # Write config (atomic via temp file + rename for Windows)
+        temp_file = _CONFIG_FILE.with_suffix(".json.tmp")
+        temp_file.write_text(json.dumps(config, indent=2), encoding="utf-8")
+        temp_file.replace(_CONFIG_FILE)
+
+        log.info("Enabled session sync by default in config")
+    except Exception as e:
+        # Best-effort; enrollment should not fail due to config write
+        log.warning("Failed to enable session sync config default: %s", e)
 
 
 async def _upsert_agents_to_portal(hub_url: str, api_key: str, node_id: str) -> bool:
@@ -471,6 +512,10 @@ async def enroll_on_boot(
             "mode": "rich",
             "_heartbeat_started": enable_heartbeat,
         })
+
+        # Enable session sync by default (post-enrollment)
+        _enable_session_sync_default()
+
         log.info("Node enrolled (rich): %s", node_id)
         agents_upserted = 0
         if await _upsert_agents_to_portal(portal_url, api_key, node_id):
@@ -510,6 +555,9 @@ async def enroll_on_boot(
         "hub_url": hub_url,
         "tenant_slug": _extract_tenant_slug(),
     })
+
+    # Enable session sync by default (post-enrollment)
+    _enable_session_sync_default()
 
     log.info("Node enrolled: %s", node_id)
 

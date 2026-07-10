@@ -376,6 +376,159 @@ class SessionSyncClient:
 
         return result
 
+    async def pull_sessions(
+        self,
+        watermark: float = 0.0,
+    ) -> List[Dict[str, Any]]:
+        """
+        Pull remote sessions newer than watermark.
+
+        Fetches GET /v1/sessions?since={watermark} and returns all sessions
+        with updated_at >= watermark, sorted by updated_at ascending (oldest first).
+
+        Args:
+            watermark: Unix timestamp. Fetch sessions updated after this time.
+
+        Returns:
+            List of session dicts: [
+                {
+                    "session_id": "...",
+                    "agent_name": "...",
+                    "messages": [...],
+                    "created_at": 1234567890.0,
+                    "updated_at": 1234567890.5,
+                    "metadata": {...}
+                },
+                ...
+            ]
+            Empty list on error (fail-soft).
+        """
+        if not self.config.enabled:
+            log.debug("Session sync disabled — skipping pull")
+            return []
+
+        try:
+            path = f"/v1/sessions?since={watermark}"
+            result = await self._request("GET", path)
+
+            if result.get("error"):
+                status = result.get("status", 500)
+                # Gracefully handle 404, 403, 507 (fail-soft)
+                if status in (404, 403, 507):
+                    log.warning(
+                        "Pull sessions returned %d: %s",
+                        status, result.get("detail", "unknown")
+                    )
+                    return []
+                else:
+                    log.warning(
+                        "Pull sessions error (HTTP %d): %s",
+                        status, result.get("detail", "unknown")
+                    )
+                    return []
+
+            sessions = result.get("sessions", [])
+            log.debug("Pulled %d sessions (watermark=%.1f)", len(sessions), watermark)
+            return sessions
+
+        except Exception as e:
+            log.warning("Pull sessions failed: %s", e)
+            return []
+
+    async def merge_remote_sessions(
+        self,
+        store,  # ConversationStore (avoid circular import)
+        remote_sessions: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """
+        Merge remote sessions into the local store using last-writer-wins.
+
+        For each remote session:
+          - If no local session exists, create it (always merge)
+          - If local exists but remote is significantly newer (>60s), replace local
+          - Otherwise, keep local (local is newer or recent)
+
+        After all merges succeed, updates the pull watermark to max(remote.updated_at).
+        On any error during merge, watermark is NOT updated (partial failure safe).
+
+        Args:
+            store: ConversationStore instance
+            remote_sessions: List of session dicts from pull_sessions()
+
+        Returns:
+            Dict with keys:
+              - "merged": count of sessions merged
+              - "skipped": count of sessions kept (local was newer)
+              - "errors": list of error dicts per session
+        """
+        merged = 0
+        skipped = 0
+        errors = []
+
+        # Accumulate results before updating watermark (atomic on watermark)
+        max_remote_updated = 0.0
+
+        for remote in remote_sessions:
+            try:
+                session_id = remote.get("session_id")
+                if not session_id:
+                    errors.append({
+                        "session_id": "(missing)",
+                        "reason": "Missing session_id"
+                    })
+                    continue
+
+                remote_updated_at = remote.get("updated_at", 0.0)
+                max_remote_updated = max(max_remote_updated, remote_updated_at)
+
+                # Check if local session exists (without creating)
+                local = store._load(session_id)
+
+                # Last-writer-wins logic
+                if local is None:
+                    # No local session — always merge (create it)
+                    await store.merge_remote_session(session_id, remote)
+                    merged += 1
+                    log.debug(
+                        "Created local session %s from remote",
+                        session_id
+                    )
+                elif (
+                    remote_updated_at > local.updated_at
+                    and (remote_updated_at - local.updated_at) > 60.0
+                ):
+                    # Remote is significantly newer (>60s) — merge it
+                    await store.merge_remote_session(session_id, remote)
+                    merged += 1
+                    log.debug(
+                        "Merged remote session %s (remote_updated=%.1f, local_updated=%.1f)",
+                        session_id, remote_updated_at, local.updated_at
+                    )
+                else:
+                    # Local is newer or recent — keep it
+                    skipped += 1
+                    log.debug(
+                        "Kept local session %s (remote_updated=%.1f, local_updated=%.1f)",
+                        session_id, remote_updated_at, local.updated_at
+                    )
+
+            except Exception as e:
+                errors.append({
+                    "session_id": remote.get("session_id", "(unknown)"),
+                    "reason": str(e)
+                })
+
+        # Only update watermark if there were no errors (atomic on error)
+        if not errors and merged > 0:
+            await store.set_pull_watermark(max_remote_updated)
+            log.debug("Updated pull watermark to %.1f", max_remote_updated)
+
+        return {
+            "merged": merged,
+            "skipped": skipped,
+            "errors": errors,
+        }
+
     def debounce_sync(
         self,
         session_id: str,

@@ -79,6 +79,7 @@ class ConversationStore:
         self._dir.mkdir(parents=True, exist_ok=True)
         self._cache: OrderedDict[str, Conversation] = OrderedDict()
         self._sync_hook = None  # Optional async callable for cloud sync
+        self._watermark_file = self._dir.parent / "pull_watermark.json"  # ~/.aither/pull_watermark.json
 
     def _path(self, session_id: str) -> Path:
         # Sanitize session_id for filesystem
@@ -460,6 +461,104 @@ class ConversationStore:
             if not report.clean:
                 reports.append(report)
         return reports
+
+    # ─────────────────────────────────────────────────────────────────────
+    # PULL WATERMARK MANAGEMENT (session sync)
+    # ─────────────────────────────────────────────────────────────────────
+
+    async def get_pull_watermark(self) -> float:
+        """
+        Get the last pull watermark (max remote updated_at we've seen).
+
+        Returns:
+            Unix timestamp, or 0.0 if no watermark has been set
+        """
+        if not self._watermark_file.exists():
+            return 0.0
+
+        try:
+            data = json.loads(self._watermark_file.read_text(encoding="utf-8"))
+            return data.get("last_updated_at", 0.0)
+        except Exception as e:
+            logger.warning("Failed to read pull watermark: %s", e)
+            return 0.0
+
+    async def set_pull_watermark(self, ts: float) -> None:
+        """
+        Set the pull watermark (monotonic — only increases).
+
+        Args:
+            ts: Unix timestamp to set as watermark
+        """
+        # Ensure monotonic — don't go backwards
+        current = await self.get_pull_watermark()
+        if ts < current:
+            logger.warning(
+                "Watermark regression detected (current=%.1f, new=%.1f) — keeping current",
+                current, ts
+            )
+            return
+
+        try:
+            data = {
+                "last_updated_at": ts,
+                "pulled_at": time.time(),
+                "count": await self._count_sessions(),
+            }
+            # Atomic write via temp file + rename (Windows-safe)
+            temp_file = self._watermark_file.with_suffix(".json.tmp")
+            temp_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            temp_file.replace(self._watermark_file)
+            logger.debug("Updated pull watermark to %.1f", ts)
+        except Exception as e:
+            logger.warning("Failed to write pull watermark: %s", e)
+
+    async def _count_sessions(self) -> int:
+        """Count total sessions on disk."""
+        try:
+            return len(list(self._dir.glob("*.json")))
+        except Exception:
+            return 0
+
+    async def merge_remote_session(self, session_id: str, remote: dict) -> None:
+        """
+        Atomically merge a remote session into the store using last-writer-wins.
+
+        Replaces the entire local session with the remote version if remote is
+        deemed newer (by merge_remote_sessions() caller logic).
+
+        Args:
+            session_id: Session ID
+            remote: Remote session dict with keys: session_id, agent_name, messages,
+                   created_at, updated_at, metadata
+
+        Raises:
+            ValueError: If remote session shape is invalid
+            Exception: On save/storage failures
+        """
+        # Validate remote session shape
+        if not isinstance(remote.get("messages"), list):
+            raise ValueError(
+                f"Remote session {session_id} has invalid messages shape "
+                f"(expected list, got {type(remote.get('messages')).__name__})"
+            )
+
+        # Create or overwrite with remote
+        conv = Conversation(
+            session_id=session_id,
+            agent_name=remote.get("agent_name", ""),
+            messages=remote.get("messages", []),
+            created_at=remote.get("created_at", time.time()),
+            updated_at=remote.get("updated_at", time.time()),
+            metadata=remote.get("metadata", {}),
+        )
+
+        # Update cache
+        self._touch_cache(session_id, conv)
+
+        # Save to disk
+        self._save(conv)
+        logger.debug("Merged remote session %s", session_id)
 
 
 _store: ConversationStore | None = None

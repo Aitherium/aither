@@ -148,6 +148,19 @@ async def onboard(
     """POST /v1/mesh/onboard to the Conductor. Returns the parsed response
     (carries ``overlay_ip`` / ``aithernet_ip`` + assigned node id)."""
     import httpx
+    import json
+
+    # Read workspace_id from ~/.aither/node_auth.json if present
+    workspace_id = None
+    try:
+        from pathlib import Path
+        node_auth_file = Path.home() / ".aither" / "node_auth.json"
+        if node_auth_file.exists():
+            auth_data = json.loads(node_auth_file.read_text(encoding="utf-8"))
+            workspace_id = auth_data.get("workspace_id")
+    except Exception:
+        pass  # Gracefully ignore missing/unreadable node_auth.json
+
     payload = {
         "node_id": node_id, "wg_public_key": wg_public_key, "role": role,
         "external_port": external_port,
@@ -155,6 +168,9 @@ async def onboard(
     }
     if external_ip:
         payload["external_ip"] = external_ip
+    if workspace_id:
+        payload["workspace_id"] = workspace_id
+
     url = conductor_url.rstrip("/") + "/v1/mesh/onboard"
     async with httpx.AsyncClient(timeout=30.0, verify=_verify()) as c:
         r = await c.post(url, json=payload, headers=_headers(psk))

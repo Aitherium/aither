@@ -5265,58 +5265,82 @@ def cmd_backup(args):
 
 
 def cmd_ingest(args):
-    """Ingest files into the agent's knowledge graph."""
+    """Ingest files into the agent's knowledge graph with optional brain sync."""
     import asyncio
 
     target = Path(args.path or ".")
     agent_name = getattr(args, "agent", "default")
+    brain_sync = getattr(args, "brain", False)
+    brain_url = getattr(args, "brain_url", "")
+    classification = getattr(args, "classification", "internal")
+    chunk_size = getattr(args, "chunk_size", 2000)
+    chunk_overlap = getattr(args, "chunk_overlap", 200)
+    workspace_id = getattr(args, "workspace", "default")
+    skip_embeddings = getattr(args, "skip_embeddings", False)
+    dry_run = getattr(args, "dry_run", False)
 
     async def _ingest():
-        from adk.graph_memory import GraphMemory
+        from adk.ingest import ingest_files
 
-        graph = GraphMemory(agent_name=agent_name)
-
-        # Find files to ingest
-        patterns = ["*.md", "*.txt", "*.py", "*.yaml", "*.yml", "*.json"]
-        files = []
-        for pat in patterns:
-            if target.is_file():
-                files = [target]
-                break
-            files.extend(target.glob(pat))
-            for subdir in ("docs", "doc", "documentation"):
-                sub = target / subdir
-                if sub.is_dir():
-                    files.extend(sub.rglob(pat))
-
-        # Deduplicate
-        files = list(dict.fromkeys(files))[:200]
-
-        if not files:
-            print(f"No files found to ingest in {target}")
+        if not target.exists():
+            print(f"Error: path not found: {target}")
             return 1
 
-        print(f"Ingesting {len(files)} files into graph for agent '{agent_name}'...")
+        print(f"Ingesting files from {target}...")
+        if brain_sync:
+            print(f"  Brain sync: ENABLED (workspace: {workspace_id})")
+        else:
+            print(f"  Brain sync: disabled (local only)")
+        print(f"  Classification: {classification}")
+        print(f"  Chunk size: {chunk_size} bytes, overlap: {chunk_overlap} bytes")
 
-        ingested = 0
-        for f in files:
-            try:
-                content = f.read_text(encoding="utf-8", errors="replace")[:10000]
-                if len(content.strip()) < 20:
-                    continue
-                await graph.ingest_conversation(
-                    session_id=f"ingest:{f.name}",
-                    messages=[{"role": "system", "content": f"File: {f}\n\n{content}"}],
-                )
-                ingested += 1
-                if ingested % 10 == 0:
-                    print(f"  {ingested}/{len(files)}...")
-            except Exception:
-                pass
+        result = await ingest_files(
+            path=target,
+            classification=classification,
+            brain_sync=brain_sync,
+            brain_url=brain_url,
+            workspace_id=workspace_id,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            skip_embeddings=skip_embeddings,
+            dry_run=dry_run,
+            agent_name=agent_name,
+        )
 
-        print(f"Ingested {ingested} files into knowledge graph.")
-        stats = await graph.get_stats()
-        print(f"Graph: {stats.get('node_count', '?')} nodes, {stats.get('edge_count', '?')} edges")
+        # Print summary
+        print()
+        print("=" * 60)
+        print(f"Ingest Summary")
+        print("=" * 60)
+        print(f"Total files scanned:      {result.files_total}")
+        print(f"Files ingested:           {result.files_ingested}")
+        print(f"Files skipped:            {result.files_skipped}")
+        if result.skipped_files:
+            for path, reason in result.skipped_files[:5]:
+                print(f"  - {path}: {reason}")
+            if len(result.skipped_files) > 5:
+                print(f"  ... and {len(result.skipped_files) - 5} more")
+        print()
+        print(f"Chunks created:           {result.chunks_created}")
+        print(f"Chunks embedded:          {result.chunks_embedded}")
+        if result.embedding_degraded:
+            print(f"  WARNING: Embedding degraded (fallback dimension)")
+        print()
+        if brain_sync:
+            print(f"Brain sync status:        {'SUCCESS' if result.brain_synced else 'FAILED'}")
+            print(f"Chunks synced to hub:     {result.chunks_synced}")
+        else:
+            print(f"Brain sync:               disabled")
+        print()
+        if result.errors:
+            print("Errors encountered:")
+            for error in result.errors:
+                print(f"  ! {error}")
+        print("=" * 60)
+
+        # Return appropriate exit code
+        if result.errors and result.files_ingested == 0:
+            return 1
         return 0
 
     return asyncio.run(_ingest())
@@ -8925,6 +8949,23 @@ def _register_commands(sub):
     ingest_p = sub.add_parser("ingest", help="Ingest files into the agent's knowledge graph")
     ingest_p.add_argument("path", nargs="?", default=".", help="File or directory to ingest")
     ingest_p.add_argument("--agent", default="default", help="Agent name for the graph")
+    ingest_p.add_argument("--brain", action="store_true",
+                         help="Enable sync to CompanyBrain hub (default: local only)")
+    ingest_p.add_argument("--brain-url", default="",
+                         help="Override brain hub URL (default: from env/config)")
+    ingest_p.add_argument("--classification", default="internal",
+                         choices=["public", "internal", "confidential", "restricted"],
+                         help="Classification level for ingested content (default: internal)")
+    ingest_p.add_argument("--chunk-size", type=int, default=2000,
+                         help="Bytes per chunk (default: 2000)")
+    ingest_p.add_argument("--chunk-overlap", type=int, default=200,
+                         help="Overlap bytes between chunks (default: 200)")
+    ingest_p.add_argument("--workspace", default="default",
+                         help="Workspace ID for brain sync (default: default)")
+    ingest_p.add_argument("--skip-embeddings", action="store_true",
+                         help="Skip embedding if brain unreachable")
+    ingest_p.add_argument("--dry-run", action="store_true",
+                         help="Print what would be ingested without persisting")
 
     # adk doctor — system health checks
     sub.add_parser("doctor", help="Check system health (Python, GPU, LLM backends, API keys)")

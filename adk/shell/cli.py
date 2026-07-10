@@ -4952,5 +4952,421 @@ def watch(interval, verbose):
         click.echo("\nMonitor stopped.")
 
 
+# ─── aither sessions (Claude Code session manager) ──────────────────────────
+# Track / browse / search / resume Claude Code sessions, and guard against the
+# "Windows Terminal died and took all 12 sessions with it" failure. Engine in
+# adk/shell/claude_sessions.py — read-only against Claude's own journals.
+
+
+def _sessions_engine():
+    from adk.shell import claude_sessions as cs
+    return cs
+
+
+def _secho(text=""):
+    """click.echo that survives legacy cp1252 consoles — journal titles and
+    snippets routinely contain characters Windows' default codepage can't
+    encode, and one bad char must not crash the whole listing."""
+    try:
+        click.echo(text)
+    except UnicodeEncodeError:
+        enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+        click.echo(str(text).encode(enc, errors="replace").decode(enc))
+
+
+def _sessions_print_table(sessions, show_prompt=True):
+    cs = _sessions_engine()
+    crash = cs.pending_crash()
+    if crash:
+        n = len(crash.get("sessions", []))
+        _secho(click.style(
+            f"\n  ! crash recorded {crash.get('crashed_at', '?')} - {n} session(s) lost. "
+            f"Run `aither sessions restore` to reopen them.", fg="yellow"))
+    _secho(click.style("\n  Claude Code sessions", fg="cyan", bold=True))
+    _secho(click.style("  " + "-" * 72, fg="bright_black"))
+    for i, s in enumerate(sessions, 1):
+        live = click.style(" LIVE", fg="green", bold=True) if s.live else ""
+        branch = click.style(f" ({s.branch})", fg="cyan") if s.branch else ""
+        title = s.title if len(s.title) <= 44 else s.title[:43] + "..."
+        _secho(
+            f"  {click.style(f'{i:>2}', fg='yellow', bold=True)}  "
+            f"{click.style(f'{s.age:<9}', fg='bright_black')}  "
+            f"{click.style(title, fg='white', bold=True)}{branch}{live}"
+        )
+        _secho("        " + click.style(s.cwd, fg="bright_black"))
+        if show_prompt and s.last_prompt:
+            lp = " ".join(s.last_prompt.split())
+            if len(lp) > 70:
+                lp = lp[:69] + "..."
+            _secho("        " + click.style("> " + lp, fg="green"))
+    _secho(click.style("  " + "-" * 72, fg="bright_black"))
+
+
+def _sessions_launch_and_report(cs, chosen, separate, dry_run):
+    lines = cs.launch_sessions(chosen, separate_windows=separate, dry_run=dry_run)
+    verb = "Would resume" if dry_run else "Resuming"
+    _secho(click.style(f"\n  {verb} {len(chosen)} session(s):", fg="green", bold=True))
+    for ln in lines:
+        _secho(f"    - {ln}")
+
+
+@cli.group("sessions", invoke_without_command=True)
+@click.option("--list", "as_list", is_flag=True, help="Plain list instead of the interactive browser")
+@click.option("--filter", "text_filter", default="", help="Substring match on title/cwd/branch/prompt")
+@click.option("--hours", default=0.0, help="Only sessions active within N hours")
+@click.option("--per-dir", is_flag=True, help="One (most recent) session per directory")
+@click.option("--scan", default=120, show_default=True, help="How many recent journals to parse")
+@click.option("--top", default=25, show_default=True, help="Max sessions to show")
+@click.option("--json", "output_json", is_flag=True, help="JSON output")
+@click.pass_context
+def sessions_grp(ctx, as_list, text_filter, hours, per_dir, scan, top, output_json):
+    """Manage Claude Code sessions — browse, search, resume, crash-recover.
+
+    \b
+    aither sessions                        # Interactive browser (filter/preview/resume)
+    aither sessions --list                 # Plain list (LIVE-flagged)
+    aither sessions search "vllm bug"      # Full-text search across sessions
+    aither sessions resume 1,3,5-7         # Reopen sessions as WT tabs
+    aither sessions resume all --per-dir   # One tab per project directory
+    aither sessions restore                # Reopen everything a WT crash killed
+    aither sessions guard install          # Auto-restore watchdog at logon
+    aither sessions ingest --watch         # Auto-sync conversations into the brain
+    """
+    if ctx.invoked_subcommand is not None:
+        return
+    # Bare `aither sessions` on a real terminal = the interactive browser.
+    if not (as_list or output_json or text_filter or per_dir or hours) and sys.stdin.isatty():
+        try:
+            from adk.shell.session_browser import browse
+            browse()
+            return
+        except (ImportError, RuntimeError) as exc:
+            click.echo(click.style(f"  (browser unavailable: {exc} — plain list)", fg="yellow"))
+    cs = _sessions_engine()
+    found = cs.scan_sessions(
+        scan=scan, top=top, per_dir=per_dir,
+        text_filter=text_filter, lookback_hours=hours,
+    )
+    if output_json:
+        click.echo(json.dumps([s.to_dict() for s in found], indent=2))
+        return
+    if not found:
+        click.echo("No Claude Code sessions found.")
+        return
+    _sessions_print_table(found)
+    click.echo(click.style(
+        "  resume with: aither sessions resume 1,3,5-7   (or 'all')\n", fg="bright_black"))
+
+
+@sessions_grp.command("browse")
+def sessions_browse():
+    """Interactive full-screen browser: filter, preview, deep search, resume."""
+    from adk.shell.session_browser import browse
+    browse()
+
+
+@sessions_grp.command("ingest")
+@click.option("--days", default=7.0, show_default=True, help="Sessions active in the last N days")
+@click.option("--watch", is_flag=True, help="Keep running; auto-sync new content")
+@click.option("--interval", default=300.0, show_default=True, help="Watch tick seconds")
+@click.option("--brain-sync/--local-only", default=True, show_default=True,
+              help="Also push deltas to the CompanyBrain hub (needs `adk enroll`)")
+@click.option("--classification", default="internal", show_default=True,
+              type=click.Choice(["internal", "confidential", "restricted"]))
+@click.option("--dry-run", is_flag=True, help="Report what would be ingested")
+@click.option("--json", "output_json", is_flag=True, help="JSON output")
+def sessions_ingest(days, watch, interval, brain_sync, classification, dry_run, output_json):
+    """Ingest session conversations into the local KB / company brain.
+
+    Incremental: each run only processes journal content appended since the
+    last run. Chunks containing secret patterns are skipped, never stored.
+    """
+    from adk.shell.claude_ingest import ingest_sessions, watch_sessions
+    kwargs = dict(days=days, brain_sync=brain_sync,
+                  classification=classification, dry_run=dry_run)
+    if watch:
+        click.echo(f"Session ingest watch running (every {interval:g}s, "
+                   f"last {days:g} days, {'brain-sync' if brain_sync else 'local-only'}). "
+                   "Ctrl+C to stop.")
+        try:
+            watch_sessions(interval=interval, on_event=lambda m: _secho(f"  [ingest] {m}"),
+                           **kwargs)
+        except KeyboardInterrupt:
+            click.echo("\nIngest watch stopped.")
+        return
+    result = asyncio.run(ingest_sessions(**kwargs))
+    if output_json:
+        click.echo(json.dumps(result.to_dict(), indent=2))
+        return
+    d = result.to_dict()
+    verb = "would ingest" if dry_run else "ingested"
+    click.echo(f"  sessions seen      : {d['sessions_seen']}")
+    click.echo(f"  sessions {verb}: {d['sessions_ingested']}")
+    click.echo(f"  chunks created     : {d['chunks_created']}")
+    if d["chunks_skipped_secrets"]:
+        click.echo(click.style(
+            f"  chunks skipped     : {d['chunks_skipped_secrets']} (secret patterns)", fg="yellow"))
+    click.echo(f"  brain synced       : {d['chunks_synced'] if d['brain_synced'] else 'no'}")
+    for err in d["errors"]:
+        _secho(click.style(f"  ! {err}", fg="red"))
+
+
+@sessions_grp.command("search")
+@click.argument("query")
+@click.option("--days", default=30.0, show_default=True, help="Only journals touched in the last N days")
+@click.option("--limit", default=20, show_default=True, help="Max matching sessions")
+@click.option("--json", "output_json", is_flag=True, help="JSON output")
+@click.option("--resume", "do_resume", is_flag=True, help="Pick matches to resume after searching")
+def sessions_search(query, days, limit, output_json, do_resume):
+    """Full-text search across session conversations (user + assistant text)."""
+    cs = _sessions_engine()
+    hits = cs.search_sessions(query, days=days, max_sessions=limit)
+    if output_json:
+        click.echo(json.dumps(
+            [{**h.session.to_dict(), "matches": h.matches, "snippets": h.snippets} for h in hits],
+            indent=2))
+        return
+    if not hits:
+        click.echo(f"No sessions matching {query!r} in the last {days:g} days.")
+        return
+    cs.mark_live([h.session for h in hits])
+    _secho(click.style(f"\n  {len(hits)} session(s) matching ", fg="cyan", bold=True)
+           + click.style(query, fg="yellow", bold=True))
+    _secho(click.style("  " + "-" * 72, fg="bright_black"))
+    for i, h in enumerate(hits, 1):
+        s = h.session
+        live = click.style(" LIVE", fg="green", bold=True) if s.live else ""
+        _secho(
+            f"  {click.style(f'{i:>2}', fg='yellow', bold=True)}  "
+            f"{click.style(f'{s.age:<9}', fg='bright_black')}  "
+            f"{click.style(s.title, fg='white', bold=True)}"
+            f"{click.style(f'  [{h.matches} match(es)]', fg='cyan')}{live}"
+        )
+        _secho("        " + click.style(s.cwd, fg="bright_black"))
+        for snip in h.snippets:
+            _secho("        " + click.style("> " + snip, fg="green"))
+    _secho(click.style("  " + "-" * 72, fg="bright_black"))
+    if do_resume:
+        answer = click.prompt("  resume which? (e.g. 1,3 / all / Enter=none)",
+                              default="", show_default=False)
+        idx = cs.expand_selection(answer, len(hits))
+        if idx:
+            _sessions_launch_and_report(cs, [hits[i - 1].session for i in idx],
+                                        separate=False, dry_run=False)
+
+
+@sessions_grp.command("resume")
+@click.argument("selector", default="")
+@click.option("--filter", "text_filter", default="", help="Substring match before selecting")
+@click.option("--hours", default=0.0, help="Only sessions active within N hours")
+@click.option("--per-dir", is_flag=True, help="One (most recent) session per directory")
+@click.option("--separate", is_flag=True, help="Separate WT windows instead of tabs")
+@click.option("--dry-run", is_flag=True, help="Show what would launch")
+@click.option("--include-live", is_flag=True, help="Also offer sessions that look already open")
+def sessions_resume(selector, text_filter, hours, per_dir, separate, dry_run, include_live):
+    """Reopen sessions: `resume all`, `resume 1,3,5-7`, or interactive pick.
+
+    Already-LIVE sessions are excluded by default so you don't fork a
+    conversation that's still open in another tab.
+    """
+    cs = _sessions_engine()
+    found = cs.scan_sessions(per_dir=per_dir, text_filter=text_filter, lookback_hours=hours)
+    if not include_live:
+        found = [s for s in found if not s.live]
+    if not found:
+        click.echo("No resumable sessions (everything recent looks already open — "
+                   "use --include-live to override).")
+        return
+    if not selector:
+        _sessions_print_table(found)
+        selector = click.prompt("  resume which? (e.g. 1,3,5-7 / all / Enter=cancel)",
+                                default="", show_default=False)
+        if not selector.strip():
+            click.echo("  Cancelled.")
+            return
+    idx = cs.expand_selection(selector, len(found))
+    if not idx:
+        click.echo("  Nothing selected.")
+        return
+    _sessions_launch_and_report(cs, [found[i - 1] for i in idx], separate, dry_run)
+
+
+@sessions_grp.command("restore")
+@click.option("--separate", is_flag=True, help="Separate WT windows instead of tabs")
+@click.option("--dry-run", is_flag=True, help="Show what would launch")
+def sessions_restore(separate, dry_run):
+    """Reopen the full session set from the last crash (or last live snapshot)."""
+    cs = _sessions_engine()
+    snap = cs.pending_crash()
+    source = "crash"
+    if not snap:
+        snap = cs._read_json(cs.LIVE_SNAPSHOT)
+        source = "last live snapshot"
+    if not snap or not snap.get("sessions"):
+        click.echo("No crash or live snapshot recorded yet. "
+                   "Run `aither sessions guard install` so the watchdog tracks your sessions.")
+        return
+    chosen = cs.snapshot_sessions(snap)
+    click.echo(f"  Restoring from {source} ({snap.get('taken_at', '?')}).")
+    _sessions_launch_and_report(cs, chosen, separate, dry_run)
+    if source == "crash" and not dry_run:
+        cs.clear_crash()
+
+
+@sessions_grp.command("guard")
+@click.argument("action", default="status",
+                type=click.Choice(["status", "run", "install", "uninstall", "pause", "unpause"]))
+@click.option("--daemon", is_flag=True, help="(with run) alias used by the scheduled task")
+@click.option("--interval", default=20.0, show_default=True, help="Seconds between watchdog ticks")
+@click.option("--min-sessions", default=3, show_default=True,
+              help="Sessions that must die at once to count as a crash")
+@click.option("--no-auto-restore", is_flag=True, help="Record crashes but don't relaunch")
+def sessions_guard(action, daemon, interval, min_sessions, no_auto_restore):
+    """Crash watchdog: snapshot live sessions, auto-restore after terminal death.
+
+    \b
+    aither sessions guard install     # Hidden at-logon scheduled task (recommended)
+    aither sessions guard run         # Run the loop in THIS console (for testing)
+    aither sessions guard pause       # Temporarily disable crash restore
+    """
+    cs = _sessions_engine()
+    if action == "install":
+        name = cs.install_guard(auto_restore=not no_auto_restore)
+        click.echo(f"Installed + started scheduled task: {name!r}. "
+                   "Your sessions now auto-restore after a terminal crash.")
+        return
+    if action == "uninstall":
+        ok = cs.uninstall_guard()
+        click.echo("Guard task removed." if ok else "Guard task was not installed.")
+        return
+    if action == "pause":
+        cs.GUARD_PAUSE.parent.mkdir(parents=True, exist_ok=True)
+        cs.GUARD_PAUSE.touch()
+        click.echo("Guard paused (crash restore disabled until `guard unpause`).")
+        return
+    if action == "unpause":
+        try:
+            cs.GUARD_PAUSE.unlink()
+        except OSError:
+            pass
+        click.echo("Guard unpaused.")
+        return
+    if action == "run" or daemon:
+        if cs.claude_process_count() < 0:
+            click.echo("psutil not installed — guard can't see claude processes. "
+                       "pip install psutil", err=True)
+            sys.exit(1)
+        click.echo(f"Session guard running (tick {interval:g}s, crash = >={min_sessions} "
+                   f"sessions dying with the terminal). Ctrl+C to stop.")
+        click.echo("NOTE: run this OUTSIDE the terminal it guards — "
+                   "`aither sessions guard install` does that for you.")
+        try:
+            cs.guard_loop(interval=interval, auto_restore=not no_auto_restore,
+                          min_sessions=min_sessions,
+                          on_event=lambda msg: click.echo(f"  [guard] {msg}"))
+        except KeyboardInterrupt:
+            click.echo("\nGuard stopped.")
+        return
+    # status
+    snap = cs._read_json(cs.LIVE_SNAPSHOT)
+    crash = cs.pending_crash()
+    n_procs = cs.claude_process_count()
+    click.echo(f"  claude processes now : {n_procs if n_procs >= 0 else 'unknown (no psutil)'}")
+    if snap:
+        click.echo(f"  last live snapshot   : {snap.get('taken_at')} "
+                   f"({len(snap.get('sessions', []))} session(s))")
+    else:
+        click.echo("  last live snapshot   : none — guard has never run")
+    click.echo("  pending crash        : "
+               + (f"{crash.get('crashed_at')} ({len(crash.get('sessions', []))} lost) "
+                  f"-> `aither sessions restore`" if crash else "none"))
+    click.echo(f"  paused               : {'YES' if cs.GUARD_PAUSE.exists() else 'no'}")
+    if sys.platform == "win32":
+        import subprocess as _sp
+        r = _sp.run(["schtasks", "/Query", "/TN", cs.GUARD_TASK_NAME],
+                    capture_output=True, text=True)
+        click.echo(f"  scheduled task       : {'installed' if r.returncode == 0 else 'NOT installed'}"
+                   + ("" if r.returncode == 0 else "  -> `aither sessions guard install`"))
+
+
+# ─── command center (aither hq / inbox / agents / palette / brief / watch) ──
+# One cockpit for the fleet. All reads via command_center.fleet_client —
+# fail-soft per source, internal-CA TLS, dashboard-grade timeouts.
+
+
+@cli.command("hq")
+def hq_cmd():
+    """Command-center dashboard: fleet, LLM queue, alerts, sessions, inbox.
+
+    Hotkeys jump into chat, sessions browser, inbox, agents, brief, watch,
+    and docker recovery. The morning one-terminal cockpit.
+    """
+    from adk.shell.command_center.hq import run_hq
+    run_hq()
+
+
+@cli.command("inbox")
+@click.option("--min-severity", default=0.3, show_default=True,
+              help="Alert severity floor (0-1)")
+def inbox_cmd(min_severity):
+    """Unified inbox: mail + relay mentions + Pulse alerts, one queue."""
+    from adk.shell.command_center.inbox import run_inbox
+    run_inbox(min_severity=min_severity)
+
+
+@cli.command("palette")
+def palette_cmd():
+    """Universal fuzzy picker: actions, sessions, services — Enter acts."""
+    from adk.shell.command_center.palette import run_palette
+    run_palette()
+
+
+@cli.command("brief")
+@click.option("--run", "do_run", is_flag=True,
+              help="Trigger a fresh briefing (also emails/inboxes it)")
+@click.option("--history", default=1, show_default=True,
+              help="Show the latest brief (1) or list the last N")
+def brief_cmd(do_run, history):
+    """The executive briefing, rendered in your terminal (Atlas archive)."""
+    from adk.shell.command_center.brief import run_brief
+    run_brief(run=do_run, history=history)
+
+
+@cli.command("watch")
+@click.option("--interval", default=15.0, show_default=True, help="Tick seconds")
+@click.option("--auto-recover", is_flag=True,
+              help="Auto-run docker recovery when the wedge signature fires")
+def watch_cmd(interval, auto_recover):
+    """Fleet watchtower: health stream + named wedge-signature detection."""
+    from adk.shell.command_center.watchtower import run_watch
+    run_watch(interval=interval, auto_recover=auto_recover)
+
+
+@cli.group("agents", invoke_without_command=True)
+@click.pass_context
+def agents_grp(ctx):
+    """Agent console: roster, ask any agent (effort-tiered), forge, routines.
+
+    \b
+    aither agents                          # Interactive console
+    aither agents ask hydra "review X"     # One-shot ask (default effort 5)
+    aither agents ask -e 8 atlas "why..."  # Reasoning-tier ask
+    """
+    if ctx.invoked_subcommand is None:
+        from adk.shell.command_center.agents_console import run_agents
+        run_agents()
+
+
+@agents_grp.command("ask")
+@click.option("-e", "--effort", default=5, show_default=True,
+              type=click.IntRange(1, 10), help="Effort tier (1-2 triage, 7-10 reasoning)")
+@click.argument("agent")
+@click.argument("question", nargs=-1, required=True)
+def agents_ask(effort, agent, question):
+    """Ask a named agent one question and print the answer."""
+    from adk.shell.command_center.agents_console import ask_once
+    ask_once(agent, " ".join(question), effort=effort)
+
+
 if __name__ == "__main__":
     entry()

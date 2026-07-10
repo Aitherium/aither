@@ -2,6 +2,39 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [2.18.0] - 2026-07-10
+
+### Added — AitherShell command center + Claude Code session management
+
+- **`aither sessions`** — Claude Code session manager: interactive full-screen
+  browser (type-to-filter, transcript preview, deep full-text `search`, resume
+  **in the current terminal** or as Windows Terminal tabs), crash guard
+  (`guard install` = at-logon watchdog that snapshots live sessions and
+  auto-restores the whole set after a terminal crash), and `ingest [--watch]`
+  (incremental, secret-guarded sync of session conversations into the local KB
+  / CompanyBrain via the standard ingest pipeline).
+- **`aither hq`** — command-center dashboard: per-service fleet health, LLM
+  queue (depth/VRAM/models), Pulse alerts, live session count, inbox unread —
+  auto-refreshing, with one-key jumps into chat, sessions, inbox, agents,
+  brief, watchtower, and docker recovery.
+- **`aither inbox`** — unified queue over CommCore mail, Relay
+  mentions/notifications, and Pulse alerts; open/mark-read/DM-reply from the
+  terminal. Every source degrades independently.
+- **`aither agents`** — roster console + `agents ask -e <1-10> <agent> <q>`
+  (effort-tiered ask via Genesis, with automatic `/chat/stream` fallback when
+  the `/agent/sync` execute gate rejects host callers) + forge dispatch
+  inspection + routine health.
+- **`aither palette`** — universal fuzzy picker across actions, sessions, and
+  services; **`aither brief`** — renders Atlas's executive briefing in the
+  terminal; **`aither watch`** — fleet watchtower with named wedge-signature
+  detection (docker-WSL wedge, LLM-queue stall, crash-loop uptime regression)
+  and optional docker auto-recovery.
+- All fleet reads go through a shared fail-soft `FleetClient` (internal-CA
+  TLS via `adk._tls`, dashboard-grade timeouts, per-source degraded states).
+- Node shell-cli (`@aitherium/shell-cli` 1.13.0): `aither
+  sessions|hq|inbox|palette|brief|watch|agents|docker` now pass through to the
+  Python shell instead of being intent-classified as chat prompts.
+
 ## [2.17.1] - 2026-07-05
 
 ### Fully self-service mesh join — no customer key handling
