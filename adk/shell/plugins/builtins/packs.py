@@ -9,12 +9,14 @@ import tarfile
 import webbrowser
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlencode
 
 import httpx
 
 from adk.shell.plugins import SlashCommand
+
+__all__ = ["sync_entitled_packs"]
 
 
 def _safe_extract(tar: tarfile.TarFile, path: str) -> None:
@@ -69,6 +71,7 @@ class PacksPlugin(SlashCommand):
       /packs info <pack-id>    Show pack details
       /packs purchase <id>     Open Stripe checkout
       /packs install <id>      Download and extract pack
+      /packs activate <id>     Hot-reload packs on agent server (no download)
       /packs sync              Install every entitled pack not already present
       /packs library           Show purchased packs
       /packs help              Show help text
@@ -79,7 +82,12 @@ class PacksPlugin(SlashCommand):
     category = "marketplace"
 
     def __init__(self):
-        super().__init__()
+        # Explicitly set the dataclass fields for the parent SlashCommand
+        super().__init__(
+            name="packs",
+            description="Browse and manage agent/skill/tool packs from marketplace.",
+            aliases=["pack", "store"],
+        )
         self.auth = AuthStore()
         self._base_url = self._get_base_url()
 
@@ -94,6 +102,59 @@ class PacksPlugin(SlashCommand):
             return portal_url.rstrip("/")
 
         return "https://portal.aitherium.com"
+
+    def _get_adk_server_url(self) -> str:
+        """Resolve ADK agent server URL for hot-apply.
+
+        Checks env vars AITHER_ADK_SERVER_URL, AITHER_ADK_URL, then defaults
+        to localhost:8000 (standard adk serve port).
+        """
+        adk_url = os.environ.get("AITHER_ADK_SERVER_URL")
+        if adk_url:
+            return adk_url.rstrip("/")
+
+        adk_url = os.environ.get("AITHER_ADK_URL")
+        if adk_url:
+            return adk_url.rstrip("/")
+
+        return "http://localhost:8000"
+
+    def _reload_packs_on_server(self, adk_url: str) -> dict:
+        """POST to /agent/packs/reload on the agent server (hot-apply).
+
+        Best-effort: returns {"status": "ok", "tools_added": N} on success,
+        or {"status": "unavailable", "message": "..."} if server is unreachable.
+        Never raises; fails gracefully for offline agent servers.
+        """
+        try:
+            with httpx.Client(timeout=5.0) as client:
+                resp = client.post(f"{adk_url}/agent/packs/reload")
+                if resp.status_code == 404:
+                    return {
+                        "status": "unavailable",
+                        "message": "agent server does not support hot-apply (404)",
+                    }
+                if resp.status_code >= 200 and resp.status_code < 300:
+                    data = resp.json()
+                    return {
+                        "status": "ok",
+                        "tools_added": data.get("tools_added", 0),
+                        "message": data.get("message", "pack reloaded"),
+                    }
+                return {
+                    "status": "unavailable",
+                    "message": f"agent server error (HTTP {resp.status_code})",
+                }
+        except httpx.ConnectError:
+            return {
+                "status": "unavailable",
+                "message": f"no running agent server at {adk_url}",
+            }
+        except Exception as e:  # noqa: BLE001 — best-effort only
+            return {
+                "status": "unavailable",
+                "message": f"hot-apply failed: {type(e).__name__}: {e}",
+            }
 
     def execute(self, args: List[str], **kwargs) -> str:
         """Main entry point for /packs command."""
@@ -118,6 +179,10 @@ class PacksPlugin(SlashCommand):
             if len(args) < 2:
                 return "ERROR: /packs install requires <pack-id>"
             return self._install(args[1], args[2:])
+        elif command == "activate":
+            # activate takes no required args; optional pack_id is ignored
+            # (server reloads all discovered packs regardless)
+            return self._activate_packs(args[1:] if len(args) > 1 else [])
         elif command == "sync":
             return self._sync(args[1:])
         elif command == "library":
@@ -230,6 +295,23 @@ class PacksPlugin(SlashCommand):
         except Exception as e:
             return f"ERROR: Failed to open checkout: {e}"
 
+    def _activate_packs(self, args: List[str]) -> str:
+        """Hot-reload packs on the agent server without downloading.
+
+        If pack_id is provided, it's included in the message for context.
+        The server reloads all discovered packs regardless.
+        """
+        adk_url = self._get_adk_server_url()
+        result = self._reload_packs_on_server(adk_url)
+
+        if result["status"] == "ok":
+            tools_added = result.get("tools_added", 0)
+            if tools_added > 0:
+                return f"✓ Hot-applied packs: {tools_added} tools added to agent"
+            return f"✓ Packs reloaded ({result.get('message', 'no new tools')})"
+        else:
+            return f"⚠ Could not hot-apply to agent server: {result['message']}\n  packs will apply on next agent restart"
+
     def _install(self, pack_id: str, args: List[str]) -> str:
         """Download and optionally extract pack bundle."""
         extract = "--extract" in args or "-x" in args
@@ -265,9 +347,23 @@ class PacksPlugin(SlashCommand):
                 os.makedirs(extract_dir, exist_ok=True)
 
                 with tarfile.open(filename, "r:gz") as tar:
-                    tar.extractall(path=extract_dir)
+                    _safe_extract(tar, extract_dir)
 
                 result += f"\nExtracted to directory '{extract_dir}'"
+
+                # Best-effort: trigger hot-apply on the running agent server.
+                # If server is unreachable, degrade gracefully.
+                adk_url = self._get_adk_server_url()
+                reload_result = self._reload_packs_on_server(adk_url)
+                if reload_result["status"] == "ok":
+                    tools_added = reload_result.get("tools_added", 0)
+                    if tools_added > 0:
+                        result += f"\n✓ Hot-applied: {tools_added} tools added"
+                    else:
+                        result += "\n✓ Pack reloaded (tools available on next agent restart)"
+                else:
+                    # No error — just informational
+                    result += f"\n  → {reload_result['message']} — will apply on next start"
 
             return result
 
@@ -456,8 +552,16 @@ COMMANDS:
     Download pack bundle to current directory.
     Options:
       --extract, -x    Automatically extract the .tar.gz archive
+    After extraction, automatically tries to hot-apply to running agent (graceful
+    fallback if agent is offline).
     Usage: /packs install <pack-id> [--extract]
     Example: /packs install my-skill-pack --extract
+
+  activate [pack-id]
+    Hot-reload packs on the running agent server (does not download).
+    If no agent server is running, prints a hint that packs will apply on restart.
+    Usage: /packs activate
+    Example: /packs activate
 
   sync [--dry-run]
     Install every entitled pack not already present locally. Polls your active
@@ -546,3 +650,137 @@ EXAMPLES:
         output.append(f"Install:  /packs install {pack.get('id')} --extract")
 
         return "\n".join(output)
+
+
+# ─── Module-level function for enrollment auto-sync ───
+
+
+async def sync_entitled_packs(
+    auth_token: str,
+    tenant_id: Optional[str] = None,
+    base_url: str = "https://portal.aitherium.com",
+) -> Tuple[int, int]:
+    """Sync entitled packs for a newly enrolled node (best-effort).
+
+    Called by fleet_enroll.py after successful enrollment, to auto-install
+    the customer's purchased packs on the new node.
+
+    Args:
+        auth_token: Bearer token for authentication
+        tenant_id: Optional tenant ID header
+        base_url: Portal URL (default portal.aitherium.com)
+
+    Returns:
+        (installed_count, failed_count) tuple; never raises.
+        Best-effort: failures log but do not block enrollment.
+    """
+    import logging
+    log = logging.getLogger("adk.packs")
+
+    def _packs_dir() -> Path:
+        """The local pack install root (matches agent auto-discovery)."""
+        d = Path(os.path.expanduser("~")) / ".aitheros" / "packs"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    async def _download_verify_install(pack_id: str, dest: Path) -> bool:
+        """Download → verify signature → extract one pack. Returns True on success."""
+        try:
+            async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+                headers = {"Authorization": f"Bearer {auth_token}", "Content-Type": "application/json"}
+                if tenant_id:
+                    headers["X-Tenant-ID"] = tenant_id
+
+                resp = await client.get(
+                    f"{base_url.rstrip('/')}/v1/packs/{pack_id}/download",
+                    headers=headers,
+                )
+            if resp.status_code == 402:
+                log.warning("Pack %s: license required (purchase not active)", pack_id)
+                return False
+            if resp.status_code == 404:
+                log.warning("Pack %s: no downloadable artifact", pack_id)
+                return False
+            if resp.status_code != 200:
+                log.warning("Pack %s: HTTP %s", pack_id, resp.status_code)
+                return False
+
+            tarball = resp.content
+            signature = resp.headers.get("X-Aither-Pack-Signature")
+
+            # Ed25519 signature verification (fail-closed when a key is pinned).
+            try:
+                from adk.pack_verifier import verify_pack_tarball
+
+                verified, vmsg = verify_pack_tarball(tarball, signature)
+                if not verified:
+                    log.warning("Pack %s: signature check failed (%s)", pack_id, vmsg)
+                    return False
+            except ImportError:
+                pass  # verifier unavailable → proceed (legacy/offline)
+
+            # Extract to a temp dir then atomically swap in (no half-installed pack).
+            import io
+            import shutil
+            import tempfile
+
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(dir=str(dest.parent)) as tmp:
+                with tarfile.open(fileobj=io.BytesIO(tarball), mode="r:gz") as tar:
+                    _safe_extract(tar, tmp)
+                if dest.exists():
+                    shutil.rmtree(dest, ignore_errors=True)
+                # If the tar has a single top dir, promote it; else move tmp itself.
+                children = [p for p in Path(tmp).iterdir()]
+                if len(children) == 1 and children[0].is_dir():
+                    shutil.move(str(children[0]), str(dest))
+                else:
+                    shutil.move(tmp, str(dest))
+                    Path(tmp).mkdir(exist_ok=True)  # keep context manager happy
+            log.info("Pack %s: installed", pack_id)
+            return True
+        except Exception as e:  # noqa: BLE001
+            log.warning("Pack %s: %s: %s", pack_id, type(e).__name__, e)
+            return False
+
+    # 1. Fetch entitlements
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            headers = {"Authorization": f"Bearer {auth_token}", "Content-Type": "application/json"}
+            if tenant_id:
+                headers["X-Tenant-ID"] = tenant_id
+
+            resp = await client.get(
+                f"{base_url.rstrip('/')}/v1/marketplace/license/mine",
+                headers=headers,
+            )
+            resp.raise_for_status()
+            licenses = resp.json().get("licenses", [])
+    except Exception as e:  # noqa: BLE001
+        log.warning("Could not fetch entitlements: %s", e)
+        return 0, 0
+
+    entitled = sorted({
+        lic.get("listing_id", "")
+        for lic in licenses
+        if lic.get("status") == "active" and lic.get("listing_id")
+    })
+    if not entitled:
+        log.info("No entitled packs to sync")
+        return 0, 0
+
+    # 2. Install each entitled pack not already present
+    packs_root = _packs_dir()
+    installed, failed = 0, 0
+    for pack_id in entitled:
+        dest = packs_root / pack_id
+        if dest.is_dir() and any(dest.iterdir()):
+            log.debug("Pack %s: already present, skipping", pack_id)
+            continue
+        if await _download_verify_install(pack_id, dest):
+            installed += 1
+        else:
+            failed += 1
+
+    log.info("Pack sync complete: installed=%d, failed=%d", installed, failed)
+    return installed, failed

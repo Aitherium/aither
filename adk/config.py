@@ -130,6 +130,13 @@ class Config:
     reasoning_base_url: str = field(default_factory=lambda: os.getenv("AITHER_REASONING_BASE_URL", ""))
     reasoning_model: str = field(default_factory=lambda: os.getenv("AITHER_REASONING_MODEL", ""))
 
+    # Perception backend — vision/multimodal requests (configurable)
+    # Values: "", "anthropic", "openai", "gemini", "gateway"
+    perception_backend: str = field(default_factory=lambda: os.getenv("AITHER_PERCEPTION_BACKEND", ""))
+    perception_api_key: str = field(default_factory=lambda: os.getenv("AITHER_PERCEPTION_API_KEY", ""))
+    perception_base_url: str = field(default_factory=lambda: os.getenv("AITHER_PERCEPTION_BASE_URL", ""))
+    perception_model: str = field(default_factory=lambda: os.getenv("AITHER_PERCEPTION_MODEL", ""))
+
     # Cluster backend — dedicated CPU cluster for effort 9+ tasks (grid mode)
     # Values: "", "openai", "vllm", "llamacpp"
     cluster_backend: str = field(default_factory=lambda: os.getenv("AITHER_CLUSTER_BACKEND", ""))
@@ -268,6 +275,14 @@ class Config:
             config.reasoning_base_url = saved["reasoning_url"]
         if not config.reasoning_model and saved.get("reasoning_model"):
             config.reasoning_model = saved["reasoning_model"]
+        if not config.perception_backend and saved.get("perception_backend"):
+            config.perception_backend = saved["perception_backend"]
+        if not config.perception_api_key and saved.get("perception_api_key"):
+            config.perception_api_key = saved["perception_api_key"]
+        if not config.perception_base_url and saved.get("perception_url"):
+            config.perception_base_url = saved["perception_url"]
+        if not config.perception_model and saved.get("perception_model"):
+            config.perception_model = saved["perception_model"]
         if not config.deepseek_api_key and saved.get("deepseek_api_key"):
             config.deepseek_api_key = saved["deepseek_api_key"]
         if not config.dgx_url and saved.get("dgx_url"):
@@ -403,6 +418,7 @@ class Config:
             "openai": ("openai_api_key", "OPENAI_API_KEY"),
             "anthropic": ("anthropic_api_key", "ANTHROPIC_API_KEY"),
             "deepseek": ("deepseek_api_key", "DEEPSEEK_API_KEY"),
+            "perception": ("perception_api_key", "AITHER_PERCEPTION_API_KEY"),
         }
         for provider, (field_name, env_name) in _KEY_MAP.items():
             key = keys.get(provider, "")

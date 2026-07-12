@@ -63,11 +63,16 @@ DEFAULT_CONFIG_PATH = _compute_default_config_path()
 
 
 class ModelTier(str, Enum):
-    """Three reasoning tiers, ordered cheapest → strongest."""
+    """Three reasoning tiers + perception, ordered cheapest → strongest.
+
+    PERCEPTION is a modality tier for vision/multimodal requests, independent
+    of effort-based routing.
+    """
 
     FAST = "fast"
     ORCHESTRATOR = "orchestrator"
     REASONING = "reasoning"
+    PERCEPTION = "perception"
 
     @classmethod
     def from_str(cls, value: str | "ModelTier") -> "ModelTier":
@@ -84,8 +89,8 @@ class ModelTier(str, Enum):
 
     @property
     def rank(self) -> int:
-        """Ordering: FAST=0, ORCHESTRATOR=1, REASONING=2."""
-        return {"fast": 0, "orchestrator": 1, "reasoning": 2}[self.value]
+        """Ordering: FAST=0, ORCHESTRATOR=1, REASONING=2, PERCEPTION=3 (modality)."""
+        return {"fast": 0, "orchestrator": 1, "reasoning": 2, "perception": 3}[self.value]
 
 
 @dataclass(slots=True)
@@ -119,6 +124,11 @@ _DEFAULT_TIERS: dict[ModelTier, TierSpec] = {
         backend="auto", model="deepseek-r1:70b",
         max_tokens=8192, temperature=0.4,
         notes="Long-horizon reasoning, MCTS evaluation, hard analysis.",
+    ),
+    ModelTier.PERCEPTION: TierSpec(
+        backend="auto", model="qwen-vl:7b",
+        max_tokens=2048, temperature=0.7,
+        notes="Vision/multimodal requests. Image analysis, OCR, visual reasoning.",
     ),
 }
 

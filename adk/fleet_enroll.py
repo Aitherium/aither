@@ -315,6 +315,38 @@ async def _upsert_agents_to_portal(hub_url: str, api_key: str, node_id: str) -> 
         return False
 
 
+async def _sync_entitled_packs_best_effort(
+    api_key: str,
+    portal_url: str,
+) -> tuple:
+    """Best-effort entitled-pack sync for enrollment auto-install.
+
+    Tries to sync packs from the portal; never blocks or raises — failures
+    just log a warning.
+
+    Returns:
+        (packs_installed, packs_failed) counts
+    """
+    try:
+        from adk.shell.plugins.builtins.packs import sync_entitled_packs
+
+        installed, failed = await sync_entitled_packs(
+            auth_token=api_key,
+            base_url=portal_url,
+        )
+        if installed > 0:
+            log.info("Enrollment auto-sync: installed %d packs", installed)
+        if failed > 0:
+            log.warning("Enrollment auto-sync: %d pack installs failed", failed)
+        return installed, failed
+    except ImportError:
+        log.debug("Pack sync unavailable (packs plugin not found)")
+        return 0, 0
+    except Exception as e:  # noqa: BLE001 — never block enrollment
+        log.warning("Enrollment auto-sync failed (continuing): %s", e)
+        return 0, 0
+
+
 async def _heartbeat_loop(
     hub_url: str,
     api_key: str,
@@ -366,34 +398,93 @@ async def _heartbeat_loop(
 async def _self_mint_gateway_key(bearer_token: str, node_id: str) -> str:
     """Trade a tenant-scoped capability bearer_token for a real avk_... gateway key.
 
-    Calls AitherSecrets' self-service POST /api-keys (identity_nodes.py's
-    register_node mints the bearer_token this consumes). AitherSecrets is
-    local-only (no public tunnel route), so this always targets the local
-    vault. Best-effort: returns "" on any failure, never raises.
+    For LOCAL co-located deploys, calls AitherSecrets' self-service POST /api-keys.
+    For REMOTE nodes (no local secrets vault), exchanges via Genesis' endpoint
+    POST /v1/workspace/api-keys/enrollment-token/exchange.
+
+    Identity_nodes.py's register_node mints the bearer_token this consumes.
+    Best-effort: returns "" on any failure, never raises.
     """
     try:
         import httpx
+        from urllib.parse import urlparse
 
         from adk._tls import tls_verify
+
+        # Determine if this is a LOCAL or REMOTE scenario
         secrets_url = os.environ.get("AITHER_SECRETS_URL", "http://localhost:8111")
-        async with httpx.AsyncClient(timeout=15.0, verify=tls_verify()) as client:
-            resp = await client.post(
-                f"{secrets_url.rstrip('/')}/api-keys",
-                json={"name": f"node-{node_id}", "scopes": ["endpoint:secrets"]},
-                headers={"Authorization": f"Bearer {bearer_token}"},
-            )
-        if resp.status_code == 200:
-            minted = resp.json().get("api_key", "")
-            if minted:
-                log.info("Node self-minted its own gateway key: %s", node_id)
-                return minted
+        parsed = urlparse(secrets_url)
+        is_localhost = parsed.hostname in ("localhost", "127.0.0.1", "::1")
+
+        # If we have explicit remote gateway URLs, treat as remote
+        gateway_url = os.environ.get("AITHER_GATEWAY_URL", "").strip()
+        api_url = os.environ.get("AITHER_API_URL", "").strip()
+        has_explicit_remote = (gateway_url and "localhost" not in gateway_url.lower()) or \
+                              (api_url and "localhost" not in api_url.lower())
+
+        if is_localhost and not has_explicit_remote:
+            # LOCAL path: call AitherSecrets directly (fast, co-located)
+            async with httpx.AsyncClient(timeout=15.0, verify=tls_verify()) as client:
+                resp = await client.post(
+                    f"{secrets_url.rstrip('/')}/api-keys",
+                    json={"name": f"node-{node_id}", "scopes": ["endpoint:secrets"]},
+                    headers={"Authorization": f"Bearer {bearer_token}"},
+                )
+            if resp.status_code == 200:
+                minted = resp.json().get("api_key", "")
+                if minted:
+                    log.info("Node self-minted its own gateway key (local): %s", node_id)
+                    return minted
+            else:
+                log.debug(
+                    "Self-service key mint failed (HTTP %s) — falling back to user token: %s",
+                    resp.status_code, resp.text[:200],
+                )
         else:
+            # REMOTE path: exchange the enrollment token via the PUBLIC endpoint
+            # that made this node remote (gateway/api), NOT localhost genesis — a
+            # remote node has no local :8001, so defaulting to genesis localhost
+            # would POST to a dead port and silently fall back to the user token
+            # (the whole remote-mint would be inert). Prefer the explicit public
+            # URL; only fall back to AITHER_GENESIS_URL if it is itself remote.
+            genesis_env = os.environ.get("AITHER_GENESIS_URL", "").strip()
+            exchange_base = (
+                api_url or gateway_url
+                or (genesis_env if "localhost" not in genesis_env.lower() and genesis_env else "")
+            ).rstrip("/")
+            if not exchange_base:
+                log.warning(
+                    "Remote node but no public gateway/api URL set "
+                    "(AITHER_GATEWAY_URL / AITHER_API_URL) — cannot exchange enrollment "
+                    "token; falling back to user token."
+                )
+                return ""
             log.debug(
-                "Self-service key mint failed (HTTP %s) — falling back to user token: %s",
-                resp.status_code, resp.text[:200],
+                "Node is remote (secrets_url=%s) — exchanging bearer_token via %s",
+                secrets_url, exchange_base,
             )
+            async with httpx.AsyncClient(timeout=15.0, verify=tls_verify()) as client:
+                resp = await client.post(
+                    f"{exchange_base}/v1/workspace/api-keys/enrollment-token/exchange",
+                    json={"enrollment_token": bearer_token},
+                )
+            if resp.status_code == 200:
+                data = resp.json()
+                minted = data.get("token", "")
+                if minted:
+                    log.info(
+                        "Node self-minted its own gateway key (remote via Genesis): %s",
+                        node_id,
+                    )
+                    return minted
+            else:
+                log.warning(
+                    "Remote enrollment-token exchange failed (HTTP %s) — "
+                    "falling back to user token: %s",
+                    resp.status_code, resp.text[:200],
+                )
     except Exception as e:  # noqa: BLE001 — self-service is additive, must not block enrollment
-        log.debug("Self-service key mint failed — falling back to user token: %s", e)
+        log.warning("Self-service key mint failed — falling back to user token: %s", e)
     return ""
 
 
@@ -516,6 +607,11 @@ async def enroll_on_boot(
         # Enable session sync by default (post-enrollment)
         _enable_session_sync_default()
 
+        # Best-effort: auto-sync entitled packs for onboarding
+        packs_installed, packs_failed = await _sync_entitled_packs_best_effort(
+            api_key, portal_url,
+        )
+
         log.info("Node enrolled (rich): %s", node_id)
         agents_upserted = 0
         if await _upsert_agents_to_portal(portal_url, api_key, node_id):
@@ -525,6 +621,8 @@ async def enroll_on_boot(
             "enrolled": True,
             "node_id": node_id,
             "agents_upserted": agents_upserted,
+            "packs_installed": packs_installed,
+            "packs_failed": packs_failed,
             "mode": "rich",
             "workspace": rich.get("workspace", {}),
         }
@@ -559,6 +657,11 @@ async def enroll_on_boot(
     # Enable session sync by default (post-enrollment)
     _enable_session_sync_default()
 
+    # Best-effort: auto-sync entitled packs for onboarding
+    packs_installed, packs_failed = await _sync_entitled_packs_best_effort(
+        api_key, portal_url,
+    )
+
     log.info("Node enrolled: %s", node_id)
 
     # Upsert agents
@@ -579,4 +682,6 @@ async def enroll_on_boot(
         "enrolled": True,
         "node_id": node_id,
         "agents_upserted": agents_upserted,
+        "packs_installed": packs_installed,
+        "packs_failed": packs_failed,
     }

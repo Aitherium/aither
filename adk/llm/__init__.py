@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import TYPE_CHECKING
 
 from .base import (
@@ -151,6 +152,10 @@ class LLMRouter:
         self._cluster_provider: LLMProvider | None = None
         self._cluster_provider_name: str = ""
         self._cluster_model: str | None = None
+        # Perception backend — vision/multimodal requests (modality-based routing)
+        self._perception_provider: LLMProvider | None = None
+        self._perception_provider_name: str = ""
+        self._perception_model: str | None = None
 
         if provider:
             self._provider = self._create_provider(provider, base_url, api_key)
@@ -471,6 +476,58 @@ class LLMRouter:
         except Exception as e:
             logger.warning("Failed to set up cluster backend '%s': %s", backend, e)
 
+    def _setup_perception_backend(self) -> None:
+        """Configure a separate provider for perception/vision requests if config specifies one.
+
+        Modality-based routing: vision/multimodal requests route to a
+        specialized vision model (e.g., GPT-4V, Gemini, Claude Vision).
+        """
+        cfg = self._config
+        if not cfg:
+            return
+        backend = cfg.perception_backend
+        if not backend:
+            return
+
+        # Resolve API key for the perception backend
+        api_key = cfg.perception_api_key
+        if not api_key:
+            if backend == "anthropic":
+                api_key = cfg.anthropic_api_key
+            elif backend == "openai":
+                api_key = cfg.openai_api_key
+            elif backend == "gemini":
+                # Gemini has no Config field — read its own env var (the
+                # GeminiProvider also self-resolves these). Do NOT borrow the
+                # anthropic key: a wrong-provider key is a silent auth failure.
+                api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY", "")
+            elif backend == "gateway":
+                api_key = cfg.aither_api_key
+
+        if not api_key and backend not in ("vllm", "ollama"):
+            logger.debug("Perception backend '%s' configured but no API key available", backend)
+            return
+
+        # Ollama uses native /api/chat, not OpenAI /v1 — strip /v1 suffix
+        base_url = cfg.perception_base_url or None
+        if base_url and backend == "ollama":
+            base_url = base_url.rstrip("/").removesuffix("/v1")
+
+        try:
+            self._perception_provider = self._create_provider(
+                backend,
+                base_url=base_url,
+                api_key=api_key,
+            )
+            self._perception_provider_name = backend
+            self._perception_model = cfg.perception_model or None
+            logger.info(
+                "Perception backend: %s (model=%s) for vision/multimodal",
+                backend, self._perception_model or "default",
+            )
+        except Exception as e:
+            logger.warning("Failed to set up perception backend '%s': %s", backend, e)
+
     async def _try_cloud_apis(self) -> LLMProvider | None:
         """Try cloud API keys from Config (populated by provider_keys.json).
 
@@ -713,6 +770,9 @@ class LLMRouter:
             # Set up cluster backend for grid mode (effort 9+)
             if self._cluster_provider is None:
                 self._setup_cluster_backend()
+            # Set up perception backend for vision/multimodal requests
+            if self._perception_provider is None:
+                self._setup_perception_backend()
         return self._provider
 
     @property
@@ -757,6 +817,24 @@ class LLMRouter:
         self._reasoning_model = model
         logger.info("Set reasoning backend to %s (model=%s)", provider, model or "default")
 
+    def set_perception_backend(
+        self,
+        provider: str,
+        base_url: str | None = None,
+        api_key: str | None = None,
+        model: str | None = None,
+    ) -> None:
+        """Set a separate backend for vision/multimodal (perception) requests.
+
+        Usage:
+            agent.llm.set_perception_backend("openai", api_key="sk-...")
+            agent.llm.set_perception_backend("gemini", api_key="...")
+        """
+        self._perception_provider = self._create_provider(provider, base_url, api_key)
+        self._perception_provider_name = provider
+        self._perception_model = model
+        logger.info("Set perception backend to %s (model=%s)", provider, model or "default")
+
     def get_backends(self) -> dict:
         """Return info about all configured backends."""
         info = {
@@ -775,7 +853,40 @@ class LLMRouter:
             info["cluster"] = self._cluster_provider_name
             if self._cluster_model:
                 info["cluster_model"] = self._cluster_model
+        if hasattr(self, "_perception_provider") and self._perception_provider is not None:
+            info["perception"] = self._perception_provider_name
+            if self._perception_model:
+                info["perception_model"] = self._perception_model
         return info
+
+    def _has_image_content(self, messages: list[Message]) -> bool:
+        """Check if any message contains image/visual content.
+
+        Returns True if messages contain image attachments, base64 images,
+        or image URLs that would benefit from a vision model.
+        """
+        for msg in messages:
+            if not msg:
+                continue
+            # Check content field (could be string or list of content blocks)
+            content = getattr(msg, "content", None)
+            if content is None:
+                continue
+            # String content — check for common image URL patterns or base64
+            if isinstance(content, str):
+                if any(pat in content.lower() for pat in ("data:image", "http", ".jpg", ".png", ".gif", ".webp", "[image]")):
+                    return True
+            # List of content blocks (OpenAI format: [{"type": "image_url", ...}, ...])
+            elif isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict):
+                        if block.get("type") in ("image", "image_url"):
+                            return True
+            # Check for attachments field (if present)
+            attachments = getattr(msg, "attachments", None)
+            if attachments:
+                return True
+        return False
 
     def model_for_effort(self, effort: int) -> str:
         """Select model based on effort level (1-10).
@@ -898,6 +1009,7 @@ class LLMRouter:
         tool_choice: str | dict | None = None,
         top_p: float | None = None,
         repetition_penalty: float | None = None,
+        role: str | None = None,
         **kwargs,
     ) -> LLMResponse:
         """Route a chat request to the active provider.
@@ -906,6 +1018,9 @@ class LLMRouter:
         - effort 1-3: local provider (fast, small models)
         - effort 4+: remote desktop provider (large models, GPU)
         Falls back to local if remote is unreachable.
+
+        If role="perception" or messages contain images, routes to the perception
+        backend (if configured).
         """
         # OQ16 lever 2 — opt-in response cache. Only active when a ResponseCache was
         # attached AND this call passes cacheable=True. We recurse once with cacheable
@@ -920,9 +1035,23 @@ class LLMRouter:
                 key,
                 lambda: self.chat(
                     messages, model=model, effort=effort, tool_choice=tool_choice,
-                    top_p=top_p, repetition_penalty=repetition_penalty, **kwargs,
+                    top_p=top_p, repetition_penalty=repetition_penalty, role=role, **kwargs,
                 ),
             )
+
+        # Perception routing: explicit role or image detection
+        perception_prov = getattr(self, "_perception_provider", None)
+        if perception_prov is not None and (role == "perception" or self._has_image_content(messages)):
+            perception_model = getattr(self, "_perception_model", None) or model
+            try:
+                resp = await perception_prov.chat(
+                    messages, model=perception_model, tool_choice=tool_choice,
+                    top_p=top_p, repetition_penalty=repetition_penalty, **kwargs,
+                )
+                self._log_cost(resp, self._perception_provider_name)
+                return resp
+            except Exception as e:
+                logger.warning("Perception backend failed, falling back to primary: %s", e)
 
         provider = await self.get_provider()
         if effort is not None:

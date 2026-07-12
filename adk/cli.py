@@ -4088,6 +4088,183 @@ def _push_key_to_vault(provider: str, key: str) -> bool:
         return False
 
 
+def cmd_secret(args):
+    """Manage secrets in encrypted local keyring + sync with AitherSecrets vault."""
+    import asyncio as _asyncio
+
+    sub = getattr(args, "secret_command", None)
+
+    if sub == "list":
+        from adk.builtin_tools import secret_list
+        result = secret_list()
+        if result.startswith("{"):
+            try:
+                import json
+                data = json.loads(result)
+                if "keys" in data:
+                    print(f"\nStored Secrets ({data.get('count', 0)})")
+                    print("=" * 50)
+                    for key in data["keys"]:
+                        print(f"  {key}")
+                    return 0
+            except Exception:
+                pass
+        print(result)
+        return 0
+
+    elif sub == "get":
+        name = getattr(args, "name", "")
+        if not name:
+            print("Usage: adk secret get <name>")
+            return 1
+        from adk.builtin_tools import secret_get
+        result = secret_get(name)
+        if result.startswith("{"):
+            try:
+                import json
+                data = json.loads(result)
+                if "error" in data:
+                    print(f"Error: {data['error']}")
+                    return 1
+            except Exception:
+                pass
+        print(result)
+        return 0
+
+    elif sub == "set":
+        name = getattr(args, "name", "")
+        value = getattr(args, "value", "")
+        if not name or not value:
+            print("Usage: adk secret set <name> <value>")
+            return 1
+        from adk.builtin_tools import secret_set
+        result = secret_set(name, value)
+        try:
+            import json
+            data = json.loads(result)
+            if data.get("success"):
+                print(f"Stored secret '{name}' in encrypted keyring")
+                return 0
+        except Exception:
+            pass
+        print(result)
+        return 1
+
+    elif sub == "pull":
+        secrets_url = getattr(args, "secrets_url", None) or os.environ.get("AITHER_SECRETS_URL")
+        gateway_url = getattr(args, "gateway_url", None) or os.environ.get("AITHER_GATEWAY_URL")
+        api_key = getattr(args, "api_key", None) or os.environ.get("AITHER_API_KEY")
+
+        from adk.secrets_sync import SecretsSync
+        client = SecretsSync(
+            api_key=api_key,
+            secrets_url=secrets_url,
+            gateway_url=gateway_url,
+        )
+
+        async def _pull():
+            return await client.pull()
+
+        synced = _asyncio.run(_pull())
+        print(f"Pulled {len(synced)} secrets from vault")
+        for key in synced:
+            print(f"  {key}")
+        return 0 if synced else 1
+
+    elif sub == "push":
+        name = getattr(args, "name", "")
+        if not name:
+            print("Usage: adk secret push <name>")
+            return 1
+
+        from adk.builtin_tools import secret_get
+        value = secret_get(name)
+        if value.startswith("{"):
+            try:
+                import json
+                data = json.loads(value)
+                if "error" in data:
+                    print(f"Error: Secret '{name}' not found in local keyring")
+                    return 1
+            except Exception:
+                pass
+
+        secrets_url = getattr(args, "secrets_url", None) or os.environ.get("AITHER_SECRETS_URL")
+        gateway_url = getattr(args, "gateway_url", None) or os.environ.get("AITHER_GATEWAY_URL")
+        api_key = getattr(args, "api_key", None) or os.environ.get("AITHER_API_KEY")
+
+        if not (secrets_url or gateway_url) or not api_key:
+            print("Error: --secrets-url/--gateway-url and --api-key required")
+            print("  Or set: AITHER_SECRETS_URL, AITHER_GATEWAY_URL, AITHER_API_KEY")
+            return 1
+
+        from adk.secrets_sync import SecretsSync
+        client = SecretsSync(
+            api_key=api_key,
+            secrets_url=secrets_url,
+            gateway_url=gateway_url,
+        )
+
+        async def _push():
+            return await client.push(name, value)
+
+        success = _asyncio.run(_push())
+        if success:
+            print(f"Pushed secret '{name}' to vault")
+            return 0
+        else:
+            print(f"Failed to push secret '{name}'")
+            return 1
+
+    elif sub == "sync":
+        secrets_url = getattr(args, "secrets_url", None) or os.environ.get("AITHER_SECRETS_URL")
+        gateway_url = getattr(args, "gateway_url", None) or os.environ.get("AITHER_GATEWAY_URL")
+        api_key = getattr(args, "api_key", None) or os.environ.get("AITHER_API_KEY")
+
+        from adk.secrets_sync import SecretsSync
+        client = SecretsSync(
+            api_key=api_key,
+            secrets_url=secrets_url,
+            gateway_url=gateway_url,
+        )
+
+        async def _sync():
+            return await client.sync()
+
+        synced = _asyncio.run(_sync())
+        print(f"Synced {len(synced)} secrets total")
+        for key in synced:
+            print(f"  {key}")
+        return 0
+
+    else:
+        print("Usage: adk secret [list|get|set|pull|push|sync]")
+        return 1
+
+
+def cmd_voice(args):
+    """Standalone HTTP voice server for AitherShell."""
+    sub = getattr(args, "voice_command", None)
+
+    if sub == "serve":
+        from adk.voice_http import run
+
+        port = getattr(args, "port", None)
+        host = getattr(args, "host", "127.0.0.1")
+
+        try:
+            run(host=host, port=port)
+        except KeyboardInterrupt:
+            print("\nVoice server stopped.")
+            return 0
+        except Exception as exc:
+            print(f"Error: {exc}")
+            return 1
+    else:
+        print("Usage: adk voice serve [--port N] [--host ADDR]")
+        return 1
+
+
 def cmd_keys(args):
     """Manage cloud provider API keys."""
     import json as _json
@@ -8552,6 +8729,24 @@ def _register_commands(sub):
                            help="Don't save config")
 
     # aither setup
+    # adk setup-all — one command to install ALL client products (adk, shell, node, connect, +stack)
+    setup_all_p = sub.add_parser(
+        "setup-all", help="Install/set up all AitherOS client products (adk + shell + node + connect)")
+    setup_all_p.add_argument("--only", default="",
+                             help="Comma list — install ONLY these (adk,shell,node,connect,aitherzero)")
+    setup_all_p.add_argument("--skip", default="",
+                             help="Comma list — skip these products")
+    setup_all_p.add_argument("--with-stack", dest="with_stack", default="", metavar="PROFILE",
+                             help="Also deploy the AitherZero stack via `adk setup --stack` (e.g. core, full)")
+    setup_all_p.add_argument("--dev", action="store_true",
+                             help="Editable install of aither-adk from the local checkout (pip -e)")
+    setup_all_p.add_argument("--dry-run", dest="dry_run", action="store_true",
+                             help="Print the install plan without doing anything")
+    setup_all_p.add_argument("--strict", action="store_true",
+                             help="Abort on the first failed product (default: best-effort, continue)")
+    setup_all_p.add_argument("--yes", "--non-interactive", dest="yes", action="store_true",
+                             help="Non-interactive")
+
     setup_p = sub.add_parser("setup", help="Interactive GPU setup wizard (vLLM/Ollama) + optional AitherOS stack")
     setup_p.add_argument("shortcut", nargs="?", default=None,
                          help="Quick setup: 'nemotron' (--tier lite), 'llamacpp' / 'local' / 'endpoint' (native local orchestrator, no Docker)")
@@ -8903,6 +9098,36 @@ def _register_commands(sub):
     keys_test_p.add_argument("provider", nargs="?", help="Specific provider to test (default: all)")
     keys_rm_p = keys_sub.add_parser("remove", help="Remove a provider key")
     keys_rm_p.add_argument("provider", help="Provider to remove")
+
+    # adk secret — manage secrets in encrypted local keyring + sync with vault
+    secret_p = sub.add_parser("secret", help="Manage secrets (list, get, set, pull, push, sync)")
+    secret_sub = secret_p.add_subparsers(dest="secret_command")
+    secret_sub.add_parser("list", help="List all stored secret keys (values not shown)")
+    secret_get_p = secret_sub.add_parser("get", help="Get a secret value")
+    secret_get_p.add_argument("name", help="Secret name")
+    secret_set_p = secret_sub.add_parser("set", help="Store a secret in encrypted keyring")
+    secret_set_p.add_argument("name", help="Secret name")
+    secret_set_p.add_argument("value", help="Secret value")
+    secret_pull_p = secret_sub.add_parser("pull", help="Pull secrets from platform vault")
+    secret_pull_p.add_argument("--secrets-url", help="AitherSecrets URL (default: from env)")
+    secret_pull_p.add_argument("--gateway-url", help="Gateway URL (fallback, default: from env)")
+    secret_pull_p.add_argument("--api-key", help="API key (default: from env)")
+    secret_push_p = secret_sub.add_parser("push", help="Push a secret to the platform vault")
+    secret_push_p.add_argument("name", help="Secret name to push")
+    secret_push_p.add_argument("--secrets-url", help="AitherSecrets URL (default: from env)")
+    secret_push_p.add_argument("--gateway-url", help="Gateway URL (fallback, default: from env)")
+    secret_push_p.add_argument("--api-key", help="API key (default: from env)")
+    secret_sync_p = secret_sub.add_parser("sync", help="Bidirectional sync (pull + push local-only)")
+    secret_sync_p.add_argument("--secrets-url", help="AitherSecrets URL (default: from env)")
+    secret_sync_p.add_argument("--gateway-url", help="Gateway URL (fallback, default: from env)")
+    secret_sync_p.add_argument("--api-key", help="API key (default: from env)")
+
+    # adk voice serve — standalone HTTP voice server for AitherShell
+    voice_p = sub.add_parser("voice", help="Voice services (serve standalone HTTP server)")
+    voice_sub = voice_p.add_subparsers(dest="voice_command")
+    voice_serve_p = voice_sub.add_parser("serve", help="Start the HTTP voice server (default port 8085)")
+    voice_serve_p.add_argument("--port", type=int, default=None, help="Port number (default: AITHER_VOICE_HTTP_PORT or 8085)")
+    voice_serve_p.add_argument("--host", default="127.0.0.1", help="Bind address (default: 127.0.0.1 — localhost only)")
 
     # adk grid — manage grid distributed infrastructure
     grid_p = sub.add_parser("grid", help="Manage grid distributed nodes (add, remove, list, test, sync)")
@@ -9467,6 +9692,9 @@ def main():
     elif args.command == "setup":
         from adk.setup_cli import cmd_setup
         sys.exit(cmd_setup(args))
+    elif args.command == "setup-all":
+        from adk.bootstrap_cli import cmd_setup_all
+        sys.exit(cmd_setup_all(args))
     elif args.command == "aeon":
         sys.exit(cmd_aeon(args))
     elif args.command == "create-app":
@@ -9507,6 +9735,10 @@ def main():
         sys.exit(cmd_backend(args))
     elif args.command == "keys":
         sys.exit(cmd_keys(args))
+    elif args.command == "secret":
+        sys.exit(cmd_secret(args))
+    elif args.command == "voice":
+        sys.exit(cmd_voice(args))
     elif args.command == "routing":
         sys.exit(cmd_routing(args))
     elif args.command == "costs":
