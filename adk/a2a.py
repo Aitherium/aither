@@ -26,6 +26,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Any, AsyncIterator
 
 logger = logging.getLogger("adk.a2a")
@@ -130,15 +131,89 @@ class Task:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Task Manager
+# Task Manager — Durable (FileStore-backed JSONL)
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TaskManager:
-    """In-memory task lifecycle manager."""
+    """Persistent task lifecycle manager backed by JSONL file.
 
-    def __init__(self):
+    Tasks are stored in an append-only JSONL file (same format as FileStore)
+    so they survive container restarts. In-memory dict is used for fast access.
+    """
+
+    def __init__(self, store_path: str | Path = ".adk/tasks.jsonl"):
+        """Initialize TaskManager with optional persistent file backing.
+
+        Args:
+            store_path: Path to JSONL file. If relative, resolved from current directory.
+                       Parent directory is created if missing.
+        """
+        self._store_path = Path(store_path)
+        self._store_path.parent.mkdir(parents=True, exist_ok=True)
         self._tasks: dict[str, Task] = {}
         self._subscribers: dict[str, list[asyncio.Queue]] = {}
+        # Load existing tasks from file
+        self._load_from_store()
+
+    def _load_from_store(self):
+        """Load tasks from JSONL file on startup."""
+        if not self._store_path.exists():
+            return
+        try:
+            with self._store_path.open("r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                        task = self._deserialize_task(obj)
+                        self._tasks[task.id] = task
+                    except (json.JSONDecodeError, KeyError) as e:
+                        logger.warning(f"Skipping malformed task record: {e}")
+        except Exception as e:
+            logger.error(f"Failed to load tasks from {self._store_path}: {e}")
+
+    def _save_to_store(self, task: Task):
+        """Append a task to the JSONL file."""
+        try:
+            with self._store_path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(self._serialize_task(task)) + "\n")
+        except Exception as e:
+            logger.error(f"Failed to save task {task.id} to store: {e}")
+
+    @staticmethod
+    def _serialize_task(task: Task) -> dict:
+        """Convert Task to JSON-serializable dict."""
+        return {
+            "id": task.id,
+            "contextId": task.contextId,
+            "status": {
+                "state": task.status.state.value,
+                "message": task.status.message,
+                "timestamp": task.status.timestamp,
+            },
+            "history": task.history,
+            "artifacts": task.artifacts,
+            "metadata": task.metadata,
+        }
+
+    @staticmethod
+    def _deserialize_task(obj: dict) -> Task:
+        """Reconstruct Task from JSON dict."""
+        status = TaskStatus(
+            state=TaskState(obj["status"]["state"]),
+            message=obj["status"].get("message", ""),
+            timestamp=obj["status"].get("timestamp", _now()),
+        )
+        return Task(
+            id=obj["id"],
+            contextId=obj["contextId"],
+            status=status,
+            history=obj.get("history", []),
+            artifacts=obj.get("artifacts", []),
+            metadata=obj.get("metadata", {}),
+        )
 
     def create_task(self, context_id: str = "", metadata: dict | None = None) -> Task:
         task = Task(
@@ -148,6 +223,7 @@ class TaskManager:
             metadata=metadata or {},
         )
         self._tasks[task.id] = task
+        self._save_to_store(task)
         return task
 
     def get_task(self, task_id: str) -> Task | None:
@@ -158,6 +234,8 @@ class TaskManager:
         if not task:
             return
         task.status = TaskStatus(state=state, message=message, timestamp=_now())
+        # Persist updated task
+        self._save_to_store(task)
         self._notify(task_id, {"type": "status", "task": task.to_dict()})
 
     def add_artifact(self, task_id: str, artifact: Artifact):
@@ -165,6 +243,8 @@ class TaskManager:
         if not task:
             return
         task.artifacts.append(artifact.to_dict())
+        # Persist updated task
+        self._save_to_store(task)
         self._notify(task_id, {"type": "artifact", "artifact": artifact.to_dict()})
 
     def add_message(self, task_id: str, message: A2AMessage):
@@ -172,6 +252,8 @@ class TaskManager:
         if not task:
             return
         task.history.append(message.to_dict())
+        # Persist updated task
+        self._save_to_store(task)
 
     def cancel_task(self, task_id: str) -> bool:
         task = self._tasks.get(task_id)
@@ -213,11 +295,13 @@ class A2AServer:
         agent=None,
         base_url: str = "http://localhost:8080",
         server_name: str = "",
+        task_store_path: str | Path = ".adk/tasks.jsonl",
     ):
         self._agent = agent
         self._base_url = base_url.rstrip("/")
         self._server_name = server_name
-        self._tasks = TaskManager()
+        self._task_store_path = Path(task_store_path)
+        self._tasks = TaskManager(store_path=self._task_store_path)
         self._agent_card: dict | None = None
 
     @property
@@ -438,16 +522,26 @@ class A2AServer:
         """Mount A2A endpoints on a FastAPI app.
 
         Adds:
-          - GET  /.well-known/agent.json — Agent Card
+          - GET  /.well-known/agent-card.json — Agent Card (canonical)
+          - GET  /.well-known/agent.json — Agent Card (legacy, 308 redirect)
           - POST /a2a — JSON-RPC 2.0
           - GET  /a2a/tasks/{task_id}/subscribe — SSE stream
         """
         from fastapi import Request
-        from fastapi.responses import JSONResponse, StreamingResponse
+        from fastapi.responses import JSONResponse, StreamingResponse, RedirectResponse
+
+        @app.get("/.well-known/agent-card.json")
+        async def agent_card_canonical():
+            """Canonical A2A agent card endpoint."""
+            return self.build_agent_card()
 
         @app.get("/.well-known/agent.json")
-        async def agent_card():
-            return self.build_agent_card()
+        async def agent_card_legacy():
+            """Legacy agent.json path — redirect to canonical location."""
+            return RedirectResponse(
+                url="/.well-known/agent-card.json",
+                status_code=308,  # 308 Permanent Redirect (preserves method)
+            )
 
         @app.post("/a2a")
         async def a2a_endpoint(request: Request):

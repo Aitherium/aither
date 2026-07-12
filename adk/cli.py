@@ -7830,7 +7830,52 @@ def _cmd_pack(args) -> int:
         print(f"Apply with: adk run --agents {pack_name}")
         return 0
 
-    print("Usage: adk pack [list|search|install|remove|info|update|export|customize]")
+    if sub == "import":
+        # Import an external agent (e.g., Eve) to an AitherADK pack
+        from adk.importers.eve import import_eve_agent
+
+        agent_path = getattr(args, "agent_path", None)
+        if not agent_path:
+            print("Usage: adk pack import <eve_agent_path>")
+            print()
+            print("Converts an Eve agent to an AitherADK pack.")
+            print()
+            print("Example:")
+            print("  adk pack import ./my-eve-agent")
+            print()
+            print("Requirements:")
+            print("  - Eve agent must have a .compiled-manifest.json")
+            print("  - Compiled manifest version must be 35")
+            return 1
+
+        try:
+            result = import_eve_agent(agent_path)
+            pack_id = result["pack_id"]
+            pack_dir = result["pack_dir"]
+            status = result["status"]
+
+            print(f"✓ Eve agent imported to AitherADK pack!")
+            print()
+            print(f"  Pack ID:  {pack_id}")
+            print(f"  Location: {pack_dir}")
+            print(f"  Status:   {status}")
+            print()
+            print("Next steps:")
+            print(f"  adk pack info {pack_id}")
+            print(f"  adk pack install {pack_id}")
+            return 0
+
+        except FileNotFoundError as e:
+            print(f"Error: {e}")
+            return 1
+        except ValueError as e:
+            print(f"Error: {e}")
+            return 1
+        except Exception as e:  # noqa: BLE001
+            print(f"Import failed: {type(e).__name__}: {e}")
+            return 1
+
+    print("Usage: adk pack [list|search|install|remove|info|update|export|customize|import]")
     return 1
 
 
@@ -9061,6 +9106,10 @@ def _register_commands(sub):
     pack_customize_p.add_argument("--system-prompt-file", help="Load system prompt from file")
     pack_customize_p.add_argument("--capabilities", help="Override capabilities (comma-separated)")
     pack_customize_p.add_argument("--show", action="store_true", help="Show current spec")
+
+    # adk pack import — import external agents (e.g., Eve agents)
+    pack_import_p = pack_sub.add_parser("import", help="Import an external agent (e.g., Eve) to AitherADK pack")
+    pack_import_p.add_argument("agent_path", help="Path to agent directory (must have .compiled-manifest.json)")
 
     # adk support — help and community links
     sub.add_parser("support", help="Get help — Discord, GitHub, docs")

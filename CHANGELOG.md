@@ -2,6 +2,42 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [2.19.0] - 2026-07-12
+
+### Added — Eve agent importer + durable A2A tasks + canonical agent discovery
+
+- **`adk pack import <eve_agent_path>`** — convert external Eve agents to AitherADK packs
+  (from GitHub or local filesystem). Maps Eve structure (instructions → system prompt,
+  agent.ts → agent.yaml, skills/*.md → skills, connections/*.ts → MCP, tools/*.ts →
+  tools/node verbatim) to AitherADK format with a single command. Eve agents (compiled
+  manifest format, schema v35) become installable packs compatible with `adk pack install`.
+- **Durable A2A task lifecycle (`TaskManager` backed by FileStore)** — agent-to-agent
+  tasks now survive container restarts. Tasks persist as append-only JSONL
+  (`.adk/tasks.jsonl`); in-memory dict for fast access; `create_task()` / `update_status()` /
+  `add_artifact()` / `add_message()` all save to disk. Google A2A v0.3.0 spec compliant.
+- **Canonical agent card discovery** — `A2AServer.mount()` now exposes:
+  - `GET /.well-known/agent-card.json` — Agent Card (canonical; contains agent identity,
+    capabilities, skills, endpoints)
+  - `GET /.well-known/agent.json` — Agent Card (legacy, redirects with 308 to canonical path)
+  - `POST /a2a` — JSON-RPC 2.0 for message send/task lifecycle
+  - `GET /a2a/tasks/{id}/subscribe` — SSE streaming task updates
+- **Four built-in agent packs now complete and catalogued**:
+  - `hermes` — architecture review & trade-off analysis
+  - `openclaw` — web research & source verification
+  - `claude-code` — feature development & debugging
+  - `analyst` — structured data inference & anomaly detection
+  All discoverable via `adk packs` / `adk install pack:<name>`.
+- **Tolerant tool-call JSON parsing** — malformed tool JSON (extra properties, missing
+  name/arguments, string-encoded nested args, missing keys) is now gracefully degraded
+  instead of silently failing. `_parse_tool_json()` accepts both `"arguments"` and
+  `"parameters"` keys, coerces string-encoded args, and skips unparseable calls instead
+  of crashing the turn.
+
+### Known limitations
+
+- Eve agent importer: remote GitHub fetching not yet implemented (local paths only).
+- Durable task store: currently JSONL (suitable for thousands of records, not millions).
+
 ## [2.18.0] - 2026-07-10
 
 ### Added — AitherShell command center + Claude Code session management

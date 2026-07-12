@@ -1,8 +1,13 @@
 FROM python:3.12-slim AS builder
 
 WORKDIR /build
-COPY pyproject.toml README.md LICENSE docker-compose.adk-vllm.yml ./
+# The wheel force-includes (pyproject [tool.hatch.build.targets.wheel.force-include])
+# several files from the repo root: agent.yaml, docker-compose.adk-vllm.yml, the
+# adk/webui/* + adk/* files (copied via `COPY adk/`), AND deploy/compose/*.yml.
+# Any missing one fails the wheel build ("Forced include not found: /build/...").
+COPY pyproject.toml README.md LICENSE docker-compose.adk-vllm.yml agent.yaml ./
 COPY adk/ adk/
+COPY deploy/ deploy/
 
 RUN pip install --no-cache-dir --prefix=/install .
 

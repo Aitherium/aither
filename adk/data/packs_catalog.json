@@ -112,12 +112,44 @@
       ]
     },
     {
+      "id": "openclaw-pack",
+      "name": "OpenClaw Research Agent",
+      "type": "agent_pack",
+      "version": "1.0.0",
+      "description": "Web research, primary sources, and cited reports with knowledge graph",
+      "tier": "starter",
+      "category": "research",
+      "tags": [
+        "research",
+        "web-search",
+        "citations",
+        "knowledge-graph",
+        "analysis"
+      ]
+    },
+    {
+      "id": "analyst-pack",
+      "name": "Analyst Data Agent",
+      "type": "agent_pack",
+      "version": "1.0.0",
+      "description": "Structured ML, zero-shot inference, forecasting, and anomaly detection",
+      "tier": "starter",
+      "category": "business",
+      "tags": [
+        "data",
+        "structured-ml",
+        "forecasting",
+        "anomaly-detection",
+        "analytics"
+      ]
+    },
+    {
       "id": "hydra-pack",
       "name": "Hydra Agent Pack",
       "type": "agent_pack",
       "version": "1.0.0",
       "description": "Testing, QA, code review, and CI/CD quality gates",
-      "tier": "builder",
+      "tier": "developer",
       "category": "dev",
       "tags": [
         "testing",
@@ -133,7 +165,7 @@
       "type": "agent_pack",
       "version": "1.0.0",
       "description": "Security audit, vulnerability scanning, and compliance",
-      "tier": "builder",
+      "tier": "developer",
       "category": "dev",
       "tags": [
         "security",
@@ -148,7 +180,7 @@
       "type": "agent_pack",
       "version": "1.0.0",
       "description": "Marketing campaigns, SEO, funnels, and content strategy",
-      "tier": "builder",
+      "tier": "developer",
       "category": "business",
       "tags": [
         "marketing",
@@ -164,7 +196,7 @@
       "type": "agent_pack",
       "version": "1.0.0",
       "description": "Sales, CRM, accounting, and financial analysis",
-      "tier": "builder",
+      "tier": "developer",
       "category": "business",
       "tags": [
         "sales",
@@ -174,12 +206,46 @@
       ]
     },
     {
+      "id": "hermes-pack",
+      "name": "Hermes Architecture Agent",
+      "type": "agent_pack",
+      "version": "1.0.0",
+      "description": "Architecture reviews, design trade-off analysis, and ADRs",
+      "tier": "developer",
+      "category": "dev",
+      "tags": [
+        "architecture",
+        "design",
+        "trade-offs",
+        "refactoring",
+        "adr",
+        "reasoning"
+      ]
+    },
+    {
+      "id": "claude-code-pack",
+      "name": "Claude Code Development Agent",
+      "type": "agent_pack",
+      "version": "1.0.0",
+      "description": "Feature development, debugging, testing, refactoring, and code review",
+      "tier": "developer",
+      "category": "dev",
+      "tags": [
+        "code",
+        "development",
+        "debugging",
+        "testing",
+        "refactoring",
+        "review"
+      ]
+    },
+    {
       "id": "creative-bundle",
       "name": "Creative Team Bundle",
       "type": "agent_pack",
       "version": "1.0.0",
       "description": "Full creative team: Iris + Saga + Prometheus + Vera",
-      "tier": "builder",
+      "tier": "developer",
       "category": "creative",
       "tags": [
         "creative",
@@ -193,7 +259,7 @@
       "type": "agent_pack",
       "version": "1.0.0",
       "description": "Full dev team: Demiurge + Hydra + Athena + Vera",
-      "tier": "builder",
+      "tier": "developer",
       "category": "dev",
       "tags": [
         "dev",
@@ -208,7 +274,7 @@
       "type": "agent_pack",
       "version": "1.0.0",
       "description": "Full business team: Atlas + Hera + Prospero + Plutus",
-      "tier": "builder",
+      "tier": "developer",
       "category": "business",
       "tags": [
         "business",
@@ -230,30 +296,6 @@
         "personas",
         "enterprise"
       ]
-    },
-    {
-      "id": "grid-distributed",
-      "name": "Grid Distributed Inference",
-      "type": "service_pack",
-      "version": "1.0.0",
-      "description": "3-tier distributed inference across GPU, Mac, and CPU cluster nodes. Effort-based routing with automatic fallback.",
-      "tier": "free",
-      "category": "infrastructure",
-      "tags": [
-        "grid",
-        "distributed",
-        "inference",
-        "llama-cpp",
-        "vllm",
-        "multi-node",
-        "self-hosted"
-      ],
-      "install_method": "adk_deploy",
-      "install_command": "adk deploy grid",
-      "pricing": {
-        "free_tier": true,
-        "subscription_cents": 0
-      }
     },
     {
       "id": "strata-sync",
@@ -282,7 +324,7 @@
       "type": "service_pack",
       "version": "1.0.0",
       "description": "Managed media downloader/processor with an anonymized torrent-VPN (AitherTunnel WireGuard kill-switch). Self-provisions its peer + AitherSecrets-scoped config from the fleet master key.",
-      "tier": "professional",
+      "tier": "enterprise",
       "category": "creative",
       "tags": [
         "media",
@@ -304,7 +346,7 @@
       "type": "service_pack",
       "version": "1.0.0",
       "description": "Cited multi-source research analyst \u2014 multi-engine web search, scholarly (arXiv/PubMed/Crossref/SemanticScholar), SEC/GitHub/Wikidata, Wayback recovery, a compounding knowledge graph, and exported cited reports (MD/PDF/DOCX). Built on aither-adk; runs managed or BYO-key. Also an MCP server.",
-      "tier": "professional",
+      "tier": "enterprise",
       "category": "agents",
       "tags": [
         "research",
@@ -620,7 +662,7 @@
       "type": "tool_pack",
       "version": "1.0.0",
       "description": "Cloud deploy, K3s, fleet management, compute, GPU deployments",
-      "tier": "builder",
+      "tier": "developer",
       "category": "infrastructure",
       "tags": [
         "cloud",
@@ -637,7 +679,7 @@
       "type": "tool_pack",
       "version": "1.0.0",
       "description": "Workflows, dynamic workflows, automation, pipelines, task management",
-      "tier": "builder",
+      "tier": "developer",
       "category": "infrastructure",
       "tags": [
         "workflows",
@@ -652,7 +694,7 @@
       "type": "tool_pack",
       "version": "1.0.0",
       "description": "RBAC, permissions, secrets management, security ops, compliance",
-      "tier": "builder",
+      "tier": "developer",
       "category": "infrastructure",
       "tags": [
         "rbac",
@@ -668,7 +710,7 @@
       "type": "tool_pack",
       "version": "1.0.0",
       "description": "Vision, voice, multimodal, audio assets, media extraction",
-      "tier": "builder",
+      "tier": "developer",
       "category": "creative",
       "tags": [
         "vision",
@@ -684,7 +726,7 @@
       "type": "tool_pack",
       "version": "1.0.0",
       "description": "Agent delegation, forge, swarm, orchestration, reasoning, cognitive",
-      "tier": "builder",
+      "tier": "developer",
       "category": "infrastructure",
       "tags": [
         "agent",
@@ -779,7 +821,7 @@
       "type": "skill_pack",
       "version": "1.0.0",
       "description": "Docker, K8s, disaster recovery, job scheduling, network inspection",
-      "tier": "builder",
+      "tier": "developer",
       "category": "infrastructure",
       "tags": [
         "docker",
@@ -795,7 +837,7 @@
       "type": "skill_pack",
       "version": "1.0.0",
       "description": "Secret rotation, dependency audit, privacy toolkit, accessibility",
-      "tier": "builder",
+      "tier": "developer",
       "category": "infrastructure",
       "tags": [
         "security",
@@ -811,7 +853,7 @@
       "type": "skill_pack",
       "version": "1.0.0",
       "description": "Email sequences, presentations, LinkedIn, blog-to-presentation",
-      "tier": "builder",
+      "tier": "developer",
       "category": "business",
       "tags": [
         "email",
@@ -915,7 +957,7 @@
       "type": "service_pack",
       "version": "1.0.0",
       "description": "LDAP directory + REST API for user and group management",
-      "tier": "builder",
+      "tier": "developer",
       "category": "infrastructure",
       "tags": [
         "directory",
@@ -930,7 +972,7 @@
       "type": "service_pack",
       "version": "1.0.0",
       "description": "SSO/OIDC/SAML identity provider with RBAC",
-      "tier": "builder",
+      "tier": "developer",
       "category": "infrastructure",
       "tags": [
         "identity",
