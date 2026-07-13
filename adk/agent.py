@@ -157,6 +157,16 @@ class AitherAgent:
         self.name = name or self._identity.name
         self._system_prompt = system_prompt
 
+        # Default persona from the discovered brain PACK — but ONLY when the pack's
+        # declared `identity:` matches THIS agent. This makes the shipped default
+        # pack (adk/packs/aither) drive the aither agent's persona, WITHOUT
+        # hijacking a specialized named agent (e.g. a 'hydra' agent must not adopt
+        # a discovered aither/aitherium pack's prompt). An explicit system_prompt
+        # always wins; this only fills the base when none was given.
+        self._brain_pack_prompt: str | None = None
+        if not self._system_prompt:
+            self._brain_pack_prompt = self._load_matching_brain_pack_prompt()
+
         # License gate: verify agent is licensed and custom agents are allowed
         self._check_agent_license(load_packs)
 
@@ -604,6 +614,32 @@ class AitherAgent:
         """The agent's loaded identity (read-only)."""
         return self._identity
 
+    def _load_matching_brain_pack_prompt(self) -> str | None:
+        """Return the discovered brain pack's ``system_prompt`` IFF the pack's
+        declared ``identity`` matches this agent's name — else None. Non-fatal:
+        any error (no pack, unreadable, mismatch) yields None and the agent falls
+        back to its identity-built prompt."""
+        try:
+            import os as _os
+            from pathlib import Path as _P
+
+            import yaml as _yaml
+
+            from adk.pack_discovery import discover_brain_pack
+
+            raw = _os.getenv("AGENT_BRAIN_PACK") or discover_brain_pack()
+            if not raw:
+                return None
+            data = _yaml.safe_load(_P(str(raw)).read_text(encoding="utf-8")) or {}
+            pack_identity = str(data.get("identity") or "").strip()
+            prompt = str(data.get("system_prompt") or "").strip()
+            wanted = (self.name or getattr(self._identity, "name", "") or "").strip()
+            if prompt and pack_identity and pack_identity == wanted:
+                return prompt
+        except Exception as exc:  # noqa: BLE001 - persona fallback is best-effort
+            logger.debug("brain-pack persona load failed: %s", exc)
+        return None
+
     @property
     def system_prompt(self) -> str:
         # WHOLESALE IDENTITY SWAP (mirrors Genesis build_system_message
@@ -644,7 +680,7 @@ class AitherAgent:
                 "[/IDENTITY]"
             )
 
-        base = self._system_prompt or self._identity.build_system_prompt()
+        base = self._system_prompt or self._brain_pack_prompt or self._identity.build_system_prompt()
         # Append pack persona fragments as [PACK DIRECTIVES] block
         if self._pack_persona_fragments:
             lines = ["\n[PACK DIRECTIVES]"]

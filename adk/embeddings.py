@@ -23,7 +23,8 @@ Resolution chain (first that works wins; resolved once per process, then cached)
   4. Gateway (metered)      — ``AITHER_GATEWAY_EMBEDDINGS_URL`` (managed fallback).
   5. Auto-deploy local vLLM — if a GPU + Docker are present and nothing above is
                               reachable, spin up the embeddings container on :8209
-                              (opt out with ``AITHER_EMBED_AUTODEPLOY=0``).
+                              (opt in with ``AITHER_EMBED_AUTODEPLOY=1``; disabled by default
+                              so resolution happens instantly offline).
   6. CPU sentence-transformers (384-d, DEGRADED, dim-tagged) — offline last resort.
   7. Feature-hash (384-d, DEGRADED) — always works, zero deps; keeps offline
                               semantic search alive when even ST is unavailable.
@@ -212,7 +213,8 @@ class AdkEmbeddings:
             return "gateway"
 
         # 5. auto-deploy a local vLLM embeddings container (GPU + Docker)
-        if _flag("AITHER_EMBED_AUTODEPLOY", True) and await self._maybe_autodeploy():
+        # NOTE: opt-IN (disabled by default) so resolution is instant offline
+        if _flag("AITHER_EMBED_AUTODEPLOY", False) and await self._maybe_autodeploy():
             if await self._try_openai_endpoint(f"http://localhost:{_VLLM_EMBED_PORT}"):
                 return "vllm"
 
@@ -335,7 +337,7 @@ class AdkEmbeddings:
 
         logger.warning(
             "adk.embeddings: no embeddings backend reachable — auto-deploying vLLM "
-            "embeddings (%s) on :%d (set AITHER_EMBED_AUTODEPLOY=0 to disable)",
+            "embeddings (%s) on :%d (autodeploy is opt-IN via AITHER_EMBED_AUTODEPLOY=1)",
             _AUTODEPLOY_IMAGE, _VLLM_EMBED_PORT,
         )
         try:

@@ -505,9 +505,15 @@ class GraphMemory:
                 CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_id);
                 CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_id);
                 CREATE INDEX IF NOT EXISTS idx_keywords ON keywords(keyword);
-                CREATE INDEX IF NOT EXISTS idx_nodes_synced ON nodes(synced);
             """)
+            # Migrate BEFORE any index that references a migration-added column.
+            # `synced` is added by the v4 migration; on a pre-v4 DB the
+            # `CREATE TABLE IF NOT EXISTS` above is a no-op (table already exists
+            # without `synced`), so creating idx_nodes_synced here would fail with
+            # "no such column: synced" and silently disable GraphMemory entirely.
             self._migrate(conn)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_nodes_synced ON nodes(synced)")
+            conn.commit()
 
     def _migrate(self, conn: sqlite3.Connection):
         """Run schema migrations for the graph database."""

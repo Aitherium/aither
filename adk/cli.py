@@ -7456,6 +7456,85 @@ def _load_pack_catalog(genesis_url: str) -> list[dict]:
     return catalog
 
 
+def _cmd_fleet(args) -> int:
+    """Create & manage a fleet of agents across runtimes (local | managed | cloud-run)."""
+    import json as _json
+
+    from adk.fleet_manager import FleetManager
+
+    mgr = FleetManager()
+    cmd = getattr(args, "fleet_command", None)
+
+    def _emit(obj, human):
+        if getattr(args, "json_output", False):
+            print(_json.dumps(obj, indent=2))
+        else:
+            print(human)
+
+    if cmd == "create":
+        opts = {
+            "pack": args.pack or "",
+            "port": args.port,
+            "mcp_url": getattr(args, "mcp_url", "") or "",
+            "model": args.model or "",
+        }
+        m = mgr.create(args.runtime, args.name, **{k: v for k, v in opts.items() if v != ""})
+        status_icon = {"running": "✓", "pending_runtime": "…", "failed": "✗"}.get(m.status, "•")
+        _emit(m.to_dict(),
+              f"{status_icon} {m.runtime} agent '{m.name}' [{m.id}] → {m.status}"
+              + (f"  {m.endpoint}" if m.endpoint else "")
+              + (f"  {m.ref}" if m.ref else "")
+              + (f"\n  error: {m.error}" if m.error else ""))
+        return 1 if m.status == "failed" else 0
+
+    if cmd == "list":
+        members = mgr.list_members()
+        if getattr(args, "json_output", False):
+            print(_json.dumps([m.to_dict() for m in members], indent=2))
+        elif not members:
+            print("No fleet members. Create one: adk fleet create <name> --runtime managed --pack <id>")
+        else:
+            print(f"{'ID':<14}{'RUNTIME':<12}{'STATUS':<16}{'NAME'}")
+            for m in members:
+                print(f"{m.id:<14}{m.runtime:<12}{m.status:<16}{m.name}")
+        return 0
+
+    if cmd == "status":
+        m = mgr.refresh(args.member_id)
+        if m is None:
+            _emit({"error": "not found"}, f"No fleet member '{args.member_id}'")
+            return 1
+        _emit(m.to_dict(), f"{m.id}  {m.runtime}  {m.status}  {m.name}"
+              + (f"  {m.endpoint}" if m.endpoint else ""))
+        return 0
+
+    if cmd == "rm":
+        ok = mgr.remove(args.member_id)
+        print(f"Removed {args.member_id}" if ok else f"No fleet member '{args.member_id}'")
+        return 0 if ok else 1
+
+    if cmd == "connect-local":
+        from adk.fleet_manager import connect_local_agent
+        result = connect_local_agent(args.agent_name, args.mcp_url)
+        if result.get("ok"):
+            endpoint_info = result.get("endpoint", {})
+            human = f"✓ Registered local agent '{args.agent_name}' → {args.mcp_url}"
+            if endpoint_info.get("name"):
+                human += f"\n  name: {endpoint_info.get('name')}"
+            if endpoint_info.get("auth_vault_key"):
+                human += f"\n  auth (vault key): {endpoint_info.get('auth_vault_key')}"
+            _emit(result, human)
+            return 0
+        else:
+            error_msg = result.get("error", "unknown error")
+            human = f"✗ Failed to register local agent: {error_msg}"
+            _emit(result, human)
+            return 1
+
+    print("Usage: adk fleet {create|list|status|rm|connect-local}. See `adk fleet -h`.")
+    return 1
+
+
 def _cmd_pack(args) -> int:
     """Handle `adk pack` subcommands."""
     sub = getattr(args, "pack_command", None)
@@ -9336,6 +9415,31 @@ def _register_commands(sub):
     pack_import_p = pack_sub.add_parser("import", help="Import an external agent (e.g., Eve) to AitherADK pack")
     pack_import_p.add_argument("agent_path", help="Path to agent directory (must have .compiled-manifest.json)")
 
+    # adk fleet — create & manage agents across runtimes (local | managed | cloud-run)
+    fleet_p = sub.add_parser("fleet", help="Create & manage a fleet of agents (local | managed | cloud-run)")
+    fleet_sub = fleet_p.add_subparsers(dest="fleet_command")
+    fleet_create_p = fleet_sub.add_parser("create", help="Create an agent in a runtime")
+    fleet_create_p.add_argument("name", help="Agent name")
+    fleet_create_p.add_argument("--runtime", "-r", default="local",
+                                choices=["local", "managed", "cloud-run"],
+                                help="Where the agent runs (default: local)")
+    fleet_create_p.add_argument("--pack", default="", help="Pack/identity to run (e.g. an eve-import id)")
+    fleet_create_p.add_argument("--port", type=int, default=8080, help="Local runtime port")
+    fleet_create_p.add_argument("--mcp-url", dest="mcp_url", default="", help="Gateway MCP url (managed)")
+    fleet_create_p.add_argument("--model", default="", help="Model override (managed)")
+    fleet_create_p.add_argument("--json", dest="json_output", action="store_true", help="JSON output")
+    fleet_list_p = fleet_sub.add_parser("list", help="List fleet members")
+    fleet_list_p.add_argument("--json", dest="json_output", action="store_true", help="JSON output")
+    fleet_status_p = fleet_sub.add_parser("status", help="Refresh & show one member's status")
+    fleet_status_p.add_argument("member_id", help="Fleet member id")
+    fleet_status_p.add_argument("--json", dest="json_output", action="store_true", help="JSON output")
+    fleet_rm_p = fleet_sub.add_parser("rm", help="Remove a member (teardown + drop record)")
+    fleet_rm_p.add_argument("member_id", help="Fleet member id")
+    fleet_connect_p = fleet_sub.add_parser("connect-local", help="Register this machine's local agent MCP endpoint with the gateway (bidirectional)")
+    fleet_connect_p.add_argument("agent_name", help="Name/identifier for the local agent")
+    fleet_connect_p.add_argument("mcp_url", help="Public URL where the local agent's MCP is reachable")
+    fleet_connect_p.add_argument("--json", dest="json_output", action="store_true", help="JSON output")
+
     # adk support — help and community links
     sub.add_parser("support", help="Get help — Discord, GitHub, docs")
 
@@ -9544,6 +9648,172 @@ def _register_commands(sub):
     # Hidden executor used by `start` to run the detached job body.
     jobs_exec_p = jobs_sub.add_parser("_exec", help=argparse.SUPPRESS)
     jobs_exec_p.add_argument("id", help="Local job ID to execute")
+
+    # adk forge — dispatch agent tasks to Genesis /forge/dispatch
+    forge_p = sub.add_parser("forge", help="Dispatch tasks to agent forge (Genesis)")
+    forge_p.add_argument("task", help="Task description (quoted string)")
+    forge_p.add_argument("--agent", default="demiurge",
+                         help="Agent to dispatch to (default: demiurge)")
+    forge_p.add_argument("--effort", type=int, default=5,
+                         help="Effort level 1-10 (default: 5)")
+    forge_p.add_argument("--watch", action="store_true", dest="watch",
+                         help="Stream progress (default: true)")
+    forge_p.add_argument("--no-watch", action="store_false", dest="watch",
+                         help="Don't stream progress")
+    forge_p.set_defaults(watch=True)
+
+
+# ── Forge subcommand handler ─────────────────────────────────────────────
+
+
+def cmd_forge(args) -> int:
+    """Dispatch a task to Genesis /forge/dispatch with optional streaming."""
+    import httpx
+    import json
+
+    task = getattr(args, "task", "")
+    agent = getattr(args, "agent", "demiurge")
+    effort = getattr(args, "effort", 5)
+    watch = getattr(args, "watch", True)
+
+    if not task:
+        print("Error: task is required", file=sys.stderr)
+        return 1
+
+    genesis_url = _get_genesis_url()
+
+    # Build request payload
+    payload = {
+        "task": task,
+        "agent": agent,
+        "effort": effort,
+    }
+
+    try:
+        # Dispatch to Genesis
+        with httpx.Client(verify=tls_verify()) as client:
+            try:
+                response = client.post(
+                    f"{genesis_url}/forge/dispatch",
+                    json=payload,
+                    timeout=30.0,
+                )
+            except Exception as e:
+                print(
+                    f"Error: Genesis offline or unreachable ({genesis_url})",
+                    file=sys.stderr,
+                )
+                print(f"  {type(e).__name__}: {e}", file=sys.stderr)
+                return 1
+
+            if response.status_code != 200:
+                try:
+                    err_data = response.json()
+                    print(
+                        f"Error: Genesis returned {response.status_code}",
+                        file=sys.stderr,
+                    )
+                    print(f"  {err_data.get('detail', 'Unknown error')}",
+                          file=sys.stderr)
+                except Exception:
+                    print(
+                        f"Error: Genesis returned {response.status_code}: "
+                        f"{response.text[:200]}",
+                        file=sys.stderr,
+                    )
+                return 1
+
+            dispatch_result = response.json()
+            session_id = dispatch_result.get("session_id", "unknown")
+            print(f"Session ID: {session_id}")
+
+        # Stream if requested
+        if watch:
+            return _stream_forge_session(genesis_url, session_id)
+
+        return 0
+
+    except Exception as e:
+        print(f"Error: {type(e).__name__}: {e}", file=sys.stderr)
+        return 1
+
+
+def _stream_forge_session(genesis_url: str, session_id: str) -> int:
+    """Stream forge session progress via GET /forge/sessions/{id}/stream (SSE)."""
+    import httpx
+
+    try:
+        with httpx.Client(verify=tls_verify()) as client:
+            stream_url = f"{genesis_url}/forge/sessions/{session_id}/stream"
+            try:
+                with client.stream(
+                    "GET",
+                    stream_url,
+                    timeout=300.0,  # 5 minutes for long-running tasks
+                ) as response:
+                    if response.status_code != 200:
+                        print(
+                            f"Error: Stream returned {response.status_code}",
+                            file=sys.stderr,
+                        )
+                        return 1
+
+                    # Parse SSE lines
+                    for line in response.iter_lines():
+                        if not line:
+                            continue
+                        line = line.strip()
+                        if line.startswith("data: "):
+                            data_str = line[6:]  # Remove "data: " prefix
+                            try:
+                                data = json.loads(data_str)
+                                phase = data.get("phase", "")
+                                message = data.get("message", "")
+
+                                if phase:
+                                    print(f"[{phase}] {message}")
+                                else:
+                                    print(message)
+
+                                # Check for final result or error
+                                if data.get("status") == "completed":
+                                    result = data.get("result", "")
+                                    if result:
+                                        print(f"\nResult:\n{result}")
+                                    pr_url = data.get("pr_url", "")
+                                    if pr_url:
+                                        print(f"PR: {pr_url}")
+                                    return 0
+                                elif data.get("status") == "failed":
+                                    error = data.get("error", "Unknown error")
+                                    print(
+                                        f"Error: {error}",
+                                        file=sys.stderr,
+                                    )
+                                    return 1
+
+                            except json.JSONDecodeError:
+                                # Not JSON, print as-is
+                                print(line)
+
+                    # Stream ended without explicit completion
+                    print("Stream ended", file=sys.stderr)
+                    return 0
+
+            except httpx.ReadTimeout:
+                print(
+                    "Error: Stream timeout (task taking longer than 5 min)",
+                    file=sys.stderr,
+                )
+                return 1
+            except Exception as e:
+                print(f"Error streaming: {type(e).__name__}: {e}",
+                      file=sys.stderr)
+                return 1
+
+    except Exception as e:
+        print(f"Error: {type(e).__name__}: {e}", file=sys.stderr)
+        return 1
 
 
 # ── MCP subcommand handlers ───────────────────────────────────────────────
@@ -9773,6 +10043,8 @@ def main():
         sys.exit(cmd_packs(args))
     elif args.command == "pack":
         sys.exit(_cmd_pack(args))
+    elif args.command == "fleet":
+        sys.exit(_cmd_fleet(args))
     elif args.command == "skills":
         sys.exit(_cmd_skills(args))
     elif args.command == "soul":
@@ -9836,6 +10108,8 @@ def main():
         print("  Email:     support@aitherium.com")
         print()
         sys.exit(0)
+    elif args.command == "forge":
+        sys.exit(cmd_forge(args))
     elif args.command == "train":
         sys.exit(_cmd_train(args))
     elif args.command is None:

@@ -1886,7 +1886,7 @@ IDENTITY_DEFAULTS = {
     "demiurge": ["file_io", "shell", "python", "web", "git", "code", "repowise", "swarm", "graph", "workspace", "safety", "self"],
     "analyst": ["file_io", "web", "python", "code", "graph", "structured_ml", "workspace", "safety", "self"],
     "atlas": ["file_io", "web", "secrets", "code", "graph", "workspace", "safety", "self"],
-    "aither": ["file_io", "shell", "python", "web", "secrets", "creative", "git", "code", "repowise", "swarm", "graph", "workspace", "safety", "self"],
+    "aither": ["file_io", "shell", "web", "self"],
     "lyra": ["file_io", "web", "graph", "workspace", "voice", "safety", "self"],
     "hydra": ["file_io", "shell", "python", "git", "code", "repowise", "graph", "workspace", "safety", "self"],
     "prometheus": ["file_io", "shell", "secrets", "git", "workspace", "safety", "self"],

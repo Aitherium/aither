@@ -132,7 +132,8 @@ def discover_brain_pack() -> Optional[Path]:
     2. brain_pack.yaml in CWD
     3. Entry-point registered packs (first found)
     4. ~/.aither/packs/<name>/brain_pack.yaml (first found)
-    5. None (use defaults)
+    5. Bundled aither pack (shipped with ADK)
+    6. None (use defaults)
     """
     # 1. Explicit env var
     env_path = os.getenv("AGENT_BRAIN_PACK")
@@ -169,6 +170,12 @@ def discover_brain_pack() -> Optional[Path]:
         bp = local_packs[0]["dir"] / "brain_pack.yaml"
         if bp.exists():
             return bp
+
+    # 6. Bundled aither pack (shipped with ADK) — default fallback
+    aither_pack = Path(__file__).resolve().parent / "packs" / "aither" / "brain_pack.yaml"
+    if aither_pack.exists():
+        logger.info("Brain pack from bundled aither pack: %s", aither_pack)
+        return aither_pack
 
     return None
 
