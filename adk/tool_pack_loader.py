@@ -133,14 +133,20 @@ def _default_dirs(extra_dirs: list[Path] | None) -> list[Path]:
     for d in env.split(os.pathsep):
         if d.strip():
             dirs.append(Path(d.strip()))
-    # 2. the importable lib.agents.packs package (the AitherOS in-repo packs)
+    # 2. the importable lib.agents.packs package (the AitherOS in-repo packs).
+    # Present only inside the monorepo; when it is, its live source wins over the
+    # bundled snapshot below (discover() is first-dir-wins).
     try:
         spec = importlib.util.find_spec("lib.agents.packs")
         for loc in (spec.submodule_search_locations or []) if spec else []:
             dirs.append(Path(loc))
     except Exception:
         pass
-    # 3. marketplace-installed packs
+    # 3. packs bundled inside the wheel (adk/toolpacks/) — these ship with the
+    # SDK so a bare `pip install aither-adk` has arc-brainpack, deep_research and
+    # cloudflare available with no monorepo checkout or marketplace download.
+    dirs.append(Path(__file__).resolve().parent / "toolpacks")
+    # 4. marketplace-installed packs
     dirs.append(Path.home() / ".aitheros" / "packs")
     # 4. caller-supplied
     for d in extra_dirs or []:

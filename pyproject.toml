@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "aither-adk"
-version = "2.19.1"
+version = "2.20.0"
 description = "Build AI agents with real memory + faculties on any backend, local or cloud. Open-core: free local runtime with typed memory, knowledge graph, code graph and ReAct; paid tiers (portal.aitherium.com) unlock fleets, channels, reasoning and marketplace packs."
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -45,6 +45,10 @@ embedding = [
 ]
 node = ["mcp>=1.0", "starlette>=0.36"]
 pdf = ["pypdf>=4.0", "fpdf2>=2.7"]
+# ARC world-model contribution: the bundled arc-brainpack pack registers/streams
+# transitions with only core deps (httpx); PLAYING ARC to generate transitions
+# (arc_contribute / `adk contribute play`) needs the real game client.
+arc = ["arcengine>=0.9.3", "requests>=2.28.0"]
 sync = ["watchdog>=3.0.0"]
 federation = ["cryptography>=41.0.0"]
 addons = ["docker>=7.0"]
@@ -135,6 +139,10 @@ exclude = [
 ]
 artifacts = [
     "adk/identities/aither.yaml",
+    # Bundled tool packs (arc-brainpack, deep_research, cloudflare): force-include
+    # their non-.py assets — the .toolpack.yaml manifests (dotfiles), pack UIs and
+    # skill markdown — so a `pip install aither-adk` ships working, discoverable packs.
+    "adk/toolpacks/**/*",
 ]
 
 [tool.hatch.build.targets.wheel]

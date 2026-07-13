@@ -82,8 +82,9 @@ class AuthMdStore:
             tenant: Tenant ID, from the AUTHENTICATED caller (or AITHER_TENANT for a
                     single-tenant self-hosted node, which the operator sets at deploy time).
             workspace: Workspace ID. Same provenance.
-            vault_url: AitherSecrets URL. Defaults to env AITHER_SECRETS_URL or
-                      "https://aitheros-secrets:8111".
+            vault_url: AitherSecrets URL. Defaults to env AITHER_SECRETS_URL, else
+                      a local "http://127.0.0.1:8111" (managed deployments set the
+                      env to point at their own vault).
             vault_token: Internal auth token. Defaults to env AITHER_INTERNAL_SECRET.
 
         Raises:
@@ -105,7 +106,7 @@ class AuthMdStore:
                 "back to a shared namespace."
             )
         self.vault_url = (vault_url or os.getenv("AITHER_SECRETS_URL", "")).rstrip("/") or (
-            "https://aitheros-secrets:8111"
+            "http://127.0.0.1:8111"
         )
         self.vault_token = vault_token or os.getenv("AITHER_INTERNAL_SECRET", "")
 

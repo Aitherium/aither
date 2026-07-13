@@ -949,7 +949,7 @@ def main() -> int:
         "--with-local-orchestrator",
         action="store_true",
         help="Also install Nemotron-Orchestrator-8B locally via llama.cpp "
-             "(native OpenAI endpoint at http://127.0.0.1:8200/v1, no Docker)",
+             "(native OpenAI endpoint at http://127.0.0.1:8209/v1, no Docker)",
     )
     parser.add_argument(
         "--orchestrator-quant",
@@ -960,8 +960,8 @@ def main() -> int:
     parser.add_argument(
         "--orchestrator-port",
         type=int,
-        default=8200,
-        help="Port for local orchestrator server (default: 8200)",
+        default=8209,
+        help="Port for local orchestrator server (default: 8209)",
     )
     parser.add_argument(
         "--non-interactive",
@@ -1116,13 +1116,13 @@ def main() -> int:
             try:
                 result = llamacpp_setup.install(
                     quant=getattr(args, "orchestrator_quant", None),
-                    port=getattr(args, "orchestrator_port", 8200),
+                    port=getattr(args, "orchestrator_port", 8209),
                     service=True,
                     dry_run=dry_run,
                 )
                 if getattr(result, "success", False):
                     print(f"  {green('[OK]')} Local orchestrator: "
-                          f"http://127.0.0.1:{getattr(args, 'orchestrator_port', 8200)}/v1")
+                          f"http://127.0.0.1:{getattr(args, 'orchestrator_port', 8209)}/v1")
                 else:
                     warn("Local orchestrator install reported failure — "
                          "retry: aither setup llamacpp")

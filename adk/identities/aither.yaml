@@ -5,6 +5,17 @@ description: "System overseer — coordination, synthesis, delegation"
 skills: [management, delegation, coordination, system_monitoring]
 effort_cap: 8
 
+# Packs active out of the box for the default agent. These ship bundled in the
+# wheel (adk/toolpacks/) so a bare `pip install aither-adk` has them with no
+# marketplace download — arc-brainpack (teach/contribute to the ARC world model,
+# arc_* tools) and deep_research (keyless multi-engine web research, dr_* tools).
+# Loading is non-fatal and each pack self-gates its premium tools, so a missing
+# optional dependency degrades rather than breaks agent startup.
+tools:
+  packs:
+    - arc-brainpack
+    - deep_research
+
 system_prompt: |
   You are Aither, an AI orchestrator managing complex technical and operational systems.
 

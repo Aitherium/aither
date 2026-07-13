@@ -1,7 +1,7 @@
 """
 Flow Tools - GitHub CI/CD Tools for Agents
 ===========================================
-Lightweight HTTP stubs that call AitherFlow service (port 8165)
+Lightweight HTTP stubs that call AitherFlow service (port 8164/flow)
 for GitHub Actions, CI/CD, releases, and code review.
 
 These tools give agents the power to:
@@ -18,29 +18,49 @@ All operations go through AitherFlow which handles GitHub authentication.
 """
 
 import json
+import os
 from typing import List
 
 import httpx
 
-# FLOW_URL from env/config
+# FLOW_URL resolution: env var wins, otherwise localhost:8164/flow
+# AITHER_AITHERFLOW_URL or AITHER_FLOW_URL = full base (used verbatim, no /flow appended)
+# AITHER_AITHERFLOW_PORT = port only (will get :8164/flow appended)
 
 
 try:
+    from adk.ports import get_service_url, get_port
 
-
-    from adk.ports import get_service_url
-
-
-    FLOW_URL = get_service_url("AitherFlow")
-
+    # Try environment overrides first
+    _flow_url_env = os.getenv("AITHER_AITHERFLOW_URL") or os.getenv("AITHER_FLOW_URL")
+    if _flow_url_env:
+        # Full URL provided; strip trailing slash but don't add /flow
+        FLOW_URL = _flow_url_env.rstrip("/")
+    else:
+        # Check for port override
+        _flow_port_env = os.getenv("AITHER_AITHERFLOW_PORT")
+        if _flow_port_env:
+            # Port override; build with /flow suffix
+            _host = os.getenv("AITHER_SERVICE_HOST", "localhost")
+            FLOW_URL = f"http://{_host}:{_flow_port_env}/flow"
+        else:
+            # Use default resolution: get_service_url gives host:port, add /flow
+            _base = get_service_url("AitherFlow", 8164)
+            FLOW_URL = f"{_base}/flow"
 
 except ImportError:
-
-
     from adk.ports import get_port
 
-
-    FLOW_URL = f"http://localhost:{get_port('AitherFlow', 8165)}"
+    _flow_url_env = os.getenv("AITHER_AITHERFLOW_URL") or os.getenv("AITHER_FLOW_URL")
+    if _flow_url_env:
+        FLOW_URL = _flow_url_env.rstrip("/")
+    else:
+        _flow_port_env = os.getenv("AITHER_AITHERFLOW_PORT")
+        if _flow_port_env:
+            _host = os.getenv("AITHER_SERVICE_HOST", "localhost")
+            FLOW_URL = f"http://{_host}:{_flow_port_env}/flow"
+        else:
+            FLOW_URL = f"http://localhost:{get_port('AitherFlow', 8164)}/flow"
 
 # Reusable HTTP client
 _flow_client: httpx.Client = None
@@ -82,7 +102,7 @@ def _flow_request(method: str, endpoint: str, data: dict = None, params: dict = 
             return response.text
 
     except httpx.ConnectError:
-        return json.dumps({"error": "Cannot connect to AitherFlow. Is it running on port 8165?"})
+        return json.dumps({"error": f"Cannot connect to AitherFlow at {FLOW_URL}"})
     except Exception as e:
         return json.dumps({"error": str(e)})
 

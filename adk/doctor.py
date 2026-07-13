@@ -79,7 +79,7 @@ def check_vllm() -> tuple[bool, list[str]]:
     import urllib.request
     import urllib.error
 
-    ports = [8000, 8200, 8201, 8202, 8203, 8209]
+    ports = [8000, 8201, 8202, 8203, 8209]   # not 8200: that's media-forge, not an LLM
 
     # Add user-configured ports
     extra = os.environ.get("AITHER_VLLM_PORTS", "")
@@ -102,7 +102,7 @@ def check_vllm() -> tuple[bool, list[str]]:
             pass
 
     if not found:
-        _fail("vLLM: no instances found on ports 8000, 8200-8203, 8209")
+        _fail("vLLM: no instances found on ports 8000, 8201-8203, 8209")
     return bool(found), found
 
 
@@ -133,7 +133,7 @@ def check_dgx() -> tuple[bool, list[str]]:
 
     # Auto-scan common DGX Spark addresses
     for host in ("spark.local", "192.168.0.33"):
-        for port in (8000, 8120, 8200):
+        for port in (8000, 8120, 8209):
             try:
                 req = urllib.request.Request(f"http://{host}:{port}/v1/models")
                 with urllib.request.urlopen(req, timeout=2) as resp:

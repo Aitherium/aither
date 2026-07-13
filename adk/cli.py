@@ -1607,7 +1607,7 @@ def cmd_connect(args):
         import httpx
 
         # vLLM (preferred — enables true concurrent/parallel agents)
-        for port in [8000, 8100, 8101, 8102, 8120, 8200, 8201, 8202, 8203]:
+        for port in [8000, 8100, 8101, 8102, 8120, 8209, 8201, 8202, 8203]:
             try:
                 async with httpx.AsyncClient(timeout=2.0) as client:
                     resp = await client.get(f"http://localhost:{port}/v1/models")
@@ -3698,7 +3698,7 @@ def cmd_backend(args):
         elif target == "llamacpp":
             from adk import llamacpp_setup
 
-            result = llamacpp_setup.install(quant=None, port=8200, service=True)
+            result = llamacpp_setup.install(quant=None, port=8209, service=True)
             if not result.success:
                 print(f"  ERROR: {result.error}", file=sys.stderr)
                 return 1
@@ -3726,7 +3726,7 @@ def cmd_backend(args):
             if setup_result != 0:
                 print("  ERROR: vLLM setup failed", file=sys.stderr)
                 return 1
-            endpoint = "http://localhost:8200/v1"
+            endpoint = "http://localhost:8209/v1"
             model_name = "auto"
         else:
             print(f"  ERROR: unknown backend {target}", file=sys.stderr)
@@ -3740,7 +3740,7 @@ def cmd_backend(args):
         if target in ("llamacpp", "vllm"):
             from adk import llamacpp_setup
 
-            verify_port = 8200 if target == "vllm" else 8200
+            verify_port = 8209
             for _ in range(30):
                 if llamacpp_setup.status(port=verify_port).running:
                     break
@@ -3939,6 +3939,87 @@ def cmd_packs(args) -> int:
     """Alias for 'adk install list' — list available agent packs."""
     args.install_command = "list"
     return cmd_install(args)
+
+
+def _load_arc_pack():
+    """File-load the bundled arc-brainpack pack and return its tools module.
+    Bundled at adk/toolpacks/arc-brainpack — loaded by path so it works from a
+    plain `pip install aither-adk` with the pack dir not on sys.path."""
+    import importlib.util
+    pack_dir = Path(__file__).resolve().parent / "toolpacks" / "arc-brainpack"
+    init = pack_dir / "__init__.py"
+    tools = pack_dir / "tools.py"
+    target = init if init.is_file() else tools
+    if not target.is_file():
+        raise FileNotFoundError(f"arc-brainpack pack not found at {pack_dir}")
+    spec = importlib.util.spec_from_file_location(
+        "_arc_brainpack", target, submodule_search_locations=[str(pack_dir)])
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["_arc_brainpack"] = mod
+    spec.loader.exec_module(mod)  # type: ignore[union-attr]
+    # register/__init__ may re-export from tools; prefer the tools module for fns
+    if not hasattr(mod, "arc_register") and (pack_dir / "tools.py").is_file():
+        tspec = importlib.util.spec_from_file_location(
+            "_arc_brainpack.tools", pack_dir / "tools.py",
+            submodule_search_locations=[str(pack_dir)])
+        tmod = importlib.util.module_from_spec(tspec)
+        sys.modules["_arc_brainpack.tools"] = tmod
+        tspec.loader.exec_module(tmod)  # type: ignore[union-attr]
+        return tmod
+    return mod
+
+
+def cmd_contribute(args) -> int:
+    """Teach Aither's ARC world model via the bundled arc-brainpack pack.
+
+    Zero-to-contributing with no repo clone:
+        pip install 'aither-adk[arc]'
+        adk contribute register
+        export ARC_API_KEY=<key from three.arcprize.org>
+        adk contribute play
+    """
+    sub = getattr(args, "contribute_command", None)
+    try:
+        pack = _load_arc_pack()
+    except Exception as exc:
+        print(f"✗ could not load the arc-brainpack pack: {exc}")
+        return 1
+
+    def _show(result):
+        if isinstance(result, (dict, list)):
+            print(json.dumps(result, indent=2, default=str))
+        elif result is not None:
+            print(result)
+
+    try:
+        if sub == "register":
+            _show(pack.arc_register())
+        elif sub == "play":
+            fn = getattr(pack, "arc_contribute", None) or getattr(pack, "contribute_random", None)
+            if fn is None:
+                print("✗ this pack build has no play entrypoint")
+                return 1
+            _show(fn(args.games or None, n=args.steps))
+        elif sub == "status":
+            _show(pack.arc_status())
+        elif sub == "leaderboard":
+            _show(pack.arc_leaderboard(limit=getattr(args, "limit", 20)))
+        elif sub == "solo":
+            _show(pack.arc_solo())
+        else:
+            print("Teach Aither's ARC world model (free, open).\n")
+            print("  adk contribute register       mint a free wallet + contributor token")
+            print("  adk contribute play [games]   play ARC and stream transitions")
+            print("  adk contribute status         your accepted count + daily quota")
+            print("  adk contribute leaderboard    who has taught it the most")
+            print("  adk contribute solo           one-command self-host (train YOUR own model)\n")
+            print("Playing needs the arc extra:  pip install 'aither-adk[arc]'")
+            print("and an ARC key:  export ARC_API_KEY=<key from three.arcprize.org>")
+            return 0
+    except Exception as exc:
+        print(f"✗ {sub}: {exc}")
+        return 1
+    return 0
 
 
 # ── Phase 1: aither keys — API key management ─────────────────────────────
@@ -6102,7 +6183,7 @@ def cmd_quickstart_local(args):
         if setup_result != 0:
             print("  ERROR: vLLM setup failed", file=sys.stderr)
             return 1
-        endpoint = "http://localhost:8200/v1"
+        endpoint = "http://localhost:8209/v1"
         model_name = "auto"
     else:
         print(f"  ERROR: unknown backend {backend}", file=sys.stderr)
@@ -6118,7 +6199,7 @@ def cmd_quickstart_local(args):
         if backend in ("llamacpp", "vllm"):
             import time
 
-            verify_port = getattr(args, "port", 8200) if backend == "llamacpp" else 8200
+            verify_port = getattr(args, "port", 8209) if backend == "llamacpp" else 8209
             # Wait for the freshly-started service to bind + load the model.
             for _ in range(60):
                 if llamacpp_setup.status(port=verify_port).running:
@@ -6208,7 +6289,7 @@ def cmd_status(args):
 
         checks = {
             "Genesis": os.environ.get("AITHER_URL", "http://localhost:8001"),
-            "vLLM": os.environ.get("AITHER_VLLM_URL", os.environ.get("VLLM_URL", "http://localhost:8200")),
+            "vLLM": os.environ.get("AITHER_VLLM_URL", os.environ.get("VLLM_URL", "http://localhost:8209")),
             "Ollama": _fix_ollama_host(os.environ.get("OLLAMA_HOST", "")),
             "AitherNode": "http://localhost:8090",
             "Gateway": os.environ.get("AITHER_GATEWAY_URL", "https://gateway.aitherium.com"),
@@ -6570,7 +6651,7 @@ def _detect_llm_backend():
     # 2. Check for vLLM
     try:
         import httpx
-        for port in (8200, 8201, 8202, 8203, 8209, 8000):
+        for port in (8201, 8202, 8203, 8209, 8000):
             try:
                 resp = httpx.get(f"http://localhost:{port}/v1/models", timeout=1.0)
                 if resp.status_code == 200:
@@ -8839,7 +8920,7 @@ def _register_commands(sub):
     setup_p.add_argument("--llamacpp-quant", default=None,
                          help="llama.cpp GGUF quant (e.g. Q4_K_M, Q5_K_M, Q8_0). Default: auto-pick from VRAM/RAM")
     setup_p.add_argument("--llamacpp-port", type=int, default=None,
-                         help="llama.cpp server port (default: 8200)")
+                         help="llama.cpp server port (default: 8209)")
     setup_p.add_argument("--no-service", action="store_true",
                          help="llama.cpp: skip installing system service (systemd/launchd/scheduled task)")
     setup_p.add_argument("--reasoning-api", choices=["anthropic", "openai", "deepseek", "gateway"],
@@ -9280,8 +9361,8 @@ def _register_commands(sub):
     quickstart_local_p.add_argument(
         "--port",
         type=int,
-        default=8200,
-        help="Port for local inference endpoint (default: 8200)"
+        default=8209,
+        help="Port for local inference endpoint (default: 8209)"
     )
     quickstart_local_p.add_argument(
         "--dry-run",
@@ -9371,6 +9452,25 @@ def _register_commands(sub):
 
     # adk packs — alias for list
     sub.add_parser("packs", help="List available agent packs")
+
+    # adk contribute — teach the ARC world model (bundled arc-brainpack pack)
+    contribute_p = sub.add_parser(
+        "contribute",
+        help="Teach Aither's ARC world model — enroll, then play & stream transitions (free)",
+    )
+    contribute_sub = contribute_p.add_subparsers(dest="contribute_command")
+    contribute_sub.add_parser(
+        "register", help="Mint a free wallet + contributor token (idempotent)")
+    c_play = contribute_sub.add_parser(
+        "play", help="Play ARC games and stream every transition (needs: pip install 'aither-adk[arc]')")
+    c_play.add_argument("games", nargs="*", default=[],
+                        help="ARC game ids (default: a starter set)")
+    c_play.add_argument("-n", "--steps", type=int, default=200,
+                        help="Max transitions per game (default 200)")
+    contribute_sub.add_parser("status", help="Your accepted count + daily quota")
+    c_lb = contribute_sub.add_parser("leaderboard", help="Who has taught it the most")
+    c_lb.add_argument("--limit", type=int, default=20, help="Rows to show (default 20)")
+    contribute_sub.add_parser("solo", help="Print the one-command self-host (train YOUR own model)")
 
     # adk pack — tool pack management
     pack_p = sub.add_parser("pack", help="Manage ToolPack extensions (list, search, install, remove, info)")
@@ -10041,6 +10141,8 @@ def main():
         sys.exit(cmd_install(args))
     elif args.command == "packs":
         sys.exit(cmd_packs(args))
+    elif args.command == "contribute":
+        sys.exit(cmd_contribute(args))
     elif args.command == "pack":
         sys.exit(_cmd_pack(args))
     elif args.command == "fleet":
