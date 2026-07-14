@@ -8,6 +8,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+
+@pytest.fixture(autouse=True)
+def _isolated_task_store(tmp_path, monkeypatch):
+    """TaskManager persists to a CWD-relative `.adk/tasks.jsonl` by default, so
+    every A2AServer in this file would share (and re-load) one store — tasks
+    from earlier tests leak into later counts, and the suite litters the repo
+    dir. Run each test in its own temp CWD instead."""
+    monkeypatch.chdir(tmp_path)
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from adk.a2a import (
