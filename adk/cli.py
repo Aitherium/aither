@@ -10309,9 +10309,9 @@ def main():
         from adk.shell_launcher import cmd_shell
         sys.exit(cmd_shell(args))
     elif args.command == "platform":
-        # Delegate to the internal platform CLI (merged from aither_adk.cli)
+        # Delegate to the internal platform CLI (relocated to aither-platform package)
         try:
-            from adk.platform.cli import main as platform_main
+            from aither_platform.cli import main as platform_main
             # Replace sys.argv so the platform CLI parses its own args
             sys.argv = ["adk-platform"] + (args.platform_args or [])
             platform_main()

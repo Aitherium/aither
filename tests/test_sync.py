@@ -1,7 +1,7 @@
 """Unit tests for sync modules (watermark, lockbox, files).
 
 Tests use pytest with mocking and temporary directories.
-Run with: pytest adk/test_sync.py -v
+Run with: pytest tests/test_sync.py -v
 """
 
 import asyncio

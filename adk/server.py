@@ -1493,7 +1493,7 @@ def create_app(
             _state["gateway_connected"] = False
             return
         try:
-            from adk.gateway import GatewayClient
+            from adk.client import GatewayClient
             gw = GatewayClient(gateway_url=config.gateway_url, api_key=config.aither_api_key)
             ident = load_identity(identity)
             result = await gw.register_agent(

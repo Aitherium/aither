@@ -2,6 +2,24 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [2.22.0] - 2026-07-14
+
+### Changed — internal toolkit relocation
+
+- **`adk.platform` relocated** — the internal aither-platform toolkit (ComfyUI/image-gen
+  pipelines, fleet agent clients, parallel CLI/UI/tools stack) has been moved out of the
+  adk SDK tree to the standalone internal `aither-platform` package at
+  `AitherOS/agents/aither_platform/`. The public package remains unaffected (it already
+  excluded `adk.platform` since 2.21.1). Internal AitherOS agent builds now install
+  `aither-platform` separately. `adk platform` falls through to the same "not available"
+  message on public installs; internal builds work via the relocated package.
+
+### Removed — backward-compat re-export deleted
+
+- **`adk.gateway` module removed** — the backward-compatibility re-export of `GatewayClient`
+  from `adk.gateway` has been removed. Use `from adk.client import GatewayClient` instead
+  (the established public API since 2.21.0). All internal importers have been updated.
+
 ## [2.21.1] - 2026-07-14
 
 ### Removed — internal toolkit and license-gated product no longer ship publicly

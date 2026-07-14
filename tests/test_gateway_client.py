@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import httpx
-from adk.gateway import GatewayClient
+from adk.client import GatewayClient
 
 
 # ---------------------------------------------------------------------------
