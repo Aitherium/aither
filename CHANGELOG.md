@@ -2,6 +2,30 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [2.21.0] - 2026-07-14
+
+### Added — Completion gate: verified-or-retried task execution
+
+- **`adk.gate.CompletionGate`** — a composable wrapper that closes the "silent
+  success" gap: an agent's ReAct loop returns whatever the model produced and
+  calls it done (`finish_reason = stop/max_steps/length`), which is a *liveness*
+  signal, not a *completion* one — so an agent can "succeed" while doing nothing.
+  `CompletionGate` runs the agent, verifies the result against acceptance
+  criteria, retries with the failure fed back, and returns the response with
+  `finish_reason` set to `verified` or an honest `unverified`. Never a false pass.
+  - **Hard-first, un-soft-passable checks** (`adk.gate.hard_checks`): a filesystem
+    path a criterion says must exist is checked on disk; a required quoted token
+    must appear in the output. Only genuinely subjective criteria fall through to
+    an optional LLM judge (reuses the agent's own model), which **fails closed**
+    if unavailable.
+  - **`gated_run(agent, task, criteria=..., max_retries=2)`** — one-shot helper.
+  - `auto_criteria` (LLM writes the machine-checkable definition-of-done from the
+    task), a `verifier=` override for custom checks (tests-pass / HTTP probe), and
+    a `requires_action` short-circuit so it never fights human-approval pauses.
+  - Compose it onto any agent exposing `run(task) -> resp{.content, .finish_reason}`
+    (`AitherAgent`, `core.Agent`, or a thin adapter over a remote dispatch).
+  - Exported from the top-level package: `from adk import CompletionGate, gated_run`.
+
 ## [2.19.0] - 2026-07-12
 
 ### Added — Eve agent importer + durable A2A tasks + canonical agent discovery

@@ -1,1018 +1,1039 @@
-[
-  {
-    "category": "research",
-    "description": "Agentic eval, context engineering, OpenHands, quasi-coder, capacity planning",
-    "id": "advanced-skills",
-    "name": "Advanced Skills",
-    "tags": [
-      "eval",
-      "context",
-      "openhands",
-      "capacity",
-      "enterprise"
-    ],
-    "tier": "enterprise",
-    "type": "skill_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "infrastructure",
-    "description": "Agent delegation, forge, swarm, orchestration, reasoning, cognitive",
-    "id": "agent-tools",
-    "name": "Agent Tools",
-    "tags": [
-      "agent",
-      "delegation",
-      "forge",
-      "swarm",
-      "orchestration"
-    ],
-    "tier": "developer",
-    "type": "tool_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "infrastructure",
-    "description": "The sovereign orchestrator — your base AI agent",
-    "id": "aither-core",
-    "name": "Aither Core",
-    "tags": [
-      "core",
-      "orchestrator",
-      "base",
-      "free"
-    ],
-    "tier": "free",
-    "type": "agent_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "business",
-    "description": "Full platform dogfood — every panel, every tool, every domain",
-    "id": "aitherium",
-    "name": "Aitherium HQ",
-    "tags": [
-      "platform",
-      "dogfood",
-      "workspace",
-      "full-access"
-    ],
-    "tier": "free",
-    "type": "agent_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "business",
-    "description": "Structured ML, zero-shot inference, forecasting, and anomaly detection",
-    "id": "analyst-pack",
-    "name": "Analyst Data Agent",
-    "tags": [
-      "data",
-      "structured-ml",
-      "forecasting",
-      "anomaly-detection",
-      "analytics"
-    ],
-    "tier": "starter",
-    "type": "agent_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "dev",
-    "description": "Security audit, vulnerability scanning, and compliance",
-    "id": "athena-pack",
-    "name": "Athena Agent Pack",
-    "tags": [
-      "security",
-      "audit",
-      "vulnerability",
-      "compliance"
-    ],
-    "tier": "developer",
-    "type": "agent_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "business",
-    "description": "Project management, delegation, observability, and billing ops",
-    "id": "atlas-pack",
-    "name": "Atlas Agent Pack",
-    "tags": [
-      "pm",
-      "delegation",
-      "observability",
-      "billing",
-      "business"
-    ],
-    "tier": "starter",
-    "type": "agent_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "infrastructure",
-    "description": "Workflows, dynamic workflows, automation, pipelines, task management",
-    "id": "automation-tools",
-    "name": "Automation Tools",
-    "tags": [
-      "workflows",
-      "automation",
-      "pipelines",
-      "tasks"
-    ],
-    "tier": "developer",
-    "type": "tool_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "business",
-    "description": "Full business team: Atlas + Hera + Prospero + Plutus",
-    "id": "business-bundle",
-    "name": "Business Team Bundle",
-    "tags": [
-      "business",
-      "bundle",
-      "team"
-    ],
-    "tier": "developer",
-    "type": "agent_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "business",
-    "description": "Project intake, product catalog, storefront, PRD, onboarding",
-    "id": "business-skills",
-    "name": "Business Skills",
-    "tags": [
-      "project",
-      "product",
-      "storefront",
-      "prd",
-      "business"
-    ],
-    "tier": "starter",
-    "type": "skill_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "dev",
-    "description": "Feature development, debugging, testing, refactoring, and code review",
-    "id": "claude-code-pack",
-    "name": "Claude Code Development Agent",
-    "tags": [
-      "code",
-      "development",
-      "debugging",
-      "testing",
-      "refactoring",
-      "review"
-    ],
-    "tier": "developer",
-    "type": "agent_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "dev",
-    "description": "Code intelligence: CodeGraph, codebase analysis, review, specs",
-    "id": "code-tools",
-    "name": "Code Tools",
-    "tags": [
-      "code",
-      "codegraph",
-      "review",
-      "analysis",
-      "developer"
-    ],
-    "tier": "starter",
-    "type": "tool_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "dev",
-    "description": "Semantic code search, call-graph tracing, impact/blast-radius analysis, and multi-repo indexing. Understand your codebase at scale — find dead code, trace dependencies, and predict what breaks.",
-    "id": "codegraph",
-    "name": "CodeGraph Code Intelligence",
-    "tags": [
-      "codegraph",
-      "search",
-      "call-graph",
-      "impact-analysis",
-      "code-intelligence",
-      "multi-repo"
-    ],
-    "tier": "free",
-    "type": "tool_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "dev",
-    "description": "Standalone code-intelligence service: AST indexing, semantic search, call-graph tracing, impact analysis, and multi-repo registry. Serves /codegraph/* at port 8153.",
-    "id": "codegraph-service",
-    "name": "CodeGraph Service",
-    "tags": [
-      "codegraph",
-      "code-intelligence",
-      "search",
-      "call-graph",
-      "indexing"
-    ],
-    "tier": "starter",
-    "type": "service_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "commerce",
-    "description": "Stripe commerce, invoicing, billing, products, CRM, contacts",
-    "id": "commerce-tools",
-    "name": "Commerce Tools",
-    "tags": [
-      "stripe",
-      "commerce",
-      "invoicing",
-      "billing",
-      "crm"
-    ],
-    "tier": "starter",
-    "type": "tool_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "business",
-    "description": "Email, relay, social, contacts, calendar, booking, workspace mail",
-    "id": "communication-tools",
-    "name": "Communication Tools",
-    "tags": [
-      "email",
-      "social",
-      "calendar",
-      "booking",
-      "communication"
-    ],
-    "tier": "starter",
-    "type": "tool_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "infrastructure",
-    "description": "Essential skills: workspace management, prompts, strata artifacts",
-    "id": "core-skills",
-    "name": "Core Skills",
-    "tags": [
-      "core",
-      "workspace",
-      "prompts",
-      "free"
-    ],
-    "tier": "free",
-    "type": "skill_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "infrastructure",
-    "description": "Essential tools: filesystem, git, memory, search, context, diagnostics",
-    "id": "core-tools",
-    "name": "Core Tools",
-    "tags": [
-      "core",
-      "filesystem",
-      "git",
-      "memory",
-      "search",
-      "free"
-    ],
-    "tier": "free",
-    "type": "tool_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "creative",
-    "description": "Full creative team: Iris + Saga + Prometheus + Vera",
-    "id": "creative-bundle",
-    "name": "Creative Team Bundle",
-    "tags": [
-      "creative",
-      "bundle",
-      "team"
-    ],
-    "tier": "developer",
-    "type": "agent_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "creative",
-    "description": "Content pipeline, character design, blog-to-video, design systems",
-    "id": "creative-skills",
-    "name": "Creative Skills",
-    "tags": [
-      "content",
-      "character",
-      "blog",
-      "design",
-      "creative"
-    ],
-    "tier": "starter",
-    "type": "skill_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "creative",
-    "description": "Image/video generation, design systems, Remotion, Mermaid diagrams",
-    "id": "creative-tools",
-    "name": "Creative Tools",
-    "tags": [
-      "image",
-      "video",
-      "design",
-      "generation",
-      "creative"
-    ],
-    "tier": "starter",
-    "type": "tool_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "agents",
-    "description": "Cited multi-source research analyst — multi-engine web search, scholarly (arXiv/PubMed/Crossref/SemanticScholar), SEC/GitHub/Wikidata, Wayback recovery, a compounding knowledge graph, and exported cited reports (MD/PDF/DOCX). Built on aither-adk; runs managed or BYO-key. Also an MCP server.",
-    "id": "deep-research",
-    "name": "Deep Research",
-    "pricing": {
-      "free_tier": false,
-      "subscription_cents": 2900
+{
+  "version": 1,
+  "packs": [
+    {
+      "id": "aitherium",
+      "name": "Aitherium HQ",
+      "type": "agent_pack",
+      "version": "1.0.0",
+      "description": "Full platform dogfood \u2014 every panel, every tool, every domain",
+      "tier": "free",
+      "category": "business",
+      "tags": [
+        "platform",
+        "dogfood",
+        "workspace",
+        "full-access"
+      ]
     },
-    "tags": [
-      "research",
-      "search",
-      "scholarly",
-      "knowledge-graph",
-      "mcp",
-      "cited",
-      "managed",
-      "self-hosted"
-    ],
-    "tier": "enterprise",
-    "type": "service_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "dev",
-    "description": "Code generation, refactoring, deployment, and PR management",
-    "id": "demiurge-pack",
-    "name": "Demiurge Agent Pack",
-    "tags": [
-      "code",
-      "refactor",
-      "deploy",
-      "pr",
-      "developer"
-    ],
-    "tier": "starter",
-    "type": "agent_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "dev",
-    "description": "Full dev team: Demiurge + Hydra + Athena + Vera",
-    "id": "dev-bundle",
-    "name": "Dev Team Bundle",
-    "tags": [
-      "dev",
-      "bundle",
-      "team",
-      "code"
-    ],
-    "tier": "developer",
-    "type": "agent_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "dev",
-    "description": "Git workflow, code refactoring, CI/CD, SWE best practices",
-    "id": "dev-skills",
-    "name": "Dev Skills",
-    "tags": [
-      "git",
-      "refactor",
-      "cicd",
-      "swe",
-      "developer"
-    ],
-    "tier": "starter",
-    "type": "skill_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "infrastructure",
-    "description": "LDAP directory + REST API for user and group management",
-    "id": "directory-pack",
-    "name": "AitherDirectory",
-    "tags": [
-      "directory",
-      "ldap",
-      "users",
-      "groups"
-    ],
-    "tier": "developer",
-    "type": "service_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "perception",
-    "description": "Fully-offline, GPU-free voice for self-hosted nodes: Parakeet TDT STT + Supertonic TTS (ONNX, CPU) as local OpenAI-compatible sidecars. AitherVoice auto-routes to them when present (set AITHER_VOICE_PROFILE=edge). Engines adapted from Local-VoiceMode-LLM (MIT).",
-    "id": "edge-voice",
-    "install_command": "adk deploy edge-voice",
-    "install_method": "aitherzero_playbook",
-    "name": "Edge Voice (Offline CPU)",
-    "pricing": {
-      "free_tier": true,
-      "subscription_cents": 0
+    {
+      "id": "aither-core",
+      "name": "Aither Core",
+      "type": "agent_pack",
+      "version": "1.0.0",
+      "description": "The sovereign orchestrator \u2014 your base AI agent",
+      "tier": "free",
+      "category": "infrastructure",
+      "tags": [
+        "core",
+        "orchestrator",
+        "base",
+        "free"
+      ]
     },
-    "tags": [
-      "voice",
-      "stt",
-      "tts",
-      "offline",
-      "cpu",
-      "onnx",
-      "edge",
-      "self-hosted",
-      "standalone"
-    ],
-    "tier": "developer",
-    "type": "service_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "infrastructure",
-    "description": "Multi-node distributed inference — connect GPU, Mac, CPU cluster, and cloud into one routing fabric with effort-based model selection",
-    "id": "grid-distributed",
-    "name": "AitherGrid — Distributed Inference",
-    "tags": [
-      "distributed",
-      "inference",
-      "multi-node",
-      "gpu",
-      "apple-silicon",
-      "llama-cpp",
-      "vllm",
-      "ollama",
-      "edge"
-    ],
-    "tier": "starter",
-    "type": "service_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "business",
-    "description": "Marketing campaigns, SEO, funnels, and content strategy",
-    "id": "hera-pack",
-    "name": "Hera Agent Pack",
-    "tags": [
-      "marketing",
-      "seo",
-      "campaigns",
-      "funnels",
-      "content"
-    ],
-    "tier": "developer",
-    "type": "agent_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "dev",
-    "description": "Architecture reviews, design trade-off analysis, and ADRs",
-    "id": "hermes-pack",
-    "name": "Hermes Architecture Agent",
-    "tags": [
-      "architecture",
-      "design",
-      "trade-offs",
-      "refactoring",
-      "adr",
-      "reasoning"
-    ],
-    "tier": "developer",
-    "type": "agent_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "dev",
-    "description": "Testing, QA, code review, and CI/CD quality gates",
-    "id": "hydra-pack",
-    "name": "Hydra Agent Pack",
-    "tags": [
-      "testing",
-      "qa",
-      "review",
-      "cicd",
-      "quality"
-    ],
-    "tier": "developer",
-    "type": "agent_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "infrastructure",
-    "description": "SSO/OIDC/SAML identity provider with RBAC",
-    "id": "identity-pack",
-    "name": "AitherIdentity",
-    "tags": [
-      "identity",
-      "sso",
-      "oidc",
-      "saml",
-      "rbac"
-    ],
-    "tier": "developer",
-    "type": "service_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "infrastructure",
-    "description": "Cloud deploy, K3s, fleet management, compute, GPU deployments",
-    "id": "infrastructure-tools",
-    "name": "Infrastructure Tools",
-    "tags": [
-      "cloud",
-      "k3s",
-      "fleet",
-      "compute",
-      "gpu",
-      "infrastructure"
-    ],
-    "tier": "developer",
-    "type": "tool_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "creative",
-    "description": "Image, video, 3D, and animation generation",
-    "id": "iris-pack",
-    "name": "Iris Agent Pack",
-    "tags": [
-      "image",
-      "video",
-      "3d",
-      "animation",
-      "creative"
-    ],
-    "tier": "starter",
-    "type": "agent_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "infrastructure",
-    "description": "16 specialized personas for advanced multi-agent orchestration",
-    "id": "knights-pack",
-    "name": "Knights of the Round Table",
-    "tags": [
-      "knights",
-      "multi-agent",
-      "personas",
-      "enterprise"
-    ],
-    "tier": "enterprise",
-    "type": "agent_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "research",
-    "description": "Knowledge RAG service with document ingestion and retrieval",
-    "id": "knowledge-rag-pack",
-    "name": "Knowledge RAG",
-    "tags": [
-      "knowledge",
-      "rag",
-      "documents",
-      "retrieval"
-    ],
-    "tier": "starter",
-    "type": "service_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "research",
-    "description": "Knowledge RAG, embeddings, AitherGraph, event graph, condensation",
-    "id": "knowledge-tools",
-    "name": "Knowledge Tools",
-    "tags": [
-      "knowledge",
-      "rag",
-      "embeddings",
-      "graph",
-      "research"
-    ],
-    "tier": "starter",
-    "type": "tool_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "research",
-    "description": "Research, knowledge synthesis, benchmarks, and a compounding LLM-maintained wiki",
-    "id": "lyra-pack",
-    "name": "Lyra Agent Pack",
-    "tags": [
-      "research",
-      "knowledge",
-      "wiki",
-      "benchmarks",
-      "analysis"
-    ],
-    "tier": "starter",
-    "type": "agent_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "research",
-    "description": "Turnkey self-service knowledge base: Lyra agent + wiki tools + self-hosted backend, autonomously curated by Nemotron-Orchestrator-8B.",
-    "id": "lyra-wiki",
-    "name": "LyraWiki — Knowledge Base Appliance",
-    "tags": [
-      "wiki",
-      "knowledge",
-      "appliance",
-      "self-service",
-      "nemotron",
-      "multi-tenant"
-    ],
-    "tier": "developer",
-    "type": "bundle",
-    "version": "1.0.0"
-  },
-  {
-    "category": "research",
-    "description": "Self-hosted, multi-tenant LLM wiki backend. Bundles Nemotron-Orchestrator-8B + the full memory stack (Mind, Nexus, Spirit, KnowledgeGraph) behind LyraWiki.",
-    "id": "lyra-wiki-service",
-    "name": "LyraWiki Knowledge Engine",
-    "pricing": {
-      "free_tier": false,
-      "subscription_cents": 2900
+    {
+      "id": "arc-brainpack",
+      "name": "ARC Brain \u2014 Contribute & Earn",
+      "type": "agent_pack",
+      "version": "1.0.0",
+      "description": "Crowdsource the AitherWorldModel \u2014 play real ARC-AGI-3 games with a random policy, contribute every transition to the public Contribution Gateway, and climb the contributor leaderboard. Free and unmetered. Or run the whole stack solo on your own box, no GPU.",
+      "tier": "free",
+      "category": "research",
+      "tags": [
+        "arc-agi",
+        "world-model",
+        "crowdsource",
+        "contribute",
+        "acta",
+        "leaderboard",
+        "free"
+      ]
     },
-    "tags": [
-      "wiki",
-      "knowledge",
-      "rag",
-      "self-hosted",
-      "multi-tenant",
-      "nemotron",
-      "standalone"
-    ],
-    "tier": "developer",
-    "type": "service_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "research",
-    "description": "Wiki knowledge management: ingest, query, lint, consolidate, crystallize, decay reports, page history",
-    "id": "lyra-wiki-tools",
-    "name": "LyraWiki Tools",
-    "tags": [
-      "wiki",
-      "knowledge",
-      "rag",
-      "ingest",
-      "query",
-      "curate"
-    ],
-    "tier": "developer",
-    "type": "tool_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "business",
-    "description": "Tenant-scoped email service with folders and threading",
-    "id": "mail-pack",
-    "name": "AitherMail",
-    "tags": [
-      "email",
-      "mail",
-      "communication"
-    ],
-    "tier": "starter",
-    "type": "service_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "business",
-    "description": "Email sequences, presentations, LinkedIn, blog-to-presentation",
-    "id": "marketing-skills",
-    "name": "Marketing Skills",
-    "tags": [
-      "email",
-      "presentation",
-      "linkedin",
-      "marketing"
-    ],
-    "tier": "developer",
-    "type": "skill_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "creative",
-    "description": "Managed media downloader/processor with an anonymized torrent-VPN (AitherTunnel WireGuard kill-switch). Self-provisions its peer + AitherSecrets-scoped config from the fleet master key.",
-    "id": "media-forge",
-    "name": "MediaForge",
-    "pricing": {
-      "free_tier": false,
-      "subscription_cents": 1900
+    {
+      "id": "atlas-pack",
+      "name": "Atlas Agent Pack",
+      "type": "agent_pack",
+      "version": "1.0.0",
+      "description": "Project management, delegation, observability, and billing ops",
+      "tier": "starter",
+      "category": "business",
+      "tags": [
+        "pm",
+        "delegation",
+        "observability",
+        "billing",
+        "business"
+      ]
     },
-    "tags": [
-      "media",
-      "torrent",
-      "vpn",
-      "privacy",
-      "wireguard",
-      "managed",
-      "self-hosted"
-    ],
-    "tier": "enterprise",
-    "type": "service_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "infrastructure",
-    "description": "Autonomously quantize an LLM to 4-bit (AWQ/RTN) — free on your own CPU+GPU, optional cloud GPU — then eval, register, and deploy. One tracked job: provision→quantize→eval→register→deploy. RTN runs locally for $0.",
-    "id": "model-quantization",
-    "name": "Model Quantization",
-    "tags": [
-      "quantization",
-      "awq",
-      "4-bit",
-      "gpu",
-      "cost-optimization",
-      "local",
-      "free",
-      "vllm"
-    ],
-    "tier": "free",
-    "type": "tool_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "research",
-    "description": "Web research, primary sources, and cited reports with knowledge graph",
-    "id": "openclaw-pack",
-    "name": "OpenClaw Research Agent",
-    "tags": [
-      "research",
-      "web-search",
-      "citations",
-      "knowledge-graph",
-      "analysis"
-    ],
-    "tier": "starter",
-    "type": "agent_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "infrastructure",
-    "description": "Docker, K8s, disaster recovery, job scheduling, network inspection",
-    "id": "ops-skills",
-    "name": "Operations Skills",
-    "tags": [
-      "docker",
-      "k8s",
-      "recovery",
-      "scheduling",
-      "ops"
-    ],
-    "tier": "developer",
-    "type": "skill_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "creative",
-    "description": "Vision, voice, multimodal, audio assets, media extraction",
-    "id": "perception-tools",
-    "name": "Perception Tools",
-    "tags": [
-      "vision",
-      "voice",
-      "multimodal",
-      "audio",
-      "perception"
-    ],
-    "tier": "developer",
-    "type": "tool_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "business",
-    "description": "Create polls/surveys, email them to subscribers with one-vote links, embed them in blog posts, and watch live results. Self-contained: MCP tools + admin panel + embeddable widget + email distribution.",
-    "id": "polls-pack",
-    "name": "Polls & Surveys",
-    "pricing": {
-      "free_tier": false,
-      "subscription_cents": 900
+    {
+      "id": "demiurge-pack",
+      "name": "Demiurge Agent Pack",
+      "type": "agent_pack",
+      "version": "1.0.0",
+      "description": "Code generation, refactoring, deployment, and PR management",
+      "tier": "starter",
+      "category": "dev",
+      "tags": [
+        "code",
+        "refactor",
+        "deploy",
+        "pr",
+        "developer"
+      ]
     },
-    "tags": [
-      "polls",
-      "surveys",
-      "feedback",
-      "engagement",
-      "marketing",
-      "cms",
-      "newsletter"
-    ],
-    "tier": "developer",
-    "type": "tool_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "business",
-    "description": "Sales, CRM, accounting, and financial analysis",
-    "id": "prospero-pack",
-    "name": "Prospero Agent Pack",
-    "tags": [
-      "sales",
-      "crm",
-      "accounting",
-      "finance"
-    ],
-    "tier": "developer",
-    "type": "agent_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "infrastructure",
-    "description": "Qdrant vector database for RAG and embeddings",
-    "id": "qdrant-pack",
-    "name": "Qdrant Vector DB",
-    "tags": [
-      "vector",
-      "qdrant",
-      "rag",
-      "embeddings"
-    ],
-    "tier": "starter",
-    "type": "service_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "creative",
-    "description": "Computer-vision tools over a Roboflow inference server (local Docker or remote): run detection models and Workflows, drive the asset pipeline with quality gating and JSONL/CSV logging, and bridge PASS-grade assets to 3D via MicroScheduler mesh generation. Cloud project ops use your Roboflow API key. Pure HTTP — no torch, no inference SDK baked in.",
-    "id": "roboflow",
-    "name": "Roboflow Vision",
-    "pricing": {
-      "free_tier": true,
-      "subscription_cents": 0
+    {
+      "id": "lyra-pack",
+      "name": "Lyra Agent Pack",
+      "type": "agent_pack",
+      "version": "1.0.0",
+      "description": "Research, knowledge synthesis, benchmarks, and a compounding LLM-maintained wiki",
+      "tier": "starter",
+      "category": "research",
+      "tags": [
+        "research",
+        "knowledge",
+        "wiki",
+        "benchmarks",
+        "analysis"
+      ]
     },
-    "tags": [
-      "computer-vision",
-      "inference",
-      "object-detection",
-      "segmentation",
-      "workflows",
-      "3d-generation",
-      "roboflow"
-    ],
-    "tier": "free",
-    "type": "tool_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "creative",
-    "description": "Storytelling, narrative, lore, and content creation",
-    "id": "saga-pack",
-    "name": "Saga Agent Pack",
-    "tags": [
-      "storytelling",
-      "narrative",
-      "lore",
-      "content",
-      "writing"
-    ],
-    "tier": "starter",
-    "type": "agent_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "infrastructure",
-    "description": "Standalone credential vault for agent secrets management",
-    "id": "secrets-pack",
-    "name": "AitherSecrets",
-    "tags": [
-      "secrets",
-      "vault",
-      "credentials"
-    ],
-    "tier": "starter",
-    "type": "service_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "infrastructure",
-    "description": "Secret rotation, dependency audit, privacy toolkit, accessibility",
-    "id": "security-skills",
-    "name": "Security Skills",
-    "tags": [
-      "security",
-      "secrets",
-      "audit",
-      "privacy",
-      "accessibility"
-    ],
-    "tier": "developer",
-    "type": "skill_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "infrastructure",
-    "description": "RBAC, permissions, secrets management, security ops, compliance",
-    "id": "security-tools",
-    "name": "Security Tools",
-    "tags": [
-      "rbac",
-      "permissions",
-      "secrets",
-      "security",
-      "compliance"
-    ],
-    "tier": "developer",
-    "type": "tool_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "commerce",
-    "description": "Storefront + Stripe Commerce for agent-powered shops",
-    "id": "shop-stack",
-    "name": "Shop Stack",
-    "tags": [
-      "shop",
-      "storefront",
-      "stripe",
-      "commerce"
-    ],
-    "tier": "starter",
-    "type": "service_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "infrastructure",
-    "description": "Full AitherOS self-hosted deployment — custom quote via RFP",
-    "id": "sovereign-stack",
-    "name": "Sovereign Stack",
-    "tags": [
-      "sovereign",
-      "self-hosted",
-      "full",
-      "enterprise"
-    ],
-    "tier": "enterprise",
-    "type": "service_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "infrastructure",
-    "description": "File storage, sync, and backup with peer-to-peer mesh. Install on any endpoint.",
-    "id": "strata-sync",
-    "name": "AitherStrata Sync",
-    "pricing": {
-      "free_tier": true,
-      "subscription_cents": 1400
+    {
+      "id": "iris-pack",
+      "name": "Iris Agent Pack",
+      "type": "agent_pack",
+      "version": "1.0.0",
+      "description": "Image, video, 3D, and animation generation",
+      "tier": "starter",
+      "category": "creative",
+      "tags": [
+        "image",
+        "video",
+        "3d",
+        "animation",
+        "creative"
+      ]
     },
-    "tags": [
-      "storage",
-      "sync",
-      "backup",
-      "mesh",
-      "standalone",
-      "self-hosted"
-    ],
-    "tier": "free",
-    "type": "service_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "infrastructure",
-    "description": "Model training, cloud training, LLMfit, model fleet, session harvesting",
-    "id": "training-tools",
-    "name": "Training Tools",
-    "tags": [
-      "training",
-      "fine-tuning",
-      "model",
-      "fleet",
-      "enterprise"
-    ],
-    "tier": "enterprise",
-    "type": "tool_pack",
-    "version": "1.0.0"
-  },
-  {
-    "category": "business",
-    "description": "People analytics, relationship insights, meeting/email intelligence, collaboration signals, engagement scoring",
-    "id": "workspace-intelligence-tools",
-    "name": "Workspace Intelligence",
-    "tags": [
-      "intelligence",
-      "people",
-      "analytics",
-      "meetings",
-      "email",
-      "relationships",
-      "collaboration"
-    ],
-    "tier": "starter",
-    "type": "tool_pack",
-    "version": "1.0.0"
-  }
-]
+    {
+      "id": "saga-pack",
+      "name": "Saga Agent Pack",
+      "type": "agent_pack",
+      "version": "1.0.0",
+      "description": "Storytelling, narrative, lore, and content creation",
+      "tier": "starter",
+      "category": "creative",
+      "tags": [
+        "storytelling",
+        "narrative",
+        "lore",
+        "content",
+        "writing"
+      ]
+    },
+    {
+      "id": "openclaw-pack",
+      "name": "OpenClaw Research Agent",
+      "type": "agent_pack",
+      "version": "1.0.0",
+      "description": "Web research, primary sources, and cited reports with knowledge graph",
+      "tier": "starter",
+      "category": "research",
+      "tags": [
+        "research",
+        "web-search",
+        "citations",
+        "knowledge-graph",
+        "analysis"
+      ]
+    },
+    {
+      "id": "analyst-pack",
+      "name": "Analyst Data Agent",
+      "type": "agent_pack",
+      "version": "1.0.0",
+      "description": "Structured ML, zero-shot inference, forecasting, and anomaly detection",
+      "tier": "starter",
+      "category": "business",
+      "tags": [
+        "data",
+        "structured-ml",
+        "forecasting",
+        "anomaly-detection",
+        "analytics"
+      ]
+    },
+    {
+      "id": "hydra-pack",
+      "name": "Hydra Agent Pack",
+      "type": "agent_pack",
+      "version": "1.0.0",
+      "description": "Testing, QA, code review, and CI/CD quality gates",
+      "tier": "developer",
+      "category": "dev",
+      "tags": [
+        "testing",
+        "qa",
+        "review",
+        "cicd",
+        "quality"
+      ]
+    },
+    {
+      "id": "athena-pack",
+      "name": "Athena Agent Pack",
+      "type": "agent_pack",
+      "version": "1.0.0",
+      "description": "Security audit, vulnerability scanning, and compliance",
+      "tier": "developer",
+      "category": "dev",
+      "tags": [
+        "security",
+        "audit",
+        "vulnerability",
+        "compliance"
+      ]
+    },
+    {
+      "id": "hera-pack",
+      "name": "Hera Agent Pack",
+      "type": "agent_pack",
+      "version": "1.0.0",
+      "description": "Marketing campaigns, SEO, funnels, and content strategy",
+      "tier": "developer",
+      "category": "business",
+      "tags": [
+        "marketing",
+        "seo",
+        "campaigns",
+        "funnels",
+        "content"
+      ]
+    },
+    {
+      "id": "prospero-pack",
+      "name": "Prospero Agent Pack",
+      "type": "agent_pack",
+      "version": "1.0.0",
+      "description": "Sales, CRM, accounting, and financial analysis",
+      "tier": "developer",
+      "category": "business",
+      "tags": [
+        "sales",
+        "crm",
+        "accounting",
+        "finance"
+      ]
+    },
+    {
+      "id": "hermes-pack",
+      "name": "Hermes Architecture Agent",
+      "type": "agent_pack",
+      "version": "1.0.0",
+      "description": "Architecture reviews, design trade-off analysis, and ADRs",
+      "tier": "developer",
+      "category": "dev",
+      "tags": [
+        "architecture",
+        "design",
+        "trade-offs",
+        "refactoring",
+        "adr",
+        "reasoning"
+      ]
+    },
+    {
+      "id": "claude-code-pack",
+      "name": "Claude Code Development Agent",
+      "type": "agent_pack",
+      "version": "1.0.0",
+      "description": "Feature development, debugging, testing, refactoring, and code review",
+      "tier": "developer",
+      "category": "dev",
+      "tags": [
+        "code",
+        "development",
+        "debugging",
+        "testing",
+        "refactoring",
+        "review"
+      ]
+    },
+    {
+      "id": "creative-bundle",
+      "name": "Creative Team Bundle",
+      "type": "agent_pack",
+      "version": "1.0.0",
+      "description": "Full creative team: Iris + Saga + Prometheus + Vera",
+      "tier": "developer",
+      "category": "creative",
+      "tags": [
+        "creative",
+        "bundle",
+        "team"
+      ]
+    },
+    {
+      "id": "dev-bundle",
+      "name": "Dev Team Bundle",
+      "type": "agent_pack",
+      "version": "1.0.0",
+      "description": "Full dev team: Demiurge + Hydra + Athena + Vera",
+      "tier": "developer",
+      "category": "dev",
+      "tags": [
+        "dev",
+        "bundle",
+        "team",
+        "code"
+      ]
+    },
+    {
+      "id": "business-bundle",
+      "name": "Business Team Bundle",
+      "type": "agent_pack",
+      "version": "1.0.0",
+      "description": "Full business team: Atlas + Hera + Prospero + Plutus",
+      "tier": "developer",
+      "category": "business",
+      "tags": [
+        "business",
+        "bundle",
+        "team"
+      ]
+    },
+    {
+      "id": "knights-pack",
+      "name": "Knights of the Round Table",
+      "type": "agent_pack",
+      "version": "1.0.0",
+      "description": "16 specialized personas for advanced multi-agent orchestration",
+      "tier": "enterprise",
+      "category": "infrastructure",
+      "tags": [
+        "knights",
+        "multi-agent",
+        "personas",
+        "enterprise"
+      ]
+    },
+    {
+      "id": "strata-sync",
+      "name": "AitherStrata Sync",
+      "type": "service_pack",
+      "version": "1.0.0",
+      "description": "File storage, sync, and backup with peer-to-peer mesh. Install on any endpoint.",
+      "tier": "free",
+      "category": "infrastructure",
+      "tags": [
+        "storage",
+        "sync",
+        "backup",
+        "mesh",
+        "standalone",
+        "self-hosted"
+      ],
+      "pricing": {
+        "free_tier": true,
+        "subscription_cents": 1400
+      }
+    },
+    {
+      "id": "media-forge",
+      "name": "MediaForge",
+      "type": "service_pack",
+      "version": "1.0.0",
+      "description": "Managed media downloader/processor with an anonymized torrent-VPN (AitherTunnel WireGuard kill-switch). Self-provisions its peer + AitherSecrets-scoped config from the fleet master key.",
+      "tier": "enterprise",
+      "category": "creative",
+      "tags": [
+        "media",
+        "torrent",
+        "vpn",
+        "privacy",
+        "wireguard",
+        "managed",
+        "self-hosted"
+      ],
+      "pricing": {
+        "free_tier": false,
+        "subscription_cents": 1900
+      }
+    },
+    {
+      "id": "deep-research",
+      "name": "Deep Research",
+      "type": "service_pack",
+      "version": "1.0.0",
+      "description": "Cited multi-source research analyst \u2014 multi-engine web search, scholarly (arXiv/PubMed/Crossref/SemanticScholar), SEC/GitHub/Wikidata, Wayback recovery, a compounding knowledge graph, and exported cited reports (MD/PDF/DOCX). Built on aither-adk; runs managed or BYO-key. Also an MCP server.",
+      "tier": "enterprise",
+      "category": "agents",
+      "tags": [
+        "research",
+        "search",
+        "scholarly",
+        "knowledge-graph",
+        "mcp",
+        "cited",
+        "managed",
+        "self-hosted"
+      ],
+      "pricing": {
+        "free_tier": false,
+        "subscription_cents": 2900
+      }
+    },
+    {
+      "id": "edge-voice",
+      "name": "Edge Voice (Offline CPU)",
+      "type": "service_pack",
+      "version": "1.0.0",
+      "description": "Fully-offline, GPU-free voice for self-hosted nodes: Parakeet TDT STT + Supertonic TTS (ONNX, CPU) as local OpenAI-compatible sidecars. AitherVoice auto-routes to them when present (set AITHER_VOICE_PROFILE=edge). Engines adapted from Local-VoiceMode-LLM (MIT).",
+      "tier": "developer",
+      "category": "perception",
+      "tags": [
+        "voice",
+        "stt",
+        "tts",
+        "offline",
+        "cpu",
+        "onnx",
+        "edge",
+        "self-hosted",
+        "standalone"
+      ],
+      "install_method": "aitherzero_playbook",
+      "install_command": "adk deploy edge-voice",
+      "pricing": {
+        "free_tier": true,
+        "subscription_cents": 0
+      }
+    },
+    {
+      "id": "lyra-wiki-service",
+      "name": "LyraWiki Knowledge Engine",
+      "type": "service_pack",
+      "version": "1.0.0",
+      "description": "Self-hosted, multi-tenant LLM wiki backend. Bundles Nemotron-Orchestrator-8B + the full memory stack (Mind, Nexus, Spirit, KnowledgeGraph) behind LyraWiki.",
+      "tier": "developer",
+      "category": "research",
+      "tags": [
+        "wiki",
+        "knowledge",
+        "rag",
+        "self-hosted",
+        "multi-tenant",
+        "nemotron",
+        "standalone"
+      ],
+      "pricing": {
+        "free_tier": false,
+        "subscription_cents": 2900
+      }
+    },
+    {
+      "id": "lyra-wiki",
+      "name": "LyraWiki \u2014 Knowledge Base Appliance",
+      "type": "bundle",
+      "version": "1.0.0",
+      "description": "Turnkey self-service knowledge base: Lyra agent + wiki tools + self-hosted backend, autonomously curated by Nemotron-Orchestrator-8B.",
+      "tier": "developer",
+      "category": "research",
+      "tags": [
+        "wiki",
+        "knowledge",
+        "appliance",
+        "self-service",
+        "nemotron",
+        "multi-tenant"
+      ]
+    },
+    {
+      "id": "model-quantization",
+      "name": "Model Quantization",
+      "type": "tool_pack",
+      "version": "1.0.0",
+      "description": "Autonomously quantize an LLM to 4-bit (AWQ/RTN) \u2014 free on your own CPU+GPU, optional cloud GPU \u2014 then eval, register, and deploy. One tracked job: provision\u2192quantize\u2192eval\u2192register\u2192deploy. RTN runs locally for $0.",
+      "tier": "free",
+      "category": "infrastructure",
+      "tags": [
+        "quantization",
+        "awq",
+        "4-bit",
+        "gpu",
+        "cost-optimization",
+        "local",
+        "free",
+        "vllm"
+      ]
+    },
+    {
+      "id": "codegraph",
+      "name": "CodeGraph Code Intelligence",
+      "type": "tool_pack",
+      "version": "1.0.0",
+      "description": "Semantic code search, call-graph tracing, impact/blast-radius analysis, and multi-repo indexing. Understand your codebase at scale \u2014 find dead code, trace dependencies, and predict what breaks.",
+      "tier": "free",
+      "category": "dev",
+      "tags": [
+        "codegraph",
+        "search",
+        "call-graph",
+        "impact-analysis",
+        "code-intelligence",
+        "multi-repo"
+      ]
+    },
+    {
+      "id": "roboflow",
+      "name": "Roboflow Vision",
+      "type": "tool_pack",
+      "version": "1.0.0",
+      "description": "Computer-vision tools over a Roboflow inference server (local Docker or remote): run detection models and Workflows, drive the asset pipeline with quality gating and JSONL/CSV logging, and bridge PASS-grade assets to 3D via MicroScheduler mesh generation. Cloud project ops use your Roboflow API key. Pure HTTP \u2014 no torch, no inference SDK baked in.",
+      "tier": "free",
+      "category": "creative",
+      "tags": [
+        "computer-vision",
+        "inference",
+        "object-detection",
+        "segmentation",
+        "workflows",
+        "3d-generation",
+        "roboflow"
+      ],
+      "pricing": {
+        "free_tier": true,
+        "subscription_cents": 0
+      }
+    },
+    {
+      "id": "codegraph-service",
+      "name": "CodeGraph Service",
+      "type": "service_pack",
+      "version": "1.0.0",
+      "description": "Standalone code-intelligence service: AST indexing, semantic search, call-graph tracing, impact analysis, and multi-repo registry. Serves /codegraph/* at port 8153.",
+      "tier": "starter",
+      "category": "dev",
+      "tags": [
+        "codegraph",
+        "code-intelligence",
+        "search",
+        "call-graph",
+        "indexing"
+      ]
+    },
+    {
+      "id": "lyra-wiki-tools",
+      "name": "LyraWiki Tools",
+      "type": "tool_pack",
+      "version": "1.0.0",
+      "description": "Wiki knowledge management: ingest, query, lint, consolidate, crystallize, decay reports, page history",
+      "tier": "developer",
+      "category": "research",
+      "tags": [
+        "wiki",
+        "knowledge",
+        "rag",
+        "ingest",
+        "query",
+        "curate"
+      ]
+    },
+    {
+      "id": "polls-pack",
+      "name": "Polls & Surveys",
+      "type": "tool_pack",
+      "version": "1.0.0",
+      "description": "Create polls/surveys, email them to subscribers with one-vote links, embed them in blog posts, and watch live results. Self-contained: MCP tools + admin panel + embeddable widget + email distribution.",
+      "tier": "developer",
+      "category": "business",
+      "tags": [
+        "polls",
+        "surveys",
+        "feedback",
+        "engagement",
+        "marketing",
+        "cms",
+        "newsletter"
+      ],
+      "pricing": {
+        "free_tier": false,
+        "subscription_cents": 900
+      }
+    },
+    {
+      "id": "core-tools",
+      "name": "Core Tools",
+      "type": "tool_pack",
+      "version": "1.0.0",
+      "description": "Essential tools: filesystem, git, memory, search, context, diagnostics",
+      "tier": "free",
+      "category": "infrastructure",
+      "tags": [
+        "core",
+        "filesystem",
+        "git",
+        "memory",
+        "search",
+        "free"
+      ]
+    },
+    {
+      "id": "code-tools",
+      "name": "Code Tools",
+      "type": "tool_pack",
+      "version": "1.0.0",
+      "description": "Code intelligence: CodeGraph, codebase analysis, review, specs",
+      "tier": "starter",
+      "category": "dev",
+      "tags": [
+        "code",
+        "codegraph",
+        "review",
+        "analysis",
+        "developer"
+      ]
+    },
+    {
+      "id": "commerce-tools",
+      "name": "Commerce Tools",
+      "type": "tool_pack",
+      "version": "1.0.0",
+      "description": "Stripe commerce, invoicing, billing, products, CRM, contacts",
+      "tier": "starter",
+      "category": "commerce",
+      "tags": [
+        "stripe",
+        "commerce",
+        "invoicing",
+        "billing",
+        "crm"
+      ]
+    },
+    {
+      "id": "creative-tools",
+      "name": "Creative Tools",
+      "type": "tool_pack",
+      "version": "1.0.0",
+      "description": "Image/video generation, design systems, Remotion, Mermaid diagrams",
+      "tier": "starter",
+      "category": "creative",
+      "tags": [
+        "image",
+        "video",
+        "design",
+        "generation",
+        "creative"
+      ]
+    },
+    {
+      "id": "knowledge-tools",
+      "name": "Knowledge Tools",
+      "type": "tool_pack",
+      "version": "1.0.0",
+      "description": "Knowledge RAG, embeddings, AitherGraph, event graph, condensation",
+      "tier": "starter",
+      "category": "research",
+      "tags": [
+        "knowledge",
+        "rag",
+        "embeddings",
+        "graph",
+        "research"
+      ]
+    },
+    {
+      "id": "communication-tools",
+      "name": "Communication Tools",
+      "type": "tool_pack",
+      "version": "1.0.0",
+      "description": "Email, relay, social, contacts, calendar, booking, workspace mail",
+      "tier": "starter",
+      "category": "business",
+      "tags": [
+        "email",
+        "social",
+        "calendar",
+        "booking",
+        "communication"
+      ]
+    },
+    {
+      "id": "workspace-intelligence-tools",
+      "name": "Workspace Intelligence",
+      "type": "tool_pack",
+      "version": "1.0.0",
+      "description": "People analytics, relationship insights, meeting/email intelligence, collaboration signals, engagement scoring",
+      "tier": "starter",
+      "category": "business",
+      "tags": [
+        "intelligence",
+        "people",
+        "analytics",
+        "meetings",
+        "email",
+        "relationships",
+        "collaboration"
+      ]
+    },
+    {
+      "id": "infrastructure-tools",
+      "name": "Infrastructure Tools",
+      "type": "tool_pack",
+      "version": "1.0.0",
+      "description": "Cloud deploy, K3s, fleet management, compute, GPU deployments",
+      "tier": "developer",
+      "category": "infrastructure",
+      "tags": [
+        "cloud",
+        "k3s",
+        "fleet",
+        "compute",
+        "gpu",
+        "infrastructure"
+      ]
+    },
+    {
+      "id": "automation-tools",
+      "name": "Automation Tools",
+      "type": "tool_pack",
+      "version": "1.0.0",
+      "description": "Workflows, dynamic workflows, automation, pipelines, task management",
+      "tier": "developer",
+      "category": "infrastructure",
+      "tags": [
+        "workflows",
+        "automation",
+        "pipelines",
+        "tasks"
+      ]
+    },
+    {
+      "id": "security-tools",
+      "name": "Security Tools",
+      "type": "tool_pack",
+      "version": "1.0.0",
+      "description": "RBAC, permissions, secrets management, security ops, compliance",
+      "tier": "developer",
+      "category": "infrastructure",
+      "tags": [
+        "rbac",
+        "permissions",
+        "secrets",
+        "security",
+        "compliance"
+      ]
+    },
+    {
+      "id": "perception-tools",
+      "name": "Perception Tools",
+      "type": "tool_pack",
+      "version": "1.0.0",
+      "description": "Vision, voice, multimodal, audio assets, media extraction",
+      "tier": "developer",
+      "category": "creative",
+      "tags": [
+        "vision",
+        "voice",
+        "multimodal",
+        "audio",
+        "perception"
+      ]
+    },
+    {
+      "id": "agent-tools",
+      "name": "Agent Tools",
+      "type": "tool_pack",
+      "version": "1.0.0",
+      "description": "Agent delegation, forge, swarm, orchestration, reasoning, cognitive",
+      "tier": "developer",
+      "category": "infrastructure",
+      "tags": [
+        "agent",
+        "delegation",
+        "forge",
+        "swarm",
+        "orchestration"
+      ]
+    },
+    {
+      "id": "training-tools",
+      "name": "Training Tools",
+      "type": "tool_pack",
+      "version": "1.0.0",
+      "description": "Model training, cloud training, LLMfit, model fleet, session harvesting",
+      "tier": "enterprise",
+      "category": "infrastructure",
+      "tags": [
+        "training",
+        "fine-tuning",
+        "model",
+        "fleet",
+        "enterprise"
+      ]
+    },
+    {
+      "id": "core-skills",
+      "name": "Core Skills",
+      "type": "skill_pack",
+      "version": "1.0.0",
+      "description": "Essential skills: workspace management, prompts, strata artifacts",
+      "tier": "free",
+      "category": "infrastructure",
+      "tags": [
+        "core",
+        "workspace",
+        "prompts",
+        "free"
+      ]
+    },
+    {
+      "id": "dev-skills",
+      "name": "Dev Skills",
+      "type": "skill_pack",
+      "version": "1.0.0",
+      "description": "Git workflow, code refactoring, CI/CD, SWE best practices",
+      "tier": "starter",
+      "category": "dev",
+      "tags": [
+        "git",
+        "refactor",
+        "cicd",
+        "swe",
+        "developer"
+      ]
+    },
+    {
+      "id": "business-skills",
+      "name": "Business Skills",
+      "type": "skill_pack",
+      "version": "1.0.0",
+      "description": "Project intake, product catalog, storefront, PRD, onboarding",
+      "tier": "starter",
+      "category": "business",
+      "tags": [
+        "project",
+        "product",
+        "storefront",
+        "prd",
+        "business"
+      ]
+    },
+    {
+      "id": "creative-skills",
+      "name": "Creative Skills",
+      "type": "skill_pack",
+      "version": "1.0.0",
+      "description": "Content pipeline, character design, blog-to-video, design systems",
+      "tier": "starter",
+      "category": "creative",
+      "tags": [
+        "content",
+        "character",
+        "blog",
+        "design",
+        "creative"
+      ]
+    },
+    {
+      "id": "ops-skills",
+      "name": "Operations Skills",
+      "type": "skill_pack",
+      "version": "1.0.0",
+      "description": "Docker, K8s, disaster recovery, job scheduling, network inspection",
+      "tier": "developer",
+      "category": "infrastructure",
+      "tags": [
+        "docker",
+        "k8s",
+        "recovery",
+        "scheduling",
+        "ops"
+      ]
+    },
+    {
+      "id": "security-skills",
+      "name": "Security Skills",
+      "type": "skill_pack",
+      "version": "1.0.0",
+      "description": "Secret rotation, dependency audit, privacy toolkit, accessibility",
+      "tier": "developer",
+      "category": "infrastructure",
+      "tags": [
+        "security",
+        "secrets",
+        "audit",
+        "privacy",
+        "accessibility"
+      ]
+    },
+    {
+      "id": "marketing-skills",
+      "name": "Marketing Skills",
+      "type": "skill_pack",
+      "version": "1.0.0",
+      "description": "Email sequences, presentations, LinkedIn, blog-to-presentation",
+      "tier": "developer",
+      "category": "business",
+      "tags": [
+        "email",
+        "presentation",
+        "linkedin",
+        "marketing"
+      ]
+    },
+    {
+      "id": "advanced-skills",
+      "name": "Advanced Skills",
+      "type": "skill_pack",
+      "version": "1.0.0",
+      "description": "Agentic eval, context engineering, OpenHands, quasi-coder, capacity planning",
+      "tier": "enterprise",
+      "category": "research",
+      "tags": [
+        "eval",
+        "context",
+        "openhands",
+        "capacity",
+        "enterprise"
+      ]
+    },
+    {
+      "id": "secrets-pack",
+      "name": "AitherSecrets",
+      "type": "service_pack",
+      "version": "1.0.0",
+      "description": "Standalone credential vault for agent secrets management",
+      "tier": "starter",
+      "category": "infrastructure",
+      "tags": [
+        "secrets",
+        "vault",
+        "credentials"
+      ]
+    },
+    {
+      "id": "mail-pack",
+      "name": "AitherMail",
+      "type": "service_pack",
+      "version": "1.0.0",
+      "description": "Tenant-scoped email service with folders and threading",
+      "tier": "starter",
+      "category": "business",
+      "tags": [
+        "email",
+        "mail",
+        "communication"
+      ]
+    },
+    {
+      "id": "qdrant-pack",
+      "name": "Qdrant Vector DB",
+      "type": "service_pack",
+      "version": "1.0.0",
+      "description": "Qdrant vector database for RAG and embeddings",
+      "tier": "starter",
+      "category": "infrastructure",
+      "tags": [
+        "vector",
+        "qdrant",
+        "rag",
+        "embeddings"
+      ]
+    },
+    {
+      "id": "knowledge-rag-pack",
+      "name": "Knowledge RAG",
+      "type": "service_pack",
+      "version": "1.0.0",
+      "description": "Knowledge RAG service with document ingestion and retrieval",
+      "tier": "starter",
+      "category": "research",
+      "tags": [
+        "knowledge",
+        "rag",
+        "documents",
+        "retrieval"
+      ]
+    },
+    {
+      "id": "shop-stack",
+      "name": "Shop Stack",
+      "type": "service_pack",
+      "version": "1.0.0",
+      "description": "Storefront + Stripe Commerce for agent-powered shops",
+      "tier": "starter",
+      "category": "commerce",
+      "tags": [
+        "shop",
+        "storefront",
+        "stripe",
+        "commerce"
+      ]
+    },
+    {
+      "id": "directory-pack",
+      "name": "AitherDirectory",
+      "type": "service_pack",
+      "version": "1.0.0",
+      "description": "LDAP directory + REST API for user and group management",
+      "tier": "developer",
+      "category": "infrastructure",
+      "tags": [
+        "directory",
+        "ldap",
+        "users",
+        "groups"
+      ]
+    },
+    {
+      "id": "identity-pack",
+      "name": "AitherIdentity",
+      "type": "service_pack",
+      "version": "1.0.0",
+      "description": "SSO/OIDC/SAML identity provider with RBAC",
+      "tier": "developer",
+      "category": "infrastructure",
+      "tags": [
+        "identity",
+        "sso",
+        "oidc",
+        "saml",
+        "rbac"
+      ]
+    },
+    {
+      "id": "grid-distributed",
+      "name": "AitherGrid \u2014 Distributed Inference",
+      "type": "service_pack",
+      "version": "1.0.0",
+      "description": "Multi-node distributed inference \u2014 connect GPU, Mac, CPU cluster, and cloud into one routing fabric with effort-based model selection",
+      "tier": "starter",
+      "category": "infrastructure",
+      "tags": [
+        "distributed",
+        "inference",
+        "multi-node",
+        "gpu",
+        "apple-silicon",
+        "llama-cpp",
+        "vllm",
+        "ollama",
+        "edge"
+      ]
+    },
+    {
+      "id": "sovereign-stack",
+      "name": "Sovereign Stack",
+      "type": "service_pack",
+      "version": "1.0.0",
+      "description": "Full AitherOS self-hosted deployment \u2014 custom quote via RFP",
+      "tier": "enterprise",
+      "category": "infrastructure",
+      "tags": [
+        "sovereign",
+        "self-hosted",
+        "full",
+        "enterprise"
+      ]
+    }
+  ]
+}

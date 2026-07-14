@@ -5,15 +5,20 @@ from importlib.metadata import PackageNotFoundError, version as _pkg_version
 try:  # single source of truth = the installed package metadata (pyproject version)
     __version__ = _pkg_version("aither-adk")
 except PackageNotFoundError:  # running from a source checkout without install
-    __version__ = "2.20.0"
+    __version__ = "2.21.0"
 
 from adk.agent import AitherAgent
+from adk.gate import CompletionGate, GateVerdict, gated_run, hard_checks
 from adk.tools import tool, ToolRegistry
 from adk.llm import LLMRouter
 from adk.config import Config
 
 __all__ = [
     "AitherAgent",
+    "CompletionGate",
+    "GateVerdict",
+    "gated_run",
+    "hard_checks",
     "tool",
     "ToolRegistry",
     "LLMRouter",

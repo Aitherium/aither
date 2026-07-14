@@ -270,6 +270,123 @@ def cmd_create_app(args):
     return result.returncode
 
 
+def cmd_ssh(args):
+    """Open a raw interactive terminal into a prod/dev environment via the tunnel.
+
+    Self-contained websocket-PTY client (POSIX): reuses the SAME server gateway as
+    `aither connect` — wss://<tunnel>/tunnel/ssh?token=<jwt>[&container=<ws>] — and the
+    same JSON frame protocol. The PTY is server-side (tmux-backed), so no local pty
+    lib is needed; we just put the local TTY in raw mode and shuttle frames.
+    Ctrl-Q detaches (leaves the session running for reconnect).
+    """
+    import asyncio
+    import json as _json
+    from urllib.parse import urlencode
+
+    container = getattr(args, "container", None) or getattr(args, "container_opt", None)
+    tunnel = getattr(args, "tunnel_url", None) or "tunnel.aitherium.com"
+    host = tunnel.replace("https://", "").replace("wss://", "").replace("http://", "").rstrip("/")
+
+    cfg = load_saved_config()
+    # Prefer the device-flow access_token (a real JWT the tunnel validates at
+    # /identity/auth/me); fall back to an API key / env.
+    token = (cfg.get("access_token") or cfg.get("api_key")
+             or os.environ.get("AITHER_API_KEY", ""))
+    if not token:
+        print("Not authenticated. Run: adk login")
+        return 1
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        print("adk shell needs an interactive terminal (TTY).")
+        return 1
+    if os.name != "posix":
+        print("adk shell raw mode is POSIX-only. On Windows use: aither connect")
+        return 1
+    try:
+        import signal
+        import termios
+        import tty
+
+        import websockets
+    except ImportError:
+        print("adk shell needs the 'websockets' package: pip install websockets")
+        return 1
+
+    qs = {"token": token}
+    if container:
+        qs["container"] = container
+    url = f"wss://{host}/tunnel/ssh?{urlencode(qs)}"
+    print(f"  connecting to {container or host} … (Ctrl-Q to detach)")
+
+    async def _run():
+        async with websockets.connect(url, max_size=None) as ws:
+            fd = sys.stdin.fileno()
+            old = termios.tcgetattr(fd)
+            tty.setraw(fd)
+            loop = asyncio.get_event_loop()
+
+            async def _send_size():
+                cols, rows = os.get_terminal_size()
+                await ws.send(_json.dumps({"type": "resize", "cols": cols, "rows": rows}))
+
+            try:
+                loop.add_signal_handler(
+                    signal.SIGWINCH, lambda: asyncio.ensure_future(_send_size()))
+            except (NotImplementedError, RuntimeError):
+                pass
+            await _send_size()
+
+            async def _pump_stdin():
+                reader = asyncio.StreamReader()
+                await loop.connect_read_pipe(
+                    lambda: asyncio.StreamReaderProtocol(reader), sys.stdin)
+                while True:
+                    data = await reader.read(1024)
+                    if not data:
+                        break
+                    if data == b"\x11":  # Ctrl-Q → detach
+                        await ws.close()
+                        break
+                    await ws.send(_json.dumps(
+                        {"type": "input", "data": data.decode("utf-8", "replace")}))
+
+            async def _pump_ws():
+                async for raw in ws:
+                    msg = _json.loads(raw)
+                    mtype = msg.get("type")
+                    if mtype == "output":
+                        sys.stdout.write(msg.get("data", ""))
+                        sys.stdout.flush()
+                    elif mtype == "ping":
+                        await ws.send(_json.dumps({"type": "pong"}))
+
+            try:
+                done, pending = await asyncio.wait(
+                    [asyncio.create_task(_pump_stdin()), asyncio.create_task(_pump_ws())],
+                    return_when=asyncio.FIRST_COMPLETED)
+                for t in pending:
+                    t.cancel()
+            finally:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+    try:
+        asyncio.run(_run())
+    except websockets.exceptions.ConnectionClosed as exc:
+        code = getattr(exc, "code", None)
+        if code == 4003:
+            print("\nTerminal access denied (your role lacks the 'terminal' capability).")
+            return 13
+        if code == 4001:
+            print("\nAuthentication failed — run: adk login")
+            return 1
+        if code == 4004:
+            print("\nContainer not running.")
+            return 1
+    except Exception as exc:  # noqa: BLE001
+        print(f"\nconnect failed: {exc}")
+        return 1
+    return 0
+
+
 def cmd_workspace(args):
     """Manage dev workspaces on AitherOS tunnel."""
     import json as _json
@@ -9107,6 +9224,15 @@ def _register_commands(sub):
     d_agent.add_argument("--from", dest="from_url", help="Direct download URL for the agent package")
 
     # adk workspace — manage dev workspaces on AitherOS tunnel
+    ssh_p = sub.add_parser(
+        "ssh", help="Open a remote terminal into a prod/dev environment via the tunnel")
+    ssh_p.add_argument("container", nargs="?", default=None,
+                       help="Dev-workspace container to attach to (optional)")
+    ssh_p.add_argument("--container", dest="container_opt", default=None,
+                       help="Dev-workspace container (alternative to positional)")
+    ssh_p.add_argument("--tunnel-url", default="tunnel.aitherium.com",
+                       help="Tunnel host (default: tunnel.aitherium.com)")
+
     ws_p = sub.add_parser("workspace", help="Manage dev workspaces on AitherOS tunnel")
     ws_sub = ws_p.add_subparsers(dest="ws_command")
 
@@ -10043,6 +10169,8 @@ def main():
         sys.exit(cmd_down(args))
     elif args.command == "stack":
         sys.exit(cmd_stack(args))
+    elif args.command == "ssh":
+        sys.exit(cmd_ssh(args))
     elif args.command == "wizard":
         from adk.setup_cli import cmd_wizard
         sys.exit(cmd_wizard(args))
