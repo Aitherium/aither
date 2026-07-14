@@ -2,6 +2,23 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [2.21.1] - 2026-07-14
+
+### Removed — internal toolkit and license-gated product no longer ship publicly
+
+- **`adk.platform`** — the internal aither-platform toolkit (ComfyUI/image-gen
+  pipelines, fleet agent clients, a parallel cli/ui/tools stack) is no longer
+  included in the public repo or the PyPI wheel. It was internal-only code that
+  had been riding along since the aither-platform merge. `adk platform` now
+  reports "Platform toolkit not available" on public installs; internal AitherOS
+  builds are unaffected.
+- **`adk.formbridge`** — the FormBridge form-automation product is license-gated
+  (PROFESSIONAL+); its implementation no longer ships in the free package. All
+  import sites (`builtin_tools`, `server` route mount) already degrade behind
+  `except ImportError`, so nothing else changes behavior.
+- Product test suites (`test_formbridge.py`, `test_encounter_keying.py`,
+  `test_flow_tools.py`) are excluded from the public sync alongside them.
+
 ## [2.21.0] - 2026-07-14
 
 ### Added — Completion gate: verified-or-retried task execution

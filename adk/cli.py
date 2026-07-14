@@ -10316,7 +10316,7 @@ def main():
             sys.argv = ["adk-platform"] + (args.platform_args or [])
             platform_main()
         except ImportError:
-            print("Platform toolkit not available. Install with: pip install aither-adk[platform]")
+            print("Platform toolkit not available (internal AitherOS builds only).")
             sys.exit(1)
     elif args.command == "listen":
         sys.exit(_cmd_listen(args))
