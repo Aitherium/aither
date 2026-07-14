@@ -58,12 +58,19 @@ def verify_bytes(
 
     Never raises — returns False on any error.
     """
+    # Import in its own guarded block: if the import lived inside the main try,
+    # a missing `cryptography` would reach `except InvalidSignature:` with that
+    # name unbound and crash with UnboundLocalError instead of failing closed.
     try:
         from cryptography.exceptions import InvalidSignature
         from cryptography.hazmat.primitives.asymmetric.ed25519 import (
             Ed25519PublicKey,
         )
+    except ImportError:
+        logger.debug("Cannot verify signature: cryptography not installed")
+        return False
 
+    try:
         pub_hex = public_key_hex or get_pack_public_key()
         if not pub_hex:
             # No public key configured — cannot verify

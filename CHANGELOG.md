@@ -2,6 +2,28 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [2.22.1] - 2026-07-14
+
+### Fixed — real bugs surfaced by reviving the public CI (red since Jul 5)
+
+- **TLS**: bundled toolpacks (arc-brainpack, cloudflare) disabled certificate
+  verification on gateway/vault calls; all now route `adk._tls.tls_verify()`
+  (verified by default, internal CA bundle when present).
+- **`system_prompt` contract**: bundled-pack `[PACK DIRECTIVES]` were appended
+  even to an explicit `system_prompt`; an explicit prompt now wins wholesale.
+- **Headless secrets**: `_derive_key()` used `os.getlogin()`, which raises
+  `OSError` without a controlling terminal (CI, daemons, containers) — falls
+  back to `getpass.getuser()` (same value on interactive boxes, so existing
+  secret files keep decrypting).
+- **`pack_verifier`**: missing `cryptography` crashed with `UnboundLocalError`
+  in the exception handler instead of failing closed; now degrades gracefully
+  (and `cryptography` was added to the dev extra so CI tests the real path).
+- **`fleet_manager._kill_pid` (POSIX)**: reported success immediately after an
+  asynchronous SIGTERM and never reaped children (zombies read as alive); now
+  polls, escalates to SIGKILL, and reaps.
+- **Identity**: `aither` regained the `creative` tool category (dropped
+  accidentally in a 2.7.0 WIP sweep).
+
 ## [2.22.0] - 2026-07-14
 
 ### Changed — internal toolkit relocation

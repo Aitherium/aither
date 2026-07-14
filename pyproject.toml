@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "aither-adk"
-version = "2.22.0"
+version = "2.22.1"
 description = "Build AI agents with real memory + faculties on any backend, local or cloud. Open-core: free local runtime with typed memory, knowledge graph, code graph and ReAct; paid tiers (portal.aitherium.com) unlock fleets, channels, reasoning and marketplace packs."
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -101,6 +101,9 @@ dev = [
     "pytest-asyncio>=0.23.0",
     "pytest-timeout>=2.2.0",
     "respx>=0.20.0",
+    # Real coverage for pack-signature verification (pack_verifier degrades
+    # gracefully without it, but then CI never exercises the verify path).
+    "cryptography>=41.0.0",
 ]
 
 [project.urls]

@@ -210,10 +210,37 @@ def _kill_pid(pid: int) -> bool:
             k.CloseHandle(h)
         return not _pid_alive(pid)
     try:
-        os.kill(pid, 15)
-        return True
+        os.kill(pid, 15)  # SIGTERM
     except OSError:
         return not _pid_alive(pid)  # already gone == success
+    # SIGTERM is asynchronous — returning True immediately reports success while
+    # the process is still running (or ignoring TERM). Poll for exit, escalate
+    # to SIGKILL, and reap along the way: a dead CHILD lingers as a zombie that
+    # kill(pid, 0) still "sees" until waited on.
+    import time
+
+    def _reap() -> None:
+        if hasattr(os, "waitpid") and hasattr(os, "WNOHANG"):
+            try:
+                os.waitpid(pid, os.WNOHANG)
+            except OSError:
+                pass  # not our child (or already reaped) — fine
+
+    for _ in range(20):  # ~1s graceful window
+        _reap()
+        if not _pid_alive(pid):
+            return True
+        time.sleep(0.05)
+    try:
+        os.kill(pid, 9)  # SIGKILL
+    except OSError:
+        pass
+    for _ in range(20):
+        _reap()
+        if not _pid_alive(pid):
+            return True
+        time.sleep(0.05)
+    return not _pid_alive(pid)
 
 
 # ── managed: an Anthropic hosted twin via the platform pipeline ──────────

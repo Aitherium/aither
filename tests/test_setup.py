@@ -151,7 +151,12 @@ class TestGPUDetection:
 class TestRAMDetection:
     @pytest.mark.asyncio
     async def test_ram_detected(self):
-        with patch("adk.setup._run") as mock_run:
+        # The mocked _run output is the WINDOWS detection path; on Linux
+        # _detect_ram reads /proc/meminfo directly and the mock is bypassed
+        # (this asserted the CI RUNNER had >30GB RAM). Pin the platform so the
+        # mocked branch is what's exercised everywhere.
+        with patch("adk.setup.platform.system", return_value="Windows"), \
+                patch("adk.setup._run") as mock_run:
             mock_run.return_value = (0, "TotalPhysicalMemory=34359738368\n", "")
             ram = await _detect_ram()
             assert ram > 30  # ~32 GB

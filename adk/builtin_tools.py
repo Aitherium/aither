@@ -461,8 +461,16 @@ _SECRETS_FILE_LEGACY = _SECRETS_FILE.with_suffix(".json")
 def _derive_key() -> bytes:
     """Derive an encryption key from machine-specific data."""
     import hashlib
-    # Combine username + home dir + machine-specific salt
-    material = f"{os.getlogin()}:{Path.home()}:aither-adk-secrets-v1"
+    # Combine username + home dir + machine-specific salt. os.getlogin() needs a
+    # controlling terminal and raises OSError under CI/daemons/containers — fall
+    # back to getpass (env-based) there; the two agree on normal interactive
+    # boxes, so existing secret files keep decrypting.
+    try:
+        user = os.getlogin()
+    except OSError:
+        import getpass
+        user = getpass.getuser()
+    material = f"{user}:{Path.home()}:aither-adk-secrets-v1"
     return hashlib.pbkdf2_hmac("sha256", material.encode(), b"adk-salt-v1", 100_000)
 
 
@@ -1886,7 +1894,7 @@ IDENTITY_DEFAULTS = {
     "demiurge": ["file_io", "shell", "python", "web", "git", "code", "repowise", "swarm", "graph", "workspace", "safety", "self"],
     "analyst": ["file_io", "web", "python", "code", "graph", "structured_ml", "workspace", "safety", "self"],
     "atlas": ["file_io", "web", "secrets", "code", "graph", "workspace", "safety", "self"],
-    "aither": ["file_io", "shell", "web", "self"],
+    "aither": ["file_io", "shell", "web", "creative", "self"],
     "lyra": ["file_io", "web", "graph", "workspace", "voice", "safety", "self"],
     "hydra": ["file_io", "shell", "python", "git", "code", "repowise", "graph", "workspace", "safety", "self"],
     "prometheus": ["file_io", "shell", "secrets", "git", "workspace", "safety", "self"],

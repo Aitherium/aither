@@ -681,8 +681,11 @@ class AitherAgent:
             )
 
         base = self._system_prompt or self._brain_pack_prompt or self._identity.build_system_prompt()
-        # Append pack persona fragments as [PACK DIRECTIVES] block
-        if self._pack_persona_fragments:
+        # Append pack persona fragments as [PACK DIRECTIVES] block — but only to
+        # a DEFAULT identity. An explicit system_prompt is a deliberate operator
+        # identity and wins wholesale (the same rule as the companion swap
+        # above); bundled-toolpack directives must not ride along on it.
+        if self._pack_persona_fragments and not self._system_prompt:
             lines = ["\n[PACK DIRECTIVES]"]
             lines.extend(f"- {f}" for f in self._pack_persona_fragments)
             base += "\n".join(lines)

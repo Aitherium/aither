@@ -128,7 +128,11 @@ class TestShellExec:
 
     def test_shell_error(self):
         from adk.builtin_tools import shell_exec
-        result = json.loads(shell_exec("exit 1"))
+        # `exit` is a shell BUILTIN; on Unix shell_exec deliberately runs without
+        # a shell (injection posture), so builtins don't exist there. Use a real
+        # process that exits non-zero — portable across the no-shell Unix path
+        # and the shell=True Windows path.
+        result = json.loads(shell_exec(f'"{sys.executable}" -c "raise SystemExit(1)"'))
         assert result["exit_code"] == 1
 
 
