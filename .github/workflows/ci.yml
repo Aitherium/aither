@@ -9,9 +9,6 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: aither-adk
     strategy:
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
