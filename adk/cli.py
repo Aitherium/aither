@@ -434,8 +434,8 @@ def cmd_workspace(args):
             "fullstack": "Full monorepo + AitherZero (admin/developer)",
             "frontend": "AitherVeil + packages",
             "backend": "lib + services + config + tests",
-            "gargbot": ".PRODUCTS/.GARGBOT + portal-kit",
-            "chelle": ".PRODUCTS/.CHELLE + portal-kit",
+            "app-crm": "Custom app + portal-kit",
+            "app-bot": "Custom bot app + portal-kit",
             "veil": "AitherVeil + all packages",
             "portal": "AitherVeil + portal-kit + desktop-core",
             "node": "AitherNode (standalone + monorepo)",
@@ -445,14 +445,14 @@ def cmd_workspace(args):
             "desktop": "AitherDesktop + Veil + packages",
             "creative": "Canvas-Studio + creative services",
             "gpu": "VRAM-Sentinel + GPU services",
-            "portal-kit-dev": "portal-kit + GargBot + Chelle (indie devs)",
+            "custom-app-dev": "custom apps + portal-kit (indie devs)",
         }
         print("Available workspace scopes:")
         print()
         for name, desc in scopes.items():
             print(f"  {name:20s} {desc}")
         print()
-        print("Usage: adk workspace create --scope gargbot")
+        print("Usage: adk workspace create --scope app-crm")
         return 0
 
     if ws_cmd == "create":
@@ -2212,7 +2212,7 @@ def cmd_deploy(args):
 def _onboard_agent(agent_name: str, tenant_slug: str, args) -> int:
     """Register a running agent with the portal fleet.
 
-    Usage: adk onboard --agent gargbot --tenant garg-consulting
+    Usage: adk onboard --agent myapp --tenant customer-acme
 
     Steps:
         1. Detect running agent on localhost (check /health)
@@ -5122,10 +5122,10 @@ def cmd_grid(args) -> int:
 
 
 def _grid_mesh_request(method: str, path: str, body: dict | None = None, need_key: bool = False):
-    """Call the AitherGateway node registry through the public Cloudflare tunnel.
+    """Call the gateway node registry through the public Cloudflare tunnel.
 
-    GET /nodes is open; minting/removing are internal-key gated (need_key=True,
-    sourced from AITHER_INTERNAL_SECRET/AITHER_MASTER_KEY). Returns (ok, data|msg).
+    GET /nodes is open; minting/removing are gated by admin credentials (need_key=True,
+    sourced from AITHER_INTERNAL_SECRET/AITHER_MASTER_KEY env vars). Returns (ok, data|msg).
     Uses a browser UA — Cloudflare 403s the default python-urllib agent.
     """
     import json as _json
@@ -5143,7 +5143,7 @@ def _grid_mesh_request(method: str, path: str, body: dict | None = None, need_ke
     if need_key:
         key = (_os.environ.get("AITHER_INTERNAL_SECRET") or _os.environ.get("AITHER_MASTER_KEY") or "").strip()
         if not key:
-            return False, "Admin key required: set AITHER_INTERNAL_SECRET to mint or remove nodes."
+            return False, "Admin credential required: set AITHER_INTERNAL_SECRET or AITHER_MASTER_KEY to mint or remove nodes."
         headers["X-API-Key"] = key
     data = _json.dumps(body).encode() if body is not None else None
     req = _ur.Request(f"{gateway}{path}", data=data, method=method, headers=headers)
@@ -9069,7 +9069,7 @@ def _register_commands(sub):
 
     # adk create-app — scaffold a full portal-kit workspace app
     ca_p = sub.add_parser("create-app",
-                          help="Scaffold a portal-kit workspace app (like GargBot, Chelle)")
+                          help="Scaffold a portal-kit workspace app")
     ca_p.add_argument("name", help="App name (e.g. 'ACME Assistant')")
     ca_p.add_argument("-o", "--output", help="Output directory (default: ./<slug>)")
     ca_p.add_argument("--company", default="", help="Company name")
@@ -9078,7 +9078,7 @@ def _register_commands(sub):
     ca_p.add_argument("--subdomain", default="", help="URL slug (auto-derived from name)")
     ca_p.add_argument("--color", default="#6366f1", help="Primary brand color")
     ca_p.add_argument("--template", default="default",
-                      choices=["default", "gargbot", "chelle", "wildroot"],
+                      choices=["default", "basic", "advanced", "custom"],
                       help="Base template (default: default)")
     ca_p.add_argument("--llm-provider", dest="llm_provider", default="aitheros",
                       choices=["aitheros", "ollama", "portal", "deepseek", "openai", "anthropic", "gemini"],
@@ -9177,17 +9177,6 @@ def _register_commands(sub):
     d_desktop.add_argument("--api-key", help="AITHER_API_KEY (or set env var)")
     d_desktop.add_argument("--dry-run", action="store_true", help="Show what would happen")
 
-    # aither deploy gargbot
-    d_gargbot = deploy_sub.add_parser("gargbot", help="Deploy GargBot sovereign package (setup + compose + health)")
-    d_gargbot.add_argument("--tier", choices=["lite", "entry", "pro", "pro-reasoning", "full"],
-                           help="Force a specific tier (default: auto-detect)")
-    d_gargbot.add_argument("--no-pull", action="store_true", help="Skip image pulling")
-    d_gargbot.add_argument("--start", action="store_true", default=True,
-                           help="Start services after setup (default: true)")
-    d_gargbot.add_argument("--no-start", action="store_true", help="Generate config only, don't start")
-    d_gargbot.add_argument("--api-key", help="AITHER_API_KEY for portal federation")
-    d_gargbot.add_argument("--dry-run", action="store_true", help="Show what would happen")
-
     # aither deploy grid
     d_grid = deploy_sub.add_parser(
         "grid",
@@ -9207,7 +9196,7 @@ def _register_commands(sub):
 
     # aither deploy agent — download + configure + start a tenant agent, OR upload to gateway
     d_agent = deploy_sub.add_parser("agent", help="Deploy a tenant agent to this machine (or upload to gateway)")
-    d_agent.add_argument("name", nargs="?", help="Agent name/slug (e.g. gargbot)")
+    d_agent.add_argument("name", nargs="?", help="Agent name/slug (e.g. my-agent)")
     d_agent.add_argument("-d", "--directory", help="Project directory (default: .)")
     d_agent.add_argument("--api-key", help="AITHER_API_KEY")
     d_agent.add_argument("--gateway", help="Gateway URL (default: gateway.aitherium.com)")
@@ -9238,7 +9227,7 @@ def _register_commands(sub):
 
     ws_create = ws_sub.add_parser("create", help="Create a cloud dev workspace")
     ws_create.add_argument("--scope", default="fullstack",
-                           help="Scope template: fullstack, gargbot, chelle, veil, portal, frontend, backend, etc.")
+                           help="Scope template: fullstack, veil, portal, frontend, backend, node, etc.")
     ws_create.add_argument("--tunnel-url", default="https://tunnel.aitherium.com",
                            help="Tunnel URL (default: tunnel.aitherium.com)")
 

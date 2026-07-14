@@ -5,7 +5,7 @@ When running standalone, ADK agents store secrets locally in ~/.aither/secrets.e
 agents can access credentials configured via the portal without manual setup.
 
 Sync sources (in priority order):
-1. AitherSecrets service (http://secrets:8111) — when sovereign stack is running
+1. AitherSecrets service — when sovereign stack is running (via AITHER_SECRETS_URL)
 2. Gateway vault (https://gateway.aitherium.com/v1/secrets) — when online
 3. Local encrypted keyring (~/.aither/secrets.enc) — always available as fallback
 

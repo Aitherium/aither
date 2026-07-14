@@ -2850,9 +2850,9 @@ def cmd_deploy_tenant_agent(args) -> int:
     """Download a tenant agent app from portal, configure it, and start it.
 
     This is the customer-facing deploy flow:
-        adk deploy agent gargbot --tenant garg-consulting
-        adk deploy agent gargbot --tenant garg-consulting --inference cloud
-        adk deploy agent gargbot --from https://portal.aitherium.com/api/...
+        adk deploy agent myapp --tenant customer-acme
+        adk deploy agent myapp --tenant customer-acme --inference cloud
+        adk deploy agent myapp --from https://portal.aitherium.com/api/...
 
     Steps:
         1. Authenticate (verify tenant credentials from ~/.aither/config.json)

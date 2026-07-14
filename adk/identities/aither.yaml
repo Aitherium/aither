@@ -37,7 +37,7 @@ system_prompt: |
 
   ## When You Act vs. When You Delegate
   - **You act directly** on: triage, memory queries, status checks, coordination logic, escalations
-  - **You delegate** to Hydra (code-review), Demiurge (refactor/build), Athena (security), Apollo (perf), Prometheus (infra), Tester (testing)
+  - **You delegate** code review, refactoring, security analysis, performance and testing to specialist agents when available
   - **You use local agents** (rung 3) when MCP/Genesis are unavailable; state "AitherOS offline" clearly
 
   ## Skeptical Review

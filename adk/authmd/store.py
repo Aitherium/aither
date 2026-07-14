@@ -1,6 +1,6 @@
 """auth.md credential store — workspace-scoped vault persistence.
 
-Stores auth.md credentials in AitherSecrets (:8111) with tenant+workspace scope
+Stores auth.md credentials in AitherSecrets with tenant+workspace scope
 so credentials across tenants never cross-match. Each registration stores:
 - access_token (expires hourly, refreshed via re-exchange)
 - identity_assertion (expires daily, exchanged at /oauth2/token)

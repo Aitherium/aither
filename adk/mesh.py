@@ -1,18 +1,16 @@
 """adk.mesh — autonomous AitherMesh (WireGuard overlay) onboarding.
 
-A fresh node (appliance, DGX Spark, OptiPlex, or a CI runner) joins the
-``10.77.0.0/16`` WireGuard overlay by the SAME proven flow used to onboard the
-DGX Spark and the Dell OptiPlex — now as a first-class, cross-platform SDK
-capability so `adk mesh join` works anywhere aither-adk runs:
+A fresh node joins the overlay network via a proven bootstrap flow —
+now as a first-class, cross-platform SDK capability so `adk mesh join` works
+anywhere aither-adk runs:
 
   1. generate a WireGuard keypair
-  2. POST /v1/mesh/onboard to the Conductor (:8193) → receive an ``overlay_ip``
-  3. fetch the server pubkey from AitherNet ``/aithernet/topology`` (:8125)
+  2. POST /v1/mesh/onboard to the Conductor → receive an ``overlay_ip``
+  3. fetch the server pubkey from network topology endpoint
   4. write the wg config + bring the interface up (wg-quick / wireguard.exe)
   5. verify the handshake (``wg show``)
 
-Once up, the node reaches internal services at their mesh addresses (the
-embeddings endpoint, the event bus, the vector store, …) exactly like any
+Once up, the node reaches services at their mesh addresses exactly like any
 fleet peer — which is how a swarm runner talks back to the fleet.
 
 Auth: the node's WireGuard public key registered through the Conductor is the
@@ -79,15 +77,14 @@ def generate_keypair() -> tuple[str, str]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _resolve_conductor_url(default_url: str) -> str:
-    """Resolve the conductor URL. If the default internal hostname does not
-    resolve, fall back to the public conductor.aitherium.com endpoint.
+    """Resolve the conductor URL. If the default hostname does not
+    resolve, fall back to the public endpoint.
 
-    This allows seamless operation both in-fleet (where aitheros-conductor:8193
-    is reachable on the mesh) and for customer boxes (where only the public
-    tunnel conductor.aitherium.com is available).
+    This allows seamless operation in fleet deployments and for customer
+    nodes where only the public tunnel is available.
 
     Args:
-        default_url: The internal default (e.g., https://aitheros-conductor:8193)
+        default_url: The default URL (typically internal).
 
     Returns:
         The default if the hostname resolves, otherwise the public fallback.

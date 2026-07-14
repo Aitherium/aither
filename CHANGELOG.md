@@ -2,6 +2,18 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [2.23.0] - 2026-07-14
+
+### Removed — dead modules and internal integrations
+
+- **`adk.swarm`, `adk.provisioning_tools`, `adk.session_sync_integration`, `adk.addon_metering`** — four orphan modules with zero public usage have been deleted. These were internal prototypes kept for legacy monorepo consumers; public packages have not imported them since 2.21.0 (tracked as D-348). **Breaking for anyone directly importing these modules** (import will fail). They are no longer exempt from the orphan-module check.
+- **`adk.aither_bridge`** — the AitherOS-internal IRC ↔ chat gateway bridge is no longer shipped in the public aither-adk package (stripped at sync time). All public importers already degrade behind `except ImportError` (in `adk.server` and `adk.builtin_tools`), so public packages remain unaffected. The module stays in the private AitherOS monorepo for internal use.
+- **Identity document trim** — removed internal agent names from `adk/identities/aither.yaml` delegation guidance, replacing with role-generic wording ("delegate code review, refactoring, security analysis, performance and testing to specialist agents when available"). Effort-tier routing philosophy remains unchanged and is product design, not a leak.
+
+### Changed — genericized customer/product names in help text
+
+- CLI help/examples no longer name specific customer deployments (`--scope` template list and `deploy agent` name example use generic placeholders). Functional deploy paths are unchanged.
+
 ## [2.22.1] - 2026-07-14
 
 ### Fixed — real bugs surfaced by reviving the public CI (red since Jul 5)

@@ -18,7 +18,7 @@ Design rules (do not regress):
    proactive auto-neurons, swarm, packs) and reasoning-tier effort.
 3. **AitherOS's own deployments are never gated.**  ``AITHER_TENANT_SLUG=aitherium``
    (or a verified internal license) resolves to :data:`Tier.INTERNAL`, which
-   allows everything.  This keeps gargbot/chelle/portal-kit working unchanged.
+   allows everything.  This keeps custom apps and built-in tools working unchanged.
 4. **The real money-gate is server-side.**  Premium identities/skills/tools are
    not in the wheel and are delivered by Genesis ``/v1/packs/download`` behind a
    402.  Local checks exist to give *clear errors and good UX*, not to be the

@@ -153,12 +153,6 @@ def check_orphan_modules():
     exempt = {
         "__main__",  # executed via `python -m adk`, never imported
         "ports",  # imported by the internal aither_platform toolkit (outside this repo)
-        # Kept for internal/monorepo consumers; public-orphan triage tracked in
-        # TECH_DEBT.md D-348 — delete or re-wire, don't let this list grow.
-        "swarm",
-        "provisioning_tools",
-        "session_sync_integration",
-        "addon_metering",
     }
     for name, path in sorted(module_files.items()):
         if name not in imported and name not in exempt:

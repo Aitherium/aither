@@ -4184,9 +4184,9 @@ def apps():
     \b
     aither apps catalog                        # List available apps
     aither apps list                           # List deployed apps
-    aither apps install roboflow               # Install an app
-    aither apps primary roboflow               # Set primary app for subdomain
-    aither apps bootstrap --tenant roboflow roboflow chelle   # Seed apps
+    aither apps install myapp                  # Install an app
+    aither apps primary myapp                  # Set primary app for subdomain
+    aither apps bootstrap --tenant customer-1 app-1 app-2   # Seed apps
     """
     pass
 
@@ -4257,8 +4257,8 @@ def apps_install(slug, primary):
     """Install an app to the current workspace.
 
     \b
-    aither apps install roboflow
-    aither apps install chelle --primary
+    aither apps install myapp
+    aither apps install another-app --primary
     """
     import httpx
 
@@ -4285,8 +4285,8 @@ def apps_set_primary(slug):
     """Set an app as the primary app for tenant subdomain routing.
 
     \b
-    aither apps primary roboflow
-    # Now roboflow.aitherium.com routes to /roboflow
+    aither apps primary myapp
+    # Now myapp.<domain> routes to /myapp
     """
     import httpx
 
@@ -4308,8 +4308,8 @@ def apps_bootstrap(app_slugs, tenant, tenant_id, primary):
     """Seed multiple apps to a tenant workspace in one call.
 
     \b
-    aither apps bootstrap --tenant roboflow --primary roboflow roboflow chelle
-    aither apps bootstrap --tenant aitherium roboflow chelle marketing-hub
+    aither apps bootstrap --tenant customer-1 --primary app-1 app-1 app-2
+    aither apps bootstrap --tenant customer-2 app-1 app-2 app-3
     """
     import httpx
 
