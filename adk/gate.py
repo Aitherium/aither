@@ -41,8 +41,46 @@ from typing import Any, Awaitable, Callable, Optional, Sequence
 _PATH_RE = re.compile(r"(/[\w./\-]+\.\w+|[A-Za-z]:\\[\w\\.\-]+)")
 # A quoted literal token the output must surface as proof-of-work.
 _TOKEN_RE = re.compile(r'"([^"]{2,80})"|`([^`]{2,80})`')
+# A BARE, code-like literal token (has an underscore, or is 4+ chars of CAPS/
+# digits) — so a natural criterion like ``output contains ADK_AUTO_OK`` is checked
+# hard instead of falling to the LLM judge. Deliberately conservative: it only
+# matches identifier/code shapes, never ordinary prose, so we don't invent false
+# hard-fails from a descriptive sentence.
+_BARE_TOKEN_RE = re.compile(r"\b([A-Za-z0-9]*_[A-Za-z0-9_]+|[A-Z][A-Z0-9]{3,})\b")
+# Uppercase words that look code-like but are just describing the criterion.
+_BARE_STOPWORDS = frozenset({
+    "TOKEN", "OUTPUT", "STRING", "VALUE", "EXACT", "EXACTLY", "MUST", "CONTAIN",
+    "CONTAINS", "CONTAINING", "RESULT", "ANSWER", "RESPONSE", "TRUE", "FALSE",
+    "JSON", "TEXT", "WORD", "PHRASE", "LITERAL", "PROOF", "DONE", "NULL", "NONE",
+    "SHOULD", "INCLUDE", "INCLUDES", "REPLY", "SENTENCE",
+})
 
 Judge = Callable[[str], Awaitable[str]]
+
+
+def _first_json_object(text: str) -> Optional[dict]:
+    """Extract the first complete JSON object from a possibly-noisy LLM reply.
+
+    Models wrap verdicts in prose, markdown fences, or emit a second object —
+    ``json.loads(text[first{:last}])`` then dies with "Extra data". ``raw_decode``
+    parses ONE value from a start offset and ignores whatever trails it, so we
+    scan for the first ``{`` that begins a valid object. Returns ``None`` when
+    nothing parses (caller fails closed — never a soft pass)."""
+    if not text:
+        return None
+    decoder = json.JSONDecoder()
+    i = 0
+    while True:
+        start = text.find("{", i)
+        if start == -1:
+            return None
+        try:
+            obj, _ = decoder.raw_decode(text, start)
+            if isinstance(obj, dict):
+                return obj
+        except json.JSONDecodeError:
+            pass
+        i = start + 1
 
 
 @dataclass(slots=True)
@@ -73,15 +111,28 @@ def hard_checks(output: str, criteria: Sequence[str]) -> Optional[GateVerdict]:
             checked = True
             if not os.path.exists(path):
                 return GateVerdict(False, f"required artifact missing: {path}", method="hard")
-        if "contain" in c.lower():
+        if "contain" in c.lower() or "includ" in c.lower():
+            found_quoted = False
             for m in _TOKEN_RE.finditer(c):
                 token = m.group(1) or m.group(2)
                 if token:
+                    found_quoted = True
                     checked = True
                     if token not in text:
                         return GateVerdict(
                             False, f"output missing required token {token!r}", method="hard"
                         )
+            # No quoted token? Fall back to a bare code-like literal so the natural
+            # phrasing ``contains ADK_AUTO_OK`` is still enforced mechanically.
+            if not found_quoted:
+                for m in _BARE_TOKEN_RE.finditer(c):
+                    token = m.group(1)
+                    if token and token.upper() not in _BARE_STOPWORDS:
+                        checked = True
+                        if token not in text:
+                            return GateVerdict(
+                                False, f"output missing required token {token!r}", method="hard"
+                            )
     return GateVerdict(True, "hard checks passed", method="hard") if checked else None
 
 
@@ -96,8 +147,12 @@ async def _llm_judge(judge: Judge, task: str, output: str, criteria: Sequence[st
     crit = "\n".join(f"- {c}" for c in criteria)
     prompt = _JUDGE_TMPL.format(task=task[:2000], criteria=crit, output=(output or "")[:6000])
     text = await judge(prompt)
-    start, end = text.find("{"), text.rfind("}")
-    data = json.loads(text[start : end + 1])
+    data = _first_json_object(text)
+    if data is None:
+        # A judge that answered but emitted no parseable verdict must NOT soft-pass.
+        return GateVerdict(
+            False, "judge returned no parseable JSON verdict; failing closed", method="judge"
+        )
     return GateVerdict(bool(data.get("approved")), str(data.get("reason", ""))[:200], method="judge")
 
 
@@ -219,8 +274,7 @@ class CompletionGate:
         )
         try:
             text = await self.judge(prompt)  # type: ignore[misc]
-            start, end = text.find("{"), text.rfind("}")
-            data = json.loads(text[start : end + 1])
+            data = _first_json_object(text) or {}
             return [str(c) for c in data.get("criteria", []) if str(c).strip()][:6]
         except Exception:
             return []

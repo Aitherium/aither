@@ -2,6 +2,14 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [2.23.1] - 2026-07-14
+
+### Fixed — CompletionGate no longer false-fails on correct results
+
+- **Tolerant judge JSON extraction.** The LLM judge parsed its reply with `json.loads(text[first"{":last"}"])`, which raised `JSONDecodeError` ("Extra data") whenever the model appended prose after the verdict or emitted a second object — and `verify()` turned that into a fail-closed verdict, so a genuinely completed task reported `unverified`. New `_first_json_object()` uses `JSONDecoder.raw_decode` from the first `{` that begins a valid object and ignores trailing content (prose, markdown fences, extra objects). A judge that answers with no parseable JSON still fails closed (never a soft pass), now with a clear reason. The same extractor backs `_derive_criteria`.
+- **Bare code-like tokens are hard-checked.** A natural criterion like `output contains ADK_AUTO_OK` (no quotes) previously fell through to the judge; `hard_checks` now also matches bare identifier/code shapes (contains an underscore, or 4+ CAPS/digit chars), with a stopword guard so a descriptive uppercase word (`OUTPUT`, `CONTAIN`) never becomes a false required token. Quote a token to force it regardless.
+- +9 tests (24 total), including the exact trailing-data regression.
+
 ## [2.23.0] - 2026-07-14
 
 ### Removed — dead modules and internal integrations

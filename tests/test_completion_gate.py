@@ -158,3 +158,75 @@ async def test_gated_run_convenience():
     agent = FakeAgent(["contains OK here"])
     resp = await gated_run(agent, "do it", criteria=['output must contain "OK"'])
     assert resp.finish_reason == "verified"
+
+
+# ── bare (unquoted) code-like token hard checks ───────────────────────────
+def test_hard_bare_token_present():
+    # Natural phrasing, no quotes — must still be enforced mechanically.
+    v = hard_checks("The task is complete: ADK_AUTO_OK.", ["output contains ADK_AUTO_OK"])
+    assert v is not None and v.approved and v.method == "hard"
+
+
+def test_hard_bare_token_absent_fails_hard():
+    v = hard_checks("some unrelated prose", ["output must contain ADK_AUTO_OK"])
+    assert v is not None and not v.approved and v.method == "hard"
+
+
+def test_hard_bare_token_ignores_prose_stopwords():
+    # "OUTPUT"/"CONTAIN" are code-shaped uppercase words but only describe the
+    # criterion — they must NOT become required tokens (no false hard-fail).
+    assert hard_checks("anything at all", ["the OUTPUT should read well"]) is None
+
+
+def test_hard_bare_caps_code_token():
+    v = hard_checks("status HELLO done", ["response includes HELLO"])
+    # 'HELLO' is 5 caps chars → treated as a required literal.
+    assert v is not None and v.approved and v.method == "hard"
+
+
+# ── robust JSON extraction (the "Extra data" judge crash) ─────────────────
+def test_first_json_object_trailing_extra_data():
+    from adk.gate import _first_json_object
+
+    # The exact shape that crashed json.loads(first{..last}): a valid object
+    # followed by junk.
+    d = _first_json_object('{"approved": true, "reason": "ok"} and some trailing text')
+    assert d == {"approved": True, "reason": "ok"}
+
+
+def test_first_json_object_markdown_fenced_and_multiple():
+    from adk.gate import _first_json_object
+
+    d = _first_json_object('here you go:\n```json\n{"approved": false, "reason": "no"}\n```\n{"x":1}')
+    assert d == {"approved": False, "reason": "no"}
+
+
+def test_first_json_object_none_when_unparseable():
+    from adk.gate import _first_json_object
+
+    assert _first_json_object("no json here at all") is None
+    assert _first_json_object("") is None
+
+
+async def test_judge_with_trailing_data_now_approves():
+    # Regression: a judge that appends prose after strict JSON used to raise
+    # JSONDecodeError → fail closed on a genuinely-approved result. Now parses.
+    async def judge(_prompt):
+        return '{"approved": true, "reason": "done"}\nHope that helps!'
+
+    agent = FakeAgent(["some prose"])
+    gate = CompletionGate(criteria=["the explanation should be clear"], judge=judge, max_retries=0)
+    resp = await gate.run(agent, "explain")
+    assert resp.finish_reason == "verified"
+    assert gate.last_verdict.method == "judge"
+
+
+async def test_judge_unparseable_fails_closed():
+    async def judge(_prompt):
+        return "I think it's fine, honestly."  # no JSON → must NOT soft-pass
+
+    agent = FakeAgent(["prose"])
+    gate = CompletionGate(criteria=["should be clear"], judge=judge, max_retries=0)
+    resp = await gate.run(agent, "explain")
+    assert resp.finish_reason == "unverified"
+    assert gate.last_verdict.method == "judge"
