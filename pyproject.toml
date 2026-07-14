@@ -108,8 +108,8 @@ dev = [
 
 [project.urls]
 Homepage = "https://aitherium.com"
-Repository = "https://github.com/Aitherium/aither"
-Documentation = "https://github.com/Aitherium/aither#readme"
+Repository = "https://github.com/Aitherium/aither-adk"
+Documentation = "https://github.com/Aitherium/aither-adk#readme"
 
 [project.scripts]
 adk = "adk.cli:main"

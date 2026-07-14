@@ -43,16 +43,20 @@ class TestDetectCPUCores:
 
     def test_detect_cpu_cores(self):
         """Test CPU core detection."""
-        # Patch psutil first (if available)
-        with patch("builtins.__import__", side_effect=ImportError):
-            with patch("os.cpu_count", return_value=8):
+        # os.cpu_count must be patched FIRST: setting up patch("os.cpu_count")
+        # itself imports its target, so with __import__ already broken the mock
+        # setup raises (seen on the 3.10 runner; 3.12 mock resolves from
+        # sys.modules and hid it). The __import__ patch (blocking psutil) goes
+        # innermost.
+        with patch("os.cpu_count", return_value=8):
+            with patch("builtins.__import__", side_effect=ImportError):
                 result = _detect_cpu_cores()
         assert result == 8
 
     def test_detect_cpu_cores_fallback(self):
         """Test CPU core fallback to 1."""
-        with patch("builtins.__import__", side_effect=ImportError):
-            with patch("os.cpu_count", return_value=None):
+        with patch("os.cpu_count", return_value=None):
+            with patch("builtins.__import__", side_effect=ImportError):
                 result = _detect_cpu_cores()
         assert result >= 1
 
