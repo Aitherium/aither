@@ -36,6 +36,16 @@ INFERENCE_PATH = os.path.join(
     PROJECT_ROOT, "AitherOS", "apps", "AitherNode", "gateway", "inference.py"
 )
 
+# Monorepo-coupled test: the subject module lives in the private AitherOS tree,
+# which does not exist in the public aither-adk checkout (this file loads it by
+# PATH, so absence breaks pytest COLLECTION, not just this suite). Skip the
+# whole module when running outside the monorepo.
+if not os.path.exists(INFERENCE_PATH):
+    pytest.skip(
+        "AitherOS monorepo not present (public checkout) — inference.py unavailable",
+        allow_module_level=True,
+    )
+
 # Stub the auth module dependency
 _auth_mock = MagicMock()
 _auth_mock.TenantContext = MockTenantContext
