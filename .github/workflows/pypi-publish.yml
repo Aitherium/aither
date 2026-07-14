@@ -21,6 +21,13 @@ jobs:
         run: pip install build
       - name: Build package
         run: python -m build
+      - name: Moat guard (inspect built wheel + sdist)
+        # Defense-in-depth: fail the publish if the built artifacts leak the
+        # internal moat (adk/platform, adk/formbridge, adk/aither_bridge,
+        # nanogpt, premium identities, or an aither_adk import) or drop the
+        # licensing keystone. The sync gate checks the source payload; this
+        # checks what actually gets uploaded.
+        run: python scripts/check_moat_boundary.py
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
