@@ -133,8 +133,9 @@ def _vault_secret(name: str) -> str:
     try:
         import httpx
         url = setting("vault_url", "AITHER_SECRETS_URL").rstrip("/")
+        from adk._tls import tls_verify
         r = httpx.get(f"{url}/secrets/{name}", headers={"X-API-Key": key},
-                      verify=False, timeout=8)  # noqa: S501 — internal CA, loopback
+                      verify=tls_verify(), timeout=8)
         if r.status_code != 200:
             return ""
         body = r.json()

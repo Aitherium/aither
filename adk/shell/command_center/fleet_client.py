@@ -9,7 +9,7 @@ through this module. Design rules:
   service is a dimmed tile with its error, never an exception that kills the
   cockpit.
 - **Short timeouts.** These are dashboard reads (3s default), not work calls.
-- **TLS via the internal CA** (``adk._tls.tls_verify``), never ``verify=False``.
+- **TLS via the internal CA** (``adk._tls.tls_verify``); verification is never disabled.
 - Genesis is HTTP on :8001 (ground truth); everything else is HTTPS-first.
 """
 

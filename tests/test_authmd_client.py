@@ -297,7 +297,10 @@ class MockAuthMdStore(AuthMdStore):
     """In-memory mock of AuthMdStore for testing."""
 
     def __init__(self):
-        super().__init__()
+        # AuthMdStore fail-closes without a tenant (no shared-namespace
+        # fallback); this mock never touches the vault, so a fixed test
+        # tenant is correct anywhere the suite runs (no AITHER_TENANT dep).
+        super().__init__(tenant="test-tenant")
         self._cache: Dict[str, StoredCredential] = {}
 
     async def get(self, service_resource: str, user_id: str = "") -> StoredCredential | None:

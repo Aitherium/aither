@@ -11,9 +11,9 @@ Design contract:
   * GUARDED. Every tool returns a string / JSON-string the agent can relay and
     NEVER raises into the caller's loop. A dead gateway, a missing token, or a
     missing arcengine extra produces a readable message, not a crash.
-  * verify=False on gateway HTTPS: the gateway may be served with the fleet
-    internal CA (or plain HTTP on a solo box). ARC-AGI-3 (a public site) is
-    verified normally.
+  * Gateway HTTPS verifies via adk._tls.tls_verify(): trusts the fleet
+    internal CA bundle when present (or plain HTTP on a solo box). ARC-AGI-3
+    (a public site) is verified normally.
   * Bearer auth on gateway calls. The token is minted by arc_register (ACTA
     wallet -> POST /v1/register), persisted to ~/.aitheros/arc_contrib_token.json,
     and mirrored into WM_CONTRIB_TOKEN for this session.
@@ -101,7 +101,7 @@ def _persist(record: dict) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# guarded HTTP — httpx if present (verify=False), else stdlib urllib (unverified)
+# guarded HTTP — httpx if present (tls_verify), else stdlib urllib fallback
 # --------------------------------------------------------------------------- #
 def _request(method: str, url: str, *, body: Optional[dict] = None,
              headers: Optional[dict] = None, timeout: float = 20.0) -> dict:
@@ -116,10 +116,13 @@ def _request(method: str, url: str, *, body: Optional[dict] = None,
         hdrs["Content-Type"] = "application/json"
     if headers:
         hdrs.update(headers)
-    # Preferred path: httpx (verify=False for the gateway's internal-CA posture)
+    # Preferred path: httpx. TLS verify routes through adk._tls.tls_verify():
+    # verified by default, trusts the AitherNet internal CA bundle when present
+    # (fleet-internal gateways), and only AITHER_TLS_VERIFY=false disables it.
     try:
         import httpx
-        with httpx.Client(verify=False, timeout=timeout) as c:
+        from adk._tls import tls_verify
+        with httpx.Client(verify=tls_verify(), timeout=timeout) as c:
             r = c.request(method, url, json=body, headers=hdrs)
             out: dict = {"ok": 200 <= r.status_code < 300, "status": r.status_code}
             try:
@@ -131,13 +134,22 @@ def _request(method: str, url: str, *, body: Optional[dict] = None,
         pass
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "status": 0, "error": str(e)}
-    # Fallback: stdlib urllib with an unverified TLS context (loopback / internal CA).
+    # Fallback: stdlib urllib. Same TLS policy as the httpx path: verified by
+    # default, internal CA bundle when present, disabled ONLY via the explicit
+    # AITHER_TLS_VERIFY=false escape hatch (mirrors adk._tls.tls_verify()).
     try:
         data = json.dumps(body).encode("utf-8") if body is not None else None
         req = urllib.request.Request(url, data=data, headers=hdrs, method=method)
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
+        from adk._tls import tls_verify
+        _v = tls_verify()
+        if _v is False:
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+        elif isinstance(_v, str):
+            ctx = ssl.create_default_context(cafile=_v)
+        else:
+            ctx = ssl.create_default_context()
         with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
             raw = resp.read().decode("utf-8", "replace")
             out = {"ok": True, "status": getattr(resp, "status", 200)}
@@ -422,7 +434,7 @@ def _arc_open_scorecard(http: "_ArcHttp", root: str,
 def _submit_observe(base: str, tok: str, grid: Any, action_str: str,
                     next_grid: Any, game: str) -> tuple:
     """POST {base}/v1/observe with Bearer auth. Returns (submitted:bool, accepted:bool).
-    Uses the pack's guarded _request helper (httpx verify=False / urllib fallback)."""
+    Uses the pack's guarded _request helper (httpx tls_verify / urllib fallback)."""
     r = _request("POST", f"{base}/v1/observe",
                  body={"grid": grid, "action": action_str,
                        "next_grid": next_grid, "game": str(game)},
