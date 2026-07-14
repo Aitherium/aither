@@ -241,7 +241,7 @@ async def ingest_sessions(
     if brain_sync:
         try:
             import os
-            from adk.brain_sync import BrainSyncClient, SyncDeltaItem
+            from adk.sync.brain import BrainSyncClient, SyncDeltaItem
             client = BrainSyncClient(
                 brain_url=brain_url or os.getenv("AITHER_BRAIN_HUB_URL", "http://localhost:8001"),
                 tenant_id=tenant_id,

@@ -508,7 +508,7 @@ async def ingest_files(
     # Sync to brain hub if enabled
     if brain_sync and chunks_all:
         try:
-            from adk.brain_sync import BrainSyncClient, SyncDeltaItem
+            from adk.sync.brain import BrainSyncClient, SyncDeltaItem
 
             # Get brain URL
             if not brain_url:

@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from adk.secrets_sync import SecretsSync, _extract_secret_names
+from adk.sync.secrets import SecretsSync, _extract_secret_names
 
 
 class TestSecretsSync:

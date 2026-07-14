@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from adk.conversations import ConversationStore, Conversation
-from adk.session_sync import SessionSyncClient, SessionSyncConfig
+from adk.sync.sessions import SessionSyncClient, SessionSyncConfig
 
 
 @pytest.fixture

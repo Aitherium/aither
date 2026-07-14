@@ -1,5 +1,12 @@
 """MCP client bridge — load remote MCP server tools as ADK Tools.
 
+LAYER: Minimal generic JSON-RPC adapter for any MCP server.
+ROLE: Bridges ANY MCP server's tools into ADK's Tool/Capability system.
+      NOT platform-specific — works with AitherNode, external MCP servers, etc.
+      No authentication/billing/caching — pure protocol translation.
+
+See also: adk.mcp — enterprise client for AitherOS MCP gateway with auth/billing.
+
 Lets any agent call tools hosted by an MCP server (AitherNode, an external
 MCP server, or anything else that speaks the Model Context Protocol over
 HTTP JSON-RPC).

@@ -10,7 +10,7 @@ Sync sources (in priority order):
 3. Local encrypted keyring (~/.aither/secrets.enc) — always available as fallback
 
 Usage:
-    from adk.secrets_sync import SecretsSync
+    from adk.sync.secrets import SecretsSync
 
     # Pull secrets from platform vault into encrypted local store
     client = SecretsSync(api_key="...", secrets_url="http://secrets:8111")

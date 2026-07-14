@@ -231,7 +231,7 @@ def create_app(
         # updates back up. Fail-soft: never blocks boot.
         if not offline:
             try:
-                from adk.settings_sync import build_client
+                from adk.sync.settings import build_client
                 _settings_sync = build_client()
                 if _settings_sync is not None:
                     _state["settings_sync"] = _settings_sync
@@ -1477,7 +1477,7 @@ def create_app(
     async def _sync_secrets():
         """Pull secrets from platform vault into local ADK store on startup."""
         try:
-            from adk.secrets_sync import sync_secrets
+            from adk.sync.secrets import sync_secrets
             synced = await sync_secrets()
             if synced:
                 logger.info("Synced %d secrets from vault", len(synced))

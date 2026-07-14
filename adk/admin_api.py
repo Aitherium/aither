@@ -742,7 +742,7 @@ def register_admin_routes(
             return _catalog_cache["data"]
         # Lazy import — settings_sync imports this module at load time.
         try:
-            from adk.settings_sync import _default_portal_url, _resolve_token
+            from adk.sync.settings import _default_portal_url, _resolve_token
             token = _resolve_token()
             portal = _default_portal_url()
         except ImportError:

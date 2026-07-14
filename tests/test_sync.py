@@ -13,9 +13,9 @@ from unittest import mock
 
 import pytest
 
-from adk.sync_watermark import SyncWatermarkStore
-from adk.lockbox_sync import LockboxSyncClient, LockboxSyncConfig
-from adk.files_sync import FilesSyncClient, FilesSyncConfig, FileEntry
+from adk.sync.watermark import SyncWatermarkStore
+from adk.sync.lockbox import LockboxSyncClient, LockboxSyncConfig
+from adk.sync.files import FilesSyncClient, FilesSyncConfig, FileEntry
 
 
 # ═══════════════════════════════════════════════════════════════════════════

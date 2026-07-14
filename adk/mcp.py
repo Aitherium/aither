@@ -1,5 +1,12 @@
 """MCP bridge — connect ADK agents to AitherOS tools via mcp.aitherium.com.
 
+LAYER: Enterprise client bridge for AitherOS MCP gateway and AitherNode.
+ROLE: Provides full authentication (ACTA billing, Identity tokens, external
+       agent keys), token balance tracking, and tool discovery/invocation.
+       NOT a generic MCP adapter — specific to AitherOS platform.
+
+See also: adk.core.mcp — minimal generic JSON-RPC adapter for any MCP server.
+
 Supports three authentication modes:
 
 1. **ACTA API keys** (``aither_sk_live_*``) — billing-backed keys from the

@@ -362,7 +362,7 @@ class TestBrainSyncContract:
 
     def test_sync_delta_item_validation(self):
         """SyncDeltaItem validates inputs."""
-        from adk.brain_sync import SyncDeltaItem
+        from adk.sync.brain import SyncDeltaItem
 
         # Valid
         item = SyncDeltaItem(
@@ -382,7 +382,7 @@ class TestBrainSyncContract:
 
     def test_sync_delta_to_dict(self):
         """SyncDeltaItem serializes to dict."""
-        from adk.brain_sync import SyncDeltaItem
+        from adk.sync.brain import SyncDeltaItem
 
         item = SyncDeltaItem(
             chunk_id="chunk-1",
@@ -402,7 +402,7 @@ class TestBrainSyncContract:
 
     def test_sync_request_to_json(self):
         """SyncRequest serializes to JSON."""
-        from adk.brain_sync import SyncDeltaItem, SyncRequest
+        from adk.sync.brain import SyncDeltaItem, SyncRequest
 
         request = SyncRequest(
             tenant_id="tenant-1",
@@ -423,7 +423,7 @@ class TestBrainSyncContract:
 
     def test_sync_response_parsing(self):
         """SyncResponse parses from dict."""
-        from adk.brain_sync import SyncResponse
+        from adk.sync.brain import SyncResponse
 
         data = {
             "accepted": 5,

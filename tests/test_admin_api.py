@@ -240,7 +240,7 @@ class TestGraphAndSessions:
 
 class TestSettingsSyncSecretPolicy:
     def test_snapshot_excludes_provider_keys_and_mcp_headers(self):
-        from adk import settings_sync
+        from adk.sync import settings as settings_sync
 
         saved = {"llm_provider": "openai", "model": "gpt-4o", "model_api_key": "sk-SECRET",
                  "required_packs": ["p1"]}

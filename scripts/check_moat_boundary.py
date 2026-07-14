@@ -5,7 +5,15 @@ Fails (non-zero exit) if the wheel OR the sdist leaks the internal moat:
   * imports the proprietary ``aither_adk`` package
   * bundles ``adk/nanogpt.py`` (on-device training IP)
   * bundles any premium identity YAML (only ``aither.yaml`` is free)
+  * bundles the internal ``adk/platform`` toolkit (relocated out of the SDK,
+    D-347) or the license-gated ``adk/formbridge`` product
+  * bundles ``adk/aither_bridge.py`` (internal IRC↔chat bridge, stripped at sync)
   * is missing the ``adk/licensing.py`` entitlement keystone
+
+These package-build checks are defense-in-depth behind ``tools/publish_gate.py``
+(which gates the SYNC payload) — the two layers must stay in lockstep so a
+reintroduced module or a broken hatch ``exclude`` is caught at BOTH the repo
+sync and the built-artifact layer.
 
 The sdist matters as much as the wheel: ``python -m build`` publishes BOTH, and an
 sdist can include files the wheel excludes (audit 2026-06-12 P1-5).
@@ -46,6 +54,15 @@ def _check_names(entries, *, strip_root: bool) -> tuple[list[str], bool]:
 
         if name.endswith("adk/nanogpt.py"):
             violations.append(f"LEAK: training IP shipped: {raw}")
+
+        if "adk/platform/" in name or name.endswith("adk/platform.py"):
+            violations.append(f"LEAK: internal platform toolkit shipped: {raw}")
+
+        if "adk/formbridge/" in name or name.endswith("adk/formbridge.py"):
+            violations.append(f"LEAK: license-gated formbridge product shipped: {raw}")
+
+        if name.endswith("adk/aither_bridge.py"):
+            violations.append(f"LEAK: internal aither_bridge shipped: {raw}")
 
         if "/identities/" in name and name.endswith(".yaml") and not name.endswith("aither.yaml"):
             violations.append(f"LEAK: premium identity shipped: {raw}")

@@ -4353,7 +4353,7 @@ def cmd_secret(args):
         gateway_url = getattr(args, "gateway_url", None) or os.environ.get("AITHER_GATEWAY_URL")
         api_key = getattr(args, "api_key", None) or os.environ.get("AITHER_API_KEY")
 
-        from adk.secrets_sync import SecretsSync
+        from adk.sync.secrets import SecretsSync
         client = SecretsSync(
             api_key=api_key,
             secrets_url=secrets_url,
@@ -4396,7 +4396,7 @@ def cmd_secret(args):
             print("  Or set: AITHER_SECRETS_URL, AITHER_GATEWAY_URL, AITHER_API_KEY")
             return 1
 
-        from adk.secrets_sync import SecretsSync
+        from adk.sync.secrets import SecretsSync
         client = SecretsSync(
             api_key=api_key,
             secrets_url=secrets_url,
@@ -4419,7 +4419,7 @@ def cmd_secret(args):
         gateway_url = getattr(args, "gateway_url", None) or os.environ.get("AITHER_GATEWAY_URL")
         api_key = getattr(args, "api_key", None) or os.environ.get("AITHER_API_KEY")
 
-        from adk.secrets_sync import SecretsSync
+        from adk.sync.secrets import SecretsSync
         client = SecretsSync(
             api_key=api_key,
             secrets_url=secrets_url,

@@ -2,6 +2,29 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [2.24.0] - 2026-07-14
+
+### Changed — sync-family consolidation
+
+- **Removed dead code:** `adk/sync.py` (528 lines) deleted — it was unreachable,
+  shadowed by the `adk/sync/` package (`import adk.sync` always resolved to the
+  package; nothing loaded the module by path — verified).
+- **Grouped the sync domain modules into the `adk.sync` package:**
+  `brain_sync`→`adk.sync.brain`, `files_sync`→`adk.sync.files`,
+  `lockbox_sync`→`adk.sync.lockbox`, `secrets_sync`→`adk.sync.secrets`,
+  `session_sync`→`adk.sync.sessions`, `settings_sync`→`adk.sync.settings`,
+  `sync_watermark`→`adk.sync.watermark`. All in-tree importers updated. No
+  back-compat shims were left because **zero external/monorepo code imported the
+  old root paths** (verified) — a clean move, not a shimmed one. **Breaking only
+  for code that imported `adk.<name>_sync` directly** (none known).
+
+### Docs — MCP module layering clarified
+
+- `adk.mcp` (enterprise AitherOS gateway client: auth/billing/token-tracking) and
+  `adk.core.mcp` (minimal generic JSON-RPC adapter for any MCP server) are
+  DISTINCT layers, not duplicates — each now carries a LAYER/ROLE/See-also
+  docstring so they are not mistakenly consolidated.
+
 ## [2.23.2] - 2026-07-14
 
 ### Fixed — CompletionGate no longer false-fails on correct results

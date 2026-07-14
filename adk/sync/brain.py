@@ -4,7 +4,7 @@ Posts embedding deltas to POST /api/v1/brain/sync with tenant/workspace context,
 tracks watermarks for incremental sync, and handles transient failures gracefully.
 
 Usage:
-    from adk.brain_sync import BrainSyncClient, SyncDeltaItem
+    from adk.sync.brain import BrainSyncClient, SyncDeltaItem
 
     client = BrainSyncClient(
         brain_url="http://localhost:8001",

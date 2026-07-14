@@ -409,7 +409,7 @@ class TestCatalogFailSoft:
     def test_offline_without_token(self, pack_dir, tmp_path):
         c = _make_client(tmp_path)
         try:
-            with patch("adk.settings_sync._resolve_token", return_value=""):
+            with patch("adk.sync.settings._resolve_token", return_value=""):
                 r = c.get("/admin/catalog/packs", headers=AUTH)
             assert r.status_code == 200
             assert r.json()["offline"] is True
