@@ -2,7 +2,7 @@
 
 All notable changes to aither-adk will be documented in this file.
 
-## [2.23.1] - 2026-07-14
+## [2.23.2] - 2026-07-14
 
 ### Fixed — CompletionGate no longer false-fails on correct results
 
