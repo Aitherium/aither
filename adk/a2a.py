@@ -22,12 +22,22 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import AsyncIterator
+
+# `from __future__ import annotations` stringizes every annotation, and FastAPI
+# resolves an endpoint's annotations via get_type_hints() against THIS module's
+# globals. The /a2a endpoint is annotated `request: Request`, so `Request` must
+# be resolvable here — otherwise FastAPI mis-reads it as a query param and every
+# POST /a2a 422s. Import it at module scope (guarded: fastapi stays optional for
+# adk core; mount() cannot run without it anyway).
+try:
+    from fastapi import Request
+except ImportError:  # pragma: no cover - fastapi is optional for non-server use
+    Request = None  # type: ignore[assignment,misc]
 
 logger = logging.getLogger("adk.a2a")
 
@@ -355,6 +365,10 @@ class A2AServer:
                 if ts["id"] not in existing_ids:
                     card.setdefault("skills", []).append(ts)
 
+        # Add public_key for signed A2A trust verification
+        if self._agent and hasattr(self._agent, "_a2a_public_key"):
+            card["public_key"] = self._agent._a2a_public_key
+
         # Ensure streaming capability
         card.setdefault("capabilities", {})["streaming"] = True
         card.setdefault("capabilities", {})["stateTransitionHistory"] = True
@@ -373,8 +387,18 @@ class A2AServer:
 
     # ── JSON-RPC handler ──────────────────────────────────────────────────
 
-    async def handle_jsonrpc(self, body: dict) -> dict:
-        """Handle a JSON-RPC 2.0 A2A request."""
+    async def handle_jsonrpc(
+        self,
+        body: dict,
+        caller_public_key: str | None = None,
+        caller_trusted: bool = False,
+    ) -> dict:
+        """Handle a JSON-RPC 2.0 A2A request.
+
+        caller_public_key / caller_trusted carry the verified A2A identity from the
+        mount() gate. They are only consulted by security-bearing methods
+        (skills/invoke); benign methods ignore them.
+        """
         method = body.get("method", "")
         params = body.get("params", {})
         req_id = body.get("id")
@@ -385,6 +409,9 @@ class A2AServer:
             return self._handle_tasks_get(req_id, params)
         elif method == "tasks/cancel":
             return self._handle_tasks_cancel(req_id, params)
+        elif method == "skills/invoke":
+            return await self._handle_skills_invoke(
+                req_id, params, caller_public_key, caller_trusted)
         else:
             return _jsonrpc_error(req_id, -32601, f"Method not found: {method}")
 
@@ -488,6 +515,103 @@ class A2AServer:
         task = self._tasks.get_task(task_id)
         return _jsonrpc_success(req_id, {"task": task.to_dict() if task else {}})
 
+    async def _handle_skills_invoke(
+        self,
+        req_id,
+        params: dict,
+        caller_public_key: str | None = None,
+        caller_trusted: bool = False,
+    ) -> dict:
+        """Handle skills/invoke — call a tool on this agent and return the result.
+
+        This is the ONE method that lets a remote peer run local code, so it is
+        fail-closed on three independent controls (defense in depth):
+
+          1. TRUST — the caller must present a cryptographically-verified,
+             *trusted* Ed25519 key. mount() enforces this for skills/invoke
+             regardless of the global AITHER_A2A_REQUIRE_TRUST mode; we re-check
+             `caller_trusted` here so the handler can never run for an untrusted
+             caller even if wired differently in future.
+          2. ALLOWLIST — the tool must be explicitly opted in via
+             ToolDef.expose_to_a2a (default False). A tool being registered
+             locally does NOT make it remotely reachable.
+          3. AUTHORIZATION — the tool executes under a constrained AuthContext
+             (verified peer, clearance 0, no action classes), so any tool marked
+             with required_clearance>0 or an action_class (write/delete/admin) is
+             denied by ToolRegistry.execute() even when exposed.
+        """
+        # Control 1: trust (defense-in-depth; mount() already gated this).
+        if not caller_trusted:
+            logger.warning("A2A skills/invoke: rejecting untrusted caller")
+            return _jsonrpc_error(req_id, -32600, "Untrusted caller — skills/invoke denied")
+
+        skill_name = params.get("skill", "").strip()
+        args = params.get("args", {})
+
+        if not skill_name:
+            return _jsonrpc_error(req_id, -32602, "skill name is required")
+
+        if not isinstance(args, dict):
+            return _jsonrpc_error(req_id, -32602, "args must be a dict")
+
+        # Check if agent exists and has tools
+        if not self._agent:
+            logger.error("A2A skills/invoke: no agent configured")
+            return _jsonrpc_error(req_id, -32603, "Agent not configured")
+
+        if not hasattr(self._agent, "_tools"):
+            return _jsonrpc_error(req_id, -32602, "Agent does not support tools")
+
+        # Look up the tool in the agent's registry (strict dict lookup, never getattr)
+        tool_def = self._agent._tools.get(skill_name)
+        if tool_def is None:
+            logger.warning(f"A2A skills/invoke: tool not found: {skill_name}")
+            return _jsonrpc_error(req_id, -32602, f"Tool not found: {skill_name}")
+
+        # Control 2: allowlist — only tools explicitly exposed to A2A are reachable.
+        if not getattr(tool_def, "expose_to_a2a", False):
+            logger.warning(f"A2A skills/invoke: tool not exposed for remote invoke: {skill_name}")
+            return _jsonrpc_error(
+                req_id, -32601, f"Tool not exposed for remote invocation: {skill_name}")
+
+        # Control 3: authorization — run under a constrained principal derived from the
+        # verified caller key. clearance=0 + no action classes => clearance/action-gated
+        # tools are denied by execute() even if exposed.
+        try:
+            from adk.auth import AuthContext, Principal
+            key_fp = (caller_public_key or "unknown")[:16]
+            auth = AuthContext(Principal(
+                subject_id=f"a2a:{key_fp}",
+                principal_class="agent",
+                role="mesh_peer",
+                clearance=0,
+                allowed_action_types=frozenset(),
+                channel="a2a",
+                verified=True,
+            ))
+        except Exception as e:  # pragma: no cover - auth import/construction is stable
+            logger.error(f"A2A skills/invoke: failed to build AuthContext: {e}")
+            return _jsonrpc_error(req_id, -32603, "Authorization context error")
+
+        # Execute the tool under the constrained AuthContext
+        try:
+            result_json = await self._agent._tools.execute(skill_name, args, auth=auth)
+            # result_json is a JSON string; parse it
+            result_obj = json.loads(result_json)
+
+            return _jsonrpc_success(req_id, {
+                "skill": skill_name,
+                "output": result_obj,
+            })
+        except json.JSONDecodeError as e:
+            # Log full detail server-side; return a generic message to the caller
+            # so tool internals / paths / secrets never leak over the wire.
+            logger.error(f"A2A skills/invoke {skill_name}: JSON parse error: {e}")
+            return _jsonrpc_error(req_id, -32603, "Tool returned invalid JSON")
+        except Exception as e:
+            logger.error(f"A2A skills/invoke {skill_name} failed: {e}")
+            return _jsonrpc_error(req_id, -32603, f"Tool execution error in '{skill_name}'")
+
     # ── SSE streaming ─────────────────────────────────────────────────────
 
     async def stream_task(self, task_id: str) -> AsyncIterator[str]:
@@ -514,7 +638,7 @@ class A2AServer:
                 ):
                     break
             except asyncio.TimeoutError:
-                yield f": keepalive\n\n"
+                yield ": keepalive\n\n"
 
     # ── FastAPI mount ─────────────────────────────────────────────────────
 
@@ -524,7 +648,7 @@ class A2AServer:
         Adds:
           - GET  /.well-known/agent-card.json — Agent Card (canonical)
           - GET  /.well-known/agent.json — Agent Card (legacy, 308 redirect)
-          - POST /a2a — JSON-RPC 2.0
+          - POST /a2a — JSON-RPC 2.0 (with optional A2A trust verification)
           - GET  /a2a/tasks/{task_id}/subscribe — SSE stream
         """
         from fastapi import Request
@@ -546,13 +670,91 @@ class A2AServer:
         @app.post("/a2a")
         async def a2a_endpoint(request: Request):
             try:
+                body_bytes = await request.body()
                 body = await request.json()
             except Exception:
                 return JSONResponse(
                     _jsonrpc_error(None, -32700, "Parse error"),
                     status_code=200,
                 )
-            result = await self.handle_jsonrpc(body)
+
+            # Optional A2A trust verification (OPT-IN via AITHER_A2A_REQUIRE_TRUST)
+            from adk.a2a_trust import (
+                verify_a2a_request,
+                should_require_a2a_trust,
+                should_audit_a2a_trust,
+            )
+
+            x_signature = request.headers.get("X-Signature")
+            x_public_key = request.headers.get("X-Public-Key")
+            x_node_id = request.headers.get("X-Node-ID")
+            method = body.get("method", "") if isinstance(body, dict) else ""
+
+            # Verify the signature ONCE up front whenever headers are present, so
+            # both the global gate and the method-specific gate below share one
+            # verification result (and one caller identity).
+            trust_result = None
+            if x_signature and x_public_key:
+                trust_result = await verify_a2a_request(
+                    request_body=body_bytes,
+                    x_signature=x_signature,
+                    x_public_key=x_public_key,
+                    x_node_id=x_node_id,
+                )
+
+            # FAIL-CLOSED when trust is globally REQUIRED: a request with NO
+            # signature headers must be REJECTED, not passed through. The old code
+            # only ran `if x_signature or x_public_key`, so an attacker bypassed
+            # enforcement simply by omitting the headers.
+            if should_require_a2a_trust():
+                if not (x_signature and x_public_key):
+                    logger.warning("Rejecting A2A request: trust required but no signature")
+                    return JSONResponse(
+                        {"error": "Untrusted request",
+                         "reason": "signature required (AITHER_A2A_REQUIRE_TRUST)"},
+                        status_code=403,
+                    )
+                if not (trust_result and trust_result.trusted):
+                    reason = trust_result.reason if trust_result else "no signature"
+                    logger.warning(f"Rejecting untrusted A2A request: {reason}")
+                    return JSONResponse(
+                        {"error": "Untrusted request", "reason": reason},
+                        status_code=403,
+                    )
+                logger.debug(f"A2A trust OK: {trust_result.reason}")
+            elif should_audit_a2a_trust() and trust_result and not trust_result.trusted:
+                # Audit mode: verify if present, log only, do not block.
+                logger.warning(f"A2A trust audit: untrusted key would be rejected: "
+                             f"{trust_result.reason}")
+
+            # METHOD-SPECIFIC HARD GATE: skills/invoke lets a peer run local code,
+            # so it ALWAYS requires a verified + trusted signature — independent of
+            # the global AITHER_A2A_REQUIRE_TRUST mode (which stays 'false' by
+            # default so benign message/send chat keeps working unsigned). Flipping
+            # the global default would break existing chat and, with the mesh-trust
+            # lookup still a stub, reject everything; gating the dangerous method
+            # specifically is the safer, narrower control.
+            if method == "skills/invoke":
+                if not (x_signature and x_public_key):
+                    logger.warning("Rejecting skills/invoke: signature required")
+                    return JSONResponse(
+                        {"error": "Untrusted request",
+                         "reason": "skills/invoke requires a signed request"},
+                        status_code=403,
+                    )
+                if not (trust_result and trust_result.trusted):
+                    reason = trust_result.reason if trust_result else "no signature"
+                    logger.warning(f"Rejecting untrusted skills/invoke: {reason}")
+                    return JSONResponse(
+                        {"error": "Untrusted request",
+                         "reason": f"skills/invoke requires a trusted key: {reason}"},
+                        status_code=403,
+                    )
+
+            caller_public_key = x_public_key if (trust_result and trust_result.verified) else None
+            caller_trusted = bool(trust_result and trust_result.trusted)
+            result = await self.handle_jsonrpc(
+                body, caller_public_key=caller_public_key, caller_trusted=caller_trusted)
             return JSONResponse(result)
 
         @app.get("/a2a/tasks/{task_id}/subscribe")

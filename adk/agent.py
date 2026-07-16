@@ -87,6 +87,37 @@ def _get_session_artifacts(session_id: str) -> list:
         return []
 
 
+def _intent_matches_categories(intent_type: str, categories: list[str]) -> bool:
+    """Check if an intent matches any of the tool's intent categories.
+
+    Matching rules:
+    - If categories is empty, the tool is available for all intents (fail-open).
+    - Otherwise, check if intent_type matches any category (case-insensitive).
+    - 'DEFAULT' intent matches all unmarked tools (category is empty).
+    """
+    if not categories:
+        return True
+    intent_normalized = (intent_type or "").strip().lower()
+    return any(cat.strip().lower() == intent_normalized for cat in categories)
+
+
+def _filter_tools_by_intent(
+    tools_list: list[ToolDef],
+    intent_type: str | None = None,
+) -> list[ToolDef]:
+    """Filter tools by intent type.
+
+    Fail-open: if intent_type is None/empty, return all tools (current behavior).
+    Otherwise, filter by matching intent_categories.
+    """
+    if not intent_type:
+        return tools_list
+    return [
+        t for t in tools_list
+        if _intent_matches_categories(intent_type, getattr(t, "intent_categories", []))
+    ]
+
+
 @dataclass
 class AgentResponse:
     """Response from an agent interaction."""
@@ -409,6 +440,18 @@ class AitherAgent:
             except Exception as exc:
                 logger.debug("routines init failed (non-fatal): %s", exc)
                 self._routine_store = None
+
+        # A2A signing keypair — load or generate Ed25519 keypair for signed A2A requests
+        self._a2a_public_key: str | None = None
+        try:
+            from adk.a2a_client import load_or_generate_keypair
+            _, self._a2a_public_key = load_or_generate_keypair(self.name)
+        except Exception as e:
+            logger.debug(f"A2A keypair load failed (non-fatal): {e}")
+            # Keypair failures don't block agent creation; A2A is optional
+
+        # Intent discrimination (for context/tool gating by intent type)
+        self._current_intent: str | None = None
 
     def _check_agent_license(self, load_packs: bool) -> None:
         """Verify this agent identity is licensed and custom agents are allowed.
@@ -972,11 +1015,23 @@ class AitherAgent:
             except Exception as exc:
                 logger.warning("Safety check failed (non-fatal): %s", exc)
 
+        # Intent classification (fail-open: use keyword heuristic on error).
+        # Store intent for tool filtering and context scaling downstream.
+        self._current_intent = None
+        try:
+            from adk.intent import coarse_code_intent
+            self._current_intent = coarse_code_intent(message)
+        except Exception:
+            pass
+
         # Build messages with context-aware truncation
         messages = None
         if self._context_mgr:
             try:
                 self._context_mgr.clear()
+                # Make intent available to context assembly (add_system uses it
+                # to skip the heavy technical system-facts block on chit-chat).
+                self._context_mgr.set_intent(self._current_intent)
                 self._context_mgr.add_system(self.system_prompt)
                 if history:
                     for h in history:
@@ -1015,11 +1070,18 @@ class AitherAgent:
                 # Unified memory (AITHER_UNIFIED_MEMORY=on): authority + spreading
                 # activation recall, surfacing [CORRECTION]/[STALE]/… labels.
                 # Flag off → plain search(), byte-identical lines (no labels).
+                # Thread intent type for intent-aware chunk scoring (fail-open if unsupported).
                 from adk.graph_memory import unified_memory_mode as _unified_mode
                 if _unified_mode() == "on":
                     relevant = await self._graph.recall_with_activation(message, limit=6)
                 else:
-                    relevant = await self._graph.search(message, limit=6)
+                    try:
+                        relevant = await self._graph.search(
+                            message, limit=6, intent_type=self._current_intent
+                        )
+                    except TypeError:
+                        # Backend doesn't support intent_type — fall back to no-arg call
+                        relevant = await self._graph.search(message, limit=6)
                 if relevant:
                     graph_lines = []
                     for n in relevant:
@@ -1138,8 +1200,13 @@ class AitherAgent:
         except Exception:
             pass  # Non-fatal — persistent store is best-effort
 
-        # Call LLM (with tool loop if tools registered)
-        tools_schema = self._tools.to_openai_format() if self._tools.list_tools() else None
+        # Call LLM (with tool loop if tools registered). Intent-narrow the tool
+        # set first (fail-open: no/unknown intent → all tools; unmarked tools stay
+        # available for every intent). This is the dominant path — stream_react()
+        # applies the same filter (a review found chat() had been left ungated).
+        _all_tools = self._tools.list_tools()
+        _filtered_tools = _filter_tools_by_intent(_all_tools, self._current_intent)
+        tools_schema = self._tools.to_openai_format(_filtered_tools) if _filtered_tools else None
         tool_calls_made = []
         # Human-in-the-loop approval state. ``_pending_approvals`` collects gated tool
         # calls awaiting a customer decision; ``_paused`` short-circuits the turn so the
@@ -2002,9 +2069,22 @@ class AitherAgent:
             except Exception:
                 pass
 
+        # Intent classification (fail-open: use keyword heuristic on error).
+        # Used to filter tools by intent type.
+        _intent = None
+        try:
+            from adk.intent import coarse_code_intent
+            _intent = coarse_code_intent(message)
+        except Exception:
+            pass
+
         # System prompt = agent instructions + the ReAct text protocol + tools.
+        # Filter tools by intent before building tool_lines (fail-open: no intent → all tools).
+        all_tools = self._tools.list_tools()
+        filtered_tools = _filter_tools_by_intent(all_tools, _intent)
+
         tool_lines = []
-        for td in self._tools.list_tools():
+        for td in filtered_tools:
             props = (td.parameters or {}).get("properties", {}) if isinstance(td.parameters, dict) else {}
             tool_lines.append(f"- {td.name}({', '.join(props.keys())}) -> {td.description}")
         tools_block = "\n".join(tool_lines) if tool_lines else "(no tools available)"

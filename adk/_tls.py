@@ -17,13 +17,24 @@ Policy (``tls_verify()``):
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import Union
 
+_log = logging.getLogger("aither.adk.tls")
+_warned_disabled = False
+
 
 def _ca_bundle_path() -> str | None:
     """Locate the AitherNet CA bundle installed by ``adk setup`` / mcp_setup.
+
+    Searches in order:
+      1. $AITHER_CA_BUNDLE env var (explicit override)
+      2. $HOME/.aither/aithernet-ca-bundle.pem (user install)
+      3. $AITHER_HOME/aithernet-ca-bundle.pem (adk home)
+      4. /app/AitherOS/Library/Data/tls/combined-ca-bundle.pem (container co-located)
+      5. /certs/ca-chain.pem (container generic mount)
 
     Not cached: setup may install the bundle after the first HTTP call. Never
     raises — TLS policy must not crash an HTTP call (e.g. ``Path.home()`` raises
@@ -39,11 +50,22 @@ def _ca_bundle_path() -> str | None:
             or os.environ.get("USERPROFILE")
         )
         if not home:
-            return None
-        # AITHER_HOME points at ~/.aither directly; a bare home needs the suffix.
-        base = Path(home)
-        for candidate in (base / "aithernet-ca-bundle.pem",
-                          base / ".aither" / "aithernet-ca-bundle.pem"):
+            home = ""
+
+        # Search order: home-relative, then container mounts
+        candidates = []
+        if home:
+            base = Path(home)
+            candidates.extend([
+                base / "aithernet-ca-bundle.pem",
+                base / ".aither" / "aithernet-ca-bundle.pem",
+            ])
+        # Container-native paths (bind-mounted from AitherOS or generic /certs)
+        candidates.extend([
+            Path("/app/AitherOS/Library/Data/tls/combined-ca-bundle.pem"),
+            Path("/certs/ca-chain.pem"),
+        ])
+        for candidate in candidates:
             if candidate.is_file():
                 return str(candidate)
     except Exception:
@@ -60,6 +82,15 @@ def tls_verify() -> Union[bool, str]:
     """
     flag = os.getenv("AITHER_TLS_VERIFY", "true").strip().lower()
     if flag in ("false", "0", "no", "off"):
+        global _warned_disabled
+        if not _warned_disabled:
+            _warned_disabled = True
+            _log.warning(
+                "TLS certificate verification is DISABLED (AITHER_TLS_VERIFY=%s). "
+                "Traffic — including auth/secret calls — is exposed to MITM. "
+                "Use this only on an isolated dev box, never in production.",
+                flag,
+            )
         return False
     bundle = _ca_bundle_path()
     return bundle if bundle else True

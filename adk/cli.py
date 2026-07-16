@@ -721,6 +721,46 @@ def cmd_stack(args):
     supervisor.supervise(specs, interval=10)
 
 
+def _render_phone_access(public_url: str, token: str) -> str:
+    """Build the phone-ready SECURE chat URL (+ QR) for a tunnelled agent.
+
+    The bearer rides in the URL fragment (``#k=…``) so the browser never sends it
+    to the server or writes it to logs, yet the chat page can still call the
+    bearer-gated ``/chat/stream``. Anyone who opens the tunnel URL WITHOUT the
+    fragment hits 401 — the publicly-exposed surface stays fail-closed.
+
+    The QR uses Unicode block characters; on a terminal whose encoding can't
+    represent them (e.g. a legacy cp1252 Windows console) it is silently dropped
+    and only the (ASCII) URL is shown, so this never crashes the caller.
+    """
+    phone_url = f"{public_url.rstrip('/')}/#k={token}"
+    lines = [
+        "",
+        "     Phone access (open on any device - the token is in the link,",
+        "     never sent in a header or logged; without it the URL is 401):",
+        f"       {phone_url}",
+    ]
+    try:
+        import io
+
+        import qrcode  # optional dep; pure-python ASCII/Unicode QR
+
+        qr = qrcode.QRCode(border=1)
+        qr.add_data(phone_url)
+        qr.make(fit=True)
+        buf = io.StringIO()
+        qr.print_ascii(out=buf, invert=True)
+        block = buf.getvalue()
+        enc = (sys.stdout.encoding or "utf-8")
+        block.encode(enc)  # raises on a terminal that can't render the QR glyphs
+        lines.append("")
+        lines.extend("       " + ln for ln in block.splitlines())
+    except Exception:  # noqa: BLE001 — QR is a convenience; the URL is the essential
+        # Missing qrcode dep, or a terminal that can't render the glyphs — skip it.
+        pass
+    return "\n".join(lines)
+
+
 def cmd_up(args):
     """One command: run a persistent agent connected to your AitherOS fleet.
 
@@ -923,7 +963,8 @@ def cmd_up(args):
                          next_action="install cloudflared manually, or re-run with --no-register")
 
     # ── Callback bearer (the one secret the control plane presents back to us) ──
-    auth_token = getattr(args, "auth_token", "") or os.environ.get("AITHER_SERVER_API_KEY", "")
+    auth_token = (getattr(args, "passphrase", "") or getattr(args, "auth_token", "")
+                  or os.environ.get("AITHER_SERVER_API_KEY", ""))
     if not auth_token:
         auth_token = base64.urlsafe_b64encode(_secrets.token_bytes(24)).decode().rstrip("=")
 
@@ -1049,6 +1090,7 @@ def cmd_up(args):
         if public_url:
             print(f"     Fleet: {portal}/portal/fleet")
             print(f"     URL:   {public_url}")
+            print(_render_phone_access(public_url, auth_token))
         print(f"     Chat:  {chat_url}")
         print(f"     Logs:  {agent_log}")
         print("     Stop:  adk down     Status: adk status")
@@ -1991,6 +2033,207 @@ def _strip_think_tags(text: str) -> str:
     return text.strip()
 
 
+def cmd_ui(args):
+    """Manage the agent's swappable web UI pack (ls / set / path)."""
+    from adk.server import (
+        list_ui_packs, load_ui_pack, resolve_ui_pack_name, _ui_packs_dir,
+    )
+    action = getattr(args, "ui_command", None) or "ls"
+
+    if action == "ls":
+        packs = list_ui_packs()
+        current = resolve_ui_pack_name()
+        print("\n  Agent UI packs")
+        print("  " + "=" * 56)
+        for name, src in sorted(packs.items()):
+            mark = "*" if name == current else " "
+            where = "custom drop-in" if src not in ("builtin", "packaged") else src
+            print(f"   {mark} {name:<18} ({where})")
+        print("  " + "-" * 56)
+        print(f"  selected: {current}   (drop custom packs in {_ui_packs_dir()})")
+        print("  swap with:  adk ui set <name>")
+        return 0
+
+    if action == "set":
+        name = getattr(args, "name", None)
+        if not name:
+            print("ERROR: usage: adk ui set <name>  (see 'adk ui ls')")
+            return 1
+        packs = list_ui_packs()
+        if name not in packs:
+            print(f"ERROR: no UI pack named '{name}'. Available: {', '.join(sorted(packs))}")
+            print(f"  (or drop a folder with index.html into {_ui_packs_dir()}/{name}/)")
+            return 1
+        from adk.config import save_saved_config
+        path = save_saved_config({"agent_ui": name})
+        print(f"✓ Agent UI pack set to '{name}' (saved to {path}).")
+        print("  Reload the agent page (or restart `adk up`) to see it.")
+        return 0
+
+    if action == "path":
+        current = resolve_ui_pack_name()
+        html = load_ui_pack(current)
+        print(f"selected pack : {current}")
+        print(f"drop-in dir   : {_ui_packs_dir()}")
+        print(f"resolves      : {'OK (%d bytes)' % len(html) if html else 'MISSING'}")
+        return 0
+
+    print("usage: adk ui [ls | set <name> | path]")
+    return 1
+
+
+async def _stream_to_agent(ref, message: str) -> None:
+    """Stream a completion FROM a mesh agent, protocol-aware. The remote agent runs
+    on ITS OWN inference backend (that's the whole point)."""
+    import sys
+    if ref.chat_protocol == "openai":
+        # Raw OpenAI-compatible inference server (llama.cpp / ollama / vllm).
+        from adk.llm.base import Message
+        from adk.llm.openai_compat import OpenAIProvider
+        base = ref.invoke_url.rstrip("/")
+        if not base.endswith("/v1"):
+            base = base + "/v1"
+        prov = OpenAIProvider(base_url=base, default_model=ref.model or "")
+        got = False
+        async for chunk in prov.chat_stream([Message(role="user", content=message)],
+                                            max_tokens=1024):
+            text = getattr(chunk, "content", "") or ""
+            if text:
+                got = True
+                sys.stdout.write(text)
+                sys.stdout.flush()
+        if not got:
+            # Some reasoning models (e.g. Bonsai) emit only reasoning_content on short
+            # replies; fall back to a non-streaming completion so the user sees output.
+            resp = await prov.chat([Message(role="user", content=message)], max_tokens=1024)
+            sys.stdout.write(getattr(resp, "content", "") or "(no content)")
+        print()
+    else:
+        # A full adk agent server — its own /chat/stream, its own backend.
+        from adk.shell.genesis_client import GenesisClient
+        client = GenesisClient(base_url=ref.invoke_url)
+        async for chunk in client.chat_stream(message):
+            sys.stdout.write(chunk)
+            sys.stdout.flush()
+        print()
+
+
+def cmd_agents(args) -> int:
+    """Discover + list every agent in the mesh (name, where, what inference)."""
+    import asyncio
+    from adk.mesh_discovery import discover_agents
+    fmt = getattr(args, "format", "table")
+    agents, warnings = asyncio.run(discover_agents())
+    if fmt == "json":
+        import json
+        print(json.dumps({"agents": [a.to_dict() for a in agents],
+                          "warnings": warnings}, indent=2))
+        return 0
+    print("\n  Mesh Agents")
+    print("  " + "=" * 80)
+    if not agents:
+        print("  (none discovered)")
+    else:
+        print(f"  {'NAME':<22}{'REACH':<9}{'MODEL':<24}{'BACKEND':<11}{'STATUS'}")
+        print("  " + "-" * 80)
+        for a in agents:
+            print(f"  {a.name[:21]:<22}{a.reach[:8]:<9}"
+                  f"{(a.model or '-')[:23]:<24}{(a.provider_hint or '-')[:10]:<11}{a.status}")
+    for w in warnings:
+        print(f"  ! {w}")
+    print("  " + "-" * 80)
+    print("  chat:   adk chat <name> \"message\"")
+    print("  invoke: adk invoke <name> <skill> [--arg k=v]")
+    print("  add an endpoint: ~/.aither/agents.json (name, invoke_url, model, provider_hint)")
+    return 0
+
+
+def cmd_chat(args) -> int:
+    """Chat with a mesh agent BY NAME — it responds on its own inference backend."""
+    import asyncio
+    from adk.mesh_discovery import resolve_agent
+    name = getattr(args, "agent", None)
+    message = getattr(args, "message", None)
+    if not name:
+        print("usage: adk chat <agent-name> [message]   (see `adk agents ls`)")
+        return 1
+
+    async def _run() -> int:
+        ref = await resolve_agent(name)
+        if ref is None:
+            print(f"ERROR: no agent named '{name}' in the mesh. Try `adk agents ls`.")
+            return 1
+        if not ref.invoke_url:
+            print(f"ERROR: agent '{ref.name}' has no invoke_url — can't reach it.")
+            return 1
+        tag = ref.model or ref.provider_hint or ref.chat_protocol
+        print(f"  → {ref.name}  [{tag} @ {ref.invoke_url}]\n")
+        if message:
+            await _stream_to_agent(ref, message)
+            return 0
+        # interactive loop
+        while True:
+            try:
+                msg = input("You: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                return 0
+            if msg in ("", "exit", "quit", ":q"):
+                return 0
+            print(f"{ref.name}: ", end="", flush=True)
+            await _stream_to_agent(ref, msg)
+
+    return asyncio.run(_run())
+
+
+def cmd_invoke(args) -> int:
+    """Invoke a TOOL (skill) on a mesh agent over signed A2A — command & control.
+
+    The remote agent runs the tool on ITS side and returns the result. The call
+    is Ed25519-signed; the remote only runs tools it has opted in via
+    `expose_to_a2a=True`, and only if our key is trusted
+    (AITHER_A2A_TRUSTED_KEYS / AITHER_A2A_REQUIRE_TRUST on the peer).
+    """
+    import asyncio
+    import json as _json
+    from adk.a2a_client import invoke_skill
+
+    name = getattr(args, "agent", None)
+    skill = getattr(args, "skill", None)
+    if not name or not skill:
+        print("usage: adk invoke <agent-name> <skill> [--arg k=v ...]   (see `adk agents ls`)")
+        return 1
+
+    # Parse --arg k=v pairs. Values are JSON-parsed when possible (so numbers /
+    # bools / lists pass through typed), else kept as strings.
+    call_args: dict = {}
+    for pair in (getattr(args, "arg", None) or []):
+        if "=" not in pair:
+            print(f"ERROR: --arg must be k=v, got '{pair}'")
+            return 1
+        k, v = pair.split("=", 1)
+        try:
+            call_args[k] = _json.loads(v)
+        except Exception:
+            call_args[k] = v
+
+    this_agent = getattr(args, "as_agent", None) or os.environ.get(
+        "AITHER_AGENT_NAME", "adk-client")
+
+    async def _run() -> int:
+        result = await invoke_skill(name, skill, call_args, this_agent_name=this_agent)
+        if isinstance(result, dict) and result.get("error"):
+            print(f"ERROR ({result.get('error')}): {result.get('message', result)}")
+            if result.get("code") is not None:
+                print(f"  rpc code: {result['code']}")
+            return 1
+        output = result.get("output") if isinstance(result, dict) else result
+        print(_json.dumps(output, indent=2, default=str))
+        return 0
+
+    return asyncio.run(_run())
+
+
 def cmd_aeon(args):
     """Interactive multi-agent group chat."""
     import asyncio
@@ -2330,6 +2573,96 @@ def _onboard_agent(agent_name: str, tenant_slug: str, args) -> int:
     return asyncio.run(_do_onboard())
 
 
+def _onboard_quick(args) -> int:
+    """One-command onboarding chain: inference -> pack -> enroll.
+
+    Runs synchronously at top level. Each reused cmd_* helper manages its own
+    event loop, so this must NOT be called from within a running loop.
+    """
+    import json as _json
+    from pathlib import Path
+
+    # Resolve api_key the same way the interactive scan does.
+    api_key = getattr(args, "api_key", "") or os.environ.get("AITHER_API_KEY", "")
+    if not api_key:
+        config_path = Path.home() / ".aither" / "config.json"
+        if config_path.exists():
+            try:
+                cfg = _json.loads(config_path.read_text(encoding="utf-8"))
+                api_key = cfg.get("api_key", "")
+            except Exception:
+                pass
+
+    pack_name = getattr(args, "pack", "openclaw") or "openclaw"
+
+    print()
+    print("  QUICK SETUP")
+    print("  ───────────")
+    print()
+
+    # Step 1: inference (skip if a cloud key is already configured)
+    if not api_key:
+        print("  [1/3] Setting up local inference backend...")
+
+        class QuickstartArgs:
+            backend = "auto"
+            port = 8209
+            dry_run = False
+            model = None
+            api_key = ""
+
+        if cmd_quickstart_local(QuickstartArgs()) != 0:
+            print()
+            print("  ERROR: Inference setup failed")
+            print("  You can retry with: adk quickstart-local")
+            return 1
+    else:
+        print("  [1/3] Cloud API key already configured, skipping local inference")
+
+    # Step 2: install the default pack (non-fatal on failure)
+    print()
+    print("  [2/3] Installing agent pack...")
+
+    class InstallArgs:
+        target = f"pack:{pack_name}"
+
+    if cmd_install(InstallArgs()) != 0:
+        print()
+        print("  WARNING: Pack installation failed (continuing anyway)")
+        print(f"  You can retry with: adk install pack:{pack_name}")
+
+    # Step 3: enroll (best-effort — never blocks onboarding)
+    print()
+    print("  [3/3] Enrolling with control plane...")
+
+    class EnrollArgs:
+        portal = None
+        genesis = None
+        no_heartbeat = False
+        force = False
+
+    try:
+        if cmd_enroll(EnrollArgs()) != 0:
+            print()
+            print("  WARNING: Enrollment failed (optional, you can retry later)")
+            print("  You can retry with: adk enroll --force")
+    except Exception as e:
+        print()
+        print(f"  WARNING: Enrollment error: {e} (optional, continuing)")
+
+    print()
+    print("=" * 60)
+    print("  Onboarding Complete!")
+    print("=" * 60)
+    print()
+    print(f"  Pack installed: {pack_name}")
+    print("  Next steps:")
+    print(f"    adk run --agents {pack_name}      Run this agent")
+    print(f"    adk serve --agents {pack_name}    Serve as web service")
+    print()
+    return 0
+
+
 def cmd_onboard(args):
     """Interactive onboarding — detect products, configure, integrate."""
     import asyncio
@@ -2341,6 +2674,13 @@ def cmd_onboard(args):
     # ── Agent fleet registration mode ─────────────────────────────────
     if agent_name:
         return _onboard_agent(agent_name, tenant_slug, args)
+
+    # ── Quick mode: one-command chain ─────────────────────────────────
+    # Runs at TOP LEVEL, not inside the async _onboard() below: the reused
+    # cmd_* helpers call asyncio.run() internally (e.g. cmd_enroll), which
+    # would raise "cannot be called from a running event loop" if nested.
+    if getattr(args, 'quick', False):
+        return _onboard_quick(args)
 
     async def _onboard():
         # Inline ProductDetector (no AitherOS lib dependency)
@@ -3688,7 +4028,7 @@ def cmd_backend(args):
             print()
             print("Available:")
             for name in ("ollama", "vllm", "openai", "anthropic", "deepseek",
-                         "groq", "together", "gateway", "lmstudio", "picolm"):
+                         "groq", "together", "gateway", "lmstudio", "genesis", "picolm"):
                 print(f"  - {name}")
         asyncio.run(_list())
         return 0
@@ -4650,6 +4990,127 @@ _PROVIDER_ALIASES = {
     "ds": "deepseek",
     "local": "local",
 }
+
+
+def cmd_mesh(args) -> int:
+    """Manage AitherMesh overlay and A2A operations."""
+    import asyncio
+
+    sub = getattr(args, "mesh_command", None)
+
+    if sub == "onboard":
+        async def _onboard():
+            from adk.mesh import join, _resolve_conductor_url
+
+            conductor = getattr(args, "conductor", None)
+            if not conductor:
+                print("ERROR: --conductor required (or set AITHER_CONDUCTOR_URL)")
+                return 1
+
+            # Resolve internal hostname fallback to public endpoint
+            conductor = _resolve_conductor_url(conductor)
+            node_id = getattr(args, "node_id", "") or None
+            role = getattr(args, "role", "worker")
+            external_ip = getattr(args, "external_ip", "") or None
+            headscale = getattr(args, "headscale", False)
+
+            try:
+                report = await join(
+                    conductor_url=conductor,
+                    node_id=node_id,
+                    role=role,
+                    external_ip=external_ip,
+                    headscale=headscale,
+                )
+                print("\n  Mesh Onboard Complete")
+                print("  " + "=" * 50)
+                print(f"  Node ID:      {report.get('node_id', 'unknown')}")
+                print(f"  Overlay IP:   {report.get('overlay_ip', 'unknown')}")
+                print(f"  Transport:    {report.get('transport', 'unknown')}")
+                if report.get("transport") == "wireguard":
+                    print(f"  Interface:    {report.get('iface', 'unknown')}")
+                    print(f"  Handshake:    {'OK' if report.get('handshake') else 'pending'}")
+                elif report.get("transport") == "headscale":
+                    print(f"  Hostname:     {report.get('hostname', 'unknown')}")
+                print()
+                return 0
+            except Exception as e:
+                print(f"ERROR: {e}", file=sys.stderr)
+                return 1
+
+        return asyncio.run(_onboard())
+
+    elif sub == "ls":
+        async def _ls():
+            import json
+
+            mesh_url = getattr(args, "mesh_url", None)
+            fmt = getattr(args, "format", "table")
+
+            if not mesh_url:
+                print("ERROR: --mesh-url required (or set AITHER_MESH_URL)")
+                return 1
+
+            # A container-less remote node can't resolve the internal
+            # 'aitheros-aithernet' name — the peer directory is reached over the
+            # WireGuard overlay via mesh-core, not a public host. Degrade with a
+            # clear instruction instead of a raw DNS crash.
+            from adk.mesh import _resolve_mesh_url
+            resolved = _resolve_mesh_url(mesh_url)
+            if resolved is None:
+                print(
+                    "ERROR: cannot reach the mesh directory at "
+                    f"'{mesh_url}' (internal name doesn't resolve from this box).\n"
+                    "  The peer directory is served over the WireGuard overlay by "
+                    "mesh-core, not a public endpoint. Either:\n"
+                    "    1. run 'adk mesh onboard' first to join the overlay, or\n"
+                    "    2. pass --mesh-url https://<mesh-core-overlay-ip>:8125 "
+                    "(or set AITHER_AITHERNET_URL/AITHER_MESH_URL).")
+                return 1
+            mesh_url = resolved
+
+            try:
+                import httpx
+                from adk.mesh import _headers, _verify
+
+                # Query AitherMesh /nodes endpoint for peer directory
+                url = mesh_url.rstrip("/") + "/nodes"
+                async with httpx.AsyncClient(timeout=10.0, verify=_verify()) as c:
+                    r = await c.get(url, headers=_headers(None))
+                    r.raise_for_status()
+                    nodes = r.json() if r.headers.get("content-type", "").startswith("application/json") else []
+
+                if not isinstance(nodes, list):
+                    nodes = nodes.get("nodes", []) if isinstance(nodes, dict) else []
+
+                if fmt == "json":
+                    print(json.dumps(nodes, indent=2))
+                else:
+                    # Table format
+                    print("\n  Mesh Peers")
+                    print("  " + "=" * 80)
+                    if not nodes:
+                        print("  (no peers connected)")
+                    else:
+                        print(f"  {'Node ID':<20} {'Overlay IP':<16} {'Role':<12} {'A2A Services':<20}")
+                        print("  " + "-" * 80)
+                        for node in nodes:
+                            node_id = node.get("node_id", "unknown")[:20]
+                            overlay_ip = node.get("overlay_ip", node.get("aithernet_ip", "?"))
+                            role = node.get("role", "?")[:12]
+                            services = ", ".join(node.get("services", [])[:2])
+                            print(f"  {node_id:<20} {overlay_ip:<16} {role:<12} {services:<20}")
+                    print()
+                return 0
+            except Exception as e:
+                print(f"ERROR: {e}", file=sys.stderr)
+                return 1
+
+        return asyncio.run(_ls())
+
+    else:
+        print("Usage: adk mesh [onboard|ls]")
+        return 1
 
 
 def cmd_routing(args):
@@ -8946,6 +9407,9 @@ def _register_commands(sub):
                       help="Fail (non-zero) if the fleet registration cannot complete")
     up_p.add_argument("--token", help="Portal token for registration (else 'adk login' / $AITHER_PORTAL_TOKEN)")
     up_p.add_argument("--auth-token", help="Callback bearer the control plane presents back (minted if omitted)")
+    up_p.add_argument("--passphrase", "--pin", dest="passphrase",
+                      help="Memorable secret to authenticate remote chat (else a random token is minted). "
+                           "Enter it on the chat page's access gate from your phone.")
     up_p.add_argument("--approve", help="Comma-list of tools that pause for approval (default: file_write,shell_exec,shell)")
     up_p.add_argument("--portal", default="https://veil.aitherium.com", help="Control-plane base URL")
     up_p.add_argument("--login-url", help="Device-flow login base URL")
@@ -9059,6 +9523,35 @@ def _register_commands(sub):
                          help="Output compose file path (default: docker-compose.vllm.yml)")
     setup_p.add_argument("--force", action="store_true",
                          help="Start new containers even if inference is already running")
+
+    # aither ui — swappable agent web UI packs
+    ui_p = sub.add_parser("ui", help="Manage the agent's web UI pack (ls / set / path)")
+    ui_sub = ui_p.add_subparsers(dest="ui_command")
+    ui_sub.add_parser("ls", help="List available UI packs (marks the selected one)")
+    ui_set_p = ui_sub.add_parser("set", help="Select a UI pack (persists to ~/.aither/config.json)")
+    ui_set_p.add_argument("name", help="Pack name (e.g. console, minimal, llamacpp)")
+    ui_sub.add_parser("path", help="Show the selected pack + drop-in dir + whether it resolves")
+
+    # aither agents — discover agents in the mesh
+    agents_p = sub.add_parser("agents", help="Discover agents in the mesh (ls)")
+    agents_sub = agents_p.add_subparsers(dest="agents_command")
+    agents_ls = agents_sub.add_parser("ls", help="List every agent in the mesh + its inference backend")
+    agents_ls.add_argument("--format", choices=["table", "json"], default="table")
+
+    # aither chat — chat with a mesh agent by name (responds on its own inference)
+    chat_p = sub.add_parser("chat", help="Chat with a mesh agent by name (adk chat <agent> [msg])")
+    chat_p.add_argument("agent", help="Agent name from `adk agents ls`")
+    chat_p.add_argument("message", nargs="?", help="Message (omit for an interactive loop)")
+
+    # adk invoke — command & control: run a TOOL on a mesh agent over signed A2A
+    invoke_p = sub.add_parser(
+        "invoke", help="Invoke a tool on a mesh agent over signed A2A (adk invoke <agent> <skill>)")
+    invoke_p.add_argument("agent", help="Agent name from `adk agents ls`")
+    invoke_p.add_argument("skill", help="Tool/skill name to invoke on the remote agent")
+    invoke_p.add_argument("--arg", action="append", metavar="k=v",
+                          help="Tool argument (repeatable); value is JSON-parsed when possible")
+    invoke_p.add_argument("--as-agent", dest="as_agent",
+                          help="Name to sign as (keypair ~/.aither/agent_key.<name>.pem)")
 
     # aither aeon
     aeon_p = sub.add_parser("aeon", help="Multi-agent group chat")
@@ -9257,6 +9750,9 @@ def _register_commands(sub):
     onboard_p.add_argument("--tenant", help="Tenant slug to associate this node with")
     onboard_p.add_argument("--agent", help="Register a running agent with the portal fleet")
     onboard_p.add_argument("--non-interactive", action="store_true", help="Skip prompts, use defaults")
+    onboard_p.add_argument("--quick", action="store_true",
+                           help="One-command: auto-run inference, install default pack, enroll")
+    onboard_p.add_argument("--pack", default="openclaw", help="Pack to install (default: openclaw)")
 
     # adk enroll — register workstation with control plane
     enroll_p = sub.add_parser("enroll", help="Register this workstation with the control plane")
@@ -9427,6 +9923,42 @@ def _register_commands(sub):
     grid_sub.add_parser("ls", help="List enrolled mesh nodes (GPU, memory, containers, status)")
     grid_rm_mesh_p = grid_sub.add_parser("deregister", help="Remove an enrolled mesh node from the registry")
     grid_rm_mesh_p.add_argument("node_id", help="Node id or name to deregister")
+
+    # adk mesh — AitherMesh overlay and A2A operations
+    mesh_p = sub.add_parser("mesh", help="AitherMesh overlay operations (onboard, list peers)")
+    mesh_sub = mesh_p.add_subparsers(dest="mesh_command")
+    mesh_onboard_p = mesh_sub.add_parser("onboard", help="Onboard this node into AitherMesh overlay (WireGuard)")
+    mesh_onboard_p.add_argument(
+        "--conductor",
+        default=os.getenv("AITHER_CONDUCTOR_URL", "https://aitheros-conductor:8193"),
+        help="Conductor URL (default: $AITHER_CONDUCTOR_URL or internal address)")
+    mesh_onboard_p.add_argument(
+        "--node-id",
+        default=os.getenv("AITHER_NODE_ID", ""),
+        help="Node ID (default: auto-generated)")
+    mesh_onboard_p.add_argument(
+        "--role",
+        default=os.getenv("AITHER_MESH_ROLE", "worker"),
+        help="Node role (default: worker)")
+    mesh_onboard_p.add_argument(
+        "--external-ip",
+        default=os.getenv("AITHER_EXTERNAL_IP", ""),
+        help="External IP address for WireGuard endpoint")
+    mesh_onboard_p.add_argument(
+        "--headscale",
+        action="store_true",
+        default=os.getenv("AITHER_MESH_TRANSPORT", "").lower() == "headscale",
+        help="Use Headscale transport (NAT-friendly)")
+    mesh_ls_p = mesh_sub.add_parser("ls", help="List peer agents in the mesh and their A2A services")
+    mesh_ls_p.add_argument(
+        "--mesh-url",
+        default=os.getenv("AITHER_MESH_URL", "https://aitheros-aithernet:8125"),
+        help="AitherMesh directory URL (default: $AITHER_MESH_URL or internal)")
+    mesh_ls_p.add_argument(
+        "--format",
+        choices=["table", "json"],
+        default="table",
+        help="Output format (default: table)")
 
     # adk routing — per-intent model routing
     routing_p = sub.add_parser("routing", help="Manage per-intent model routing (which model handles which task)")
@@ -10182,6 +10714,14 @@ def main():
     elif args.command == "setup-all":
         from adk.bootstrap_cli import cmd_setup_all
         sys.exit(cmd_setup_all(args))
+    elif args.command == "ui":
+        sys.exit(cmd_ui(args))
+    elif args.command == "agents":
+        sys.exit(cmd_agents(args))
+    elif args.command == "chat":
+        sys.exit(cmd_chat(args))
+    elif args.command == "invoke":
+        sys.exit(cmd_invoke(args))
     elif args.command == "aeon":
         sys.exit(cmd_aeon(args))
     elif args.command == "create-app":
@@ -10228,6 +10768,8 @@ def main():
         sys.exit(cmd_voice(args))
     elif args.command == "routing":
         sys.exit(cmd_routing(args))
+    elif args.command == "mesh":
+        sys.exit(cmd_mesh(args))
     elif args.command == "costs":
         sys.exit(cmd_costs(args))
     elif args.command == "tools":

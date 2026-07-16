@@ -1287,6 +1287,31 @@ def graph_code_search(query: str, limit: int = 10) -> str:
     return _graph_request("GET", "/code/search", params={"q": query, "limit": limit})
 
 
+def code_concept_search(query: str, limit: int = 5) -> str:
+    """Token-cheap code lookup: concept cards (signature + call graph) only.
+
+    ~30-40 tokens per result vs ~130 for full chunks — use this FIRST for
+    "what calls X?" / "where does X live?" questions; fall back to
+    graph_code_search when you actually need docstrings/bodies.
+
+    Args:
+        query: Symbol name or natural-language code question.
+        limit: Max results (keep small — cards are dense).
+    """
+    import httpx
+    base = os.getenv("AITHER_GENESIS_URL", "http://localhost:8001")
+    url = f"{base}/codegraph/search"
+    try:
+        _tls = os.getenv("AITHER_TLS_VERIFY", "true").lower() != "false"
+        with httpx.Client(timeout=15, verify=_tls) as c:
+            resp = c.get(url, params={"q": query, "limit": limit, "compact": "true"})
+            resp.raise_for_status()
+            data = resp.json()
+        return json.dumps({"count": data.get("count", 0), "results": data.get("results", [])})
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
 def graph_kb_query(base_id: str, query: str, limit: int = 10) -> str:
     """RAG query against a knowledge base.
 
@@ -1328,7 +1353,7 @@ def graph_research(query: str, effort: str = "library_session") -> str:
 
 
 _GRAPH_TOOLS = [
-    graph_search, graph_code_search, graph_kb_query,
+    graph_search, graph_code_search, code_concept_search, graph_kb_query,
     graph_memory_query, graph_research,
 ]
 
@@ -1864,6 +1889,53 @@ def _genesis_url() -> str:
 # Registration
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Intent-aware tool categorization (for filtering by intent type)
+# Maps tool functions to the intent types they're available for.
+# Empty list = available for all intents (fail-open).
+TOOL_INTENT_CATEGORIES = {
+    # File I/O tools → code, file, analysis intents
+    file_read: ["code", "file", "analysis"],
+    file_write: ["code", "file"],
+    file_edit: ["code", "file"],
+    file_list: ["code", "file"],
+    file_search: ["code", "file", "analysis"],
+    # Shell execution → code, command intents
+    shell_exec: ["code", "command"],
+    # Python execution → code, analysis intents
+    python_exec: ["code", "analysis"],
+    # Web tools → research, web_research, question intents
+    web_search: ["research", "web_research", "question"],
+    web_fetch: ["research", "web_research"],
+    # Secrets management → all intents (security-relevant)
+    secret_get: [],
+    secret_set: [],
+    secret_list: [],
+    # Creative tools → all intents
+    image_generate: [],
+    image_refine: [],
+    image_smart: [],
+    # Git tools → code, analysis intents
+    git_status: ["code", "analysis"],
+    git_diff: ["code", "analysis"],
+    git_log: ["code", "analysis"],
+    git_add: ["code"],
+    git_commit: ["code"],
+    git_branch_list: ["code", "analysis"],
+    # Code analysis → code, analysis intents
+    code_search: ["code", "analysis"],
+    code_symbols: ["code", "analysis"],
+    repowise_search: ["code", "analysis"],
+    swarm_code: ["code", "analysis"],
+    # ML tools → analysis, research intents
+    tabular_classify: ["analysis", "research"],
+    tabular_regress: ["analysis", "research"],
+    timeseries_forecast: ["analysis", "research"],
+    tabular_teach: ["analysis", "research"],
+    # Safety tools → all intents
+    escalate_to_human: [],
+    check_safety_gate: [],
+}
+
 # Tool category definitions
 TOOL_CATEGORIES: dict = {
     "file_io": [file_read, file_write, file_edit, file_list, file_search],
@@ -1994,7 +2066,8 @@ def register_builtin_tools(
             count += register_tool_packs(agent, pack_ids=[cat])
             continue
         for fn in fns:
-            agent._tools.register(fn)
+            intent_cats = TOOL_INTENT_CATEGORIES.get(fn, [])
+            agent._tools.register(fn, intent_categories=intent_cats)
             count += 1
 
     if count:

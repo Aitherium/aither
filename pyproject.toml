@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "aither-adk"
-version = "2.24.0"
+version = "2.26.0"
 description = "Build AI agents with real memory + faculties on any backend, local or cloud. Open-core: free local runtime with typed memory, knowledge graph, code graph and ReAct; paid tiers (portal.aitherium.com) unlock fleets, channels, reasoning and marketplace packs."
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -31,6 +31,7 @@ dependencies = [
     "uvicorn[standard]>=0.24.0",
     "jinja2>=3.1.0",
     "aiosqlite>=0.19.0",
+    "qrcode>=7.4",
 ]
 
 [project.optional-dependencies]
@@ -146,6 +147,10 @@ artifacts = [
     # their non-.py assets — the .toolpack.yaml manifests (dotfiles), pack UIs and
     # skill markdown — so a `pip install aither-adk` ships working, discoverable packs.
     "adk/toolpacks/**/*",
+    # Swappable agent UI packs (built-ins: llamacpp, …). `adk ui set <name>`
+    # selects one; a custom pack is a folder with index.html dropped into
+    # ~/.aither/ui-packs/. Ship the built-ins inside the wheel.
+    "adk/webui/packs/**/*",
 ]
 
 [tool.hatch.build.targets.wheel]

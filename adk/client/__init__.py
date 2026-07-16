@@ -31,6 +31,7 @@ from adk.client._models import (
     ServiceHealth,
 )
 from adk.client._gateway import GatewayClient
+from adk.client._gateway_mcp import GatewayMCPClient, create_gateway_mcp_client
 from adk.client._base import ServiceClient
 from adk.client.services import (
     ContextClient,
@@ -52,6 +53,8 @@ __all__ = [
     "AgentInfo",
     "ServiceHealth",
     "GatewayClient",
+    "GatewayMCPClient",
+    "create_gateway_mcp_client",
     "ServiceClient",
     "ContextClient",
     "A2AClient",

@@ -412,9 +412,17 @@ async def _self_mint_gateway_key(bearer_token: str, node_id: str) -> str:
         from adk._tls import tls_verify
 
         # Determine if this is a LOCAL or REMOTE scenario
-        secrets_url = os.environ.get("AITHER_SECRETS_URL", "http://localhost:8111")
+        secrets_url = os.environ.get("AITHER_SECRETS_URL", "https://localhost:8111")
         parsed = urlparse(secrets_url)
         is_localhost = parsed.hostname in ("localhost", "127.0.0.1", "::1")
+        # Internal AitherOS services (AitherSecrets :8111 on a full mesh node)
+        # serve HTTPS with the internal CA — a plain http:// URL hits a TLS port
+        # and dies with "Server disconnected without sending a response", the
+        # exact failure that silently killed local self-mint on an edge node
+        # running the secrets service. Coerce http->https for localhost;
+        # tls_verify() below trusts the internal CA.
+        if is_localhost and parsed.scheme == "http":
+            secrets_url = "https://" + secrets_url[len("http://"):]
 
         # If we have explicit remote gateway URLs, treat as remote
         gateway_url = os.environ.get("AITHER_GATEWAY_URL", "").strip()

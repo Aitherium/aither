@@ -523,6 +523,84 @@ def _expires_in_to_iso(expires_in: Any) -> str:
     return (datetime.now(timezone.utc) + timedelta(seconds=secs)).isoformat()
 
 
+async def autonomous_agent_login(
+    *,
+    identity_url: str | None = None,
+    internal_secret: str | None = None,
+    client_name: str = "aither-agent",
+    email: str = "",
+    user_id: str = "",
+    store: AuthStore | None = None,
+    profile_name: str = "portal",
+) -> Credentials:
+    """Headless agent login — no browser, for TRUSTED FLEET-SERVICE contexts.
+
+    This is the sanctioned autonomous path so an agent (GargBot, a sovereign
+    worker, any adk node) can obtain its own edge Bearer WITHOUT a human: it runs
+    the device-code flow and self-approves via AitherIdentity's
+    ``/auth/device/authorize-internal``, which requires ``AITHER_INTERNAL_SECRET``
+    — i.e. proof the caller is a trusted service on the fleet. The endpoint is
+    owner/admin-scoped server-side, so the minted token carries only an
+    owner/admin identity the service is entitled to act as.
+
+    Uses the identity's real device paths (``/auth/device/{code,authorize-internal,
+    token}``) — NOT the RFC-standard ``/oauth/*`` paths that ``begin_device_login``
+    targets (that surface is a separate, human-browser flow). The resulting token
+    is persisted via :class:`AuthStore` so ``resolve_credentials`` returns it for
+    every subsequent edge call (gateway inference + mcp tools).
+
+    Returns the minted :class:`Credentials`. Raises :class:`AuthError` on failure.
+    """
+    import httpx
+
+    base = (
+        identity_url
+        or os.environ.get("AITHERIDENTITY_URL", os.environ.get("AITHERIUM_BASE_URL", DEFAULT_PORTAL_URL))
+    ).rstrip("/")
+    secret = internal_secret or os.environ.get("AITHER_INTERNAL_SECRET", "") or os.environ.get("AITHER_MASTER_KEY", "")
+    if not secret:
+        raise AuthError("autonomous_agent_login requires AITHER_INTERNAL_SECRET (trusted-service proof)")
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        # 1) start the device flow
+        r = await client.post(f"{base}/auth/device/code",
+                              json={"client_name": client_name, "scopes": "full"})
+        if r.status_code >= 400:
+            raise AuthError(f"device/code failed: {r.status_code} {r.text[:160]}")
+        dc = r.json()
+        # 2) self-approve with the internal secret (no browser)
+        ra = await client.post(
+            f"{base}/auth/device/authorize-internal",
+            headers={"X-Internal-Token": secret},
+            json={"user_code": dc["user_code"], "email": email, "user_id": user_id},
+        )
+        if ra.status_code >= 400:
+            raise AuthError(f"authorize-internal failed: {ra.status_code} {ra.text[:160]}")
+        # 3) exchange for the token
+        rt = await client.post(f"{base}/auth/device/token", json={"device_code": dc["device_code"]})
+        body = rt.json() if rt.content else {}
+        if rt.status_code >= 400 or not body.get("access_token"):
+            raise AuthError(f"device/token failed: {rt.status_code} {body.get('detail') or body.get('status')}")
+
+    creds = Credentials(
+        access_token=body["access_token"],
+        token_type=body.get("token_type", "bearer"),
+        endpoint=base,
+        expires_at=body.get("expires_at", ""),
+    )
+    creds.user = body.get("user", {})
+    (store or AuthStore()).set_profile(profile_name, {
+        "endpoint": base,
+        "token_type": creds.token_type,
+        "access_token": creds.access_token,
+        "expires_at": creds.expires_at,
+        "tier": body.get("tier", ""),
+        "plan": body.get("plan", ""),
+        "user": creds.user,
+    })
+    return creds
+
+
 # ---------------------------------------------------------------------------
 # Logout
 # ---------------------------------------------------------------------------

@@ -107,6 +107,35 @@ def _resolve_conductor_url(default_url: str) -> str:
         return fallback
 
 
+def _resolve_mesh_url(default_url: str) -> str | None:
+    """Resolve the AitherMesh directory URL for ``mesh ls``.
+
+    Unlike the Conductor (which has a public Cloudflare-tunnel endpoint for
+    onboarding), the AitherMesh peer directory is NOT publicly routed — after a
+    node joins, peers are reached over the WireGuard tailnet via mesh-core on
+    :8125 (see the tunnel-routes note: Strata/Nexus/mesh are proxied over the
+    overlay, not a public host). So:
+
+    - If the given hostname resolves (co-located fleet box, or the caller passed
+      an explicit overlay address) → use it.
+    - Else, if ``$AITHER_AITHERNET_URL`` is set (written post-join with the
+      mesh-core overlay address) → use that.
+    - Else → return ``None`` so the caller can print an actionable instruction
+      (join first, or pass ``--mesh-url https://<mesh-core-overlay-ip>:8125``)
+      instead of crashing on a DNS error.
+    """
+    try:
+        hostname = urlparse(default_url).hostname or "localhost"
+        socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+        return default_url
+    except (socket.gaierror, OSError):
+        overlay = os.getenv("AITHER_AITHERNET_URL", "").strip()
+        if overlay:
+            logger.info("Mesh hostname unresolvable; using overlay %s", overlay)
+            return overlay
+        return None
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Control-plane calls (Conductor onboard + AitherNet topology)
 # ─────────────────────────────────────────────────────────────────────────────

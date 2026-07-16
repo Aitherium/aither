@@ -32,29 +32,72 @@ _CONFIG_PATH_YAML = Path.home() / ".aither" / "config.yaml"
 _CONFIG_PATH = _CONFIG_PATH_YAML if _CONFIG_PATH_YAML.exists() else _CONFIG_PATH_JSON
 
 
+def _active_profile_creds() -> dict[str, Any]:
+    """Surface the active login token from ``~/.aither/auth.json``.
+
+    ``adk login`` mirrors the session into auth.json (a profiles store shared
+    with the TypeScript shell), but the legacy config.json may not carry the
+    token — so ``whoami``/``up``/``enroll`` could report "not logged in" while a
+    perfectly valid session exists. This reads the active profile so those paths
+    see the session regardless of which store holds it. Fail-soft: any problem
+    returns ``{}`` (treated as logged-out), never raises.
+    """
+    try:
+        auth = json.loads((Path.home() / ".aither" / "auth.json").read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    prof = (auth.get("profiles") or {}).get(auth.get("active_profile") or "") or {}
+    token = prof.get("access_token") or ""
+    if not token:
+        return {}
+    user = prof.get("user") or {}
+    out: dict[str, Any] = {"access_token": token, "api_key": token}
+    for src, dst in (("endpoint", "endpoint"), ("genesis_url", "genesis_url")):
+        if prof.get(src):
+            out[dst] = prof[src]
+    for key in ("tenant_id", "tenant_slug", "username"):
+        if user.get(key):
+            out[key] = user[key]
+    return out
+
+
 def load_saved_config(config_path: Path | None = None) -> dict[str, Any]:
     """Load persisted config from ``~/.aither/config.yaml`` or ``config.json``.
 
     Tries YAML first (shared with AitherShell), falls back to JSON (legacy).
-    Returns an empty dict when the file does not exist or cannot be parsed.
+    When neither carries a login token, backfills it from the active profile in
+    ``auth.json`` so the CLI sees a valid session no matter which store holds it.
+    Returns an empty dict when nothing is found. Backfill only applies to the
+    default path (an explicit ``config_path`` is returned verbatim, preserving
+    test isolation).
     """
+    cfg: dict[str, Any] = {}
+
     # Try YAML first
     yaml_path = config_path or _CONFIG_PATH_YAML
     if yaml_path.exists() and yaml_path.suffix in (".yaml", ".yml"):
         try:
             import yaml
-            return yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
+            cfg = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
         except Exception:
             logger.debug("Failed to read YAML config from %s", yaml_path)
 
     # Fall back to JSON
-    json_path = config_path or _CONFIG_PATH_JSON
-    if json_path.exists():
-        try:
-            return json.loads(json_path.read_text(encoding="utf-8"))
-        except Exception:
-            logger.debug("Failed to read JSON config from %s", json_path)
-    return {}
+    if not cfg:
+        json_path = config_path or _CONFIG_PATH_JSON
+        if json_path.exists():
+            try:
+                cfg = json.loads(json_path.read_text(encoding="utf-8"))
+            except Exception:
+                logger.debug("Failed to read JSON config from %s", json_path)
+
+    # Backfill the login token from auth.json (default path only) so a session
+    # stored there is not invisible to whoami/up/enroll.
+    if config_path is None and not (cfg.get("api_key") or cfg.get("access_token")):
+        for k, v in _active_profile_creds().items():
+            cfg.setdefault(k, v)
+
+    return cfg
 
 
 def save_saved_config(data: dict[str, Any], config_path: Path | None = None) -> Path:
@@ -112,6 +155,13 @@ class Config:
 
     # Ollama — sanitize OLLAMA_HOST which Ollama sets to a bind address (0.0.0.0:11434)
     ollama_host: str = field(default_factory=lambda: _sanitize_ollama_host(os.getenv("OLLAMA_HOST", "")))
+
+    # Generic base URL for a self-hosted OpenAI-compatible backend (llamacpp /
+    # llama-server, a local vLLM, LM Studio, …). Lets a self-hosted operator point
+    # `--backend llamacpp` at their OWN server (e.g. a PrismML Bonsai llama.cpp on
+    # http://localhost:8090/v1) instead of the provider's public API. Without this,
+    # `--backend llamacpp` fell back to _COMPAT_URLS' openai.com default.
+    llm_base_url: str = field(default_factory=lambda: os.getenv("AITHER_LLM_BASE_URL", ""))
 
     # OpenAI-compatible
     openai_base_url: str = field(default_factory=lambda: os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"))
@@ -293,6 +343,20 @@ class Config:
             config.cluster_base_url = saved["cluster_url"]
         if not config.cluster_model and saved.get("cluster_model"):
             config.cluster_model = saved["cluster_model"]
+
+        # `adk backend set <provider> --base-url URL --model MODEL` persists
+        # default_backend / inference_url / default_model into saved config.
+        # Wire those into the live Config so switching a self-hosted brain (e.g.
+        # `adk backend set llamacpp --base-url http://localhost:8090/v1`) actually
+        # takes effect — before this the base URL was saved but never read, so the
+        # provider fell back to its public API default. Env still wins (only fill
+        # when the field is empty / at its default).
+        if config.llm_backend == "auto" and saved.get("default_backend"):
+            config.llm_backend = saved["default_backend"]
+        if not config.llm_base_url and saved.get("inference_url"):
+            config.llm_base_url = saved["inference_url"]
+        if not config.model and saved.get("default_model"):
+            config.model = saved["default_model"]
 
         # Cloud mode from setup --mode cloud/hybrid
         if saved.get("cloud_mode") and config.llm_backend == "auto":

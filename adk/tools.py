@@ -24,6 +24,8 @@ class ToolDef:
     is_async: bool = False
     required_clearance: int = 0  # Minimum clearance level required to execute
     action_class: str = ""  # Action class (e.g., "write", "delete", "admin")
+    intent_categories: list[str] = field(default_factory=list)  # Intent types this tool is available for (empty=all)
+    expose_to_a2a: bool = False  # Opt-in: remotely invokable over A2A skills/invoke (default: local-only)
 
 
 class ToolRegistry:
@@ -39,6 +41,8 @@ class ToolRegistry:
         description: str | None = None,
         required_clearance: int = 0,
         action_class: str = "",
+        intent_categories: list[str] | None = None,
+        expose_to_a2a: bool = False,
     ) -> ToolDef:
         """Register a function as a tool.
 
@@ -48,6 +52,9 @@ class ToolRegistry:
             description: Tool description (defaults to docstring first line).
             required_clearance: Minimum clearance level required (default 0, no restriction).
             action_class: Action class category (e.g., "write", "delete"). Empty = no restriction.
+            intent_categories: Intent types this tool is available for (default None=all intents).
+            expose_to_a2a: Allow remote invocation via A2A skills/invoke (default False =
+                local-only). A remote peer can only reach tools explicitly opted in here.
         """
         tool_name = name or fn.__name__
         tool_desc = description or fn.__doc__ or f"Tool: {tool_name}"
@@ -64,6 +71,8 @@ class ToolRegistry:
             is_async=is_async,
             required_clearance=required_clearance,
             action_class=action_class,
+            intent_categories=intent_categories or [],
+            expose_to_a2a=expose_to_a2a,
         )
         self._tools[tool_name] = td
         return td
@@ -74,10 +83,14 @@ class ToolRegistry:
     def list_tools(self) -> list[ToolDef]:
         return list(self._tools.values())
 
-    def to_openai_format(self) -> list[dict]:
-        """Export tools in OpenAI function-calling format."""
+    def to_openai_format(self, tools: list["ToolDef"] | None = None) -> list[dict]:
+        """Export tools in OpenAI function-calling format.
+
+        tools: optional subset to export (e.g. an intent-filtered list). When
+        None, exports the full registry (backward-compatible).
+        """
         result = []
-        for td in self._tools.values():
+        for td in (tools if tools is not None else self._tools.values()):
             result.append({
                 "type": "function",
                 "function": {
@@ -148,7 +161,13 @@ class ToolRegistry:
 _global_registry = ToolRegistry()
 
 
-def tool(fn: Callable | None = None, *, name: str | None = None, description: str | None = None):
+def tool(
+    fn: Callable | None = None,
+    *,
+    name: str | None = None,
+    description: str | None = None,
+    intent_categories: list[str] | None = None,
+):
     """Decorator to register a function as an agent tool.
 
     Usage:
@@ -160,9 +179,19 @@ def tool(fn: Callable | None = None, *, name: str | None = None, description: st
         @tool(name="calculator", description="Evaluate math expressions")
         def calc(expression: str) -> str:
             ...
+
+        @tool(intent_categories=["code", "analysis"])
+        def file_read(path: str) -> str:
+            '''Read a file.'''
+            ...
     """
     def decorator(f: Callable) -> Callable:
-        td = _global_registry.register(f, name=name, description=description)
+        td = _global_registry.register(
+            f,
+            name=name,
+            description=description,
+            intent_categories=intent_categories,
+        )
         f._tool_def = td
         f.name = td.name
         f.description = td.description

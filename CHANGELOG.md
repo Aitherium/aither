@@ -2,6 +2,113 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [2.26.0] - 2026-07-16
+
+### Added — Aeon group-chat web UI pack + POST /aeon/stream SSE endpoint
+
+- **New `aeon` UI pack** (`adk/webui/packs/aeon/index.html`) — group chat for multi-agent
+  discussion. Mirrors the `llamacpp` pack's auth + SSE pattern (bearer from URL fragment #k=),
+  with a preset selector (balanced/creative/technical/security/minimal/duo_code/research) and
+  distinct colored agent messages. Synthesis block highlighted. Agent content is HTML-escaped
+  before render. Fully self-contained HTML+CSS+JS, light+dark, no external assets. (No
+  temperature/max-tokens controls — Aeon runs a fixed multi-agent round and doesn't thread
+  per-turn generation params, so exposing them would be a no-op.)
+- **POST /aeon/stream SSE endpoint** — accepts body {message, preset?, agents?, rounds?,
+  session_id?}, emits SSE with: `session_start` (participants + orchestrator), `agent_message`
+  per non-orchestrator, `synthesis` (if enabled), `error` on exception, `complete` (total tokens
+  + latency). Mirrors /chat/stream structure — like every streaming endpoint here it is gated by
+  the server auth middleware **when `AITHER_SERVER_API_KEY` is set** (a local `adk up` with no key
+  is unauthenticated by design, same as /chat/stream).
+- **Default UI pack flipped to `llamacpp`** — `resolve_ui_pack_name()` now returns `llamacpp`
+  instead of `console` when no env/config is set (new users see the clean chat, not the admin
+  SPA; existing users with AITHER_AGENT_UI or saved config unaffected).
+
+### Added — swappable agent web UI packs (llama.cpp-style built-in chat)
+
+- The page an agent serves at `/` is now a **swappable UI pack**, so you can
+  drop in, test, and deploy different chat frontends without touching the agent.
+  Select with `adk ui set <name>` (persists to `~/.aither/config.json`) or the
+  `$AITHER_AGENT_UI` env; `adk ui ls` lists packs, `adk ui path` shows what
+  resolves.
+- **New built-in `llamacpp` pack** — a clean, self-contained llama.cpp-style
+  chat UI (centered conversation, streaming token-by-token with a cursor, a
+  Stop button, a settings drawer for temperature / max-tokens that is actually
+  honored end-to-end — `/chat/stream` now forwards them to the provider —
+  minimal safe markdown, light+dark). Hits the agent's own gated `/chat/stream`
+  with the bearer read from the URL fragment (never sent in the URL). Built-ins
+  also include `console` (the full admin SPA, still the default) and `minimal`.
+- **Drop-in custom packs**: a UI pack is just a folder with an `index.html` in
+  `~/.aither/ui-packs/<name>/` (override via `$AITHER_UI_PACKS_DIR`) — no rebuild.
+- Resolution is **fail-soft**: an unknown/missing pack falls back
+  console → minimal, so `/` is never blank.
+
+### Added — MCP-gateway-first platform access + mesh A2A trust
+
+- **Gateway-first platform access** (`adk/client/_gateway_mcp.py`, `GatewayMCPClient`):
+  a self-hosted agent connects its MCP **client** to `mcp.aitherium.com` authenticated
+  as the OWNER (device-flow / PAT / ACTA token), RBAC-scoped to that identity — so it can
+  use platform tools + `get_secret` **whether or not the node runs local AitherOS
+  services**. Fail-closed: no token → client disabled, the agent still runs. Wired into
+  the server lifespan (`_connect_gateway_mcp`).
+- **`genesis` LLM backend**: `adk backend set genesis` points the agent brain at a local
+  Genesis (`http://localhost:8001/v1`, model `workflow`) — the 5090/controller pattern
+  where inference is served by the local fleet, not the cloud gateway or a raw vLLM.
+- **`adk mesh` command**: `adk mesh onboard` drives the Conductor 5-step onboard
+  (`/v1/mesh/onboard` → registers this node's public key, returns the `endpoint:mesh`
+  trust token); `adk mesh ls` lists peer nodes/agents (AitherMesh `/nodes` + Directory)
+  with their A2A cards + invoke URLs for discovery.
+
+### Security — A2A inter-agent trust enforcement (fail-closed)
+
+- **`adk/a2a_trust.py`** (new): Ed25519 signature verification + trusted-key check
+  (`AITHER_A2A_TRUSTED_KEYS`), opt-in via `AITHER_A2A_REQUIRE_TRUST` (default `false` for
+  backward compatibility; `audit` logs untrusted, `true` rejects).
+- **Fixed a fail-OPEN in the inbound A2A handler** (`adk/a2a.py`): the trust check
+  previously ran *only when signature headers were present*, so an unsigned request
+  bypassed `AITHER_A2A_REQUIRE_TRUST` entirely. Now genuinely fail-closed — required mode
+  with no/invalid signature → `403`.
+- **Sovereign template no longer scaffolds `verify=False`**: the generated
+  `services/llm.py` now uses the project's own `tls_verify()` policy helper for every
+  provider call instead of hardcoding disabled TLS verification.
+- **`adk/_tls.py`**: disabling verification via `AITHER_TLS_VERIFY=false` now emits a
+  one-time loud warning (was silent) — the escape hatch stays, the silence goes.
+
+## [2.25.1] - 2026-07-15
+
+### Fixed — self-hosted OpenAI-compatible backends honor a custom base URL
+
+- `adk backend set llamacpp --base-url http://localhost:8090/v1 --model <id>` (and
+  `vllm`/`lmstudio`, and the `AITHER_LLM_BASE_URL` env) now actually point the agent
+  at YOUR server. Previously the base URL was saved but never read, so an explicit
+  `--backend llamacpp` fell back to the provider's public API default (openai.com).
+  New `Config.llm_base_url` field + saved-config `inference_url` wiring; the explicit
+  backend path in `LLMRouter` now passes it for the local OpenAI-compatible family.
+  This is what lets a self-hosted node run its OWN local model (e.g. a PrismML
+  Bonsai llama.cpp) as the agent brain instead of ollama/cloud.
+
+## [2.25.0] - 2026-07-15
+
+### Added — node_bootstrap tool pack: bootstrap LLM inference on any hardware
+
+- **New bundled tool pack `node-bootstrap`** (`adk/toolpacks/node_bootstrap/`):
+  seven agent tools — `node_detect_hardware`, `node_resolve_recipe`,
+  `node_plan_deployment`, `node_apply`, `node_enroll`, `node_register_backend`,
+  `node_verify` — plus a CLI shim (`python -m adk.toolpacks.node_bootstrap
+  detect|resolve|plan|apply|enroll|register|verify`). Detect a box's hardware,
+  resolve a deployment recipe, actually deploy the inference engine (docker
+  compose / native / delegate), enroll with a control plane, register the
+  backend, and live-verify a completion.
+- **9 hardware recipes** shipped in the wheel: `cpu-1bit-llamacpp`, `cpu-ollama`,
+  `cuda-vllm-8gb/24gb/40gb`, `cuda-dual-stack-32gb` (32GB-card co-resident
+  stack), `unified-memory-vllm` (DGX/Grace-class), `metal-ollama` (native —
+  Docker on macOS has no Metal passthrough), `cloud-api` fallback. Resolution
+  scores hardware against min/max VRAM bands, RAM, cores and unified memory;
+  ties prefer higher tiers and self-contained recipes over fleet delegates.
+- Security posture: enrollment and backend registration are fail-closed
+  (missing token/URL → error dict, never anonymous, never `verify=False`);
+  tokens are redacted in outputs; all endpoints come from args/env
+  (`AITHER_CONTROL_PLANE_URL`, `AITHER_GENESIS_URL`, `AITHER_AUTH_TOKEN`).
+
 ## [2.24.0] - 2026-07-14
 
 ### Changed — sync-family consolidation

@@ -140,14 +140,15 @@ class TestAgentRegistry:
         with _patch_httpx(client):
             result = await gw.register_agent(
                 "atlas",
-                capabilities=["search", "analysis"],
+                owner_email="david@aitherium.com",
+                capabilities=["search", "analysis"],  # legacy fields ignored per contract
                 description="Search agent",
                 tools=["web_search"],
             )
             assert result["status"] == "registered"
             call_json = client.post.call_args[1]["json"]
             assert call_json["name"] == "atlas"
-            assert "search" in call_json["capabilities"]
+            assert call_json["owner_email"] == "david@aitherium.com"
 
     @pytest.mark.asyncio
     async def test_discover_agents_no_filter(self):
@@ -232,7 +233,7 @@ class TestErrorHandling:
 
         with _patch_httpx(client):
             with pytest.raises(httpx.HTTPStatusError):
-                await gw.register_agent("atlas")
+                await gw.register_agent("atlas", owner_email="david@aitherium.com")
 
     @pytest.mark.asyncio
     async def test_500_server_error(self):

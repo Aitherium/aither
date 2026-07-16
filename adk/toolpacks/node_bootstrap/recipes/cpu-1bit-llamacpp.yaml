@@ -1,0 +1,67 @@
+id: cpu-1bit-llamacpp
+name: CPU 1-Bit Bonsai (Q1_0 + llama.cpp)
+tier: cpu
+description: >-
+  Durable 1-bit Bonsai-27B on CPU node (OptiPlex) via PrismML-Eng/llama.cpp
+  fork. Minimal footprint (3.8GB GGUF), systemd service, ~4 tok/s reasoning
+  background tasks.
+
+hardware_requirements:
+  min_ram_gb: 8
+  min_cpu_cores: 12
+  gpu_vendor: none
+  min_vram_gb: 0
+  unified_memory: false
+  notes: >-
+    Mainline llama.cpp cannot load Q1_0 GGUF — requires PrismML-Eng/llama.cpp
+    fork. OptiPlex CPU pool alongside Ollama shelf.
+
+inference_config:
+  engine: llamacpp
+  models:
+    - name: bonsai-27b-q1_0
+      source: gguf://prism-ml/bonsai-27b-q1_0.gguf
+      size_gb: 3.8
+      quantization: Q1_0
+      context_window: 32768
+      served_name: bonsai-27b-optiplex
+  serve_args:
+    - --host 0.0.0.0
+    - --port 8090
+    - --n-gpu-layers 0
+    - --n-threads 12
+    - --n-threads-batch 12
+    - --ctx-size 32768
+  image: ""
+  platform_traps:
+    - llama-cpp-fork-only-q1_0
+    - no-gpu-layers
+
+deployment:
+  target: delegate-playbook
+  compose_template: ""
+  delegate: deploy-bonsai-node.sh
+  port: 8090
+
+backend_config:
+  backend_type: llamacpp_remote
+  health_path: /health
+  completion_path: /v1/completions
+
+verify:
+  health_timeout_s: 30
+  completion:
+    model: bonsai-27b-optiplex
+    prompt: "What is 2 + 2?"
+    min_tokens: 5
+    timeout_s: 60
+
+fleet_wiring:
+  catalog_entry:
+    backend: llamacpp_remote
+    category: reasoning
+    context_window: 32768
+    vram_gb: 0
+    speed: 4
+    quality: 7
+  ms_env_var: AITHER_GRID_LLAMACPP_URL

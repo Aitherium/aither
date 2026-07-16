@@ -118,11 +118,18 @@ class OpenAIProvider(LLMProvider):
         default_model: str = "gpt-4o-mini",
         timeout: float = 120.0,
         ctk_by_model: dict[str, dict] | None = None,
+        verify: "bool | str | None" = None,
     ):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.default_model = default_model
         self._timeout = timeout
+        # TLS verify= for the httpx client. None -> httpx default (system trust),
+        # correct for public providers (openai.com/together/groq). For a self-hosted
+        # endpoint served over https with the internal AitherNet CA (e.g. Genesis on
+        # :8001), the caller passes tls_verify() so the internal cert is trusted.
+        # Harmless on plain-http localhost endpoints (httpx ignores verify for http).
+        self._verify = verify
         # Per-model chat_template_kwargs: keys are case-insensitive substrings of
         # a model id (e.g. "qwen" -> {"enable_thinking": False}). Resolved per
         # call so a qwen reasoning model and a gemma vision model on the SAME
@@ -153,7 +160,10 @@ class OpenAIProvider(LLMProvider):
         return h
 
     def _client(self) -> httpx.AsyncClient:
-        return httpx.AsyncClient(timeout=self._timeout, headers=self._headers())
+        kw: dict = {"timeout": self._timeout, "headers": self._headers()}
+        if self._verify is not None:
+            kw["verify"] = self._verify
+        return httpx.AsyncClient(**kw)
 
     def capabilities(self) -> ProviderCapabilities:
         # OpenAI/DeepSeek/Together cache stable prefixes automatically (no request
@@ -344,9 +354,10 @@ class OpenAIProvider(LLMProvider):
     async def health_check(self) -> bool:
         """Fast connectivity check — uses a 5s timeout instead of the default 120s."""
         try:
-            async with httpx.AsyncClient(
-                timeout=5.0, headers=self._headers()
-            ) as client:
+            kw: dict = {"timeout": 5.0, "headers": self._headers()}
+            if self._verify is not None:
+                kw["verify"] = self._verify
+            async with httpx.AsyncClient(**kw) as client:
                 resp = await client.get(f"{self.base_url}/models")
                 return resp.status_code == 200
         except Exception:

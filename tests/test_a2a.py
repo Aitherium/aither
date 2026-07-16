@@ -626,3 +626,146 @@ class TestCustomAgentCompat:
         card = server.build_agent_card()
         assert card["name"] == "minimal"
         assert card["protocolVersion"] == "0.3.0"
+
+
+# ── skills/invoke security controls ─────────────────────────────────────
+
+
+def _agent_with_tools():
+    """A mock agent carrying a REAL ToolRegistry so skills/invoke exercises the
+    genuine allowlist + AuthContext path (not a mock)."""
+    from adk.tools import ToolRegistry
+
+    reg = ToolRegistry()
+    reg.register(lambda: {"ok": True}, name="safe_exposed", expose_to_a2a=True)
+    reg.register(lambda: {"ok": True}, name="local_only")  # expose_to_a2a defaults False
+    reg.register(lambda: {"ok": True}, name="write_exposed",
+                 expose_to_a2a=True, action_class="write")
+
+    agent = MagicMock()
+    agent.name = "tooled"
+    agent._tools = reg
+    return agent
+
+
+def _invoke(server, skill, *, trusted, pubkey="ab" * 32):
+    body = {"jsonrpc": "2.0", "method": "skills/invoke",
+            "params": {"skill": skill, "args": {}}, "id": 1}
+    return asyncio.run(server.handle_jsonrpc(
+        body, caller_public_key=pubkey, caller_trusted=trusted))
+
+
+class TestSkillsInvokeSecurity:
+    def test_untrusted_caller_denied(self):
+        server = A2AServer(agent=_agent_with_tools())
+        r = _invoke(server, "safe_exposed", trusted=False)
+        assert "error" in r and r["error"]["code"] == -32600
+
+    def test_non_exposed_tool_denied(self):
+        server = A2AServer(agent=_agent_with_tools())
+        r = _invoke(server, "local_only", trusted=True)
+        assert "error" in r and r["error"]["code"] == -32601
+
+    def test_unknown_tool_denied(self):
+        server = A2AServer(agent=_agent_with_tools())
+        r = _invoke(server, "does_not_exist", trusted=True)
+        assert "error" in r and r["error"]["code"] == -32602
+
+    def test_exposed_clearance0_tool_runs(self):
+        server = A2AServer(agent=_agent_with_tools())
+        r = _invoke(server, "safe_exposed", trusted=True)
+        assert "result" in r
+        assert r["result"]["skill"] == "safe_exposed"
+        assert r["result"]["output"] == {"ok": True}
+
+    def test_exposed_but_action_class_gated_denied_by_authcontext(self):
+        # Exposed to A2A, but action_class="write" -> the constrained remote
+        # principal (clearance 0, no action types) is refused by execute().
+        server = A2AServer(agent=_agent_with_tools())
+        r = _invoke(server, "write_exposed", trusted=True)
+        assert "result" in r
+        # execute() returns a forbidden envelope as the tool output
+        assert r["result"]["output"].get("error") == "forbidden"
+
+
+# ── skills/invoke END-TO-END through the real /a2a HTTP gate ─────────────
+
+
+def _sign_body(private_key, body_dict):
+    import json as _json
+    from adk.a2a_client import sign_request_body
+    raw = _json.dumps(body_dict, separators=(",", ":")).encode("utf-8")
+    return raw, sign_request_body(private_key, raw)
+
+
+class TestSkillsInvokeHttpGate:
+    """Exercise mount() -> trust gate -> handle_jsonrpc -> _handle_skills_invoke
+    over a real HTTP request, proving the signature + trust enforcement that the
+    handler-level tests assume is upstream."""
+
+    def _app(self, monkeypatch, trusted_pubkey=None):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from adk.a2a import A2AServer
+
+        app = FastAPI()
+        A2AServer(agent=_agent_with_tools()).mount(app)
+        if trusted_pubkey is not None:
+            monkeypatch.setenv("AITHER_A2A_TRUSTED_KEYS", trusted_pubkey)
+        else:
+            monkeypatch.delenv("AITHER_A2A_TRUSTED_KEYS", raising=False)
+        return TestClient(app)
+
+    def test_signed_trusted_exposed_tool_runs(self, tmp_path, monkeypatch):
+        from adk.a2a_client import load_or_generate_keypair
+        monkeypatch.setenv("AITHER_HOME", str(tmp_path))
+        priv, pub = load_or_generate_keypair("caller-a")
+        client = self._app(monkeypatch, trusted_pubkey=pub)
+        body = {"jsonrpc": "2.0", "method": "skills/invoke",
+                "params": {"skill": "safe_exposed", "args": {}}, "id": 1}
+        raw, sig = _sign_body(priv, body)
+        r = client.post("/a2a", content=raw,
+                        headers={"Content-Type": "application/json",
+                                 "X-Signature": sig, "X-Public-Key": pub})
+        assert r.status_code == 200, r.text
+        j = r.json()
+        assert j.get("result", {}).get("skill") == "safe_exposed"
+        assert j["result"]["output"] == {"ok": True}
+
+    def test_unsigned_skills_invoke_rejected(self, monkeypatch):
+        client = self._app(monkeypatch)
+        body = {"jsonrpc": "2.0", "method": "skills/invoke",
+                "params": {"skill": "safe_exposed", "args": {}}, "id": 1}
+        r = client.post("/a2a", json=body)
+        assert r.status_code == 403
+        assert "Untrusted" in r.text
+
+    def test_signed_but_untrusted_key_rejected(self, tmp_path, monkeypatch):
+        from adk.a2a_client import load_or_generate_keypair
+        monkeypatch.setenv("AITHER_HOME", str(tmp_path))
+        priv, pub = load_or_generate_keypair("caller-b")
+        # Trust a DIFFERENT key, not this caller's.
+        client = self._app(monkeypatch, trusted_pubkey="cd" * 32)
+        body = {"jsonrpc": "2.0", "method": "skills/invoke",
+                "params": {"skill": "safe_exposed", "args": {}}, "id": 1}
+        raw, sig = _sign_body(priv, body)
+        r = client.post("/a2a", content=raw,
+                        headers={"Content-Type": "application/json",
+                                 "X-Signature": sig, "X-Public-Key": pub})
+        assert r.status_code == 403
+        assert "Untrusted" in r.text
+
+    def test_tampered_body_rejected(self, tmp_path, monkeypatch):
+        from adk.a2a_client import load_or_generate_keypair
+        monkeypatch.setenv("AITHER_HOME", str(tmp_path))
+        priv, pub = load_or_generate_keypair("caller-c")
+        client = self._app(monkeypatch, trusted_pubkey=pub)
+        body = {"jsonrpc": "2.0", "method": "skills/invoke",
+                "params": {"skill": "safe_exposed", "args": {}}, "id": 1}
+        raw, sig = _sign_body(priv, body)
+        # Sign one body, send a different one -> signature must fail.
+        tampered = raw.replace(b"safe_exposed", b"write_exposed")
+        r = client.post("/a2a", content=tampered,
+                        headers={"Content-Type": "application/json",
+                                 "X-Signature": sig, "X-Public-Key": pub})
+        assert r.status_code == 403

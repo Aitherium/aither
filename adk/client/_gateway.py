@@ -64,12 +64,44 @@ class GatewayClient:
             self.api_key = data["token"]
         return data
 
-    async def register_agent(self, name: str, capabilities: List[str] = None, description: str = "", tools: List[str] = None) -> dict:
-        """Register an agent with the network."""
-        async with httpx.AsyncClient(timeout=self._timeout, headers=self._headers()) as c:
-            r = await c.post(f"{self.gateway_url}/v1/agents/register", json={
-                "name": name, "capabilities": capabilities or [], "description": description, "tools": tools or [],
-            })
+    async def register_agent(
+        self,
+        name: str,
+        owner_email: str = "",
+        description: str = "",
+        framework: str = "adk",
+        **kwargs  # Ignore legacy fields (capabilities, tools)
+    ) -> dict:
+        """Register an agent with the gateway.
+
+        Per the MCP gateway contract, registration requires name and owner_email.
+        Args:
+            name: Agent name (required)
+            owner_email: Contact email for the agent owner (required)
+            description: Brief description of the agent
+            framework: Framework type (e.g., 'adk', 'custom')
+        """
+        # Require owner_email per contract
+        if not owner_email:
+            raise ValueError("owner_email is required for agent registration")
+
+        async with httpx.AsyncClient(timeout=self._timeout) as c:
+            # Registration is ANONYMOUS (no auth required) per contract
+            r = await c.post(
+                f"{self.gateway_url}/v1/agents/register",
+                json={
+                    "name": name,
+                    "owner_email": owner_email,
+                    "description": description,
+                    "framework": framework,
+                },
+            )
+            if r.status_code == 400:
+                # Contract specifies 400 for rate limit, body size, invalid json, missing fields
+                data = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+                raise ValueError(
+                    f"Registration failed (400): {data.get('error', r.text[:200])}"
+                )
             r.raise_for_status()
             return r.json()
 

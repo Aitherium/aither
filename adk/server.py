@@ -21,6 +21,7 @@ from typing import Any
 import httpx
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi import Response
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
 
 from adk import __version__
@@ -59,6 +60,152 @@ def _load_webui() -> str | None:
             return None
     _WEBUI_CACHE = html
     return html
+
+
+# ─── Swappable agent UI packs ────────────────────────────────────────────────
+# The page an agent serves at "/" is a swappable UI PACK, so you can drop in,
+# test, and deploy different chat frontends (the full console, a minimal chat,
+# AitherAeon, a company room, a custom brand) without touching the agent.
+#
+# Selection (first that is set wins): $AITHER_AGENT_UI env, else "console".
+# Resolution order for a pack name:
+#   1. drop-in dir: $AITHER_UI_PACKS_DIR/<name>/index.html  (default ~/.aither/ui-packs)
+#   2. packaged built-in: adk/webui/packs/<name>/index.html
+#   3. special built-ins: "console" -> the full admin SPA (adk/webui/index.html),
+#      "minimal" -> the tiny streaming chat page (_CHAT_HTML)
+# Anything unresolvable falls back to console -> minimal, so "/" is NEVER blank.
+
+_BUILTIN_UI_PACKS = ("console", "minimal")
+
+
+# ── Central-console admin proxy allowlist (module-level so it is unit-testable) ─
+#
+# A blanket "forward every /admin/{path}" proxy was deliberately NOT built: it
+# would expose POST /admin/cli/exec (remote arbitrary command execution) and
+# POST /admin/llm/keys (credential writes) across the whole mesh behind one
+# shared bearer. The console may reach only these OBSERVE routes plus a NARROW
+# set of safe, reversible controls. cli/exec + credential writes are never here;
+# secret VALUES are never surfaced (the remote admin API already masks them).
+_MESH_ADMIN_ALLOW = {
+    "GET": {
+        "config", "meta", "routes",
+        "llm/status",
+        "packs", "catalog/packs",
+        "sessions",
+        "logs/tail",
+        "mcp/servers",
+        "graph/stats",
+    },
+    "POST": {
+        # Safe, reversible controls only — NOT llm/keys, llm/switch, cli/exec.
+        "packs/enable", "packs/disable", "packs/reload",
+    },
+    "DELETE": {
+        "sessions",  # terminate a session (prefix match: sessions/{id})
+    },
+}
+# Prefix allowances for parameterized READ routes (GET path starts with these).
+_MESH_ADMIN_GET_PREFIXES = ("packs/", "sessions/", "mcp/servers/")
+
+
+def _mesh_admin_allowed(method: str, sub: str) -> bool:
+    """True only for explicitly-allowed (method, admin-subpath) pairs. Fail-closed:
+    anything not named here (cli/exec, llm/keys, config PATCH-as-POST, …) is
+    refused. Prefix rules cover /{id}-style read routes but never dangerous verbs."""
+    sub = (sub or "").strip("/")
+    if not sub or ".." in sub:
+        return False
+    allow = _MESH_ADMIN_ALLOW.get(method.upper(), set())
+    if sub in allow:
+        return True
+    if method.upper() == "GET":
+        for pfx in _MESH_ADMIN_GET_PREFIXES:
+            if sub.startswith(pfx) and sub != pfx:
+                return True
+    if method.upper() == "DELETE" and sub.startswith("sessions/") and sub != "sessions/":
+        return True
+    return False
+
+
+def _ui_packs_dir() -> str:
+    """Drop-in directory for custom UI packs (one folder per pack)."""
+    explicit = os.getenv("AITHER_UI_PACKS_DIR", "").strip()
+    if explicit:
+        return explicit
+    home = os.environ.get("AITHER_HOME") or os.environ.get("HOME") \
+        or os.environ.get("USERPROFILE") or "."
+    return os.path.join(home, ".aither", "ui-packs")
+
+
+def resolve_ui_pack_name() -> str:
+    """The selected UI pack name: $AITHER_AGENT_UI, else the persisted
+    ``agent_ui`` from ~/.aither/config.json (set by `adk ui set`), else 'llamacpp'."""
+    env = os.getenv("AITHER_AGENT_UI", "").strip()
+    if env:
+        return env
+    try:
+        from adk.config import load_saved_config
+        saved = load_saved_config().get("agent_ui")
+        if saved:
+            return str(saved).strip()
+    except Exception:
+        pass
+    return "llamacpp"
+
+
+def list_ui_packs() -> dict[str, str]:
+    """Map of available pack name -> source ('builtin' | 'packaged' | drop-in path)."""
+    packs: dict[str, str] = {name: "builtin" for name in _BUILTIN_UI_PACKS}
+    # packaged built-ins under adk/webui/packs/*
+    try:
+        pkg = os.path.join(os.path.dirname(__file__), "webui", "packs")
+        if os.path.isdir(pkg):
+            for name in sorted(os.listdir(pkg)):
+                if os.path.isfile(os.path.join(pkg, name, "index.html")):
+                    packs.setdefault(name, "packaged")
+    except OSError:
+        pass
+    # drop-in packs (override packaged/builtin of the same name)
+    try:
+        dropin = _ui_packs_dir()
+        if os.path.isdir(dropin):
+            for name in sorted(os.listdir(dropin)):
+                idx = os.path.join(dropin, name, "index.html")
+                if os.path.isfile(idx):
+                    packs[name] = idx
+    except OSError:
+        pass
+    return packs
+
+
+def load_ui_pack(name: str | None = None) -> str | None:
+    """Load the selected UI pack's HTML, with a fail-soft fallback chain so "/"
+    is never blank. Not cached (a dev swapping packs sees the change on reload)."""
+    name = (name or resolve_ui_pack_name()).strip() or "console"
+    # 1. drop-in dir wins
+    try:
+        idx = os.path.join(_ui_packs_dir(), name, "index.html")
+        if os.path.isfile(idx):
+            with open(idx, encoding="utf-8") as fh:
+                return fh.read()
+    except OSError:
+        pass
+    # 2. packaged built-in under adk/webui/packs/<name>/
+    try:
+        idx = os.path.join(os.path.dirname(__file__), "webui", "packs", name, "index.html")
+        if os.path.isfile(idx):
+            with open(idx, encoding="utf-8") as fh:
+                return fh.read()
+    except OSError:
+        pass
+    # 3. special built-ins
+    if name == "minimal":
+        return _CHAT_HTML
+    if name == "console":
+        return _load_webui() or _CHAT_HTML
+    # 4. unknown pack -> console -> minimal (never blank)
+    logger.warning("UI pack %r not found; falling back to console", name)
+    return _load_webui() or _CHAT_HTML
 
 
 _PACK_SDK_CACHE: str | None = None
@@ -203,6 +350,7 @@ def create_app(
             logger.info("AITHER_OFFLINE=1 — sovereign mode: local only, no network registration")
 
         if not offline:
+            await _connect_gateway_mcp()
             await _register_with_gateway()
             await _sync_secrets()
             await _join_aithernet()
@@ -318,7 +466,8 @@ def create_app(
     _server_api_key = os.getenv("AITHER_SERVER_API_KEY", "")
     # "/" and "/chat" serve only the static chat page (no data); the page then
     # authenticates to the gated /chat/stream with the bearer from its URL fragment.
-    _skip_auth_paths = {"/", "/chat", "/ui", "/health", "/docs", "/openapi.json",
+    # Similarly, "/aeon" serves the group-chat UI; "/aeon/stream" is bearer-gated.
+    _skip_auth_paths = {"/", "/chat", "/aeon", "/ui", "/health", "/docs", "/openapi.json",
                         "/metrics", "/demo", "/redoc"}
 
     def _is_pack_ui_asset(path: str) -> bool:
@@ -368,6 +517,23 @@ def create_app(
 
         if not _server_api_key:
             return await call_next(request)
+
+        # Genuine local access is trusted — no token needed when you're on the box.
+        # A request whose immediate peer is loopback AND which carries no proxy /
+        # forwarding headers can only have originated on THIS machine. Cloudflare
+        # (and any reverse proxy) hits loopback too, but always adds
+        # X-Forwarded-For / Cf-Connecting-Ip / Forwarded, so the PUBLIC tunnel stays
+        # bearer-gated. This is what makes "open my own agent" seamless in the mesh
+        # without pasting a token into the URL.
+        client_host = request.client.host if request.client else ""
+        forwarded = (
+            request.headers.get("x-forwarded-for")
+            or request.headers.get("cf-connecting-ip")
+            or request.headers.get("forwarded")
+        )
+        if client_host in ("127.0.0.1", "::1") and not forwarded:
+            return await call_next(request)
+
         auth_header = request.headers.get("authorization", "")
         if not auth_header.startswith("Bearer "):
             return JSONResponse(status_code=401, content={"error": "Missing or invalid Authorization header"})
@@ -491,6 +657,7 @@ def create_app(
             "llm_backend": provider,
             "version": __version__,
             "gateway_connected": _state.get("gateway_connected", False),
+            "gateway_mcp_connected": _state.get("gateway_mcp_connected", False),
         }
 
         if is_fleet and _state["fleet"]:
@@ -507,19 +674,26 @@ def create_app(
 
     @app.get("/", response_class=HTMLResponse)
     async def console_page():
-        # The page `adk up` opens is now the full admin console (Chat is its
-        # first tab). Falls back to the minimal chat page if the packaged asset
-        # is somehow missing.
-        return HTMLResponse(_load_webui() or _CHAT_HTML)
+        # The page `adk up` opens is the SELECTED UI pack ($AITHER_AGENT_UI,
+        # default "console" = the full admin SPA). Swap it with `adk ui set
+        # <pack>` or drop a folder in ~/.aither/ui-packs/. Never blank — falls
+        # back console -> minimal.
+        return HTMLResponse(load_ui_pack())
 
     @app.get("/ui", response_class=HTMLResponse)
     async def console_page_alias():
-        return HTMLResponse(_load_webui() or _CHAT_HTML)
+        return HTMLResponse(load_ui_pack())
 
     @app.get("/chat", response_class=HTMLResponse)
     async def chat_page_minimal():
-        # Back-compat: the original lightweight streaming chat page.
-        return HTMLResponse(_CHAT_HTML)
+        # Back-compat: the original lightweight streaming chat page (the
+        # "minimal" pack), regardless of the selected pack.
+        return HTMLResponse(load_ui_pack("minimal"))
+
+    @app.get("/aeon", response_class=HTMLResponse)
+    async def aeon_page():
+        # Aeon group-chat UI pack — multi-agent discussion.
+        return HTMLResponse(load_ui_pack("aeon"))
 
     # ─── Pack UI assets + bridge SDK (sandboxed-iframe plugin system) ───
     # A pack may declare a `ui:` block in its .toolpack.yaml; the console then
@@ -912,8 +1086,45 @@ def create_app(
         reasoning = body.get("reasoning", False)
         mcp_endpoints = body.get("mcp_endpoints")
 
+        # Optional per-turn generation params (honored by the OpenAI-compatible
+        # providers). Only forward what the caller actually set + what is valid,
+        # so a UI's settings drawer really takes effect instead of being decorative.
+        gen_params: dict[str, Any] = {}
+        try:
+            if body.get("temperature") is not None:
+                gen_params["temperature"] = float(body["temperature"])
+            if body.get("max_tokens") is not None:
+                gen_params["max_tokens"] = int(body["max_tokens"])
+        except (TypeError, ValueError):
+            gen_params = {}
+
         return StreamingResponse(
-            _aitheros_stream(get_agent, message, session_id, agent_name, reasoning, mcp_endpoints),
+            _aitheros_stream(get_agent, message, session_id, agent_name, reasoning,
+                             mcp_endpoints, gen_params=gen_params or None),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    @app.post("/aeon/stream")
+    async def stream_aeon_group_chat(request: Request):
+        """Aeon group-chat SSE stream — multi-agent discussion.
+
+        Body: {message, preset?, agents?, rounds?, session_id?, temperature?, max_tokens?}
+        Response: SSE with agent_message events per participant + synthesis.
+        """
+        body = await request.json()
+        message = body.get("message", "")
+        preset = body.get("preset", "balanced")
+        agents = body.get("agents")
+        rounds = body.get("rounds", 1)
+        session_id = body.get("session_id") or f"aeon-{uuid.uuid4().hex[:8]}"
+
+        # NOTE: no per-turn temperature/max_tokens here — AeonSession.chat() runs a
+        # multi-agent round and does not thread per-call generation params, so
+        # accepting them would be a silent no-op. Omitted deliberately.
+
+        return StreamingResponse(
+            _aeon_stream(message, preset, agents, rounds, session_id),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
@@ -1256,6 +1467,10 @@ def create_app(
                         "scope": {"visibility": "workspace", "tenant_id": tenant_id},
                         "invoke_url": invoke_url,
                         "status": "online",
+                        # Advertise what inference this agent runs, so discovery
+                        # (`adk agents ls`) shows "optiplex → bonsai (llamacpp)".
+                        "model": getattr(config, "model", "") or "",
+                        "provider_hint": getattr(config, "llm_backend", "") or "",
                     },
                     headers={"Authorization": f"Bearer {api_key}"},
                 )
@@ -1280,6 +1495,9 @@ def create_app(
                         "agent_type": "adk-agent",
                         "capabilities": ["chat", "tools"],
                         "billing_email": billing_email,
+                        # Inference backend advertised for mesh discovery.
+                        "model": getattr(config, "model", "") or "",
+                        "provider_hint": getattr(config, "llm_backend", "") or "",
                     },
                     headers={
                         "Authorization": f"Bearer {api_key}",
@@ -1484,6 +1702,81 @@ def create_app(
         except (ImportError, RuntimeError, OSError, ConnectionError, httpx.HTTPError) as exc:
             logger.debug("Secrets sync failed (non-fatal): %s", exc)
 
+    async def _connect_gateway_mcp():
+        """Connect MCP client to gateway for platform tool access.
+
+        Self-hosted agents use this to access platform tools (code search, memory,
+        secrets, etc.) without running the full AitherOS stack locally.
+
+        Authentication hierarchy:
+          1. AITHER_API_KEY (device-flow token, ACTA key, or Identity bearer)
+          2. Local AitherSecrets self-mint (fallback via fleet_enroll)
+
+        Fail-soft: no token or connection failure logs warning, agent runs offline.
+        """
+        if not config.aither_api_key:
+            logger.debug("Gateway MCP: no API key configured (running offline)")
+            return
+
+        try:
+            from adk.client._gateway_mcp import create_gateway_mcp_client
+
+            gateway_url = config.gateway_url or os.getenv("AITHER_GATEWAY_URL", "")
+            if not gateway_url:
+                gateway_url = "https://mcp.aitherium.com"
+
+            # Create and test connection (never crashes startup)
+            mcp_client = await create_gateway_mcp_client(
+                gateway_url=gateway_url,
+                api_key=config.aither_api_key,
+            )
+
+            if mcp_client:
+                _state["gateway_mcp_client"] = mcp_client
+                _state["gateway_mcp_connected"] = True
+                logger.info("Gateway MCP client connected: %s", gateway_url)
+
+                # Register gateway tools in agent (best-effort, async)
+                try:
+                    a = await get_agent()
+                    if a:
+                        tools = await mcp_client.list_tools()
+                        for tool_spec in tools:
+                            # Create a closure for this tool
+                            tool_name = tool_spec["name"]
+
+                            async def _gateway_tool_call(
+                                tn=tool_name, **kwargs
+                            ) -> str:
+                                result = await mcp_client.call_tool(tn, kwargs)
+                                if result.get("success"):
+                                    return result.get("text", "")
+                                else:
+                                    return f"Error: {result.get('message', 'unknown')}"
+
+                            _gateway_tool_call.__name__ = tool_name
+                            _gateway_tool_call.__doc__ = tool_spec.get("description", "")
+
+                            a._tools.register(
+                                _gateway_tool_call,
+                                name=tool_name,
+                                description=tool_spec.get("description", ""),
+                            )
+                        logger.info(
+                            "Registered %d gateway tools with agent %s",
+                            len(tools), a.name,
+                        )
+                except Exception as exc:  # noqa: BLE001 — tool registration is advisory
+                    logger.debug("Gateway tool registration failed (non-fatal): %s", exc)
+            else:
+                _state["gateway_mcp_connected"] = False
+                logger.debug("Gateway MCP connection failed (running offline)")
+        except ImportError:
+            logger.debug("Gateway MCP unavailable (continuing offline)")
+        except Exception as exc:  # noqa: BLE001 — must never crash startup
+            _state["gateway_mcp_connected"] = False
+            logger.warning("Gateway MCP init failed (continuing offline): %s", exc)
+
     async def _register_with_gateway():
         if not config.gateway_url or not config.aither_api_key:
             logger.debug("Gateway auto-registration skipped (not configured)")
@@ -1496,14 +1789,33 @@ def create_app(
             from adk.client import GatewayClient
             gw = GatewayClient(gateway_url=config.gateway_url, api_key=config.aither_api_key)
             ident = load_identity(identity)
+
+            # Get owner email for registration (required by gateway contract)
+            owner_email = os.getenv("AITHER_OWNER_EMAIL", "").strip()
+            if not owner_email:
+                # Try to extract from saved config
+                from adk.config import load_saved_config
+                saved = load_saved_config()
+                owner_email = saved.get("billing_email", "") or saved.get("email", "")
+
+            if not owner_email:
+                logger.warning(
+                    "Gateway registration skipped: AITHER_OWNER_EMAIL not set "
+                    "(required by gateway contract)"
+                )
+                _state["gateway_connected"] = False
+                return
+
             result = await gw.register_agent(
-                agent_name=ident.name,
-                capabilities=ident.skills,
+                name=ident.name,
+                owner_email=owner_email,
                 description=ident.description,
+                framework="adk",
             )
             _state["gateway_connected"] = True
             logger.info("Registered with gateway %s: %s", config.gateway_url, result)
-        except (ImportError, RuntimeError, OSError, ConnectionError, httpx.HTTPError) as exc:
+        except Exception as exc:  # noqa: BLE001 — registration is ALWAYS best-effort;
+            # a bad signature / gateway hiccup must never take down the agent server.
             _state["gateway_connected"] = False
             logger.warning("Gateway registration failed (non-fatal): %s", exc)
 
@@ -1597,7 +1909,7 @@ def create_app(
 
     async def _reconnect_elysium():
         """Re-join desktop mesh on startup if previously connected via `adk connect --elysium`."""
-        from adk.config import load_saved_config  # noqa: always available
+        from adk.config import load_saved_config  # noqa: F811
         try:
             saved = load_saved_config()
             elysium_url = saved.get("elysium_url", "")
@@ -1636,7 +1948,7 @@ def create_app(
 
     async def _start_mesh_hosting():
         """Start mesh hosting if --mesh flag or config mesh_enabled is set."""
-        from adk.config import load_saved_config  # noqa: always available
+        from adk.config import load_saved_config  # noqa: F811
         mesh_enabled = os.getenv("AITHER_MESH_ENABLED", "").lower() in ("true", "1", "yes")
         if not mesh_enabled:
             try:
@@ -1649,7 +1961,7 @@ def create_app(
             return
 
         try:
-            from adk.relay import AitherNetRelay  # noqa: lazy import
+            from adk.relay import AitherNetRelay  # noqa: F401
 
             saved = load_saved_config()
             base_host = saved.get("elysium_base_host", "")
@@ -2124,6 +2436,153 @@ def create_app(
         messages = await relay.poll_messages()
         return {"messages": [m.__dict__ for m in messages], "count": len(messages)}
 
+    @app.get("/mesh/agents")
+    async def mesh_agents():
+        """Discover every agent in the mesh (name + invoke_url + inference backend +
+        skills). Auth-gated: the server queries the owner registry with ITS token and
+        returns the list to the authenticated caller — the browser never sees the
+        owner token (it auths to this endpoint with the server bearer instead)."""
+        from adk.mesh_discovery import discover_agents
+        agents, warnings = await discover_agents()
+        return {"agents": [a.to_dict() for a in agents], "warnings": warnings,
+                "total": len(agents)}
+
+    def _is_safe_proxy_url(url: str) -> bool:
+        """Guard the mesh proxy targets. invoke_url values come from owner-authed
+        discovery (registry / local agents.json / a2a-fleet), NOT from caller input,
+        so this is defense-in-depth against a poisoned registry entry — not the
+        primary control. We deliberately ALLOW private/LAN IPs because real mesh
+        agents live there (e.g. the OptiPlex on 192.168.x.x); we only reject
+        non-HTTP(S) schemes and the cloud-metadata address."""
+        try:
+            from urllib.parse import urlparse
+            u = urlparse(url)
+            if u.scheme not in ("http", "https"):
+                return False
+            host = (u.hostname or "").lower()
+            if not host:
+                return False
+            # Block cloud instance-metadata endpoints (link-local 169.254.169.254).
+            if host in ("169.254.169.254", "metadata", "metadata.google.internal"):
+                return False
+            if host.startswith("169.254."):
+                return False
+            return True
+        except Exception:
+            return False
+
+    async def _proxy_agent_stream(ref, message: str):
+        """SSE generator that forwards a chat to a mesh agent (protocol-aware) and
+        re-emits frames in the pack format (token/answer/error), so the web packs can
+        talk to a REMOTE agent through this server without holding its credentials."""
+        try:
+            if ref.chat_protocol == "openai":
+                from adk.llm.base import Message
+                from adk.llm.openai_compat import OpenAIProvider
+                base = ref.invoke_url.rstrip("/")
+                if not base.endswith("/v1"):
+                    base += "/v1"
+                prov = OpenAIProvider(base_url=base, default_model=ref.model or "")
+                got = False
+                async for chunk in prov.chat_stream([Message(role="user", content=message)],
+                                                    max_tokens=1024):
+                    text = getattr(chunk, "content", "") or ""
+                    if text:
+                        got = True
+                        yield f"data: {json.dumps({'type': 'token', 't': text})}\n\n"
+                if not got:
+                    resp = await prov.chat([Message(role="user", content=message)], max_tokens=1024)
+                    yield f"data: {json.dumps({'type': 'answer', 'answer': getattr(resp, 'content', '') or ''})}\n\n"
+            else:
+                from adk.shell.genesis_client import GenesisClient
+                client = GenesisClient(base_url=ref.invoke_url)
+                async for chunk in client.chat_stream(message):
+                    yield f"data: {json.dumps({'type': 'token', 't': chunk})}\n\n"
+        except Exception as exc:  # noqa: BLE001 - surface as an SSE error frame, never 500 mid-stream
+            # Log the full exception server-side; emit a generic frame so remote
+            # agent internals / URLs / secrets never leak to the browser.
+            logger.warning("mesh chat proxy to %s failed: %s", getattr(ref, "name", "?"), exc)
+            yield f"data: {json.dumps({'type': 'error', 'error': 'upstream agent error'})}\n\n"
+
+    @app.post("/mesh/agents/{name}/chat/stream")
+    async def mesh_agent_chat(name: str, request: Request):
+        """Proxy a streaming chat to the named mesh agent — it replies on its OWN
+        inference. Auth-gated (server bearer); the remote agent's URL/creds stay
+        server-side."""
+        from adk.mesh_discovery import resolve_agent
+        ref = await resolve_agent(name)
+        if ref is None or not ref.invoke_url:
+            return JSONResponse({"error": f"agent '{name}' not found or has no invoke_url"},
+                                status_code=404)
+        if not _is_safe_proxy_url(ref.invoke_url):
+            logger.warning("mesh chat proxy: refusing unsafe invoke_url for %s", name)
+            return JSONResponse({"error": "agent has an unsafe invoke_url"}, status_code=502)
+        body = await request.json()
+        message = body.get("message", body.get("content", ""))
+        return StreamingResponse(
+            _proxy_agent_stream(ref, message),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    # Central console: aggregate each agent's own /admin API through an ALLOWLIST
+    # (module-level _mesh_admin_allowed). See its definition for the rationale —
+    # cli/exec + credential writes are never reachable through this proxy.
+    @app.api_route("/mesh/agents/{name}/admin/{path:path}",
+                   methods=["GET", "POST", "DELETE"])
+    async def mesh_agent_admin(name: str, path: str, request: Request):
+        """Owner-authed proxy to a mesh agent's OWN /admin API, restricted to an
+        allowlist (observe + narrow safe controls). Auth-gated by the server
+        bearer; the remote agent's URL stays server-side; secret values are never
+        surfaced (remote admin masks them). cli/exec + credential writes are not
+        reachable through here."""
+        import httpx
+        from adk.mesh_discovery import resolve_agent
+
+        if not _mesh_admin_allowed(request.method, path):
+            logger.warning("mesh admin proxy: refusing %s /admin/%s for %s",
+                           request.method, path, name)
+            return JSONResponse(
+                {"error": "admin route not permitted through the mesh console",
+                 "method": request.method, "path": path},
+                status_code=403,
+            )
+
+        ref = await resolve_agent(name)
+        if ref is None or not ref.invoke_url:
+            return JSONResponse({"error": f"agent '{name}' not found or has no invoke_url"},
+                                status_code=404)
+        if not _is_safe_proxy_url(ref.invoke_url):
+            logger.warning("mesh admin proxy: refusing unsafe invoke_url for %s", name)
+            return JSONResponse({"error": "agent has an unsafe invoke_url"}, status_code=502)
+
+        target = ref.invoke_url.rstrip("/") + "/admin/" + path.strip("/")
+        # Forward the owner's bearer to the remote agent (mesh-shared server key);
+        # a mismatch surfaces as the remote's own 401, never a silent success.
+        fwd_headers = {}
+        auth = request.headers.get("authorization")
+        if auth:
+            fwd_headers["Authorization"] = auth
+        body_bytes = await request.body()
+        if request.headers.get("content-type"):
+            fwd_headers["Content-Type"] = request.headers["content-type"]
+
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.request(
+                    request.method, target,
+                    params=dict(request.query_params),
+                    content=body_bytes or None,
+                    headers=fwd_headers,
+                )
+        except httpx.RequestError as exc:
+            logger.warning("mesh admin proxy to %s failed: %s", name, exc)
+            return JSONResponse({"error": "upstream agent unreachable"}, status_code=502)
+
+        media = resp.headers.get("content-type", "application/json")
+        return Response(content=resp.content, status_code=resp.status_code,
+                        media_type=media)
+
     @app.post("/mesh/tools/call")
     async def mesh_tool_call(request: Request):
         """Call an MCP tool on a remote mesh node."""
@@ -2334,7 +2793,7 @@ async def _strata_ingest_bg(**kwargs):
         pass
 
 
-async def _aitheros_stream(get_agent_fn, message: str, session_id: str, agent_name: str | None, reasoning: bool, mcp_endpoints: list | None = None):
+async def _aitheros_stream(get_agent_fn, message: str, session_id: str, agent_name: str | None, reasoning: bool, mcp_endpoints: list | None = None, gen_params: dict | None = None):
     """SSE generator emitting AitherOS-typed events.
 
     Uses the app-level get_agent() for shared memory/tools/fleet support.
@@ -2365,10 +2824,11 @@ async def _aitheros_stream(get_agent_fn, message: str, session_id: str, agent_na
         # session_start
         yield f"event: session_start\ndata: {json.dumps({'type': 'session_start', 'session_id': session_id, 'agent': agent.name, 'model': model_name})}\n\n"
 
+        _gp = gen_params or {}
         # If agent has tools, use sync chat with background heartbeat
         if agent._tools.list_tools():
             # Run chat in a task with heartbeat to keep SSE alive
-            chat_task = asyncio.ensure_future(agent.chat(message, session_id=session_id))
+            chat_task = asyncio.ensure_future(agent.chat(message, session_id=session_id, **_gp))
             while not chat_task.done():
                 yield f"event: heartbeat\ndata: {json.dumps({'type': 'heartbeat'})}\n\n"
                 await asyncio.sleep(2)
@@ -2418,7 +2878,7 @@ async def _aitheros_stream(get_agent_fn, message: str, session_id: str, agent_na
         # Streaming path — no tools
         full_content = ""
         token_count = 0
-        async for chunk in agent.chat_stream(message, session_id=session_id):
+        async for chunk in agent.chat_stream(message, session_id=session_id, **_gp):
             if chunk:
                 full_content += chunk
                 token_count += 1
@@ -2442,6 +2902,55 @@ async def _aitheros_stream(get_agent_fn, message: str, session_id: str, agent_na
         # no error/complete). Surface it as a typed error + terminal complete so the
         # caller always gets a clean end, and log the full traceback for diagnosis.
         logger.exception("AitherOS stream error: %s", exc)
+        yield f"event: error\ndata: {json.dumps({'type': 'error', 'error': str(exc)})}\n\n"
+        duration_ms = int((time.time() - start) * 1000)
+        yield f"event: complete\ndata: {json.dumps({'type': 'complete', 'duration_ms': duration_ms})}\n\n"
+
+
+async def _aeon_stream(message: str, preset: str, agents: list[str] | None,
+                       rounds: int, session_id: str):
+    """SSE generator for Aeon group-chat — multi-agent discussion with synthesis.
+
+    Protocol:
+      event: session_start  -> {type, session_id, orchestrator, participants, model}
+      event: agent_message  -> {type, agent, content, tokens_used, latency_ms, round_number}
+      event: synthesis      -> {type, agent, content, tokens_used, latency_ms} (if enabled)
+      event: error          -> {type, error}
+      event: complete       -> {type, total_tokens, total_latency_ms, session_id}
+    """
+    start = time.time()
+    try:
+        from adk.aeon import AeonSession
+
+        # Create the session with the given preset/agents/rounds
+        session = AeonSession(
+            participants=agents,
+            preset=preset,
+            rounds=rounds,
+            synthesize=True,
+        )
+        model_name = getattr(session._shared_llm, "provider_name", "unknown")
+
+        # Emit session_start
+        yield f"event: session_start\ndata: {json.dumps({'type': 'session_start', 'session_id': session_id, 'orchestrator': session.orchestrator, 'participants': session.participants, 'model': model_name})}\n\n"
+
+        # Run the group chat
+        response = await session.chat(message)
+
+        # Emit each agent message (excluding synthesis)
+        for msg in response.messages:
+            yield f"event: agent_message\ndata: {json.dumps({'type': 'agent_message', 'agent': msg.agent, 'content': msg.content, 'tokens_used': msg.tokens_used, 'latency_ms': msg.latency_ms, 'round_number': msg.round_number})}\n\n"
+
+        # Emit synthesis if present
+        if response.synthesis:
+            yield f"event: synthesis\ndata: {json.dumps({'type': 'synthesis', 'agent': response.synthesis.agent, 'content': response.synthesis.content, 'tokens_used': response.synthesis.tokens_used, 'latency_ms': response.synthesis.latency_ms})}\n\n"
+
+        # Emit complete
+        total_ms = int((time.time() - start) * 1000)
+        yield f"event: complete\ndata: {json.dumps({'type': 'complete', 'total_tokens': response.total_tokens, 'total_latency_ms': response.total_latency_ms, 'session_id': session_id})}\n\n"
+
+    except Exception as exc:
+        logger.exception("Aeon stream error: %s", exc)
         yield f"event: error\ndata: {json.dumps({'type': 'error', 'error': str(exc)})}\n\n"
         duration_ms = int((time.time() - start) * 1000)
         yield f"event: complete\ndata: {json.dumps({'type': 'complete', 'duration_ms': duration_ms})}\n\n"

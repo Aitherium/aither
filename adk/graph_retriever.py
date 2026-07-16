@@ -103,6 +103,7 @@ class GraphRetriever(ABC):
         k_seeds: int = 5,
         k_hops: int = 1,
         limit: int = 12,
+        intent_type: str | None = None,
     ) -> Subgraph:
         """Search for a bounded relevant subgraph.
 
@@ -111,6 +112,7 @@ class GraphRetriever(ABC):
             k_seeds: Number of seed nodes to retrieve.
             k_hops: Depth of expansion (1 = direct neighbors only).
             limit: Max total nodes in result.
+            intent_type: Optional intent type (CODE/CONVERSATION/DEFAULT) for intent-aware scoring.
 
         Returns:
             A Subgraph with seed nodes and up to k_hops neighbors.
@@ -151,11 +153,17 @@ class InMemoryGraphRetriever(GraphRetriever):
         k_seeds: int = 5,
         k_hops: int = 1,
         limit: int = 12,
+        intent_type: str | None = None,
     ) -> Subgraph:
         """Search in-memory graph.
 
         Seeds: substring match on node.content, sorted by descending score.
         Expansion: BFS up to k_hops, deduped by id, capped at limit.
+
+        Optional intent-aware rescoring:
+        - CODE intent: multiply scores by 1.2 (boost technical content)
+        - CONVERSATION intent: filter weak nodes (score < 0.5)
+        - Missing/DEFAULT intent: neutral (no rescoring)
         """
         # Find seed nodes (substring match)
         query_lower = query.lower()
@@ -163,8 +171,22 @@ class InMemoryGraphRetriever(GraphRetriever):
             n for n in self._nodes.values()
             if query_lower in n.content.lower()
         ]
-        # Sort by score descending, then by id for determinism
-        candidates.sort(key=lambda n: (-n.score, n.id))
+
+        # Intent-aware rescoring (fail-open: no intent → neutral). Compute an
+        # EFFECTIVE score for ranking only — NEVER mutate node.score in place:
+        # nodes are shared/cached, so `n.score *= 1.2` is non-idempotent and
+        # compounds every time the same node is re-scored across queries.
+        intent_norm = (intent_type or "").strip().lower() if intent_type else ""
+        if intent_norm in ("conversation", "web_research"):
+            # CONVERSATION/web intent: drop weak matches
+            candidates = [n for n in candidates if n.score >= 0.5]
+
+        def _eff_score(n) -> float:
+            # CODE intent boosts technical relevance for RANKING without mutating n
+            return n.score * 1.2 if intent_norm == "code" else n.score
+
+        # Sort by effective score descending, then by id for determinism
+        candidates.sort(key=lambda n: (-_eff_score(n), n.id))
         seed_nodes = candidates[:k_seeds]
 
         if not seed_nodes:

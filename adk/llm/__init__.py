@@ -170,6 +170,7 @@ class LLMRouter:
         "deepseek": "https://api.deepseek.com/v1",
         "groq": "https://api.groq.com/openai/v1",
         "together": "https://api.together.xyz/v1",
+        "genesis": "https://localhost:8001/v1",  # Local AitherOS Genesis (HTTPS, internal AitherNet CA)
     }
 
     # Default models per named provider
@@ -178,6 +179,7 @@ class LLMRouter:
         "deepseek": "deepseek-chat",
         "groq": "llama-3.3-70b-versatile",
         "together": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+        "genesis": "workflow",  # Genesis routes by priority; "workflow" = default fleet model
     }
 
     def _create_provider(
@@ -198,15 +200,25 @@ class LLMRouter:
                 host=base_url or "http://localhost:11434",
                 default_model=self._model or "gemma4:4b",
             )
-        elif name in ("openai", "vllm", "lmstudio", "llamacpp", "groq", "together", "deepseek"):
+        elif name in ("openai", "vllm", "lmstudio", "llamacpp", "groq", "together", "deepseek", "genesis"):
             from .openai_compat import OpenAIProvider
             default_url = self._COMPAT_URLS.get(name, "https://api.openai.com/v1")
             default_model = self._COMPAT_MODELS.get(name, "gpt-4o-mini")
+            # Self-hosted endpoints (genesis/vllm/llamacpp/lmstudio) may be served
+            # over https with the internal AitherNet CA — trust it via tls_verify().
+            # Public providers (openai/groq/together/deepseek) keep system trust
+            # (None), since the internal CA bundle would REPLACE system roots and
+            # break their public certs. Harmless on plain-http local endpoints.
+            verify = None
+            if name in ("genesis", "vllm", "llamacpp", "lmstudio"):
+                from .._tls import tls_verify
+                verify = tls_verify()
             return OpenAIProvider(
                 base_url=base_url or default_url,
                 api_key=api_key or "",
                 default_model=self._model or default_model,
                 ctk_by_model=_DEFAULT_CTK_BY_MODEL,
+                verify=verify,
             )
         elif name == "anthropic":
             from .anthropic import AnthropicProvider
@@ -230,7 +242,7 @@ class LLMRouter:
             raise ValueError(
                 f"Unknown provider: {name}. "
                 "Use 'gateway', 'ollama', 'openai', 'anthropic', 'gemini', 'deepseek', "
-                "'groq', 'together', 'vllm', 'lmstudio', 'llamacpp', or 'picolm'."
+                "'groq', 'together', 'vllm', 'lmstudio', 'llamacpp', 'genesis', or 'picolm'."
             )
 
     async def _try_ollama(self) -> LLMProvider | None:
@@ -591,8 +603,19 @@ class LLMRouter:
                 "gemini": getattr(self._config, "gemini_api_key", ""),
             }
             api_key = key_for.get(explicit, "") or os.getenv(f"{explicit.upper()}_API_KEY", "")
+            # Self-hosted OpenAI-compatible backends (llamacpp/vllm/lmstudio) need a
+            # base_url pointing at the operator's OWN server — otherwise
+            # _create_provider falls back to _COMPAT_URLS' openai.com default and
+            # the agent talks to the wrong brain. Read the generic llm_base_url
+            # (env AITHER_LLM_BASE_URL) for that family; openai keeps its own field.
+            _generic_base = (
+                getattr(self._config, "llm_base_url", "") or os.getenv("AITHER_LLM_BASE_URL", "")
+            )
             base_url_for = {
                 "openai": getattr(self._config, "openai_base_url", "") or os.getenv("OPENAI_BASE_URL", ""),
+                "llamacpp": _generic_base,
+                "vllm": _generic_base,
+                "lmstudio": _generic_base,
             }
             explicit_base_url = base_url_for.get(explicit, "") or None
             try:

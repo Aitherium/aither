@@ -81,6 +81,7 @@ class ContextManager:
         self.reserve = reserve_for_response
         self._messages: list[ContextMessage] = []
         self._system_facts: str | None = None
+        self._intent_type: str | None = None  # Intent discrimination for context scaling
 
     def add(self, role: str, content: str, **kwargs) -> ContextMessage:
         """Add a message to the context."""
@@ -98,11 +99,23 @@ class ContextManager:
             lines.append(f"- {key}: {value}")
         self._system_facts = "\n".join(lines)
 
+    def set_intent(self, intent_type: str | None) -> None:
+        """Store the current intent type (CODE/CONVERSATION/DEFAULT).
+
+        Used to gate context scaling and system fact prioritization.
+        Optional; fail-open if not set.
+        """
+        self._intent_type = intent_type
+
     def add_system(self, content: str) -> ContextMessage:
-        # If system facts are set, prepend them to the first system message
+        # If system facts are set, prepend them to the first system message —
+        # BUT skip the (technical/infra) facts for conversational intents, where
+        # they are pure noise. Fail-open: None/unknown intent → inject as before.
         if self._system_facts:
-            content = f"{self._system_facts}\n\n{content}"
-            self._system_facts = None  # Only inject once
+            _intent = (self._intent_type or "").strip().upper()
+            if _intent not in ("CONVERSATION", "GREETING"):
+                content = f"{self._system_facts}\n\n{content}"
+            self._system_facts = None  # Only consult once per turn
         return self.add("system", content)
 
     def add_user(self, content: str) -> ContextMessage:

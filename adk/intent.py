@@ -191,7 +191,51 @@ async def classify_intent(
                           grounding_label=glabel, source="llm")
 
 
+# ── Coarse code intent — fail-open fallback when classifier is skipped ──────────
+# Mirrors ContextPipeline._coarse_code_intent for intent-gated context assembly
+# in the public SDK. Used when classify_intent() is unavailable or to gate tool
+# availability by intent (CODE vs CONVERSATION). Cheap, regex-only, non-fatal.
+_CODE_KEYWORD_RE = _re.compile(
+    r"\b(?:def|class|import|function|method|module|traceback|exception|"
+    r"stack ?trace|bug|refactor|implement|compile|endpoint|repo|commit|"
+    r"api|regex|async|await|null|None)\b",
+    _re.I,
+)
+_CODE_IDENT_RE = _re.compile(
+    r"`[^`]+`|[A-Za-z_][A-Za-z0-9_]*\([^)]*\)|[a-z0-9]+_[a-z0-9]+|"
+    r"[a-z][a-zA-Z0-9]*[A-Z][a-z]|"
+    r"\.(?:py|ts|tsx|js|jsx|go|rs|java|cpp|sh|yaml|yml|json|md)\b"
+)
+_CONVERSATIONAL_RE = _re.compile(
+    r"\b(hi|hello|hey|thanks|thank you|good (?:morning|evening|afternoon)|"
+    r"how are you|who are you|what can you do|what'?s up|what time|"
+    r"sup|yo|please|nevermind)\b",
+    _re.I,
+)
+
+
+def coarse_code_intent(prompt: str) -> str:
+    """Cheap keyword heuristic for intent type (fail-open fallback).
+
+    Used to gate tool availability and context scaling when a full intent
+    classifier is skipped (low-effort trivial turns) or unavailable. Returns
+    'CODE' on code-like signals, 'CONVERSATION' on short conversational
+    queries, else 'DEFAULT' (neutral, current behavior).
+
+    Never raises; regex-only, instant.
+    """
+    p = (prompt or "").strip()
+    if not p:
+        return "DEFAULT"
+    if _CODE_KEYWORD_RE.search(p) or _CODE_IDENT_RE.search(p):
+        return "CODE"
+    if len(p.split()) <= 8 and _CONVERSATIONAL_RE.search(p):
+        return "CONVERSATION"
+    return "DEFAULT"
+
+
 __all__ = [
     "IntentDecision", "classify_intent", "keyword_intent",
     "depth_for_effort", "INTENT_VALUES", "LLMComplete",
+    "coarse_code_intent",  # NEW: intent discrimination gate
 ]
