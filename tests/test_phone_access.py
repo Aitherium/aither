@@ -42,3 +42,51 @@ def test_phone_access_never_crashes_and_returns_str():
     out = _render_phone_access("https://x.trycloudflare.com", "TKN")
     assert isinstance(out, str)
     assert "/#k=TKN" in out
+
+
+# ── Email-the-link helper (adk up --email) ─────────────────────────────
+
+from adk.cli import _email_tunnel_link  # noqa: E402
+
+
+class _FakeRelay:
+    def __init__(self, configured=True):
+        self.is_configured = configured
+        self.sent = []
+
+    def get_config(self, redact=True):
+        return {"from_addr": "agent@example.com", "username": "agent@example.com"}
+
+    def _send_direct(self, row):
+        self.sent.append(row)
+        return True, ""
+
+
+def test_email_sends_phone_link_when_configured(monkeypatch):
+    relay = _FakeRelay(configured=True)
+    monkeypatch.setattr("adk.smtp.get_mail_relay", lambda: relay)
+    ok = _email_tunnel_link("me@example.com", "myagent",
+                            "https://x.trycloudflare.com/#k=TOK", "https://x.trycloudflare.com",
+                            quiet=True)
+    assert ok is True
+    assert len(relay.sent) == 1
+    row = relay.sent[0]
+    assert row["to_addr"] == "me@example.com"
+    assert "https://x.trycloudflare.com/#k=TOK" in row["body"]
+    assert "https://x.trycloudflare.com/#k=TOK" in row["html"]
+
+
+def test_email_noop_when_not_configured(monkeypatch):
+    relay = _FakeRelay(configured=False)
+    monkeypatch.setattr("adk.smtp.get_mail_relay", lambda: relay)
+    ok = _email_tunnel_link("me@example.com", "a", "u/#k=T", "u", quiet=True)
+    assert ok is False
+    assert relay.sent == []
+
+
+def test_email_is_best_effort_on_error(monkeypatch):
+    def boom():
+        raise RuntimeError("smtp import blew up")
+    monkeypatch.setattr("adk.smtp.get_mail_relay", boom)
+    # Must never raise — up() must not be blocked by an email failure.
+    assert _email_tunnel_link("me@example.com", "a", "u/#k=T", "u", quiet=True) is False

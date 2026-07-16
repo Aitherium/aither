@@ -95,6 +95,14 @@ def check_orphan_modules():
         f.stem: f for f in ADK.glob("*.py")
         if f.name != "__init__.py"
     }
+    # Also orphan-check cohesive subpackages whose every module should be
+    # reachable (D-372). adk/sync/ is a curated domain package — before the
+    # 2.24.0 move, a dead root-level *_sync.py was caught here, but a dead
+    # adk/sync/<x>.py would have been invisible (this scan was top-level only).
+    # Keyed "sync/<name>" so the error prints the real path.
+    for f in (ADK / "sync").glob("*.py"):
+        if f.name != "__init__.py":
+            module_files[f"sync/{f.stem}"] = f
 
     # Scan all .py files in the package for imports
     all_py = list(ADK.rglob("*.py"))
@@ -121,6 +129,15 @@ def check_orphan_modules():
                 parts = node.module.split(".")
                 if len(parts) >= 2 and parts[0] == "adk":
                     imported.add(parts[1])
+                    # subpackage submodule reachability (D-372):
+                    #   from adk.sync.secrets import X  -> "sync/secrets"
+                    #   from adk.sync import secrets, X -> "sync/secrets", "sync/X"
+                    if parts[1] == "sync":
+                        if len(parts) >= 3:
+                            imported.add(f"sync/{parts[2]}")
+                        else:
+                            for alias in node.names:
+                                imported.add(f"sync/{alias.name}")
                 elif parts == ["adk"]:
                     # from adk import foo — the imported name is the module
                     for alias in node.names:
@@ -132,6 +149,8 @@ def check_orphan_modules():
                     parts = alias.name.split(".")
                     if len(parts) >= 2 and parts[0] == "adk":
                         imported.add(parts[1])
+                        if parts[1] == "sync" and len(parts) >= 3:
+                            imported.add(f"sync/{parts[2]}")  # import adk.sync.secrets
 
     # Also count __init__.py lazy imports as "used"
     init_source = (ADK / "__init__.py").read_text(encoding="utf-8")

@@ -62,7 +62,7 @@ held in the vault and never shown again), so your local agent can use your tools
 Stand up your workstation as an MCP server in one command:
 
 ```bash
-adk mcp-workstation --port 8090      # serves your local tools; optionally registers them
+adk mcp node --port 8182      # serves your local tools; optionally registers them
 ```
 
 ### 6. Run

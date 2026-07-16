@@ -751,6 +751,17 @@ class A2AServer:
                         status_code=403,
                     )
 
+                # REPLAY PROTECTION: check ts/nonce (only after trust is verified)
+                from adk.a2a_trust import check_replay
+                ok, why = check_replay(body)
+                if not ok:
+                    logger.warning(f"Rejecting skills/invoke: replay check failed: {why}")
+                    return JSONResponse(
+                        {"error": "Untrusted request",
+                         "reason": f"replay check failed: {why}"},
+                        status_code=403,
+                    )
+
             caller_public_key = x_public_key if (trust_result and trust_result.verified) else None
             caller_trusted = bool(trust_result and trust_result.trusted)
             result = await self.handle_jsonrpc(

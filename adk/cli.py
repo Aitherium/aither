@@ -761,6 +761,46 @@ def _render_phone_access(public_url: str, token: str) -> str:
     return "\n".join(lines)
 
 
+def _email_tunnel_link(to: str, name: str, phone_url: str, public_url: str,
+                       quiet: bool = False) -> bool:
+    """Best-effort: email the phone-ready access link to a configured address.
+
+    Uses the ADK MailRelay (configured once via a provider preset / SMTP creds).
+    Never raises and never blocks ``adk up``; prints a short status unless quiet.
+    """
+    def _note(msg: str) -> None:
+        if not quiet:
+            print(msg)
+
+    try:
+        from adk.smtp import get_mail_relay
+        relay = get_mail_relay()
+        if not relay.is_configured:
+            _note("  [!] Email not sent — SMTP not configured "
+                  "(configure a provider first, e.g. gmail/resend/sendgrid).")
+            return False
+        cfg = relay.get_config(redact=False)
+        sender = cfg.get("from_addr") or cfg.get("username", "")
+        subject = f"Your Aither agent '{name}' is live"
+        body = (f"Your agent '{name}' is running and reachable from anywhere.\n\n"
+                f"Open on your phone (the access token is in the link):\n{phone_url}\n\n"
+                f"Public URL: {public_url}\n")
+        html = (f"<p>Your agent <b>{name}</b> is live. Tap to chat from your phone:</p>"
+                f'<p><a href="{phone_url}" style="display:inline-block;padding:10px 18px;'
+                f'background:#3b82f6;color:#fff;border-radius:8px;text-decoration:none">'
+                f"Open {name}</a></p>"
+                f'<p style="color:#888;font-size:12px">The access token is embedded in this '
+                f"link - treat it like a password. Public URL: {public_url}</p>")
+        row = {"from_addr": sender, "to_addr": to, "subject": subject,
+               "body": body, "html": html, "attachments": "[]", "agent": name}
+        ok, err = relay._send_direct(row)
+        _note(f"  [+] Access link emailed to {to}" if ok else f"  [!] Email not sent: {err}")
+        return ok
+    except Exception as e:  # noqa: BLE001 — email is best-effort, never blocks up
+        _note(f"  [!] Email not sent: {e}")
+        return False
+
+
 def cmd_up(args):
     """One command: run a persistent agent connected to your AitherOS fleet.
 
@@ -1080,6 +1120,12 @@ def cmd_up(args):
         "log_path": str(agent_log),
     }
     daemon.write_status(status)
+
+    # ── Email the access link (optional) ──
+    email_to = getattr(args, "email", "") or saved.get("notify_email", "")
+    if email_to and public_url:
+        _email_tunnel_link(email_to, name, f"{public_url.rstrip('/')}/#k={auth_token}",
+                           public_url, quiet=non_interactive)
 
     # ── Report ──
     if non_interactive:
@@ -9410,6 +9456,8 @@ def _register_commands(sub):
     up_p.add_argument("--passphrase", "--pin", dest="passphrase",
                       help="Memorable secret to authenticate remote chat (else a random token is minted). "
                            "Enter it on the chat page's access gate from your phone.")
+    up_p.add_argument("--email", help="Email the phone-ready access link to this address once the "
+                                      "tunnel is up (uses configured SMTP; else saved notify_email).")
     up_p.add_argument("--approve", help="Comma-list of tools that pause for approval (default: file_write,shell_exec,shell)")
     up_p.add_argument("--portal", default="https://veil.aitherium.com", help="Control-plane base URL")
     up_p.add_argument("--login-url", help="Device-flow login base URL")

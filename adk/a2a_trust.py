@@ -26,12 +26,22 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from dataclasses import dataclass
 from typing import Optional
 
 logger = logging.getLogger("adk.a2a_trust")
 
 _REQUIRE_TRUST_MODE = os.getenv("AITHER_A2A_REQUIRE_TRUST", "false").lower()
+
+# Module-level nonce cache: maps nonce -> expiry_epoch. Pruned on each call.
+# LIMITATION (P1, accepted): this cache is PER-PROCESS. A multi-worker deploy
+# (e.g. uvicorn --workers N) would not share it, so a replay could land on a
+# different worker within the window. The timestamp window still bounds the
+# exposure to AITHER_A2A_REPLAY_WINDOW seconds. For a hardened multi-worker
+# deploy, back this with a shared store (Redis SETNX / the mesh KV) keyed by
+# nonce with the same TTL. Single-process `adk up` / one-worker serve is exact.
+_SEEN_NONCES: dict[str, int] = {}
 
 
 @dataclass
@@ -42,6 +52,63 @@ class A2ATrustResult:
     node_id: Optional[str]  # X-Node-ID from request
     public_key: Optional[str]  # X-Public-Key from request
     reason: str  # Why verified/trusted or failed
+
+
+def check_replay(body: dict) -> tuple[bool, str]:
+    """Check replay protection (timestamp + nonce validation).
+
+    Validates that a request's ts/nonce fields are present and the nonce
+    has not been seen before (within the replay window).
+
+    Args:
+        body: JSON-RPC request dict (must contain top-level "ts" and "nonce")
+
+    Returns:
+        (ok: bool, reason: str) — (True, "ok") if valid, (False, reason) if
+        replay detected or fields missing.
+    """
+    global _SEEN_NONCES
+
+    # Get window from env (default 300s = 5 min). Never let a malformed value
+    # raise (that would turn a security check into a 500) — fall back to 300.
+    try:
+        window = int(os.getenv("AITHER_A2A_REPLAY_WINDOW", "300"))
+        if window <= 0:
+            window = 300
+    except (TypeError, ValueError):
+        window = 300
+    now = int(time.time())
+
+    # Check ts and nonce presence (fail-closed)
+    ts = body.get("ts")
+    nonce = body.get("nonce")
+
+    if ts is None or not nonce:
+        return (False, "missing ts/nonce in request body")
+
+    # Ensure ts is int
+    try:
+        ts_int = int(ts)
+    except (TypeError, ValueError):
+        return (False, "ts is not a valid integer")
+
+    # Check timestamp is within window
+    if abs(now - ts_int) > window:
+        return (False, f"timestamp outside replay window (delta={abs(now - ts_int)}s, "
+                      f"window={window}s)")
+
+    # Prune expired nonces first (bound memory usage)
+    expired = [n for n, exp in _SEEN_NONCES.items() if exp < now]
+    for n in expired:
+        del _SEEN_NONCES[n]
+
+    # Check if nonce was already used
+    if nonce in _SEEN_NONCES:
+        return (False, "replay detected: nonce already used")
+
+    # Record this nonce as valid until expiry
+    _SEEN_NONCES[nonce] = now + window
+    return (True, "ok")
 
 
 async def verify_a2a_request(

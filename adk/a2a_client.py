@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -186,7 +187,7 @@ async def invoke_skill_at_url(
             "message": f"Failed to load keypair for '{this_agent_name}': {e}",
         }
 
-    # Build JSON-RPC request
+    # Build JSON-RPC request with replay protection (ts + nonce)
     request_dict = {
         "jsonrpc": "2.0",
         "method": "skills/invoke",
@@ -195,6 +196,8 @@ async def invoke_skill_at_url(
             "args": args,
         },
         "id": 1,
+        "ts": int(time.time()),
+        "nonce": os.urandom(16).hex(),
     }
 
     # Serialize to JSON bytes
@@ -236,14 +239,25 @@ async def invoke_skill_at_url(
                 "body": response.text[:200],
             }
 
-        # Handle JSON-RPC error response
+        # Handle error response (both JSON-RPC and plain error responses)
         if "error" in resp_dict:
             error_obj = resp_dict.get("error", {})
-            return {
-                "error": "rpc_error",
-                "code": error_obj.get("code"),
-                "message": error_obj.get("message"),
-            }
+            # Handle both JSON-RPC error format (dict) and plain error format (string)
+            if isinstance(error_obj, dict):
+                return {
+                    "error": "rpc_error",
+                    "code": error_obj.get("code"),
+                    "message": error_obj.get("message"),
+                }
+            else:
+                # Plain error string (from trust/auth checks)
+                reason = resp_dict.get("reason", "")
+                return {
+                    "error": "http_error",
+                    "status_code": response.status_code,
+                    "message": error_obj if isinstance(error_obj, str) else str(error_obj),
+                    "reason": reason,
+                }
 
         # Return success result
         if "result" in resp_dict:
@@ -381,7 +395,7 @@ async def send_message(
             "message": f"Failed to load keypair for '{this_agent_name}': {e}",
         }
 
-    # Build JSON-RPC request
+    # Build JSON-RPC request with replay protection (ts + nonce)
     message_dict = {
         "parts": [{"type": "text", "text": text}],
     }
@@ -395,6 +409,8 @@ async def send_message(
             "message": message_dict,
         },
         "id": 1,
+        "ts": int(time.time()),
+        "nonce": os.urandom(16).hex(),
     }
 
     # Serialize to JSON bytes
@@ -435,14 +451,25 @@ async def send_message(
                 "status_code": response.status_code,
             }
 
-        # Check for JSON-RPC error
+        # Check for error response (both JSON-RPC and plain error responses)
         if "error" in resp_dict:
             error_obj = resp_dict.get("error", {})
-            return {
-                "error": "rpc_error",
-                "code": error_obj.get("code"),
-                "message": error_obj.get("message"),
-            }
+            # Handle both JSON-RPC error format (dict) and plain error format (string)
+            if isinstance(error_obj, dict):
+                return {
+                    "error": "rpc_error",
+                    "code": error_obj.get("code"),
+                    "message": error_obj.get("message"),
+                }
+            else:
+                # Plain error string (from trust/auth checks)
+                reason = resp_dict.get("reason", "")
+                return {
+                    "error": "http_error",
+                    "status_code": response.status_code,
+                    "message": error_obj if isinstance(error_obj, str) else str(error_obj),
+                    "reason": reason,
+                }
 
         # Return result
         if "result" in resp_dict:

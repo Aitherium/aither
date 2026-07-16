@@ -717,12 +717,15 @@ class TestSkillsInvokeHttpGate:
         return TestClient(app)
 
     def test_signed_trusted_exposed_tool_runs(self, tmp_path, monkeypatch):
+        import time as _time
         from adk.a2a_client import load_or_generate_keypair
         monkeypatch.setenv("AITHER_HOME", str(tmp_path))
         priv, pub = load_or_generate_keypair("caller-a")
         client = self._app(monkeypatch, trusted_pubkey=pub)
+        # skills/invoke now enforces replay protection -> body needs ts + nonce.
         body = {"jsonrpc": "2.0", "method": "skills/invoke",
-                "params": {"skill": "safe_exposed", "args": {}}, "id": 1}
+                "params": {"skill": "safe_exposed", "args": {}}, "id": 1,
+                "ts": int(_time.time()), "nonce": "httpgate" + "0" * 24}
         raw, sig = _sign_body(priv, body)
         r = client.post("/a2a", content=raw,
                         headers={"Content-Type": "application/json",
@@ -769,3 +772,140 @@ class TestSkillsInvokeHttpGate:
                         headers={"Content-Type": "application/json",
                                  "X-Signature": sig, "X-Public-Key": pub})
         assert r.status_code == 403
+
+
+# ── Replay Protection ────────────────────────────────────────────────────
+
+
+class TestReplayProtection:
+    """Test replay protection via ts/nonce validation."""
+
+    def _app_with_replay(self, monkeypatch, tmp_path, trusted_pubkey=None):
+        """Create a FastAPI app with a trusted caller for replay tests."""
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from adk.a2a import A2AServer
+
+        app = FastAPI()
+        A2AServer(agent=_agent_with_tools()).mount(app)
+        if trusted_pubkey is not None:
+            monkeypatch.setenv("AITHER_A2A_TRUSTED_KEYS", trusted_pubkey)
+        else:
+            monkeypatch.delenv("AITHER_A2A_TRUSTED_KEYS", raising=False)
+        return TestClient(app)
+
+    def test_fresh_signed_invoke_succeeds(self, tmp_path, monkeypatch):
+        """A fresh signed skills/invoke with valid ts/nonce succeeds."""
+        from adk.a2a_client import load_or_generate_keypair, invoke_skill_at_url
+        import time as _time
+
+        monkeypatch.setenv("AITHER_HOME", str(tmp_path))
+        priv, pub = load_or_generate_keypair("replay-test-a")
+        client = self._app_with_replay(monkeypatch, tmp_path, trusted_pubkey=pub)
+
+        # invoke_skill_at_url now automatically adds ts/nonce; simulate it
+        body = {
+            "jsonrpc": "2.0",
+            "method": "skills/invoke",
+            "params": {"skill": "safe_exposed", "args": {}},
+            "id": 1,
+            "ts": int(_time.time()),
+            "nonce": "a" * 32,  # 16 bytes hex
+        }
+        raw, sig = _sign_body(priv, body)
+        r = client.post(
+            "/a2a",
+            content=raw,
+            headers={
+                "Content-Type": "application/json",
+                "X-Signature": sig,
+                "X-Public-Key": pub,
+            },
+        )
+        assert r.status_code == 200, r.text
+        j = r.json()
+        assert j.get("result", {}).get("skill") == "safe_exposed"
+
+    def test_replay_same_nonce_rejected(self, tmp_path, monkeypatch):
+        """Sending the same signed request twice -> second is rejected (replay)."""
+        from adk.a2a_client import load_or_generate_keypair
+        import time as _time
+
+        monkeypatch.setenv("AITHER_HOME", str(tmp_path))
+        # Clear the nonce cache before test to ensure isolation
+        import adk.a2a_trust as a2a_trust
+        a2a_trust._SEEN_NONCES.clear()
+
+        priv, pub = load_or_generate_keypair("replay-test-b")
+        client = self._app_with_replay(monkeypatch, tmp_path, trusted_pubkey=pub)
+
+        body = {
+            "jsonrpc": "2.0",
+            "method": "skills/invoke",
+            "params": {"skill": "safe_exposed", "args": {}},
+            "id": 1,
+            "ts": int(_time.time()),
+            "nonce": "b" * 32,
+        }
+        raw, sig = _sign_body(priv, body)
+
+        # First request succeeds
+        r1 = client.post(
+            "/a2a",
+            content=raw,
+            headers={
+                "Content-Type": "application/json",
+                "X-Signature": sig,
+                "X-Public-Key": pub,
+            },
+        )
+        assert r1.status_code == 200, r1.text
+
+        # Exact same request (same body, sig, nonce) second time -> 403 replay
+        r2 = client.post(
+            "/a2a",
+            content=raw,
+            headers={
+                "Content-Type": "application/json",
+                "X-Signature": sig,
+                "X-Public-Key": pub,
+            },
+        )
+        assert r2.status_code == 403, r2.text
+        assert "replay" in r2.text.lower()
+
+    def test_stale_timestamp_rejected(self, tmp_path, monkeypatch):
+        """A request with ts outside the replay window -> 403."""
+        from adk.a2a_client import load_or_generate_keypair
+        import time as _time
+
+        monkeypatch.setenv("AITHER_HOME", str(tmp_path))
+        monkeypatch.setenv("AITHER_A2A_REPLAY_WINDOW", "300")  # 5 min window
+        import adk.a2a_trust as a2a_trust
+        a2a_trust._SEEN_NONCES.clear()
+
+        priv, pub = load_or_generate_keypair("replay-test-c")
+        client = self._app_with_replay(monkeypatch, tmp_path, trusted_pubkey=pub)
+
+        # Create body with timestamp from 10000 seconds ago (way outside window)
+        stale_ts = int(_time.time()) - 10000
+        body = {
+            "jsonrpc": "2.0",
+            "method": "skills/invoke",
+            "params": {"skill": "safe_exposed", "args": {}},
+            "id": 1,
+            "ts": stale_ts,
+            "nonce": "c" * 32,
+        }
+        raw, sig = _sign_body(priv, body)
+        r = client.post(
+            "/a2a",
+            content=raw,
+            headers={
+                "Content-Type": "application/json",
+                "X-Signature": sig,
+                "X-Public-Key": pub,
+            },
+        )
+        assert r.status_code == 403, r.text
+        assert "timestamp" in r.text.lower() or "replay" in r.text.lower()
