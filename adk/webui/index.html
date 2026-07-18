@@ -96,6 +96,7 @@
 </header>
 <nav id="nav">
   <button data-tab="chat" class="active">Chat</button>
+  <button data-tab="ondevice">On-device</button>
   <button data-tab="backend">Backend</button>
   <button data-tab="config">Config</button>
   <button data-tab="packs">Packs</button>
@@ -120,6 +121,16 @@
       <textarea id="chatIn" rows="1" placeholder="Message the agent…" style="flex:1"></textarea>
       <button class="btn" id="chatSend">Send</button>
     </form>
+  </section>
+
+  <!-- ON-DEVICE (WebGPU, in-browser, zero server compute) -->
+  <section class="tab" id="tab-ondevice">
+    <div class="card" style="margin-bottom:12px">
+      <h3 style="margin-top:0">On-device chat <span class="chip ok">WebGPU</span></h3>
+      <div class="muted">Runs a small model 100% in this browser on your GPU — no server, no API cost,
+        nothing leaves this machine. The model downloads once (~900&nbsp;MB) and is cached.</div>
+    </div>
+    <div id="odRoot"></div>
   </section>
 
   <!-- BACKEND -->
@@ -944,6 +955,117 @@ if (KEY) (async () => {
     (d.available || []).forEach((p) => { if (p.id) packIndex[p.id] = p; });
     refreshPackTabs();
   } catch (_) {}
+})();
+</script>
+
+<!-- On-device WebGPU chat: transformers.js runs the model in the browser on the GPU.
+     Loaded lazily (only when the tab is first opened) inside a blob module worker so the
+     big download + GPU compile never freezes the console UI. -->
+<script type="module">
+(() => {
+  const MODEL = { repo: "google/gemma-4-E2B-it-qat-mobile-transformers", label: "Gemma 4 (E2B, mobile)", mb: 900 };
+  const root = document.getElementById("odRoot");
+  const navBtn = document.querySelector('#nav button[data-tab="ondevice"]');
+  if (!root || !navBtn) return;
+  const mb = (b) => (b / 1048576).toFixed(0);
+  const gpu = typeof navigator !== "undefined" && "gpu" in navigator && !!navigator.gpu;
+
+  let worker = null, inited = false, files = {}, msgs = [], streaming = "", status = "idle", progress = 0, loaded = 0, total = 0, curFile = "", tps = null, err = "";
+
+  function workerSrc() {
+    return `
+import { pipeline, TextStreamer } from "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.0";
+let gen = null;
+self.addEventListener("message", async (e) => {
+  const m = e.data;
+  if (m.type === "load") {
+    try {
+      gen = await pipeline("text-generation", ${JSON.stringify(MODEL.repo)}, {
+        device: "webgpu", dtype: "q4",
+        progress_callback: (p) => { if (p && p.status === "progress") self.postMessage({ type: "progress", file: p.file, loaded: p.loaded, total: p.total }); },
+      });
+      self.postMessage({ type: "ready" });
+    } catch (err) { self.postMessage({ type: "error", message: String((err && err.message) || err) }); }
+  } else if (m.type === "generate") {
+    try {
+      let n = 0; const t0 = performance.now();
+      const streamer = new TextStreamer(gen.tokenizer, { skip_prompt: true, skip_special_tokens: true,
+        callback_function: (t) => { n++; self.postMessage({ type: "token", text: t }); } });
+      await gen(m.messages, { max_new_tokens: 512, do_sample: false, streamer });
+      const s = (performance.now() - t0) / 1000;
+      self.postMessage({ type: "done", tps: s > 0 ? n / s : null });
+    } catch (err) { self.postMessage({ type: "error", message: String((err && err.message) || err) }); }
+  }
+});`;
+  }
+
+  function ensureWorker() {
+    if (worker) return worker;
+    worker = new Worker(URL.createObjectURL(new Blob([workerSrc()], { type: "text/javascript" })), { type: "module" });
+    worker.onmessage = (e) => {
+      const m = e.data;
+      if (m.type === "progress") {
+        if (m.file && m.total > 0) { files[m.file] = { loaded: m.loaded || 0, total: m.total }; curFile = m.file; }
+        const fs = Object.values(files); loaded = fs.reduce((a, f) => a + f.loaded, 0); total = fs.reduce((a, f) => a + f.total, 0);
+        progress = total > 0 ? Math.min(1, loaded / total) : 0;
+      } else if (m.type === "ready") { progress = 1; curFile = ""; status = "ready"; }
+      else if (m.type === "token") { streaming += m.text; }
+      else if (m.type === "done") { msgs.push({ role: "assistant", content: streaming }); streaming = ""; tps = m.tps; status = "ready"; }
+      else if (m.type === "error") { err = m.message; status = "error"; }
+      render();
+    };
+    return worker;
+  }
+
+  function load() { status = "loading"; progress = 0; err = ""; ensureWorker().postMessage({ type: "load" }); render(); }
+  function send(text) {
+    text = text.trim(); if (!text || status === "generating") return;
+    const convo = [{ role: "system", content: "You are the aither-adk on-device helper. Be concise." }, ...msgs, { role: "user", content: text }];
+    msgs.push({ role: "user", content: text }); streaming = ""; status = "generating";
+    ensureWorker().postMessage({ type: "generate", messages: convo }); render();
+  }
+
+  function render() {
+    const A = "var(--accent)", P = "var(--panel)", L = "var(--line)", M = "var(--muted)";
+    if (!gpu) { root.innerHTML = `<div class="card"><strong>WebGPU isn't available in this browser.</strong>
+      <div class="muted" style="margin-top:6px">On-device inference needs WebGPU — use Chrome or Edge. The rest of the console works fine.</div></div>`; return; }
+    let h = "";
+    if (status === "idle") {
+      h = `<button class="btn" id="odLoad">Load model (~${MODEL.mb} MB, one-time)</button>
+        <div class="muted" style="margin-top:8px">Downloads once, then it's cached on this device and never re-downloads.</div>`;
+    } else if (status === "loading") {
+      const compiling = progress >= 1;
+      h = `<div style="display:flex;flex-direction:column;gap:8px">
+        <div style="display:flex;justify-content:space-between;font-size:14px"><b>${compiling ? "Compiling on your GPU…" : "Downloading model…"}</b><span class="muted">${Math.round(progress * 100)}%</span></div>
+        <div style="height:8px;border-radius:999px;background:var(--chip);overflow:hidden"><div style="height:100%;width:${Math.max(3, Math.round(progress * 100))}%;background:${A};border-radius:999px;transition:width .3s ease;${compiling ? "animation:odpulse 1.1s ease-in-out infinite" : ""}"></div></div>
+        <div style="display:flex;justify-content:space-between;font-size:12px;color:${M};font-variant-numeric:tabular-nums"><span>${total > 0 ? mb(loaded) + " / " + mb(total) + " MB" : "starting…"}</span><span>one-time · cached on your device</span></div>
+        ${curFile && !compiling ? `<div style="font-size:12px;color:${M}">fetching ${curFile}</div>` : ""}</div>`;
+    } else if (status === "error") {
+      h = `<div class="card" style="border-color:var(--err)"><strong style="color:var(--err)">Error</strong><div class="muted" style="margin-top:6px">${err}</div>
+        <button class="btn" id="odLoad" style="margin-top:10px">Retry</button></div>`;
+    } else {
+      const rows = msgs.map((m) => m.role === "user"
+        ? `<div style="align-self:flex-end;background:${A};color:var(--accent-ink);padding:8px 12px;border-radius:12px;max-width:80%">${escapeHtml(m.content)}</div>`
+        : `<div style="align-self:flex-start;background:var(--chip);padding:8px 12px;border-radius:12px;max-width:80%;white-space:pre-wrap">${escapeHtml(m.content)}</div>`).join("");
+      const stream = streaming ? `<div style="align-self:flex-start;background:var(--chip);padding:8px 12px;border-radius:12px;max-width:80%;white-space:pre-wrap">${escapeHtml(streaming)}▍</div>` : "";
+      const empty = (!msgs.length && !streaming) ? `<div class="muted">Loaded and running on your GPU. Ask it anything.</div>` : "";
+      h = `<div id="odLog" style="display:flex;flex-direction:column;gap:10px;min-height:30vh;max-height:52vh;overflow:auto">${rows}${stream}${empty}</div>
+        ${tps != null ? `<div class="muted" style="font-size:12px;margin:6px 0">${tps.toFixed(1)} tok/s · on your GPU</div>` : ""}
+        <form id="odForm" class="row" style="margin-top:10px"><textarea id="odIn" rows="1" placeholder="Message the on-device model…" style="flex:1" ${status === "generating" ? "disabled" : ""}></textarea>
+        <button class="btn" id="odSend" ${status === "generating" ? "disabled" : ""}>${status === "generating" ? "…" : "Send"}</button></form>`;
+    }
+    root.innerHTML = h;
+    const lb = document.getElementById("odLoad"); if (lb) lb.onclick = load;
+    const f = document.getElementById("odForm"); if (f) f.onsubmit = (e) => { e.preventDefault(); const i = document.getElementById("odIn"); send(i.value); i.value = ""; };
+    const lg = document.getElementById("odLog"); if (lg) lg.scrollTop = lg.scrollHeight;
+  }
+  function escapeHtml(s) { return String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c])); }
+
+  // keyframes for the compile pulse
+  const st = document.createElement("style"); st.textContent = "@keyframes odpulse{0%,100%{opacity:1}50%{opacity:.55}}"; document.head.appendChild(st);
+
+  // lazy init on first tab open (don't touch WebGPU until the user asks)
+  navBtn.addEventListener("click", () => { if (!inited) { inited = true; render(); } });
 })();
 </script>
 </body>

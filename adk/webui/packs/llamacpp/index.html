@@ -77,6 +77,7 @@ button.stop{background:#c0392b}
     <option value="">this agent (local)</option>
   </select>
   <select id="backendPick" title="Which brain runs inference — switch at will" style="margin-left:8px;background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:4px 8px;font:inherit;font-size:13px">
+    <option value="ondevice">⚡ On-device (WebGPU · free)</option>
     <option value="local">🖥 Local Bonsai-27B</option>
     <option value="genesis">🧠 Genesis (local mesh)</option>
     <option value="mcp">☁ MCP Cloud</option>
@@ -283,11 +284,50 @@ button.stop{background:#c0392b}
     sid='web-'+Math.random().toString(36).slice(2);localStorage.setItem('adk_sid',sid);
     if(empty)empty.style.display='';input.focus();});
 
+  // ── On-device (WebGPU) backend — runs a small model in THIS browser on the GPU,
+  //    so light chats cost ZERO server compute. transformers.js loads in a blob module
+  //    worker (UI never freezes) from the CDN (local GUI, no CSP). First message triggers
+  //    a one-time ~900MB download, then it's cached. Single history kept per page.
+  var odWorker=null, odFiles={}, odHistory=[];
+  function odEnsure(){
+    if(odWorker) return odWorker;
+    var src='import {pipeline,TextStreamer} from "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.0";'+
+      'let g=null;self.onmessage=async(e)=>{const m=e.data;if(m.type!=="chat")return;try{'+
+      'if(!g){g=await pipeline("text-generation","google/gemma-4-E2B-it-qat-mobile-transformers",{device:"webgpu",dtype:"q4",'+
+      'progress_callback:p=>{if(p&&p.status==="progress")self.postMessage({type:"progress",file:p.file,loaded:p.loaded,total:p.total});}});'+
+      'self.postMessage({type:"ready"});}'+
+      'const s=new TextStreamer(g.tokenizer,{skip_prompt:true,skip_special_tokens:true,callback_function:t=>self.postMessage({type:"token",text:t})});'+
+      'await g(m.messages,{max_new_tokens:m.maxTokens||512,do_sample:(m.temperature||0)>0,temperature:m.temperature||1,streamer:s});'+
+      'self.postMessage({type:"done"});}catch(err){self.postMessage({type:"error",message:String((err&&err.message)||err)});}};';
+    odWorker=new Worker(URL.createObjectURL(new Blob([src],{type:'text/javascript'})),{type:'module'});
+    return odWorker;
+  }
+  function sendOnDevice(text, el){
+    if(!('gpu' in navigator)){el.classList.remove('cursor');
+      el.innerHTML='⚠ WebGPU not available here — use Chrome or Edge (or pick another backend).';setBusy(false);return;}
+    var w=odEnsure(), acc='';
+    var msgs=[{role:'system',content:'You are the on-device helper. Be concise.'}].concat(odHistory).concat([{role:'user',content:text}]);
+    w.onmessage=function(e){
+      var m=e.data;
+      if(m.type==='progress'){ if(m.file&&m.total>0)odFiles[m.file]={loaded:m.loaded||0,total:m.total};
+        var fs=Object.values(odFiles),ld=fs.reduce(function(a,f){return a+f.loaded},0),tot=fs.reduce(function(a,f){return a+f.total},0);
+        var pct=tot>0?Math.round(ld/tot*100):0;
+        el.innerHTML='<span style="color:var(--dim)">Downloading on-device model… '+pct+'% · '+(ld/1048576|0)+' / '+(tot/1048576|0)+' MB (one-time, cached)</span>'; log.scrollTop=log.scrollHeight; }
+      else if(m.type==='ready'){ el.innerHTML='<span style="color:var(--dim)">Compiling on your GPU…</span>'; }
+      else if(m.type==='token'){ acc+=m.text; el.innerHTML=md(acc); log.scrollTop=log.scrollHeight; }
+      else if(m.type==='done'){ el.classList.remove('cursor'); if(!acc)el.innerHTML='<span style="color:var(--dim)">(no response)</span>';
+        odHistory.push({role:'user',content:text}); odHistory.push({role:'assistant',content:acc}); setBusy(false); }
+      else if(m.type==='error'){ el.classList.remove('cursor'); el.innerHTML='⚠ '+esc(m.message); setBusy(false); }
+    };
+    w.postMessage({type:'chat',messages:msgs,temperature:parseFloat(temp.value),maxTokens:parseInt(document.getElementById('maxtok').value,10)});
+  }
+
   async function send(text){
     var body=turn('user',esc(text));
     var el=turn('assistant','');el.classList.add('cursor');
     var acc='', got=false;
     setBusy(true);
+    if(backendPick.value==='ondevice'){ sendOnDevice(text, el); return; }
     controller=new AbortController();
     var payload={message:text,session_id:sid,
       temperature:parseFloat(temp.value),max_tokens:parseInt(document.getElementById('maxtok').value,10)};
