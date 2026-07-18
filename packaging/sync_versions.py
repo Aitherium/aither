@@ -117,6 +117,30 @@ def sync_winget(version: str, check: bool) -> bool:
     return True
 
 
+def sync_init(version: str, check: bool) -> bool:
+    """Sync the source-checkout fallback __version__ in adk/__init__.py.
+
+    The installed package reads pyproject metadata, but a source checkout (and
+    the public repo's check_exports.py CI gate) sees the literal fallback —
+    leaving it stale broke public CI on v2.27.0 (fallback said 2.24.0)."""
+    path = Path(__file__).parent.parent / "adk" / "__init__.py"
+    text = path.read_text(encoding="utf-8")
+    pattern = r'(__version__ = ")([^"]+)(")'
+    m = re.search(pattern, text)
+    if not m:
+        print("  init: no fallback __version__ found (skipped)")
+        return True
+    if m.group(2) == version:
+        print(f"  init: already {version}")
+        return True
+    if check:
+        print(f"  init: {m.group(2)} -> {version} (needs update)")
+        return False
+    path.write_text(re.sub(pattern, rf"\g<1>{version}\g<3>", text, count=1), encoding="utf-8")
+    print(f"  init: updated to {version}")
+    return True
+
+
 def main():
     check = "--check" in sys.argv
     version = get_version()
@@ -124,6 +148,7 @@ def main():
     print()
 
     all_ok = True
+    all_ok &= sync_init(version, check)
     all_ok &= sync_npm(version, check)
     all_ok &= sync_brew(version, check)
     all_ok &= sync_winget(version, check)
