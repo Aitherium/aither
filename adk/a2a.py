@@ -381,6 +381,10 @@ class A2AServer:
             {"url": f"{self._base_url}/a2a", "transport": "JSONRPC"},
             {"url": f"{self._base_url}/mcp", "transport": "JSONRPC"},
         ]
+        # Preferred transport (A2A AgentCard field) — the /a2a JSON-RPC endpoint is
+        # the primary interface, so advertise it. Completes AgentCard field coverage
+        # for strict spec consumers that read preferredTransport.
+        card.setdefault("preferredTransport", "JSONRPC")
 
         self._agent_card = card
         return card

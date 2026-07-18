@@ -1125,17 +1125,20 @@ $Action = New-ScheduledTaskAction `
     -Argument "-NoProfile -ExecutionPolicy Bypass -File '$ScriptPath'" `
     -WorkingDirectory '{repo_root}'
 
-# Create triggers: AtStartup + 5-minute heartbeat
-$TriggerStartup = New-ScheduledTaskTrigger -AtStartup
+# Create triggers: AtLogOn (runs in the user's session, has ~/.claude) + 5-min heartbeat.
+# NOTE: AtLogOn + Interactive (NOT AtStartup + S4U) — S4U/RunLevel-Highest registration
+# hangs from a non-elevated shell waiting on a logon-rights/UAC check. Interactive runs in
+# the owner's desktop session (where the Claude login lives) and still survives logoff+reboot.
+$TriggerLogon = New-ScheduledTaskTrigger -AtLogOn -User $User
 $TriggerHeartbeat = New-ScheduledTaskTrigger -Once -At (Get-Date) `
     -RepetitionInterval (New-TimeSpan -Minutes 5) `
     -RepetitionDuration (New-TimeSpan -Days 3650)
 
-# Create principal: S4U (Service-for-User) at RunLevel Highest
+# Create principal: Interactive (owner's session) at RunLevel Limited (runner needs no admin)
 $Principal = New-ScheduledTaskPrincipal `
     -UserID $User `
-    -LogonType S4U `
-    -RunLevel Highest
+    -LogonType Interactive `
+    -RunLevel Limited
 
 # Create settings: multiple instances ignored, no timeout, auto-restart
 $Settings = New-ScheduledTaskSettingsSet `
@@ -1151,12 +1154,12 @@ $Settings = New-ScheduledTaskSettingsSet `
 Register-ScheduledTask `
     -TaskName $TaskName `
     -Action $Action `
-    -Trigger $TriggerStartup, $TriggerHeartbeat `
+    -Trigger $TriggerLogon, $TriggerHeartbeat `
     -Principal $Principal `
     -Settings $Settings `
     -Force `
     -Description @"
-Claude runner: AtStartup + 5-min heartbeat, S4U principal, no embedded secrets
+Claude runner: AtLogOn + 5-min heartbeat, Interactive principal, no embedded secrets
 "@
 
 # Start it immediately
@@ -1167,7 +1170,7 @@ Write-Host "Claude runner registered and started. Host: {host}, Port: {port}"
     try:
         result = subprocess.run(
             ["powershell", "-NoProfile", "-Command", ps_script],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, timeout=90,
         )
         if result.returncode != 0:
             print(f"Error: failed to register task: {result.stderr}", file=sys.stderr)
