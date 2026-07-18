@@ -5404,14 +5404,45 @@ def cmd_keys(args):
 
     if sub == "set":
         provider = getattr(args, "provider", "").lower()
-        key = getattr(args, "key", "")
-        if not provider or not key:
-            print("Usage: adk keys set <provider> <key>")
+        key = getattr(args, "key", "") or ""
+        if not provider:
+            print("Usage: adk keys set <provider> [key]")
             return 1
         if provider not in _KNOWN_PROVIDERS:
-            print(f"Unknown provider: {provider}")
-            print(f"Known: {', '.join(sorted(_KNOWN_PROVIDERS))}")
-            return 1
+            # Accept aliases/model names (kimi → moonshot, claude → anthropic, …)
+            try:
+                from adk.llm.onboarding import resolve_name
+                resolved = resolve_name(provider)
+            except Exception:
+                resolved = None
+            if resolved in _KNOWN_PROVIDERS:
+                provider = resolved
+            else:
+                print(f"Unknown provider: {provider}")
+                print(f"Known: {', '.join(sorted(_KNOWN_PROVIDERS))}")
+                return 1
+        if not key:
+            # Guided onboarding: no key on the command line → show where to get
+            # one, then prompt with hidden input (keeps the key out of shell
+            # history). Empty input or no TTY → guidance only, no dead end.
+            try:
+                from adk.llm.onboarding import guide
+                print(guide(provider))
+            except Exception:
+                pass
+            import getpass
+            import sys as _sys
+            if _sys.stdin is not None and _sys.stdin.isatty():
+                try:
+                    key = getpass.getpass(
+                        f"Paste your {_KNOWN_PROVIDERS[provider]['label']} API key "
+                        "(input hidden, Enter to cancel): "
+                    ).strip()
+                except (EOFError, KeyboardInterrupt):
+                    key = ""
+            if not key:
+                print(f"\nNo key entered. When you have one:  adk keys set {provider} <key>")
+                return 1
 
         keys = _load_provider_keys()
         keys[provider] = key
@@ -10564,8 +10595,8 @@ def _register_commands(sub):
     keys_p = sub.add_parser("keys", help="Manage cloud provider API keys (set, list, test, remove)")
     keys_sub = keys_p.add_subparsers(dest="keys_command")
     keys_set_p = keys_sub.add_parser("set", help="Set a provider API key")
-    keys_set_p.add_argument("provider", help="Provider: openai, anthropic, deepseek, google, openrouter, groq, together")
-    keys_set_p.add_argument("key", help="API key value")
+    keys_set_p.add_argument("provider", help="Provider: openai, anthropic, deepseek, moonshot, google, openrouter, groq, together")
+    keys_set_p.add_argument("key", nargs="?", help="API key value (omit to be guided + prompted securely)")
     keys_sub.add_parser("list", help="Show configured provider keys and status")
     keys_test_p = keys_sub.add_parser("test", help="Test API keys (all or specific)")
     keys_test_p.add_argument("provider", nargs="?", help="Specific provider to test (default: all)")

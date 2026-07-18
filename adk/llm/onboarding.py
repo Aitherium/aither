@@ -29,7 +29,7 @@ PROVIDER_GUIDES: Dict[str, Dict[str, object]] = {
         "key_url": "https://platform.moonshot.ai/console/api-keys",
         "steps": [
             "Create an account + API key: https://platform.moonshot.ai (Console → API Keys)",
-            "Configure:  adk backend set moonshot --api-key sk-...   (or export MOONSHOT_API_KEY=sk-...)",
+            "Configure:  adk keys set moonshot sk-...   (stores + vault-syncs; or export MOONSHOT_API_KEY=sk-...)",
             "Test:       adk ask \"hello\" --backend moonshot",
         ],
         "aliases": ["kimi", "kimi-k3"],
@@ -41,7 +41,7 @@ PROVIDER_GUIDES: Dict[str, Dict[str, object]] = {
         "key_url": "https://platform.deepseek.com/api_keys",
         "steps": [
             "Create an API key: https://platform.deepseek.com/api_keys",
-            "Configure:  adk backend set deepseek --api-key sk-...   (or export DEEPSEEK_API_KEY=sk-...)",
+            "Configure:  adk keys set deepseek sk-...   (stores + vault-syncs; or export DEEPSEEK_API_KEY=sk-...)",
             "Test:       adk ask \"hello\" --backend deepseek",
         ],
     },
@@ -52,7 +52,7 @@ PROVIDER_GUIDES: Dict[str, Dict[str, object]] = {
         "key_url": "https://console.anthropic.com/settings/keys",
         "steps": [
             "Create an API key: https://console.anthropic.com/settings/keys",
-            "Configure:  adk backend set anthropic --api-key sk-ant-...   (or export ANTHROPIC_API_KEY=...)",
+            "Configure:  adk keys set anthropic sk-ant-...   (stores + vault-syncs; or export ANTHROPIC_API_KEY=...)",
             "Test:       adk ask \"hello\" --backend anthropic",
         ],
         "aliases": ["claude"],
@@ -64,7 +64,7 @@ PROVIDER_GUIDES: Dict[str, Dict[str, object]] = {
         "key_url": "https://platform.openai.com/api-keys",
         "steps": [
             "Create an API key: https://platform.openai.com/api-keys",
-            "Configure:  adk backend set openai --api-key sk-...   (or export OPENAI_API_KEY=sk-...)",
+            "Configure:  adk keys set openai sk-...   (stores + vault-syncs; or export OPENAI_API_KEY=sk-...)",
             "Test:       adk ask \"hello\" --backend openai",
         ],
     },
@@ -87,7 +87,7 @@ PROVIDER_GUIDES: Dict[str, Dict[str, object]] = {
         "key_url": "https://console.groq.com/keys",
         "steps": [
             "Create an API key: https://console.groq.com/keys",
-            "Configure:  adk backend set groq --api-key gsk_...   (or export GROQ_API_KEY=gsk_...)",
+            "Configure:  adk keys set groq gsk_...   (stores + vault-syncs; or export GROQ_API_KEY=gsk_...)",
         ],
     },
     "together": {
@@ -97,7 +97,7 @@ PROVIDER_GUIDES: Dict[str, Dict[str, object]] = {
         "key_url": "https://api.together.xyz/settings/api-keys",
         "steps": [
             "Create an API key: https://api.together.xyz/settings/api-keys",
-            "Configure:  adk backend set together --api-key ...",
+            "Configure:  adk keys set together <key>   (stores + vault-syncs)",
         ],
     },
     "gateway": {

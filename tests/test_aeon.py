@@ -559,7 +559,11 @@ class TestServerEndpoints:
         assert resp2.json()["session_id"] == sid
 
     def test_aeon_session_detail(self, client):
-        with patch("adk.conversations.get_conversation_store", side_effect=ImportError):
+        # _patch_agent_chat is required: without it the endpoint runs a REAL
+        # multi-agent round — on a box with a live fleet the LLM call connects
+        # and blocks past the suite timeout (hung locally; CI only passed
+        # because no backend exists there and the call fails fast).
+        with _patch_agent_chat(), patch("adk.conversations.get_conversation_store", side_effect=ImportError):
             resp = client.post("/aeon/chat", json={
                 "message": "Hello",
                 "preset": "minimal",
