@@ -218,25 +218,67 @@ async def _verify_ed25519_signature(
         raise
 
 
+# Positive/negative cache of the authoritative registry pubkey set, so we do NOT
+# hit the network on every inbound A2A request. Short TTL keeps it fresh enough
+# that a newly-enrolled agent becomes trusted within ~TTL, and a registry outage
+# fails CLOSED (empty set -> deny) for at most TTL before the next fetch retries.
+_REGISTRY_KEYS_CACHE: dict = {"keys": None, "ts": 0.0}
+_REGISTRY_KEYS_TTL = float(os.getenv("AITHER_A2A_TRUST_CACHE_TTL", "60") or "60")
+
+
+async def _fetch_registry_trusted_keys() -> set[str]:
+    """Set of a2a public keys from the AUTHORITATIVE cloud agent registry.
+
+    Reuses ``mesh_discovery._fetch_registry`` — the owner-authed, per-tenant
+    registry at ``{portal}/api/genesis/v1/agent/agent-endpoints`` (a source the
+    calling peer does NOT control, unlike its own agent card). Fail-CLOSED: no
+    owner token / unreachable registry -> empty set -> nothing trusted."""
+    try:
+        from adk.mesh_discovery import _fetch_registry
+    except Exception:
+        return set()
+    warnings: list = []
+    try:
+        agents = await _fetch_registry(warnings)
+    except Exception as e:  # _fetch_registry is already best-effort, but be safe
+        logger.debug("registry trusted-key fetch failed: %s", e)
+        return set()
+    return {a.public_key for a in agents if getattr(a, "public_key", "")}
+
+
+async def _get_registry_trusted_keys() -> set[str]:
+    """Cached wrapper around :func:`_fetch_registry_trusted_keys` (TTL-bounded)."""
+    now = time.time()
+    cached = _REGISTRY_KEYS_CACHE.get("keys")
+    if cached is not None and (now - _REGISTRY_KEYS_CACHE["ts"]) < _REGISTRY_KEYS_TTL:
+        return cached
+    keys = await _fetch_registry_trusted_keys()
+    _REGISTRY_KEYS_CACHE["keys"] = keys
+    _REGISTRY_KEYS_CACHE["ts"] = now
+    return keys
+
+
 async def _is_key_trusted(
     public_key_hex: str,
     node_id: Optional[str] = None,
 ) -> tuple[bool, str]:
-    """Check if a public key is in the trusted list.
+    """Check if a public key is in a trusted source.
 
-    Currently checks:
-      1. Static AITHER_A2A_TRUSTED_KEYS env var (comma-separated hex keys)
-      2. Mesh peer registry (if node_id provided) — TODO: implement mesh lookup
-      3. Portal fleet cache (if enabled) — TODO: implement portal lookup
+    Sources (all fail-CLOSED — an unknown key is never trusted):
+      1. Static ``AITHER_A2A_TRUSTED_KEYS`` env var (comma-separated hex keys).
+      2. Authoritative cloud agent registry (owner-authed, per-tenant) — consulted
+         when a mesh peer is identified (``node_id`` present) OR
+         ``AITHER_A2A_TRUST_FROM_PORTAL`` is enabled. The registry is the source of
+         truth the peer cannot forge (as opposed to its self-served agent card).
 
     Args:
         public_key_hex: Hex-encoded Ed25519 public key
-        node_id: Optional node ID for mesh lookup
+        node_id: Optional node ID (marks the caller as a mesh peer)
 
     Returns:
         (trusted: bool, reason: str)
     """
-    # Check static trusted keys env var
+    # 1. Static trusted keys env var
     trusted_keys_str = os.getenv("AITHER_A2A_TRUSTED_KEYS", "").strip()
     if trusted_keys_str:
         trusted_keys = [k.strip() for k in trusted_keys_str.split(",") if k.strip()]
@@ -245,17 +287,21 @@ async def _is_key_trusted(
     else:
         logger.debug("No AITHER_A2A_TRUSTED_KEYS configured")
 
-    # TODO: Check mesh peer registry (AitherNet node a2a_public_key)
-    # if node_id:
-    #     mesh_key = await aithernet.get_node_a2a_public_key(node_id, tenant_id)
-    #     if mesh_key == public_key_hex:
-    #         return True, f"Key registered for node {node_id} in mesh"
+    # 2. Authoritative registry (mesh peer or portal-trust mode). The registry is
+    #    keyed on the AUTHENTICATED pubkey set, not on the caller-supplied node_id,
+    #    so a peer cannot forge trust by claiming another node's id.
+    use_registry = bool(node_id) or \
+        os.getenv("AITHER_A2A_TRUST_FROM_PORTAL", "").lower() in ("true", "1")
+    if use_registry:
+        try:
+            registry_keys = await _get_registry_trusted_keys()
+        except Exception as e:
+            logger.debug("registry trust lookup failed: %s", e)
+            registry_keys = set()
+        if public_key_hex in registry_keys:
+            return True, "Key is registered in the cloud agent registry (authoritative)"
 
-    # TODO: Check portal fleet cache (if AITHER_A2A_TRUST_FROM_PORTAL=true)
-    # if os.getenv("AITHER_A2A_TRUST_FROM_PORTAL", "").lower() in ("true", "1"):
-    #     ...
-
-    return False, "Key is not in any trusted source (static, mesh, or portal)"
+    return False, "Key is not in any trusted source (static or registry)"
 
 
 def should_require_a2a_trust() -> bool:
