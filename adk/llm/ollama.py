@@ -18,6 +18,36 @@ from .base import (
 )
 
 
+def _ollama_messages(messages: list[Message]) -> list[dict]:
+    """messages_to_dicts, but with tool-call ``arguments`` as OBJECTS.
+
+    OpenAI serialises ``function.arguments`` as a JSON *string*; Ollama's
+    ``/api/chat`` expects a JSON *object* and 400s on a string ("Value looks
+    like object, but can't find closing '}' symbol"). We parse any string
+    arguments back to a dict on a COPY so the shared Message is untouched.
+    """
+    import copy
+
+    msgs = messages_to_dicts(messages)
+    for m in msgs:
+        tcs = m.get("tool_calls")
+        if not tcs:
+            continue
+        fixed = []
+        for tc in tcs:
+            tc = copy.deepcopy(tc) if isinstance(tc, dict) else tc
+            if isinstance(tc, dict):
+                fn = tc.get("function")
+                if isinstance(fn, dict) and isinstance(fn.get("arguments"), str):
+                    try:
+                        fn["arguments"] = json.loads(fn["arguments"]) if fn["arguments"].strip() else {}
+                    except (ValueError, TypeError):
+                        fn["arguments"] = {}
+            fixed.append(tc)
+        m["tool_calls"] = fixed
+    return msgs
+
+
 class OllamaProvider(LLMProvider):
     """Talk to a local or remote Ollama instance."""
 
@@ -57,7 +87,7 @@ class OllamaProvider(LLMProvider):
             options["repeat_penalty"] = repetition_penalty
         payload: dict = {
             "model": model,
-            "messages": messages_to_dicts(messages),
+            "messages": _ollama_messages(messages),
             "stream": False,
             "options": options,
         }
@@ -67,7 +97,9 @@ class OllamaProvider(LLMProvider):
         start = _timer()
         async with self._client() as client:
             resp = await client.post("/api/chat", json=payload)
-            resp.raise_for_status()
+            if resp.status_code >= 400:
+                raise RuntimeError(
+                    f"Ollama /api/chat {resp.status_code}: {resp.text[:400]}")
             data = resp.json()
 
         latency = _timer() - start
@@ -125,7 +157,7 @@ class OllamaProvider(LLMProvider):
             options["repeat_penalty"] = repetition_penalty
         payload: dict = {
             "model": model,
-            "messages": messages_to_dicts(messages),
+            "messages": _ollama_messages(messages),
             "stream": True,
             "options": options,
         }
@@ -134,7 +166,10 @@ class OllamaProvider(LLMProvider):
 
         async with self._client() as client:
             async with client.stream("POST", "/api/chat", json=payload) as resp:
-                resp.raise_for_status()
+                if resp.status_code >= 400:
+                    body = (await resp.aread()).decode("utf-8", "replace")
+                    raise RuntimeError(
+                        f"Ollama /api/chat {resp.status_code}: {body[:400]}")
                 async for line in resp.aiter_lines():
                     if not line.strip():
                         continue

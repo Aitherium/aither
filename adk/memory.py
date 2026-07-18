@@ -207,7 +207,7 @@ class Memory:
     async def _spirit_recall(self, query: str, limit: int = 5) -> list[dict]:
         """Pull memories from Spirit (best-effort, returns [] on failure).
 
-        Scoped by tenant_id + agent_id so GARG can't see Chelle's memories.
+        Scoped by tenant_id + agent_id so agents can't see other tenants' memories.
         In cloud mode, routes through the gateway memory proxy.
         """
         if not self._spirit_enabled:

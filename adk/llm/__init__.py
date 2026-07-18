@@ -25,6 +25,16 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("adk.llm")
 
+
+def _onboarding_menu() -> str:
+    """Guided-backend menu for no-backend errors; never let import issues mask
+    the original ConnectionError."""
+    try:
+        from .onboarding import provider_menu
+        return provider_menu()
+    except Exception:
+        return "Run `adk backend guide` for per-provider setup help."
+
 __all__ = [
     "DegenerationDetector",
     "LLMProvider",
@@ -65,6 +75,11 @@ _EFFORT_MODELS = {
         "small": "deepseek-chat",
         "medium": "deepseek-chat",
         "large": "deepseek-reasoner",
+    },
+    "moonshot": {
+        "small": "kimi-k3",
+        "medium": "kimi-k3",
+        "large": "kimi-k3",
     },
     "picolm": {
         "small": "picolm",
@@ -168,6 +183,7 @@ class LLMRouter:
     _COMPAT_URLS: dict[str, str] = {
         "openai": "https://api.openai.com/v1",
         "deepseek": "https://api.deepseek.com/v1",
+        "moonshot": "https://api.moonshot.ai/v1",
         "groq": "https://api.groq.com/openai/v1",
         "together": "https://api.together.xyz/v1",
         "genesis": "https://localhost:8001/v1",  # Local AitherOS Genesis (HTTPS, internal AitherNet CA)
@@ -177,6 +193,7 @@ class LLMRouter:
     _COMPAT_MODELS: dict[str, str] = {
         "openai": "gpt-4o-mini",
         "deepseek": "deepseek-chat",
+        "moonshot": "kimi-k3",
         "groq": "llama-3.3-70b-versatile",
         "together": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
         "genesis": "workflow",  # Genesis routes by priority; "workflow" = default fleet model
@@ -200,7 +217,7 @@ class LLMRouter:
                 host=base_url or "http://localhost:11434",
                 default_model=self._model or "gemma4:4b",
             )
-        elif name in ("openai", "vllm", "lmstudio", "llamacpp", "groq", "together", "deepseek", "genesis"):
+        elif name in ("openai", "vllm", "lmstudio", "llamacpp", "groq", "together", "deepseek", "moonshot", "genesis"):
             from .openai_compat import OpenAIProvider
             default_url = self._COMPAT_URLS.get(name, "https://api.openai.com/v1")
             default_model = self._COMPAT_MODELS.get(name, "gpt-4o-mini")
@@ -242,7 +259,8 @@ class LLMRouter:
             raise ValueError(
                 f"Unknown provider: {name}. "
                 "Use 'gateway', 'ollama', 'openai', 'anthropic', 'gemini', 'deepseek', "
-                "'groq', 'together', 'vllm', 'lmstudio', 'llamacpp', 'genesis', or 'picolm'."
+                "'moonshot', 'groq', 'together', 'vllm', 'lmstudio', 'llamacpp', "
+                "'genesis', or 'picolm'."
             )
 
     async def _try_ollama(self) -> LLMProvider | None:
@@ -435,6 +453,8 @@ class LLMRouter:
                 api_key = cfg.openai_api_key
             elif backend == "deepseek":
                 api_key = cfg.deepseek_api_key
+            elif backend == "moonshot":
+                api_key = cfg.moonshot_api_key
             elif backend == "gateway":
                 api_key = cfg.aither_api_key
 
@@ -560,9 +580,12 @@ class LLMRouter:
             if self._config.deepseek_api_key:
                 self._provider_name = "deepseek"
                 return self._create_provider("deepseek", api_key=self._config.deepseek_api_key)
+            if self._config.moonshot_api_key:
+                self._provider_name = "moonshot"
+                return self._create_provider("moonshot", api_key=self._config.moonshot_api_key)
 
         # Fallback: env vars
-        for name, env in [("anthropic", "ANTHROPIC_API_KEY"), ("openai", "OPENAI_API_KEY"), ("deepseek", "DEEPSEEK_API_KEY")]:
+        for name, env in [("anthropic", "ANTHROPIC_API_KEY"), ("openai", "OPENAI_API_KEY"), ("deepseek", "DEEPSEEK_API_KEY"), ("moonshot", "MOONSHOT_API_KEY")]:
             key = os.getenv(env, "")
             if key:
                 self._provider_name = name
@@ -598,11 +621,18 @@ class LLMRouter:
         if explicit and explicit not in ("auto", "gateway"):
             key_for = {
                 "deepseek": getattr(self._config, "deepseek_api_key", ""),
+                "moonshot": getattr(self._config, "moonshot_api_key", ""),
                 "openai": getattr(self._config, "openai_api_key", ""),
                 "anthropic": getattr(self._config, "anthropic_api_key", ""),
                 "gemini": getattr(self._config, "gemini_api_key", ""),
             }
             api_key = key_for.get(explicit, "") or os.getenv(f"{explicit.upper()}_API_KEY", "")
+            # Guided onboarding: an explicitly chosen CLOUD backend with no key
+            # is a dead end (it would 401 later with no hint) — fail NOW with
+            # the exact setup steps instead of silently falling back.
+            if not api_key and explicit in key_for:
+                from .onboarding import missing_key_message
+                raise ConnectionError(missing_key_message(explicit))
             # Self-hosted OpenAI-compatible backends (llamacpp/vllm/lmstudio) need a
             # base_url pointing at the operator's OWN server — otherwise
             # _create_provider falls back to _COMPAT_URLS' openai.com default and
@@ -732,6 +762,12 @@ class LLMRouter:
         if self._config and self._config.deepseek_api_key:
             self._provider_name = "deepseek"
             return self._create_provider("deepseek", api_key=self._config.deepseek_api_key)
+        if os.getenv("MOONSHOT_API_KEY"):
+            self._provider_name = "moonshot"
+            return self._create_provider("moonshot", api_key=os.getenv("MOONSHOT_API_KEY"))
+        if self._config and self._config.moonshot_api_key:
+            self._provider_name = "moonshot"
+            return self._create_provider("moonshot", api_key=self._config.moonshot_api_key)
 
         # 5. PicoLM — edge inference (pure C, zero dependencies)
         picolm_binary = os.getenv("PICOLM_BINARY", "")
@@ -753,8 +789,7 @@ class LLMRouter:
             "  Run setup:        python -m adk.setup\n"
             f"  Try the demo:     {_DEMO_URL}\n"
             "  Get an API key:   https://gateway.aitherium.com\n\n"
-            "AitherOS Alpha uses vLLM containers for GPU inference.\n"
-            "Run auto_setup() to detect your GPU and start the right containers."
+            + _onboarding_menu()
         )
 
     def _log_cost(self, resp, provider_name: str = "") -> None:

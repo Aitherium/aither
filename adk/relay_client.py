@@ -1,452 +1,249 @@
-"""ChatRelayClient — Python SDK for AitherRelay WebSocket participation.
+"""AitherRelay client — make an adk agent a first-class chat participant.
 
-This module provides a first-class relay client for ADK nodes, enabling them to:
-1. Mint relay tokens from AitherID bearer tokens
-2. Join channels over WebSocket
-3. Post messages and handle @mentions
-4. Auto-reconnect with exponential backoff
+The agent JOINS AitherRelay (the production chat/DM hub, e.g.
+``https://relay.aitherium.com/api/relay/v1``) as itself, then answers direct
+messages **on its own inference** — no SSH, and independent of the platform's
+Genesis-persona reply loop. This is what lets a human DM *any* fleet agent
+(OptiPlex / DGX / 5090 / a managed twin) and get a real reply.
 
-The server-side WebSocket auth contract is defined in AitherRelay.py (POST
-/v1/auth/relay-token → JWT, connect with ?token=JWT).
+Flow (all against the live AitherRelay REST API):
+    1. ``POST /agent/join``            — register this agent's nick (Bearer key)
+    2. poll ``GET /dms/partners`` + ``GET /dms/{partner}`` for new inbound human DMs
+    3. for each new DM: ``agent.chat(text)`` → ``POST /dms {to_nick, content}``
+
+Auth: a Bearer token that AitherRelay accepts — a TRUSTED credential for a
+fleet agent (ACTA ``aither_sk_*`` / a service identity), or an ``aither_ext_*``
+Agent-Lounge key (note: lounge/external agents are quarantined to agent-only
+channels and cannot DM humans — use a trusted key for human-facing agents).
+
+Usage::
+
+    from adk.relay_client import RelayClient
+    client = RelayClient(base_url=..., token=..., nick="optiplex-agent", agent=my_agent)
+    await client.run()          # join + serve DMs forever
+
+TLS: talks to internal-CA HTTPS endpoints; by default it trusts the AitherNet
+CA bundle (``tls_verify()``) rather than the system store — it never disables
+verification. Pass ``verify=`` to override.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-import time
-import uuid
-from dataclasses import dataclass
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Union
 
 import httpx
-import websockets
+
+from ._tls import tls_verify
 
 logger = logging.getLogger("adk.relay_client")
 
-# ── Relay Protocol Models ─────────────────────────────────────────────────
-
-@dataclass
-class RelayMessage:
-    """A message received from the relay."""
-    msg_id: str
-    channel: str
-    nick: str
-    content: str
-    msg_type: str = "message"
-    timestamp: float = 0.0
-    thread_id: str = ""
-    user_id: str = ""
-    session_id: str = ""
-    node_id: str = ""
-
-    @classmethod
-    def from_dict(cls, data: dict) -> RelayMessage:
-        return cls(
-            msg_id=data.get("msg_id", ""),
-            channel=data.get("channel", ""),
-            nick=data.get("nick", ""),
-            content=data.get("content", ""),
-            msg_type=data.get("msg_type", "message"),
-            timestamp=data.get("timestamp", time.time()),
-            thread_id=data.get("thread_id", ""),
-            user_id=data.get("user_id", ""),
-            session_id=data.get("session_id", ""),
-            node_id=data.get("node_id", ""),
-        )
+_DEFAULT_POLL_S = 4.0
 
 
-# ── Relay Client ──────────────────────────────────────────────────────────
-
-class ChatRelayClient:
-    """WebSocket client for AitherRelay. Handles token minting, connection,
-    channel joining, messaging, and @mention handlers with auto-reconnect.
-
-    Usage:
-        client = ChatRelayClient(
-            base_url="http://localhost:8001",
-            aither_bearer="sk-ant-...",
-            workspace_id=None,
-            user_id="user_123",
-            nick="my-agent",
-        )
-        await client.connect()
-        await client.join_channel("#team")
-        await client.post_message("#team", "Hello!")
-
-        async def handle_mention(msg):
-            return f"You mentioned me in: {msg.content}"
-        client.register_mention_handler("bot", handle_mention)
-    """
+class RelayClient:
+    """Join AitherRelay as an agent and answer DMs on the agent's own inference."""
 
     def __init__(
         self,
         base_url: str,
-        aither_bearer: str,
-        workspace_id: Optional[str] = None,
-        user_id: Optional[str] = None,
-        nick: str = "adk-node",
+        token: str,
+        nick: str,
+        agent: Any,
+        *,
+        channel: str = "#agents",
+        agent_service: str = "adk",
+        poll_interval: float = _DEFAULT_POLL_S,
+        verify: Union[bool, str, None] = None,
+        on_notification: Optional[Callable[[dict], None]] = None,
     ):
-        """Initialize relay client.
-
-        Args:
-            base_url: HTTP base URL of the relay server (e.g. "http://localhost:8001")
-            aither_bearer: AitherID Bearer token (used to mint relay JWT)
-            workspace_id: Workspace ID (for scoped channels; optional)
-            user_id: User ID (stored in token claims; defaults to generated UUID)
-            nick: Display nick for this client (must match token or join fails)
-        """
+        # base_url points at the relay API root, e.g.
+        # https://relay.aitherium.com/api/relay/v1  (or http://localhost:8205/v1)
         self.base_url = base_url.rstrip("/")
-        self.aither_bearer = aither_bearer
-        self.workspace_id = workspace_id
-        self.user_id = user_id or str(uuid.uuid4())
+        self.token = token
         self.nick = nick
+        self.agent = agent
+        self.channel = channel if channel.startswith("#") else f"#{channel}"
+        self.agent_service = agent_service
+        self.poll_interval = poll_interval
+        # TLS: default to the AitherNet CA bundle (internal-CA endpoints fail the
+        # system trust store) — never verify=False. `tls_verify()` honours
+        # AITHER_TLS_VERIFY / AITHER_CA_BUNDLE; an explicit `verify=` overrides it.
+        self.verify: Union[bool, str] = tls_verify() if verify is None else verify
+        # Highest message id we've already handled per partner — so we reply once.
+        self._seen: dict[str, str] = {}
+        # Notification callback hook (type=="mention" will call this; others log at INFO)
+        self.on_notification = on_notification
+        # Track seen notification ids to avoid duplicates
+        self._seen_notif_ids: set[str] = set()
+        # Track last failed notification poll to log warning only once per N failures
+        self._notif_poll_failure_count = 0
+        self._running = False
 
-        # WebSocket connection
-        self._ws: Any = None
-        self._relay_token: Optional[str] = None
-        self._relay_token_expires: float = 0.0
+    # ── HTTP helpers ────────────────────────────────────────────────────
+    def _headers(self) -> dict[str, str]:
+        return {"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"}
 
-        # Channel state
-        self._joined_channels: set[str] = set()
+    async def _get(self, client: httpx.AsyncClient, path: str) -> Optional[Any]:
+        r = await client.get(f"{self.base_url}{path}", headers=self._headers())
+        if r.status_code != 200 or "json" not in r.headers.get("content-type", ""):
+            return None
+        return r.json()
 
-        # Mention handlers: agent_name -> async callable
-        self._mention_handlers: dict[str, Callable] = {}
-
-        # Reconnect state
-        self._should_reconnect = False
-        self._backoff_ms = 1000
-        self._max_backoff_ms = 30000
-        self._reconnect_task: Optional[asyncio.Task] = None
-
-    async def connect(self) -> bool:
-        """Connect to the relay and mint a relay token.
-
-        Returns True on success, False if minting failed.
-        Automatically retries connection on network failure.
-        """
-        if not await self._mint_relay_token():
-            logger.error("Failed to mint relay token")
-            return False
-
-        self._should_reconnect = True
-        await self._connect_ws()
-        return self._ws is not None
-
-    async def disconnect(self):
-        """Disconnect from the relay (no auto-reconnect)."""
-        self._should_reconnect = False
-        if self._reconnect_task:
-            self._reconnect_task.cancel()
-        if self._ws:
-            try:
-                await self._ws.close()
-            except Exception:
-                pass
-            self._ws = None
-
-    async def list_channels(self) -> list[dict]:
-        """Fetch available channels (requires HTTP, no WS needed).
-
-        Returns list of dicts with name, topic, user_count, etc.
-        """
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.get(
-                    f"{self.base_url}/v1/channels",
-                    params={"scope": "platform", "nick": self.nick},
-                    headers={"Authorization": f"Bearer {self.aither_bearer}"},
-                )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    return data if isinstance(data, list) else data.get("channels", [])
-        except Exception as exc:
-            logger.debug("list_channels failed: %s", exc)
-        return []
-
-    async def join_channel(self, channel: str):
-        """Join a channel. Queues if disconnected; sends on next connection."""
-        if not channel.startswith("#"):
-            channel = f"#{channel}"
-
-        if self._ws and self._ws.open:
-            try:
-                await self._ws.send(json.dumps({
-                    "type": "join",
-                    "channel": channel,
-                    "nick": self.nick,
-                }))
-                self._joined_channels.add(channel)
-                logger.debug("Joined channel %s", channel)
-            except Exception as exc:
-                logger.debug("join_channel send failed: %s", exc)
-        else:
-            # Queue for after reconnect
-            self._joined_channels.add(channel)
-
-    async def part_channel(self, channel: str):
-        """Leave a channel."""
-        if not channel.startswith("#"):
-            channel = f"#{channel}"
-
-        self._joined_channels.discard(channel)
-        if self._ws and self._ws.open:
-            try:
-                await self._ws.send(json.dumps({
-                    "type": "part",
-                    "channel": channel,
-                }))
-                logger.debug("Parted channel %s", channel)
-            except Exception as exc:
-                logger.debug("part_channel send failed: %s", exc)
-
-    async def post_message(self, channel: str, text: str):
-        """Post a message to a channel."""
-        if not channel.startswith("#"):
-            channel = f"#{channel}"
-
-        if not self._ws or not self._ws.open:
-            logger.warning("post_message: not connected")
-            return
-
-        try:
-            await self._ws.send(json.dumps({
-                "type": "message",
-                "channel": channel,
-                "content": text,
-            }))
-        except Exception as exc:
-            logger.debug("post_message send failed: %s", exc)
-
-    def register_mention_handler(
-        self,
-        agent_name: str,
-        handler: Callable[[RelayMessage], Any],
-    ):
-        """Register an @mention handler.
-
-        Args:
-            agent_name: The agent nick to match (e.g. "bot" matches @bot)
-            handler: Async callable(msg: RelayMessage) -> str|None
-                     Return a string to post back to the channel.
-        """
-        self._mention_handlers[agent_name.lower()] = handler
-
-    # ── Private / Internal ────────────────────────────────────────────────
-
-    async def _mint_relay_token(self) -> bool:
-        """POST /v1/auth/relay-token to get a signed JWT.
-
-        Per the contract, the server validates the Bearer token and returns
-        a relay JWT (signed with AITHER_INTERNAL_SECRET, 1-hour expiry).
-        """
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.post(
-                    f"{self.base_url}/v1/auth/relay-token",
-                    json={
-                        "workspace_id": self.workspace_id,
-                        "tenant_id": None,  # ADK nodes don't have tenant_id
-                    },
-                    headers={"Authorization": f"Bearer {self.aither_bearer}"},
-                )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    self._relay_token = data.get("relay_token")
-                    self._relay_token_expires = data.get("expires_at", 0)
-                    # Use nick from response if provided (server resolves identity)
-                    if "nick" in data:
-                        self.nick = data["nick"]
-                    logger.info(
-                        "Minted relay token (expires_at=%s, nick=%s)",
-                        self._relay_token_expires, self.nick,
-                    )
-                    return True
-                else:
-                    logger.error(
-                        "Token mint failed: %d %s",
-                        resp.status_code, resp.text[:200],
-                    )
-        except Exception as exc:
-            logger.error("Token mint exception: %s", exc)
+    # ── Lifecycle ───────────────────────────────────────────────────────
+    async def join(self, client: httpx.AsyncClient) -> bool:
+        """Register this agent's nick with the relay. Returns True on success."""
+        r = await client.post(
+            f"{self.base_url}/agent/join",
+            headers=self._headers(),
+            params={"channel": self.channel},
+            json={"nick": self.nick, "agent_service": self.agent_service},
+        )
+        if r.status_code == 200:
+            logger.info("relay: joined as %s on %s", self.nick, self.channel)
+            return True
+        logger.warning("relay: join failed %s: %s", r.status_code, r.text[:200])
         return False
 
-    async def _connect_ws(self):
-        """Open WebSocket connection with relay token."""
-        if not self._relay_token:
-            logger.error("_connect_ws: no relay token")
-            return
+    @staticmethod
+    def _rows(payload: Any) -> list[dict]:
+        if isinstance(payload, dict):
+            payload = payload.get("messages", payload.get("partners", []))
+        return [m for m in (payload or []) if isinstance(m, dict)]
 
-        ws_url = (
-            self.base_url.replace("http://", "ws://")
-            .replace("https://", "wss://")
+    async def _reply_to(self, client: httpx.AsyncClient, partner: str, text: str) -> None:
+        """Run the agent's turn and DM the reply back to `partner`."""
+        try:
+            resp = await self.agent.chat(text)
+            content = getattr(resp, "content", None) or str(resp)
+        except Exception as exc:  # noqa: BLE001 — a bad turn must not kill the loop
+            logger.error("relay: agent turn failed for %s: %s", partner, exc)
+            content = f"[agent error: {exc}]"
+        await client.post(
+            f"{self.base_url}/dms",
+            headers=self._headers(),
+            json={"to_nick": partner, "content": content},
         )
-        ws_url = f"{ws_url}/ws/chat?token={self._relay_token}"
+        logger.info("relay: replied to %s (%d chars)", partner, len(content))
 
-        try:
-            self._ws = await asyncio.wait_for(
-                websockets.connect(ws_url, max_size=2**20),
-                timeout=10.0,
-            )
-            logger.info("WebSocket connected to relay")
-            self._backoff_ms = 1000  # Reset backoff on success
-            # Start the receive loop
-            self._reconnect_task = asyncio.create_task(self._receive_loop())
-        except asyncio.TimeoutError:
-            logger.error("WebSocket connection timeout")
-            self._ws = None
-            self._schedule_reconnect()
-        except Exception as exc:
-            logger.error("WebSocket connection failed: %s", exc)
-            self._ws = None
-            self._schedule_reconnect()
+    async def poll_once(self, client: httpx.AsyncClient) -> int:
+        """One pass: answer any new inbound human DMs. Returns #replies sent."""
+        partners = self._rows(await self._get(client, "/dms/partners"))
+        replies = 0
+        for p in partners:
+            partner = p.get("nick") or p.get("partner") or ""
+            if not partner or partner == self.nick:
+                continue
+            thread = self._rows(await self._get(client, f"/dms/{partner}"))
+            if not thread:
+                continue
+            last = thread[-1]
+            last_id = str(last.get("id") or last.get("message_id") or "")
+            from_nick = (last.get("from_nick") or last.get("from") or "").lower()
+            # Only reply to a NEW message FROM the human (not our own, not already seen).
+            if not last_id or self._seen.get(partner) == last_id:
+                continue
+            self._seen[partner] = last_id
+            if from_nick and from_nick != self.nick.lower():
+                await self._reply_to(client, partner, str(last.get("content", "")))
+                replies += 1
+        return replies
 
-    async def _receive_loop(self):
-        """Read messages from the WebSocket until disconnected."""
-        if not self._ws:
-            return
+    async def poll_notifications(self, client: httpx.AsyncClient) -> list[dict]:
+        """Poll stored notifications for this agent. Returns list of new notifications."""
+        # GET /v1/notifications/{nick}?unread_only=true
+        resp = await self._get(client, f"/notifications/{self.nick}?unread_only=true")
+        if resp is None:
+            self._notif_poll_failure_count += 1
+            # Log warning once per 10 failures (~40s apart at 4s poll interval)
+            if self._notif_poll_failure_count % 10 == 1:
+                logger.warning(
+                    "relay: notifications poll got no response (401/unreachable) — "
+                    "token/identity mismatch?"
+                )
+            return []
 
-        try:
-            async for msg in self._ws:
-                try:
-                    data = json.loads(msg)
-                    await self._handle_relay_message(data)
-                except json.JSONDecodeError:
-                    logger.debug("Invalid JSON from relay: %s", msg[:100])
-                except Exception as exc:
-                    logger.debug("Message handler error: %s", exc)
-        except asyncio.CancelledError:
-            pass
-        except Exception as exc:
-            logger.debug("WebSocket receive loop error: %s", exc)
-        finally:
-            self._ws = None
-            if self._should_reconnect:
-                self._schedule_reconnect()
+        self._notif_poll_failure_count = 0
+        notifs = resp.get("notifications", [])
+        new_notifs = []
+        ids_to_read = []
 
-    async def _handle_relay_message(self, data: dict):
-        """Dispatch a message from the relay."""
-        msg_type = data.get("type", "message")
+        for notif in notifs:
+            notif_id = notif.get("id", "")
+            if not notif_id or notif_id in self._seen_notif_ids:
+                continue
+            self._seen_notif_ids.add(notif_id)
+            ids_to_read.append(notif_id)
+            new_notifs.append(notif)
 
-        if msg_type == "history":
-            # On join, receive up to 200 historical messages
-            messages = [
-                RelayMessage.from_dict(m)
-                for m in data.get("messages", [])
-            ]
-            logger.debug("Received %d historical messages", len(messages))
-
-        elif msg_type == "message":
-            msg = RelayMessage.from_dict(data)
-            logger.debug(
-                "Message in %s from %s: %s",
-                msg.channel, msg.nick, msg.content[:50],
-            )
-            # Check for @mentions and fire handlers
-            await self._check_mentions(msg)
-
-        elif msg_type == "join":
-            logger.debug(
-                "%s joined %s (is_agent=%s)",
-                data.get("nick"), data.get("channel"), data.get("is_agent"),
-            )
-
-        elif msg_type == "part":
-            logger.debug(
-                "%s left %s", data.get("nick"), data.get("channel"),
-            )
-
-        elif msg_type == "error":
-            logger.warning("Relay error: %s", data.get("message"))
-
-        elif msg_type == "who_reply":
-            logger.debug(
-                "Users in %s: %s",
-                data.get("channel"),
-                [u.get("nick") for u in data.get("users", [])],
-            )
-
-    async def _check_mentions(self, msg: RelayMessage):
-        """Check if message mentions any registered agents and fire handlers."""
-        content_lower = msg.content.lower()
-        for agent_nick, handler in list(self._mention_handlers.items()):
-            if f"@{agent_nick}" in content_lower:
-                try:
-                    result = handler(msg)
-                    if asyncio.iscoroutine(result):
-                        result = await result
-                    # Post the response back to the channel
-                    if result:
-                        await self.post_message(msg.channel, str(result))
-                except Exception as exc:
-                    logger.error(
-                        "Mention handler error for @%s: %s",
-                        agent_nick, exc,
+            # Handle notification types
+            notif_type = notif.get("type", "")
+            if notif_type == "mention":
+                # For mentions, call the callback if provided; log at INFO otherwise
+                if self.on_notification:
+                    try:
+                        self.on_notification(notif)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.error(
+                            "relay: notification callback failed: %s", exc
+                        )
+                else:
+                    logger.info(
+                        "relay: notification: %s from %s in %s",
+                        notif_type,
+                        notif.get("from_nick", "?"),
+                        notif.get("channel", "?"),
                     )
+            elif notif_type in ("dm", "reaction", "thread_reply", "report", "system"):
+                # Log other known types at INFO
+                logger.info(
+                    "relay: notification: %s from %s in %s",
+                    notif_type,
+                    notif.get("from_nick", "?"),
+                    notif.get("channel", "?"),
+                )
+            else:
+                # Log unknown types at DEBUG
+                logger.debug(
+                    "relay: notification: unknown type=%s from %s in %s",
+                    notif_type,
+                    notif.get("from_nick", "?"),
+                    notif.get("channel", "?"),
+                )
 
-    def _schedule_reconnect(self):
-        """Schedule a reconnection attempt with exponential backoff."""
-        if not self._should_reconnect:
-            return
-        wait_ms = self._backoff_ms
-        self._backoff_ms = min(self._backoff_ms * 2, self._max_backoff_ms)
-        logger.info("Scheduling reconnect in %dms", wait_ms)
-        loop = asyncio.get_event_loop()
-        if not loop.is_closed():
-            loop.call_later(
-                wait_ms / 1000.0,
-                lambda: asyncio.create_task(self._reconnect()),
+        # Mark retrieved notifications as read
+        if ids_to_read:
+            await client.post(
+                f"{self.base_url}/notifications/{self.nick}/read",
+                headers=self._headers(),
+                json={"ids": ids_to_read},
             )
+            logger.debug("relay: marked %d notifications as read", len(ids_to_read))
 
-    async def _reconnect(self):
-        """Re-mint token and reconnect."""
-        if not self._should_reconnect:
-            return
-        logger.info("Reconnecting to relay...")
-        if await self._mint_relay_token():
-            await self._connect_ws()
-            # Re-join any channels we were in
-            for ch in list(self._joined_channels):
-                await self.join_channel(ch)
-        else:
-            logger.warning("Reconnect failed, will retry")
-            self._schedule_reconnect()
+        return new_notifs
 
+    async def run(self) -> None:
+        """Join, then serve DMs forever (poll → reply loop)."""
+        self._running = True
+        async with httpx.AsyncClient(
+            follow_redirects=True, timeout=30, verify=self.verify
+        ) as client:
+            if not await self.join(client):
+                raise RuntimeError("relay join failed — check the token / nick / channel")
+            # Prime _seen so we don't reply to the whole backlog on startup.
+            for p in self._rows(await self._get(client, "/dms/partners")):
+                partner = p.get("nick") or ""
+                thread = self._rows(await self._get(client, f"/dms/{partner}")) if partner else []
+                if thread:
+                    self._seen[partner] = str(thread[-1].get("id") or thread[-1].get("message_id") or "")
+            while self._running:
+                try:
+                    await self.poll_once(client)
+                    await self.poll_notifications(client)
+                except httpx.HTTPError as exc:
+                    logger.warning("relay: poll error (continuing): %s", exc)
+                await asyncio.sleep(self.poll_interval)
 
-# ── Singleton ─────────────────────────────────────────────────────────────
-
-_relay_client: Optional[ChatRelayClient] = None
-
-
-def get_relay_client(
-    base_url: Optional[str] = None,
-    aither_bearer: Optional[str] = None,
-    workspace_id: Optional[str] = None,
-    user_id: Optional[str] = None,
-    nick: str = "adk-node",
-) -> ChatRelayClient:
-    """Get or create the singleton relay client.
-
-    Args:
-        base_url: Relay server URL (default: http://localhost:8001)
-        aither_bearer: AitherID Bearer token (required)
-        workspace_id: Workspace ID (optional)
-        user_id: User ID (default: generated UUID)
-        nick: Display nick (default: adk-node)
-
-    Returns:
-        Singleton ChatRelayClient instance.
-    """
-    global _relay_client
-    if _relay_client is None:
-        base_url = base_url or "http://localhost:8001"
-        aither_bearer = aither_bearer or ""
-        _relay_client = ChatRelayClient(
-            base_url=base_url,
-            aither_bearer=aither_bearer,
-            workspace_id=workspace_id,
-            user_id=user_id,
-            nick=nick,
-        )
-    return _relay_client
+    def stop(self) -> None:
+        self._running = False

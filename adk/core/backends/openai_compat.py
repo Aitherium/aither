@@ -135,3 +135,12 @@ class DeepSeekBackend(_OpenAICompatBackend):
         super().__init__(
             base_url="https://api.deepseek.com", model=model, api_key=api_key
         )
+
+
+class MoonshotBackend(_OpenAICompatBackend):
+    name = "moonshot"
+
+    def __init__(self, *, api_key: str, model: str = "kimi-k3") -> None:
+        super().__init__(
+            base_url="https://api.moonshot.ai", model=model, api_key=api_key
+        )

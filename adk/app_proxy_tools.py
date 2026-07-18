@@ -1,12 +1,11 @@
 """App proxy tools — register HTTP-based tools from a companion app container.
 
-When ADK_APP_PROXY_URL is set (e.g., http://gargbot:8900), this module:
+When ADK_APP_PROXY_URL is set (e.g., http://localhost:8900), this module:
 1. Reads the app manifest (ADK_APP_MANIFEST env or auto-detect from ADK_APP_PROXY_URL/api/manifest)
 2. Generates proxy tool functions that forward calls to the app's HTTP endpoints
 3. Registers them on the AitherAgent so the LLM can call app-specific tools
 
-This is the bridge between sovereign deployment app containers (GargBot, Chelle, etc.)
-and the ADK agent's ReAct loop.
+This is the bridge between sovereign deployment app containers and the ADK agent's ReAct loop.
 
 Usage:
     # Automatic — called from AitherAgent.__init__ when env vars are set
@@ -14,7 +13,7 @@ Usage:
     register_app_proxy_tools(agent)
 
 Environment variables:
-    ADK_APP_PROXY_URL: Base URL of the companion app (e.g., http://gargbot:8900)
+    ADK_APP_PROXY_URL: Base URL of the companion app (e.g., http://localhost:8900)
     ADK_APP_MANIFEST: JSON string of app_tools definitions (optional)
 """
 

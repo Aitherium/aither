@@ -5,8 +5,6 @@ On startup in workspace mode:
 2. POSTs to portal gateway to register/upsert the agent
 3. Runs a heartbeat loop to maintain presence
 4. Stores portal token locally for subsequent requests
-
-Based on the pattern from .PRODUCTS/.CHELLE/backend/app/services/adk_registration.py
 """
 
 from __future__ import annotations

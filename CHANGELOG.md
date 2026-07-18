@@ -2,6 +2,23 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [2.27.0] - 2026-07-18
+
+### Added — Moonshot Kimi K3 provider (DeepSeek-equivalent cloud backend)
+
+- **New `moonshot` provider** across the LLM router: OpenAI-compatible
+  `https://api.moonshot.ai/v1`, default model `kimi-k3` (131K context default, up to 1M;
+  tool calls, JSON mode, structured output). Wired everywhere `deepseek` is:
+  - `LLMRouter(provider="moonshot")` + `_COMPAT_URLS`/`_COMPAT_MODELS`/model tiers
+    (small/medium/large → `kimi-k3`)
+  - Config: `moonshot_api_key` field (env `MOONSHOT_API_KEY`), saved-config load,
+    provider-keys map (`provider_keys.json` key `moonshot`)
+  - Auto-detect chain: tried after DeepSeek (config key, then env key)
+  - Hybrid reasoning backend: `AITHER_REASONING_BACKEND=moonshot` for effort 7+
+  - Reasoning tiers: `backend: moonshot` (alias `kimi`) via new `MoonshotBackend`
+  - CLI: `adk backend set moonshot --api-key …`, `adk backend list` shows moonshot
+- No breaking changes; DeepSeek and all other providers unchanged.
+
 ## [2.26.0] - 2026-07-16
 
 ### Added — Aeon group-chat web UI pack + POST /aeon/stream SSE endpoint

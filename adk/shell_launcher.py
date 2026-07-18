@@ -315,6 +315,18 @@ def _preflight_check() -> tuple[bool, str]:
     import urllib.request
     import urllib.error
 
+    # Check custom LLM base URL (e.g., AITHER_LLM_BASE_URL for DGX Spark :8124)
+    custom_url = os.environ.get("AITHER_LLM_BASE_URL", "").strip()
+    if custom_url:
+        url = f"{custom_url.rstrip('/')}/v1/models"
+        try:
+            req = urllib.request.Request(url)
+            with urllib.request.urlopen(req, timeout=2) as resp:
+                if resp.status == 200:
+                    return True, f"custom:{custom_url}"
+        except (urllib.error.URLError, ConnectionError, OSError):
+            pass
+
     # Check vLLM ports
     for port in (8200, 8201, 8000):
         try:

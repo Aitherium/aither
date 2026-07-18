@@ -82,7 +82,7 @@ Examples:
   aither workspace show
   aither workspace models add myModel_v2.safetensors
   aither workspace safety set unrestricted
-  aither workspace agents deploy gargbot
+  aither workspace agents deploy myapp
   aither workspace wills create my-will "You are a helpful assistant..."
 """
 

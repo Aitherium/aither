@@ -202,7 +202,9 @@ def remove_autostart() -> bool:
             ["schtasks", "/delete", "/tn", WINDOWS_TASK_NAME, "/f"],
             capture_output=True, text=True,
         )
-        return rc.returncode == 0
+        # Also clear the no-admin HKCU Run fallback (whichever was used).
+        hkcu = _remove_hkcu_run()
+        return rc.returncode == 0 or hkcu
     if sys.platform == "darwin":
         plist = Path.home() / "Library" / "LaunchAgents" / f"{LAUNCHD_LABEL}.plist"
         subprocess.run(["launchctl", "unload", str(plist)], capture_output=True)
@@ -251,10 +253,49 @@ def _install_windows_task(up_argv: list[str], dry_run: bool) -> Optional[str]:
         capture_output=True, text=True,
     )
     if rc.returncode != 0:
-        print(f"  WARN: schtasks failed ({rc.stderr.strip()}); "
-              "agent will not auto-start on reboot.", file=sys.stderr)
+        # schtasks can require elevation on some machines ("Access is denied").
+        # Fall back to the per-user Run key (HKCU) — logon autostart with NO admin
+        # needed — and tell the user how to get the richer system task if they want it.
+        if _install_hkcu_run(wrapper):
+            print("  [+] Autostart set via HKCU Run key (per-user logon, no admin needed).")
+            print("      For a system task with restart-on-failure, re-run `adk up` from an")
+            print("      elevated terminal (right-click -> Run as administrator).")
+            return f"hkcu-run:{WINDOWS_TASK_NAME}"
+        print(f"  WARN: schtasks failed ({rc.stderr.strip()}) and the HKCU fallback failed; "
+              "agent will not auto-start on reboot. Re-run `adk up` as administrator to enable it.",
+              file=sys.stderr)
         return None
     return f"windows-task:{WINDOWS_TASK_NAME}"
+
+
+def _install_hkcu_run(wrapper: Path) -> bool:
+    """Per-user logon autostart via the HKCU Run key (no admin required)."""
+    try:
+        import winreg
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Run",
+            0, winreg.KEY_SET_VALUE,
+        ) as key:
+            winreg.SetValueEx(key, WINDOWS_TASK_NAME, 0, winreg.REG_SZ, f'"{wrapper}"')
+        return True
+    except OSError:
+        return False
+
+
+def _remove_hkcu_run() -> bool:
+    """Remove the HKCU Run autostart entry (for `adk down`). Idempotent."""
+    try:
+        import winreg
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Run",
+            0, winreg.KEY_SET_VALUE,
+        ) as key:
+            winreg.DeleteValue(key, WINDOWS_TASK_NAME)
+        return True
+    except OSError:
+        return False
 
 
 def _install_systemd_user(up_argv: list[str], dry_run: bool) -> Optional[str]:

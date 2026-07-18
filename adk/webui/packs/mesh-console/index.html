@@ -81,6 +81,7 @@ pre{background:var(--code);border:1px solid var(--line);border-radius:8px;paddin
   <main>
     <div class="tabs" id="tabs" style="display:none">
       <div class="tab sel" data-t="overview">Overview</div>
+      <div class="tab" data-t="settings">Settings</div>
       <div class="tab" data-t="config">Config</div>
       <div class="tab" data-t="sessions">Sessions</div>
       <div class="tab" data-t="logs">Logs</div>
@@ -170,6 +171,78 @@ pre{background:var(--code);border:1px solid var(--line);border-radius:8px;paddin
           '<div class="note">reach: '+esc(selected.reach||'?')+' · backend: '+
           esc(selected.provider_hint||'?')+' · model: '+esc(selected.model||'?')+'</div>'+
           '<h3>Meta</h3>'+kvTable(meta)+'<h3 style="margin-top:16px">LLM</h3>'+kvTable(llm);
+      } else if(tab==='settings'){
+        var st=await api('llm/status');
+        var provs=(st&&st.providers)||[];
+        // Backend options: cloud providers (from status) + common local backends.
+        var localOpts=['llamacpp','vllm','ollama','lmstudio','genesis'];
+        var cloudIds=provs.map(function(p){return p.id;});
+        var allBackends=localOpts.concat(cloudIds.filter(function(x){return localOpts.indexOf(x)<0;}));
+        var active=(st&&st.active_backend)||'?';
+        var curModel=(st&&st.model)||'';
+        function opts(list,sel){return list.map(function(v){
+          return '<option value="'+esc(v)+'"'+(v===sel?' selected':'')+'>'+esc(v)+'</option>';}).join('');}
+        var provRows=provs.map(function(p){
+          return '<tr><td>'+esc(p.label||p.id)+'</td><td>'+
+            (p.has_key?('<span class="masked">'+esc(p.key_preview||'••••')+'</span>')
+                      :'<span class="pill">no key</span>')+'</td></tr>';
+        }).join('');
+        bodyEl.innerHTML=
+          '<h3>Inference backend</h3>'+
+          '<div class="note">Active: <b>'+esc(active)+'</b>'+(curModel?(' · model '+esc(curModel)):'')+
+          (st&&st.local_backend_detected?(' · local detected: '+esc(st.local_backend||'')):'')+'</div>'+
+          '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:8px">'+
+          '<label style="display:flex;flex-direction:column;gap:3px;font-size:12px;color:var(--dim)">Backend'+
+            '<select id="swBackend" style="min-width:150px;padding:6px 9px;background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:8px">'+opts(allBackends,active)+'</select></label>'+
+          '<label style="display:flex;flex-direction:column;gap:3px;font-size:12px;color:var(--dim)">Model'+
+            '<input id="swModel" value="'+esc(curModel)+'" placeholder="(optional)" style="padding:6px 9px;background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:8px"></label>'+
+          '<label style="display:flex;flex-direction:column;gap:3px;font-size:12px;color:var(--dim)">Base URL (local/custom)'+
+            '<input id="swBase" placeholder="e.g. http://192.168.1.121:8090/v1" style="min-width:230px;padding:6px 9px;background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:8px"></label>'+
+          '<button class="act" id="swSave">Switch backend</button>'+
+          '<button class="act" id="swTest">Test</button></div>'+
+          '<div class="msg" id="swMsg"></div>'+
+          '<h3 style="margin-top:18px">Provider API keys</h3>'+
+          '<div class="note">Enter a key to set it; stored keys show masked and are never displayed in full. '+
+          'Keys are saved to the agent’s own vault via its admin API.</div>'+
+          '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:8px">'+
+          '<label style="display:flex;flex-direction:column;gap:3px;font-size:12px;color:var(--dim)">Provider'+
+            '<select id="kProv" style="min-width:150px;padding:6px 9px;background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:8px">'+
+            opts(cloudIds.length?cloudIds:['openai','anthropic','groq','deepseek'],'')+'</select></label>'+
+          '<label style="display:flex;flex-direction:column;gap:3px;font-size:12px;color:var(--dim)">API key'+
+            '<input id="kVal" type="password" autocomplete="off" placeholder="paste key…" style="min-width:230px;padding:6px 9px;background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:8px"></label>'+
+          '<button class="act" id="kSave">Set key</button></div>'+
+          '<div class="msg" id="kMsg"></div>'+
+          (provRows?('<table style="margin-top:8px"><tr><th>provider</th><th>key</th></tr>'+provRows+'</table>'):'');
+
+        document.getElementById('swSave').onclick=async function(){
+          var m=document.getElementById('swMsg');m.textContent='switching…';m.className='msg';
+          try{
+            var r=await api('llm/switch',{method:'POST',headers:{'Content-Type':'application/json'},
+              body:JSON.stringify({provider:document.getElementById('swBackend').value,
+                model:document.getElementById('swModel').value||undefined,
+                base_url:document.getElementById('swBase').value||undefined})});
+            m.textContent='✓ active: '+(r.active_backend||'?')+(r.model?(' · '+r.model):'');
+          }catch(e){m.className='msg err';m.textContent='✗ '+((e.data&&(e.data.detail||e.data.error))||('HTTP '+e.status));}
+        };
+        document.getElementById('swTest').onclick=async function(){
+          var m=document.getElementById('swMsg');m.textContent='testing…';m.className='msg';
+          try{var r=await api('llm/test',{method:'POST',headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({provider:document.getElementById('swBackend').value})});
+            m.textContent='✓ '+(r.provider||'')+': '+(r.response_preview||'ok');
+          }catch(e){m.className='msg err';m.textContent='✗ '+((e.data&&(e.data.error))||('HTTP '+e.status));}
+        };
+        document.getElementById('kSave').onclick=async function(){
+          var m=document.getElementById('kMsg');var val=document.getElementById('kVal').value;
+          if(!val){m.className='msg err';m.textContent='enter a key';return;}
+          m.textContent='saving…';m.className='msg';
+          try{
+            var r=await api('llm/keys',{method:'POST',headers:{'Content-Type':'application/json'},
+              body:JSON.stringify({provider:document.getElementById('kProv').value,api_key:val})});
+            document.getElementById('kVal').value='';
+            m.textContent='✓ '+(r.provider||'')+' key set ('+(r.key_preview||'••••')+')';
+            renderTab();  // refresh masked list
+          }catch(e){m.className='msg err';m.textContent='✗ '+((e.data&&(e.data.error))||('HTTP '+e.status));}
+        };
       } else if(tab==='config'){
         var cfg=await api('config');
         bodyEl.innerHTML='<h3>Effective config</h3>'+

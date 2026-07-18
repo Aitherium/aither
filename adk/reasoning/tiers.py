@@ -93,11 +93,21 @@ class ModelTier(str, Enum):
         return {"fast": 0, "orchestrator": 1, "reasoning": 2, "perception": 3}[self.value]
 
 
+def _setup_help(provider: str) -> str:
+    """Guided-onboarding error text for a missing provider key (owner directive:
+    errors must guide the user step-by-step, not dead-end)."""
+    try:
+        from adk.llm.onboarding import missing_key_message
+        return missing_key_message(provider)
+    except Exception:
+        return f"{provider} backend requires {provider.upper()}_API_KEY"
+
+
 @dataclass(slots=True)
 class TierSpec:
     """How a single tier is wired."""
 
-    backend: str           # "ollama" | "vllm" | "openai" | "anthropic" | "deepseek" | "genesis" | "auto"
+    backend: str           # "ollama" | "vllm" | "openai" | "anthropic" | "deepseek" | "moonshot" | "genesis" | "auto"
     model: str             # provider model id, e.g. "qwen2.5:14b", "claude-opus-4-1"
     max_tokens: int | None = None
     temperature: float = 0.7
@@ -335,13 +345,19 @@ class ReasoningRouter:
         if kind == "anthropic":
             key = os.environ.get("ANTHROPIC_API_KEY")
             if not key:
-                raise RuntimeError("anthropic backend requires ANTHROPIC_API_KEY")
+                raise RuntimeError(_setup_help("anthropic"))
             return AnthropicBackend(api_key=key, model=model)
         if kind == "deepseek":
             key = os.environ.get("DEEPSEEK_API_KEY")
             if not key:
-                raise RuntimeError("deepseek backend requires DEEPSEEK_API_KEY")
+                raise RuntimeError(_setup_help("deepseek"))
             return DeepSeekBackend(api_key=key, model=model)
+        if kind in ("moonshot", "kimi"):
+            key = os.environ.get("MOONSHOT_API_KEY")
+            if not key:
+                raise RuntimeError(_setup_help("moonshot"))
+            from adk.core.backends.openai_compat import MoonshotBackend
+            return MoonshotBackend(api_key=key, model=model)
         if kind == "ollama":
             host = spec.base_url or os.environ.get("OLLAMA_HOST") or "http://localhost:11434"
             return OllamaBackend(base_url=host, model=model)

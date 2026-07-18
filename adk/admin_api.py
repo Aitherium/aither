@@ -549,6 +549,47 @@ def register_admin_routes(
     async def admin_packs_reload():
         return await _reload_packs()
 
+    @app.post("/admin/packs/apply")
+    async def admin_packs_apply(request: Request):
+        """Materialize a bundled pack into THIS agent's ~/.aither/agents, enable
+        it, and reload — so a pack can be pushed to any registered agent
+        (including remotely, through the /mesh/agents/{name}/admin proxy) with no
+        SSH. Only packs bundled with the agent's own adk build are accepted;
+        arbitrary file uploads are deliberately not (moat/safety)."""
+        import shutil
+        from pathlib import Path
+
+        body = await request.json()
+        pack = (body.get("pack") or body.get("id") or "").strip()
+        if not pack or "/" in pack or "\\" in pack or pack.startswith("."):
+            return JSONResponse(status_code=400, content={"error": "valid pack name required"})
+        packs_dir = Path(__file__).parent / "packs"
+        available = ([p.name for p in packs_dir.glob("*") if (p / "agent.yaml").exists()]
+                     if packs_dir.exists() else [])
+        bundled = packs_dir / pack
+        if not (bundled / "agent.yaml").exists():
+            return JSONResponse(status_code=404,
+                                content={"error": "pack_not_found", "pack": pack,
+                                         "available": available})
+        dest = Path.home() / ".aither" / "agents" / pack
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            if dest.exists():
+                shutil.rmtree(dest, ignore_errors=True)
+            shutil.copytree(bundled, dest)
+        except OSError as exc:
+            return JSONResponse(status_code=500,
+                                content={"error": "copy_failed", "detail": _scrub(str(exc))})
+        saved = load_saved_config()
+        enabled = list(saved.get("required_packs") or [])
+        if pack not in enabled:
+            enabled.append(pack)
+        save_saved_config({"required_packs": enabled})
+        result = await _reload_packs()
+        await _push_settings()
+        return {"ok": True, "pack": pack, "installed_to": str(dest),
+                "enabled": True, "enabled_packs": enabled, "reload": result}
+
     async def _reload_packs() -> dict:
         agent = await get_agent()
         before = len(agent._tools.list_tools())

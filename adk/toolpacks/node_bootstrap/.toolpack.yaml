@@ -22,6 +22,16 @@ tool_modules: []
 
 entitlements: []
 
+# MCP server configuration: when node_bootstrap is deployed as a self-hosted
+# agent pack, it exposes node_* tools via secure MCP. This pack requires
+# explicit entitlement enforcement (enforce_entitlements=true in the loader)
+# to prevent unlicensed deployments in multi-tenant hosted environments.
+mcp_server:
+  enabled: true
+  description: Node bootstrap inference deployment tools (node_* suite)
+  entitlement_required: false  # node_* tools are free tier; tier is enforced via min_tier if set
+  tools: node_*
+
 skills:
   - node-bootstrap
 

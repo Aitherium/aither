@@ -108,20 +108,29 @@ from adk.server import _mesh_admin_allowed  # noqa: E402
 
 
 class TestMeshAdminAllowlist:
-    """The mesh console proxy must be fail-closed: cli/exec + credential writes
-    are never reachable; only observe routes + narrow safe controls pass."""
+    """The mesh console proxy allows owner-authed management (observe + controls +
+    LLM config incl. backend switch / API keys / config edits) but NEVER arbitrary
+    code execution (cli/exec is hard-denied regardless of method)."""
 
     def test_denies_remote_code_exec(self):
+        # cli/* is hard-denied for every method — this is the real RCE surface.
         assert _mesh_admin_allowed("POST", "cli/exec") is False
-
-    def test_denies_credential_writes(self):
-        assert _mesh_admin_allowed("POST", "llm/keys") is False
-        assert _mesh_admin_allowed("POST", "llm/switch") is False
-
-    def test_denies_config_write_and_unknown(self):
-        assert _mesh_admin_allowed("POST", "config") is False
-        assert _mesh_admin_allowed("POST", "packs/x/tools/y/invoke") is False
         assert _mesh_admin_allowed("GET", "cli/commands") is False
+        assert _mesh_admin_allowed("POST", "cli") is False
+        assert _mesh_admin_allowed("GET", "cli/anything") is False
+
+    def test_allows_llm_config_management(self):
+        # Owner config actions the console explicitly supports (NOT RCE).
+        assert _mesh_admin_allowed("POST", "llm/switch") is True   # local<->cloud
+        assert _mesh_admin_allowed("POST", "llm/keys") is True     # set API key
+        assert _mesh_admin_allowed("POST", "llm/test") is True
+        assert _mesh_admin_allowed("PATCH", "config") is True      # edit config
+
+    def test_denies_unknown_and_wrong_method(self):
+        assert _mesh_admin_allowed("POST", "config") is False       # config edit is PATCH
+        assert _mesh_admin_allowed("POST", "packs/x/tools/y/invoke") is False
+        assert _mesh_admin_allowed("GET", "llm/keys") is False      # no reading keys back
+        assert _mesh_admin_allowed("PATCH", "llm/keys") is False
 
     def test_denies_path_traversal(self):
         assert _mesh_admin_allowed("GET", "../secrets") is False
@@ -132,12 +141,15 @@ class TestMeshAdminAllowlist:
                   "packs/mypack", "logs/tail", "mcp/servers", "llm/status"):
             assert _mesh_admin_allowed("GET", p) is True, p
 
-    def test_allows_narrow_safe_controls(self):
+    def test_allows_controls_and_mcp_and_pack_settings(self):
         assert _mesh_admin_allowed("POST", "packs/enable") is True
         assert _mesh_admin_allowed("POST", "packs/reload") is True
+        assert _mesh_admin_allowed("POST", "mcp/servers/prepare") is True
+        assert _mesh_admin_allowed("PATCH", "packs/mypack/settings") is True
         assert _mesh_admin_allowed("DELETE", "sessions/abc") is True
+        assert _mesh_admin_allowed("DELETE", "mcp/servers/srv1") is True
 
-    def test_delete_limited_to_sessions(self):
+    def test_delete_limited(self):
         assert _mesh_admin_allowed("DELETE", "packs/x") is False
         assert _mesh_admin_allowed("DELETE", "config") is False
 
@@ -172,11 +184,22 @@ class TestMeshAdminProxyHttpGate:
         assert r.status_code == 403
         assert "not permitted" in r.text
 
-    def test_credential_write_denied_before_forward(self):
+    def test_cli_commands_denied_any_method(self):
         c = TestClient(self._app())
-        r = c.post("/mesh/agents/anyagent/admin/llm/keys",
-                   headers={"Authorization": "Bearer consolekey"}, json={"key": "x"})
+        r = c.get("/mesh/agents/anyagent/admin/cli/commands",
+                  headers={"Authorization": "Bearer consolekey"})
         assert r.status_code == 403
+        assert "not permitted" in r.text
+
+    def test_llm_config_passes_allowlist_reaches_resolve(self):
+        # llm/keys is ALLOWED by policy, so it passes the allowlist and fails at
+        # agent resolution (404) rather than being blocked (403) — proving owner
+        # config management is reachable while cli/exec is not.
+        c = TestClient(self._app())
+        r = c.post("/mesh/agents/nosuchagent/admin/llm/keys",
+                   headers={"Authorization": "Bearer consolekey"},
+                   json={"provider": "openai", "api_key": "sk-test"})
+        assert r.status_code == 404  # passed allowlist, agent not found
 
     def test_admin_proxy_requires_bearer(self):
         c = TestClient(self._app())

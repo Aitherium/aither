@@ -80,12 +80,18 @@ _BUILTIN_UI_PACKS = ("console", "minimal")
 
 # ── Central-console admin proxy allowlist (module-level so it is unit-testable) ─
 #
-# A blanket "forward every /admin/{path}" proxy was deliberately NOT built: it
-# would expose POST /admin/cli/exec (remote arbitrary command execution) and
-# POST /admin/llm/keys (credential writes) across the whole mesh behind one
-# shared bearer. The console may reach only these OBSERVE routes plus a NARROW
-# set of safe, reversible controls. cli/exec + credential writes are never here;
-# secret VALUES are never surfaced (the remote admin API already masks them).
+# The console proxies each mesh agent's OWN /admin API for owner-authed
+# management: OBSERVE routes + reversible controls + CONFIGURATION (switch
+# backend local<->cloud, set the model, set provider API keys, edit config).
+# The ONE thing never proxied is arbitrary code execution — POST /admin/cli/exec
+# and GET /admin/cli/commands are hard-denied (that, not config management, was
+# the real RCE surface). Everything here is gated by the owner server bearer and
+# forwarded to a single discovered agent (no fan-out).
+#
+# SECRET BOUNDARY: API-key VALUES flow browser -> proxy -> the agent's own
+# admin-save (which persists to its vault). The console never RENDERS a stored
+# key — reads return the agent's masked view (admin_api._mask_*). The owner
+# supplies key values in the UI; the assistant never handles them.
 _MESH_ADMIN_ALLOW = {
     "GET": {
         "config", "meta", "routes",
@@ -97,32 +103,54 @@ _MESH_ADMIN_ALLOW = {
         "graph/stats",
     },
     "POST": {
-        # Safe, reversible controls only — NOT llm/keys, llm/switch, cli/exec.
+        # Reversible controls
         "packs/enable", "packs/disable", "packs/reload",
+        # Push+enable a bundled pack to a remote agent (no SSH). Only bundled
+        # packs are accepted by the target; no arbitrary uploads.
+        "packs/apply",
+        # LLM configuration — switch backend (local<->cloud), set provider API
+        # key, test the connection. These are owner config actions, not RCE.
+        "llm/switch", "llm/keys", "llm/test",
+        # MCP server management (add via prepare/confirm)
+        "mcp/servers/prepare", "mcp/servers/confirm",
+    },
+    "PATCH": {
+        "config",  # edit allowlisted config fields
     },
     "DELETE": {
-        "sessions",  # terminate a session (prefix match: sessions/{id})
+        "sessions",       # terminate a session (prefix match: sessions/{id})
+        "mcp/servers",    # remove an MCP server (prefix match: mcp/servers/{id})
     },
 }
-# Prefix allowances for parameterized READ routes (GET path starts with these).
+# Prefix allowances for parameterized routes (path starts with these).
 _MESH_ADMIN_GET_PREFIXES = ("packs/", "sessions/", "mcp/servers/")
+# Routes that are NEVER proxied regardless of method — arbitrary code execution.
+_MESH_ADMIN_DENY = ("cli/exec", "cli/commands", "cli")
 
 
 def _mesh_admin_allowed(method: str, sub: str) -> bool:
     """True only for explicitly-allowed (method, admin-subpath) pairs. Fail-closed:
-    anything not named here (cli/exec, llm/keys, config PATCH-as-POST, …) is
-    refused. Prefix rules cover /{id}-style read routes but never dangerous verbs."""
+    anything not named here is refused, and the cli/* exec surface is hard-denied
+    regardless of method. Prefix rules cover /{id}-style routes."""
     sub = (sub or "").strip("/")
     if not sub or ".." in sub:
         return False
-    allow = _MESH_ADMIN_ALLOW.get(method.upper(), set())
-    if sub in allow:
+    # Hard deny: arbitrary code execution is never reachable through the console.
+    for bad in _MESH_ADMIN_DENY:
+        if sub == bad or sub.startswith(bad + "/"):
+            return False
+    m = method.upper()
+    if sub in _MESH_ADMIN_ALLOW.get(m, set()):
         return True
-    if method.upper() == "GET":
+    if m == "GET":
         for pfx in _MESH_ADMIN_GET_PREFIXES:
             if sub.startswith(pfx) and sub != pfx:
                 return True
-    if method.upper() == "DELETE" and sub.startswith("sessions/") and sub != "sessions/":
+    if m == "PATCH" and (sub.startswith("packs/") and sub.endswith("/settings")):
+        return True  # per-pack settings edit
+    if m == "DELETE" and sub.startswith("sessions/") and sub != "sessions/":
+        return True
+    if m == "DELETE" and sub.startswith("mcp/servers/") and sub != "mcp/servers/":
         return True
     return False
 
@@ -1453,7 +1481,17 @@ def create_app(
         if not api_key:
             logger.debug("Fleet endpoint registration skipped (no API key)")
             return
-        invoke_url = os.getenv("AITHER_INVOKE_URL", f"http://localhost:{config.server_port}")
+        # Determine reach mode and invoke_url (tunnel vs mesh overlay)
+        reach_mode = "tunnel"
+        invoke_url = os.getenv("AITHER_INVOKE_URL", "")
+        if not invoke_url:
+            # Check for mesh mode (overlay IP registration)
+            mesh_overlay_ip = os.getenv("AITHER_MESH_OVERLAY_IP", "").strip()
+            if mesh_overlay_ip:
+                reach_mode = "mesh"
+                invoke_url = f"http://{mesh_overlay_ip}:{config.server_port}"
+            else:
+                invoke_url = f"http://localhost:{config.server_port}"
         tenant_id = saved.get("tenant_id", "") or os.getenv("AITHER_TENANT_ID", "")
         agent_name = _state.get("identity", identity)
         try:
@@ -1466,6 +1504,7 @@ def create_app(
                         "name": agent_name,
                         "scope": {"visibility": "workspace", "tenant_id": tenant_id},
                         "invoke_url": invoke_url,
+                        "reach": reach_mode,
                         "status": "online",
                         # Advertise what inference this agent runs, so discovery
                         # (`adk agents ls`) shows "optiplex → bonsai (llamacpp)".
@@ -1492,6 +1531,7 @@ def create_app(
                     json={
                         "name": agent_name,
                         "url": invoke_url,
+                        "reach": reach_mode,
                         "agent_type": "adk-agent",
                         "capabilities": ["chat", "tools"],
                         "billing_email": billing_email,
@@ -1530,6 +1570,7 @@ def create_app(
                             "agent_type": "adk-agent",
                             "capabilities": ["chat", "tools", "forge"],
                             "invoke_url": invoke_url,
+                            "reach": reach_mode,
                         },
                     },
                     headers={
@@ -2529,7 +2570,7 @@ def create_app(
     # (module-level _mesh_admin_allowed). See its definition for the rationale —
     # cli/exec + credential writes are never reachable through this proxy.
     @app.api_route("/mesh/agents/{name}/admin/{path:path}",
-                   methods=["GET", "POST", "DELETE"])
+                   methods=["GET", "POST", "PATCH", "DELETE"])
     async def mesh_agent_admin(name: str, path: str, request: Request):
         """Owner-authed proxy to a mesh agent's OWN /admin API, restricted to an
         allowlist (observe + narrow safe controls). Auth-gated by the server

@@ -173,8 +173,11 @@ class Config:
     # DeepSeek
     deepseek_api_key: str = field(default_factory=lambda: os.getenv("DEEPSEEK_API_KEY", ""))
 
+    # Moonshot (Kimi K3 — OpenAI-compatible, api.moonshot.ai)
+    moonshot_api_key: str = field(default_factory=lambda: os.getenv("MOONSHOT_API_KEY", ""))
+
     # Reasoning backend — separate API for effort 7+ tasks (hybrid mode)
-    # Values: "", "anthropic", "openai", "deepseek", "gateway"
+    # Values: "", "anthropic", "openai", "deepseek", "moonshot", "gateway"
     reasoning_backend: str = field(default_factory=lambda: os.getenv("AITHER_REASONING_BACKEND", ""))
     reasoning_api_key: str = field(default_factory=lambda: os.getenv("AITHER_REASONING_API_KEY", ""))
     reasoning_base_url: str = field(default_factory=lambda: os.getenv("AITHER_REASONING_BASE_URL", ""))
@@ -335,6 +338,8 @@ class Config:
             config.perception_model = saved["perception_model"]
         if not config.deepseek_api_key and saved.get("deepseek_api_key"):
             config.deepseek_api_key = saved["deepseek_api_key"]
+        if not config.moonshot_api_key and saved.get("moonshot_api_key"):
+            config.moonshot_api_key = saved["moonshot_api_key"]
         if not config.dgx_url and saved.get("dgx_url"):
             config.dgx_url = saved["dgx_url"]
         if not config.cluster_backend and saved.get("cluster_backend"):
@@ -482,6 +487,7 @@ class Config:
             "openai": ("openai_api_key", "OPENAI_API_KEY"),
             "anthropic": ("anthropic_api_key", "ANTHROPIC_API_KEY"),
             "deepseek": ("deepseek_api_key", "DEEPSEEK_API_KEY"),
+            "moonshot": ("moonshot_api_key", "MOONSHOT_API_KEY"),
             "perception": ("perception_api_key", "AITHER_PERCEPTION_API_KEY"),
         }
         for provider, (field_name, env_name) in _KEY_MAP.items():

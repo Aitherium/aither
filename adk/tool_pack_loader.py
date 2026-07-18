@@ -63,6 +63,9 @@ class ToolPackManifest:
     # "title", "entry", "icon"}]}. Assets are served by the agent server and
     # mounted in the admin console as a sandboxed iframe (never same-origin).
     ui: dict = field(default_factory=dict)
+    # Optional MCP server configuration for the pack (when the pack itself
+    # exposes tools via an MCP server, not just Python register()).
+    mcp_server: dict = field(default_factory=dict)
 
     def tool_matches(self, tool_name: str) -> bool:
         """True if *tool_name* falls under this pack's declared ``mcp_tools``
@@ -166,14 +169,29 @@ def _default_dirs(extra_dirs: list[Path] | None) -> list[Path]:
 
 
 class ToolPackLoader:
-    def __init__(self, extra_dirs: list[Path] | None = None):
+    def __init__(self, extra_dirs: list[Path] | None = None, enforce_entitlements: bool = True):
+        """Initialize the loader with optional entitlement enforcement.
+
+        Args:
+            extra_dirs: Extra directories to search for packs.
+            enforce_entitlements: If True (default), fail-closed during discovery:
+                skip packs whose entitlements are not met. If False (sovereign mode),
+                load packs even if their entitlements are unmet, deferring the gate to
+                per-tool checks inside each pack's register(). Default True enforces
+                fail-closed behavior for hosted/multi-tenant deployments.
+        """
         self.dirs = _default_dirs(extra_dirs)
         self._manifests: dict[str, ToolPackManifest] = {}
         self._discovered = False
+        self.enforce_entitlements = enforce_entitlements
 
     # -- discovery -------------------------------------------------------------
     def discover(self) -> dict[str, ToolPackManifest]:
-        """Scan the search dirs for ``<child>/.toolpack.yaml``. Idempotent."""
+        """Scan the search dirs for ``<child>/.toolpack.yaml``. Idempotent.
+
+        Applies fail-closed entitlement gating if enforce_entitlements is True:
+        packs whose required entitlements are not met raise RuntimeError.
+        """
         if self._discovered:
             return self._manifests
         for base in self.dirs:
@@ -186,8 +204,20 @@ class ToolPackLoader:
                 if not (child.is_dir() and mf_path.is_file()):
                     continue
                 m = self._parse(mf_path, child)
-                if m and m.id not in self._manifests:  # first dir wins
-                    self._manifests[m.id] = m
+                if not m:
+                    continue
+                if m.id in self._manifests:  # first dir wins
+                    continue
+
+                # Fail-closed entitlement gate during discovery
+                if self.enforce_entitlements:
+                    allowed, reason = self.check_license(m)
+                    if not allowed:
+                        raise RuntimeError(
+                            f"pack {m.id!r} failed entitlement gate: {reason}"
+                        )
+
+                self._manifests[m.id] = m
         self._discovered = True
         logger.info("tool_pack_loader: discovered %d packs across %d dirs: %s",
                     len(self._manifests), len(self.dirs), sorted(self._manifests))
@@ -211,6 +241,7 @@ class ToolPackLoader:
 
         ui_block = data.get("ui")
         pricing = data.get("pricing")
+        mcp_server_block = data.get("mcp_server")
         # Manifests use either legacy singular `entitlement:` or list `entitlements:`.
         entitlements = _list("entitlements")
         legacy = str(data.get("entitlement") or "").strip()
@@ -229,7 +260,8 @@ class ToolPackLoader:
             deprecated=bool(data.get("deprecated", False)),
             redirect_to=str(data.get("redirect_to") or ""),
             pricing=pricing if isinstance(pricing, dict) else {},
-            ui=ui_block if isinstance(ui_block, dict) else {})
+            ui=ui_block if isinstance(ui_block, dict) else {},
+            mcp_server=mcp_server_block if isinstance(mcp_server_block, dict) else {})
 
     def load_packs(self, pack_ids: list[str] | None = None) -> list[ToolPackManifest]:
         self.discover()
@@ -245,7 +277,8 @@ class ToolPackLoader:
                 out.append(m)
         return out
 
-    # -- license gate (lenient; per-tool gating lives in each pack) ------------
+    # -- license gate (fail-closed at discovery when enforce_entitlements=True;
+    # per-tool gating lives in each pack) ------
     def check_license(self, manifest: ToolPackManifest) -> tuple[bool, str]:
         # hard tier gate
         if manifest.min_tier and manifest.min_tier in _TIER_ORDER:
@@ -347,7 +380,7 @@ class ToolPackLoader:
                 mod_name = f"_toolpack_{manifest.id}"
                 # Remove the main module
                 sys.modules.pop(mod_name, None)
-                # Remove all submodules (e.g., _toolpack_roboflow.tools, .config)
+                # Remove all submodules (e.g., _toolpack_myapp.tools, .config)
                 to_remove = [key for key in sys.modules
                              if key.startswith(f"{mod_name}.")]
                 for key in to_remove:
@@ -361,12 +394,25 @@ class ToolPackLoader:
 _LOADERS: dict[tuple, ToolPackLoader] = {}
 
 
-def get_tool_pack_loader(extra_dirs: list[Path] | None = None) -> ToolPackLoader:
-    """Return a discovered ToolPackLoader (cached by the extra_dirs key)."""
-    key = tuple(str(d) for d in (extra_dirs or []))
+def get_tool_pack_loader(extra_dirs: list[Path] | None = None,
+                         enforce_entitlements: bool = True) -> ToolPackLoader:
+    """Return a discovered ToolPackLoader (cached by configuration).
+
+    Args:
+        extra_dirs: Extra directories to search for packs.
+        enforce_entitlements: If True (default), fail-closed during discovery:
+            skip packs whose entitlements are not met. If False (sovereign mode),
+            load all discovered packs regardless of entitlements.
+
+    Returns:
+        A cached, discovered ToolPackLoader instance. The cache key includes both
+        extra_dirs and enforce_entitlements to ensure configurations don't mix.
+    """
+    key = (tuple(str(d) for d in (extra_dirs or [])), bool(enforce_entitlements))
     loader = _LOADERS.get(key)
     if loader is None:
-        loader = ToolPackLoader(extra_dirs=extra_dirs)
+        loader = ToolPackLoader(extra_dirs=extra_dirs,
+                               enforce_entitlements=enforce_entitlements)
         loader.discover()
         _LOADERS[key] = loader
     return loader

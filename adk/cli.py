@@ -841,6 +841,8 @@ def cmd_up(args):
     require_register = bool(getattr(args, "require_register", False))
     provider = (getattr(args, "provider", "") or "").strip().lower()
     approval = getattr(args, "approve", None) or "file_write,shell_exec,shell"
+    reach = (getattr(args, "reach", "") or "tunnel").lower()
+    mesh_overlay_ip = None  # Set below if reach == "mesh"
     will_register = not getattr(args, "no_register", False) and not offline
 
     def _fail(code: int, error: str, hint: str = "", next_action: str = "") -> int:
@@ -991,8 +993,9 @@ def cmd_up(args):
                 will_register = False
 
     # ── cloudflared availability (auto-download if missing) ──
+    # Skip cloudflared for mesh mode (no tunnel needed)
     cf = None
-    if will_register:
+    if will_register and reach != "mesh":
         cf = _find_cloudflared()
         if not cf:
             if not non_interactive:
@@ -1025,6 +1028,11 @@ def cmd_up(args):
     child_env["AITHER_TOOL_APPROVAL"] = approval or ""
     if offline:
         child_env["AITHER_OFFLINE"] = "1"
+    if reach == "mesh":
+        # Mesh mode: bind to 0.0.0.0 and set overlay IP for registration
+        child_env["AITHER_SERVE_HOST"] = "0.0.0.0"
+        if mesh_overlay_ip:
+            child_env["AITHER_MESH_OVERLAY_IP"] = mesh_overlay_ip
     if use_gateway and portal_token:
         # Route inference through the hosted Aither brain with the portal token —
         # the router honours AITHER_LLM_BACKEND=gateway + AITHER_API_KEY (bearer).
@@ -1037,6 +1045,9 @@ def cmd_up(args):
             child_env["AITHER_INFERENCE_URL"] = _eps["inference_url"]
     serve_argv = [sys.executable, "-m", "adk.server",
                   "--port", str(port), "--identity", identity]
+    if reach == "mesh":
+        # Pass --host 0.0.0.0 for mesh mode (allow external access on overlay)
+        serve_argv += ["--host", "0.0.0.0"]
     if provider and provider != "gateway":
         serve_argv += ["--backend", provider]
     if not non_interactive:
@@ -1055,7 +1066,42 @@ def cmd_up(args):
     public_url = None
     tunnel_pid = None
     registered = False
-    if will_register and cf:
+    if reach == "mesh":
+        # Mesh mode: use overlay IP, no tunnel
+        mesh_overlay_ip = mesh_overlay_ip or os.environ.get("AITHER_MESH_OVERLAY_IP", "").strip()
+        if will_register and not mesh_overlay_ip:
+            return _fail(2, "mesh_mode_no_overlay_ip",
+                        "reach='mesh' requires AITHER_MESH_OVERLAY_IP to be set")
+        if mesh_overlay_ip and will_register:
+            if not non_interactive:
+                print(f"  [+] Mesh mode: overlay IP {mesh_overlay_ip}")
+            reg = (getattr(args, "register_url", "")
+                   or f"{portal}/api/genesis/v1/agent/fleet/register")
+            public_url = f"http://{mesh_overlay_ip}:{port}"
+            body = {"name": name, "invoke_url": public_url, "reach": "mesh",
+                    "agent_type": "adk-agent", "token": auth_token,
+                    "model": getattr(args, "model", None) or "", "provider_hint": provider}
+            hdrs = {"Content-Type": "application/json"}
+            if portal_token:
+                hdrs["Authorization"] = f"Bearer {portal_token}"
+            try:
+                rr = httpx.post(reg, json=body, headers=hdrs, timeout=20)
+                registered = rr.status_code < 300
+                if not registered:
+                    if require_register:
+                        daemon.kill_pid(server_pid)
+                        return _fail(5, f"registration rejected ({rr.status_code})",
+                                     rr.text[:200])
+                    if not non_interactive:
+                        print(f"  [!] Registration returned {rr.status_code} — "
+                              "agent is up locally; heartbeat will retry.")
+            except (httpx.HTTPError, OSError) as e:
+                if require_register:
+                    daemon.kill_pid(server_pid)
+                    return _fail(5, f"registration failed: {e}")
+                if not non_interactive:
+                    print(f"  [!] Registration failed ({e}) — heartbeat will retry.")
+    elif will_register and cf:
         tunnel_pid = daemon.spawn_detached(
             [cf, "tunnel", "--url", f"http://localhost:{port}", "--no-autoupdate"],
             tunnel_log)
@@ -4048,12 +4094,509 @@ def cmd_test(args):
     return result.returncode
 
 
+_BACKEND_PRESETS: dict[str, dict] = {
+    # Sovereign local default — Bonsai-27B on the AitherVLLMSwap server.
+    "local":   {"provider": "openai", "base_url": "http://localhost:8201/v1", "model": "bonsai-27b"},
+    "bonsai":  {"provider": "openai", "base_url": "http://localhost:8201/v1", "model": "bonsai-27b"},
+    # On-demand escalation to the mesh / cloud — each with a model the target serves.
+    "genesis": {"provider": "openai", "base_url": "http://localhost:8001/v1", "model": "aither-orchestrator"},
+    # Cloud inference is the AitherMCPGateway (mcp.aitherium.com) — it fronts the
+    # aither-* model roster. gateway.aitherium.com is the API/billing edge, NOT an
+    # inference endpoint (its /v1/models is empty), so "managed" routes via mcp too.
+    "mcp":     {"provider": "openai", "base_url": "https://mcp.aitherium.com/v1", "model": "aither-orchestrator"},
+    "gateway": {"provider": "openai", "base_url": "https://mcp.aitherium.com/v1", "model": "aither-orchestrator"},
+    "managed": {"provider": "openai", "base_url": "https://mcp.aitherium.com/v1", "model": "aither-orchestrator"},
+    # BYO-key providers — set the key first (`adk keys set <provider> <key>` or the
+    # GUI key field); the switch then uses the stored device-local key.
+    "claude":   {"provider": "anthropic", "model": "claude-sonnet-4-6"},
+    "anthropic": {"provider": "anthropic", "model": "claude-sonnet-4-6"},
+    "deepseek": {"provider": "deepseek", "model": "deepseek-chat"},
+}
+
+
+def _cmd_backend_use(preset: str) -> int:
+    """Switch the RUNNING agent's backend live (no restart) to a named preset.
+
+    Hits the agent's own POST /admin/llm/switch. From the local box this needs no
+    token (loopback-trusted); for a cloud preset the stored portal key is used.
+    """
+    import httpx
+
+    from adk import agent_daemon as daemon
+
+    cfg = _BACKEND_PRESETS.get(preset)
+    if not cfg:
+        print(f"  Unknown backend '{preset}'. Options: {', '.join(_BACKEND_PRESETS)}")
+        return 1
+
+    st = daemon.read_status() or {}
+    port = st.get("port") or 8080
+    body = dict(cfg)
+    body["persist"] = True
+    # Cloud presets authenticate with the saved portal token.
+    if preset in ("gateway", "mcp"):
+        saved = load_saved_config()
+        tok = saved.get("api_key") or saved.get("access_token") or ""
+        if tok:
+            body["api_key"] = tok
+
+    try:
+        r = httpx.post(f"http://127.0.0.1:{port}/admin/llm/switch", json=body, timeout=30)
+    except httpx.HTTPError as e:
+        print(f"  No running agent on :{port} to switch (start one with `adk up`). {e}")
+        return 1
+    if r.status_code == 200:
+        print(f"  [+] Switched live -> '{preset}'  ({cfg['base_url']}"
+              f"{', model ' + cfg['model'] if cfg.get('model') else ''})")
+        print("      No restart needed; persisted for next start.")
+        return 0
+    print(f"  Switch failed ({r.status_code}): {r.text[:200]}")
+    return 1
+
+
+def _fleet_apply_pack(args) -> int:
+    """Push+enable a bundled pack on any mesh agent via the running node's proxy.
+
+    `agent` = 'self'/'local' targets this node's /admin/packs/apply; any other
+    name targets /mesh/agents/{name}/admin/packs/apply (no SSH).
+    """
+    import httpx
+
+    from adk import agent_daemon as daemon
+
+    port = (daemon.read_status() or {}).get("port") or 8080
+    agent = (getattr(args, "agent", "") or "").strip()
+    pack = (getattr(args, "pack", "") or "").strip()
+    is_self = agent in ("", "self", "local", "this")
+    path = "/admin/packs/apply" if is_self else f"/mesh/agents/{agent}/admin/packs/apply"
+    try:
+        r = httpx.post(f"http://127.0.0.1:{port}{path}", json={"pack": pack}, timeout=90)
+    except httpx.HTTPError as e:
+        print(f"  No running agent on :{port} (start one with `adk up`). {e}")
+        return 1
+    if r.status_code == 200:
+        print(f"  [+] Applied pack '{pack}' to '{agent or 'this agent'}' (enabled + reloaded).")
+        return 0
+    detail = r.text[:200]
+    if r.status_code in (403, 404):
+        detail += "  (older agent may not support remote pack apply — upgrade it)"
+    print(f"  Apply failed ({r.status_code}): {detail}")
+    return 1
+
+
+def _relay_join_base(args) -> str:
+    """Resolve the AitherRelay API base (same as `adk relay join`)."""
+    if getattr(args, "url", ""):
+        return args.url.rstrip("/")
+    if getattr(args, "local", False):
+        return "https://localhost:8205/v1"
+    return "https://relay.aitherium.com/api/relay/v1"
+
+
+def _relay_acta_base(saved: dict, args) -> str:
+    """Resolve the ACTA/portal-gateway base URL (serves /v1/auth/keys)."""
+    for cand in (
+        getattr(args, "acta_url", "") or "",
+        os.environ.get("AITHER_ACTA_URL", ""),
+        os.environ.get("AITHERACTA_URL", ""),
+        saved.get("acta_url", ""),
+    ):
+        if cand:
+            return cand.rstrip("/")
+    if getattr(args, "local", False):
+        return "https://localhost:8206"          # portal-gateway (ACTA) on the mesh box
+    return "https://mcp.aitherium.com"            # cloud ACTA surface
+
+
+def _relay_resolve_owner_uid(acta_base: str, owner_key: str, verify) -> str:
+    """Return the AUTHENTICATED owner user_id from ACTA (never a caller-supplied id)."""
+    import httpx
+    try:
+        r = httpx.get(
+            f"{acta_base}/v1/auth/keys",
+            headers={"Authorization": f"Bearer {owner_key}"},
+            verify=verify, timeout=10.0, follow_redirects=True,
+        )
+        if r.status_code == 200 and "json" in r.headers.get("content-type", ""):
+            return str(r.json().get("user_id", "")).strip()
+    except Exception as exc:  # noqa: BLE001 — surfaced by caller, never crash
+        import logging as _logging
+        _logging.getLogger("adk.cli").debug("ACTA identity resolve failed: %s", exc)
+    return ""
+
+
+def _relay_enroll_roster(roster_path: Path, nick: str, owner_uid: str) -> tuple[bool, str]:
+    """Merge {nick: owner_uid} into the relay fleet-trust roster. Returns (wrote, msg)."""
+    try:
+        if roster_path.exists():
+            data = json.loads(roster_path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                data = {}
+        else:
+            data = {}
+        agents = data.get("agents")
+        if not isinstance(agents, dict):
+            agents = {}
+        if agents.get(nick) == owner_uid:
+            return True, f"already enrolled ({nick} -> {owner_uid})"
+        agents[nick] = owner_uid
+        data["agents"] = agents
+        roster_path.parent.mkdir(parents=True, exist_ok=True)
+        roster_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        return True, f"enrolled {nick} -> {owner_uid} in {roster_path}"
+    except OSError as exc:
+        return False, str(exc)
+
+
+def _relay_internal_token(args) -> str:
+    """The service-internal token needed to mint an agent-scoped ACTA key + write the
+    vault. Present on-mesh (container/host env); absent for a remote self-service host."""
+    return (getattr(args, "internal_token", "") or os.environ.get("AITHER_INTERNAL_SECRET", "")
+            or os.environ.get("AITHER_MASTER_KEY", "")).strip()
+
+
+def _relay_mint_agent_key(acta_base: str, uid: str, nick: str, internal_token: str, verify) -> str:
+    """Mint a REVOCABLE, agent_id-scoped ACTA key bound to owner `uid` via the internal
+    ACTA endpoint. Returns the raw key, or '' on failure. On-mesh only (needs the token)."""
+    import httpx
+    try:
+        r = httpx.post(
+            f"{acta_base}/v1/internal/users/{uid}/api-keys",
+            headers={"X-Internal-Token": internal_token},
+            json={"name": f"fleet-agent:{nick}", "agent_id": nick, "scopes": ["read"],
+                  "created_by": "adk-relay-provision",
+                  "metadata": {"purpose": "relay-fleet-agent", "nick": nick}},
+            verify=verify, timeout=20.0, follow_redirects=True,
+        )
+        if r.status_code == 200 and "json" in r.headers.get("content-type", ""):
+            return str(r.json().get("api_key", "")).strip()
+        print(f"  ! mint failed ({r.status_code}): {r.text[:160]}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"  ! mint error: {exc}")
+    return ""
+
+
+def _relay_store_credential(relay_base: str, nick: str, value: str, auth_token: str, verify) -> str:
+    """Store the agent's own relay credential in the encrypted lockbox via the relay
+    credential endpoint (agent-managed, admin-recoverable). Auth = the agent's own key.
+    Returns "" on success, else a short reason (never the secret)."""
+    import httpx
+    try:
+        r = httpx.post(
+            f"{relay_base}/agent/credential",
+            headers={"Authorization": f"Bearer {auth_token}"},
+            json={"value": value, "nick": nick, "metadata": {"source": "adk relay provision"}},
+            verify=verify, timeout=15.0, follow_redirects=True,
+        )
+        if r.status_code == 200:
+            return ""
+        return f"http {r.status_code}"
+    except Exception as exc:  # noqa: BLE001 — surface a reason, never the secret
+        return f"{type(exc).__name__}"
+
+
+def _relay_provision(args) -> int:
+    """Provision a fleet agent as a human-facing AitherRelay participant (no manual curling).
+
+    Binds <nick> to your AUTHENTICATED owner identity: resolves your user_id from ACTA,
+    enrolls `nick -> user_id` in the relay fleet-trust roster (so it may DM humans, not just
+    other agents), saves the relay credential locally so `adk relay join` uses it, and prints
+    the next step. The roster bind is identity-checked server-side — a key for a different
+    user cannot claim the nick.
+    """
+    from adk._tls import tls_verify
+
+    nick = (getattr(args, "nick", "") or "").strip()
+    if not nick:
+        print("Usage: adk relay provision <nick> [--local] [--acta-url URL] [--roster PATH] [--user-id ID]")
+        return 1
+
+    saved = load_saved_config()
+    owner_key = (getattr(args, "token", "") or os.environ.get("AITHER_API_KEY", "")
+                 or saved.get("api_key", "") or saved.get("access_token", ""))
+    if not owner_key:
+        print("  Not logged in. Run `adk login` first — provisioning binds the agent to YOUR identity.")
+        return 1
+
+    verify = tls_verify()
+    acta_base = _relay_acta_base(saved, args)
+
+    # 1) Resolve the authenticated owner user_id (server-derived, not caller-claimed).
+    owner_uid = (getattr(args, "user_id", "") or "").strip()
+    if owner_uid:
+        print(f"  Using owner user_id from --user-id: {owner_uid} (asserted).")
+    else:
+        owner_uid = _relay_resolve_owner_uid(acta_base, owner_key, verify)
+        if owner_uid:
+            print(f"  Resolved your identity from ACTA ({acta_base}): user_id={owner_uid}")
+    if not owner_uid:
+        print(f"  Could not resolve your user_id from ACTA at {acta_base}.")
+        print("  Re-run with --acta-url <portal-gateway> or pass --user-id <your-user_id> to assert it.")
+        return 1
+
+    # 2) Agent credential. Preference order:
+    #    a) explicit --agent-key
+    #    b) MINT a fresh revocable, agent-scoped key on-mesh (internal token available) +
+    #       store it in AitherSecrets — the real self-service path, no manual curling.
+    #    c) reuse your authenticated login key (resolves to owner_uid, which the roster needs).
+    agent_key = (getattr(args, "agent_key", "") or "").strip()
+    cred_kind = "supplied"
+    internal_token = _relay_internal_token(args)
+    if not agent_key and internal_token and not getattr(args, "no_mint", False):
+        minted = _relay_mint_agent_key(acta_base, owner_uid, nick, internal_token, verify)
+        if minted:
+            agent_key = minted
+            cred_kind = "minted"
+            # Store the credential in the agent's own encrypted lockbox via the relay
+            # (agent-managed + admin-recoverable). Authenticated by the minted key itself.
+            relay_base = _relay_join_base(args)
+            reason = _relay_store_credential(relay_base, nick, agent_key, agent_key, verify)
+            if not reason:
+                print(f"  Minted a revocable agent key and stored it in the agent lockbox "
+                      f"(recoverable via relay GET /v1/agent/credential).")
+            else:
+                print(f"  Minted a revocable agent key (lockbox store unavailable [{reason}]; "
+                      f"saved to local adk config).")
+    if not agent_key:
+        agent_key = owner_key
+        cred_kind = "reused-login"
+    reused = cred_kind == "reused-login"
+
+    # 3) Enroll the nick in the relay fleet-trust roster (write locally if reachable).
+    default_roster = os.environ.get("AITHER_RELAY_FLEET_TRUST_FILE", "") or str(
+        Path.cwd() / "AitherOS" / "config" / "relay" / "fleet_trust.json"
+    )
+    roster_path = Path(getattr(args, "roster", "") or default_roster)
+    wrote, msg = _relay_enroll_roster(roster_path, nick, owner_uid)
+    if wrote:
+        print(f"  Roster: {msg}")
+        print("  ! Restart aitheros-communication-core to apply the roster change (config is bind-mounted).")
+    else:
+        print(f"  Could not write the roster at {roster_path}: {msg}")
+        print("  On the relay host, add this to config/relay/fleet_trust.json then restart commcore:")
+        print(f'      {{"agents": {{"{nick}": "{owner_uid}"}}}}')
+
+    # 4) Persist the relay credential + nick locally so `adk relay join` picks it up.
+    _kind_note = {"minted": " (fresh revocable agent key)",
+                  "reused-login": " (reusing your login key — no on-mesh mint token)",
+                  "supplied": " (supplied --agent-key)"}.get(cred_kind, "")
+    try:
+        save_saved_config({"relay_token": agent_key, "relay_nick": nick})
+        print(f"  Saved relay credential for '{nick}' to your adk config{_kind_note}.")
+    except Exception as exc:  # noqa: BLE001
+        print(f"  ! Could not persist relay config: {exc}")
+
+    where = "--local" if getattr(args, "local", False) else ""
+    print(f"\n  Done. Bring the agent online:  adk relay join --nick {nick} {where}".rstrip())
+    if not wrote:
+        print("  (join will succeed but DMs to HUMANS stay quarantined until the roster entry lands + commcore restarts.)")
+    return 0
+
+
+def _relay_notifications(args) -> int:
+    """Get and optionally mark notifications as read."""
+    import asyncio
+    import json as _json
+    from datetime import datetime, timezone
+
+    # Resolve token + base URL (same pattern as relay join)
+    saved = load_saved_config()
+    token = (
+        getattr(args, "token", "")
+        or os.environ.get("AITHER_RELAY_TOKEN", "")
+        or saved.get("relay_token", "")
+        or saved.get("api_key", "")
+        or saved.get("access_token", "")
+    )
+    if not token:
+        print(
+            "  No relay credential. Run `adk relay provision <nick>` or `adk login`,"
+            " or pass --token / set AITHER_RELAY_TOKEN."
+        )
+        return 1
+
+    if getattr(args, "url", ""):
+        base = args.url.rstrip("/")
+    elif getattr(args, "local", False):
+        base = "https://localhost:8205/v1"
+    else:
+        base = "https://relay.aitherium.com/api/relay/v1"
+
+    nick = (
+        getattr(args, "nick", "")
+        or saved.get("relay_nick", "")
+        or saved.get("username", "")
+        or "aither"
+    )
+
+    async def _fetch():
+        import httpx
+        from adk._tls import tls_verify
+
+        verify = tls_verify()
+        async with httpx.AsyncClient(
+            follow_redirects=True, timeout=30, verify=verify
+        ) as client:
+            headers = {"Authorization": f"Bearer {token}"}
+            # GET /v1/notifications/{nick}?unread_only={unread_only}
+            unread_only = getattr(args, "unread", False)
+            url = f"{base}/notifications/{nick}"
+            params = {}
+            if unread_only:
+                params["unread_only"] = "true"
+
+            r = await client.get(url, headers=headers, params=params)
+            if r.status_code != 200:
+                print(f"Error: {r.status_code} — {r.text[:200]}")
+                return None
+
+            try:
+                data = r.json()
+            except ValueError:
+                print("Error: invalid JSON response")
+                return None
+
+            notifs = data.get("notifications", [])
+            unread_count = data.get("unread_count", 0)
+
+            # Mark as read if --ack is set
+            if notifs and getattr(args, "ack", False):
+                ids = [n.get("id") for n in notifs if n.get("id")]
+                if ids:
+                    r2 = await client.post(
+                        f"{base}/notifications/{nick}/read",
+                        headers=headers,
+                        json={"ids": ids},
+                    )
+                    if r2.status_code != 200:
+                        print(f"Warning: failed to mark as read: {r2.status_code}")
+
+            return notifs, unread_count
+
+    result = asyncio.run(_fetch())
+    if result is None:
+        return 1
+
+    notifs, unread_count = result
+
+    if not notifs:
+        print(f"No notifications (unread: {unread_count}).")
+        return 0
+
+    # Print compact table
+    print(f"\nNotifications (unread: {unread_count}):")
+    print(
+        f"  {'ID':<8} {'Type':<12} {'From':<16} {'Channel':<16} {'Age':<8} {'Read':<5}"
+    )
+    print("  " + "-" * 80)
+
+    now = datetime.now(timezone.utc)
+    for notif in notifs:
+        notif_id = notif.get("id", "?")[:8]
+        notif_type = notif.get("type", "?")[:12]
+        from_nick = notif.get("from_nick", "?")[:16]
+        channel = notif.get("channel", "?")[:16]
+        created_at_str = notif.get("created_at", "")
+        read = "yes" if notif.get("read", False) else "no"
+
+        # Parse created_at and compute age
+        try:
+            created_at = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
+            age_s = int((now - created_at).total_seconds())
+            if age_s < 60:
+                age = f"{age_s}s"
+            elif age_s < 3600:
+                age = f"{age_s // 60}m"
+            else:
+                age = f"{age_s // 3600}h"
+        except (ValueError, AttributeError):
+            age = "?"
+
+        print(
+            f"  {notif_id:<8} {notif_type:<12} {from_nick:<16} "
+            f"{channel:<16} {age:<8} {read:<5}"
+        )
+
+    if getattr(args, "ack", False):
+        print(f"\n  Marked {len(notifs)} notification(s) as read.")
+
+    return 0
+
+
+def cmd_relay(args):
+    """Connect this agent to AitherRelay as a chat participant — one command.
+
+    `adk relay join` joins the relay and serves DMs: a human DMs this agent and
+    it replies on its OWN inference (no SSH, no manual curling). Credential and
+    URL are auto-resolved from your login/config; override with flags.
+    `adk relay provision <nick>` enrolls a fleet agent so it may DM humans.
+    `adk relay notifications` fetches stored notifications for the agent.
+    """
+    import asyncio
+
+    if getattr(args, "relay_command", None) == "provision":
+        return _relay_provision(args)
+
+    if getattr(args, "relay_command", None) == "notifications":
+        return _relay_notifications(args)
+
+    if getattr(args, "relay_command", None) != "join":
+        print("Usage: adk relay join [--nick NAME] [--url BASE] [--local] [--channel #agents]")
+        print("       adk relay provision <nick> [--local] [--acta-url URL] [--roster PATH]")
+        print("       adk relay notifications [--nick NAME] [--local] [--unread] [--ack]")
+        return 1
+
+    from adk import AitherAgent
+    from adk.relay_client import RelayClient
+
+    saved = load_saved_config()
+    token = (getattr(args, "token", "") or os.environ.get("AITHER_RELAY_TOKEN", "")
+             or saved.get("relay_token", "")
+             or saved.get("api_key", "") or saved.get("access_token", ""))
+    if not token:
+        print("  No relay credential. Run `adk relay provision <nick>` or `adk login`,"
+              " or pass --token / set AITHER_RELAY_TOKEN.")
+        return 1
+
+    if getattr(args, "url", ""):
+        base = args.url.rstrip("/")
+    elif getattr(args, "local", False):
+        base = "https://localhost:8205/v1"       # local fleet AitherRelay (internal CA)
+    else:
+        base = "https://relay.aitherium.com/api/relay/v1"   # cloud fabric (public cert)
+
+    nick = (getattr(args, "nick", "") or saved.get("relay_nick", "")
+            or saved.get("username", "") or "aither")
+    channel = getattr(args, "channel", "") or "#agents"
+
+    agent = AitherAgent(nick)
+    client = RelayClient(base_url=base, token=token, nick=nick, agent=agent, channel=channel)
+    print(f"  Joining AitherRelay as '{nick}' at {base} — serving DMs (Ctrl+C to leave).")
+    try:
+        asyncio.run(client.run())
+    except KeyboardInterrupt:
+        print("\n  Left the relay.")
+    except Exception as e:  # noqa: BLE001 — surface a clean error, not a traceback
+        print(f"  Relay error: {e}")
+        return 1
+    return 0
+
+
 def cmd_backend(args):
-    """Manage LLM backends — list, set, test, switch, status."""
+    """Manage LLM backends — list, set, use, test, switch, status."""
     import asyncio
     import time
 
     sub = getattr(args, "backend_command", None)
+
+    if sub == "guide":
+        from adk.llm.onboarding import guide, provider_menu
+        name = getattr(args, "provider", None)
+        print(guide(name) if name else provider_menu())
+        return 0
+
+    if sub == "use":
+        return _cmd_backend_use(getattr(args, "preset", "") or "")
 
     if sub == "list":
         async def _list():
@@ -4074,7 +4617,8 @@ def cmd_backend(args):
             print()
             print("Available:")
             for name in ("ollama", "vllm", "openai", "anthropic", "deepseek",
-                         "groq", "together", "gateway", "lmstudio", "genesis", "picolm"):
+                         "moonshot", "groq", "together", "gateway", "lmstudio",
+                         "genesis", "picolm"):
                 print(f"  - {name}")
         asyncio.run(_list())
         return 0
@@ -4093,6 +4637,8 @@ def cmd_backend(args):
                 data["anthropic_api_key"] = api_key
             elif provider == "deepseek":
                 data["deepseek_api_key"] = api_key
+            elif provider == "moonshot":
+                data["moonshot_api_key"] = api_key
             else:
                 data["api_key"] = api_key
         if base_url:
@@ -4531,6 +5077,7 @@ _KNOWN_PROVIDERS = {
     "openai": {"env": "OPENAI_API_KEY", "test_url": "https://api.openai.com/v1/models", "label": "OpenAI"},
     "anthropic": {"env": "ANTHROPIC_API_KEY", "test_url": "https://api.anthropic.com/v1/messages", "label": "Anthropic"},
     "deepseek": {"env": "DEEPSEEK_API_KEY", "test_url": "https://api.deepseek.com/v1/models", "label": "DeepSeek"},
+    "moonshot": {"env": "MOONSHOT_API_KEY", "test_url": "https://api.moonshot.ai/v1/models", "label": "Moonshot Kimi"},
     "google": {"env": "GOOGLE_API_KEY", "test_url": "https://generativelanguage.googleapis.com/v1/models", "label": "Google AI"},
     "openrouter": {"env": "OPENROUTER_API_KEY", "test_url": "https://openrouter.ai/api/v1/models", "label": "OpenRouter"},
     "groq": {"env": "GROQ_API_KEY", "test_url": "https://api.groq.com/openai/v1/models", "label": "Groq"},
@@ -8167,8 +8714,14 @@ def _cmd_fleet(args) -> int:
 
     from adk.fleet_manager import FleetManager
 
-    mgr = FleetManager()
     cmd = getattr(args, "fleet_command", None)
+
+    # apply-pack targets a mesh agent through the running node's proxy, not the
+    # FleetManager lifecycle store — handle it before constructing the manager.
+    if cmd == "apply-pack":
+        return _fleet_apply_pack(args)
+
+    mgr = FleetManager()
 
     def _emit(obj, human):
         if getattr(args, "json_output", False):
@@ -9462,6 +10015,8 @@ def _register_commands(sub):
     up_p.add_argument("--portal", default="https://veil.aitherium.com", help="Control-plane base URL")
     up_p.add_argument("--login-url", help="Device-flow login base URL")
     up_p.add_argument("--register-url", help="Full fleet-register URL (overrides --portal)")
+    up_p.add_argument("--reach", choices=["tunnel", "mesh"], default="tunnel",
+                      help="Connectivity mode: tunnel (Cloudflare, default) or mesh (overlay IP)")
     up_p.add_argument("--dry-run", action="store_true", help="Show what would happen without starting anything")
 
     # adk down — stop the agent started by `adk up`
@@ -9501,6 +10056,65 @@ def _register_commands(sub):
 
     # adk logout
     sub.add_parser("logout", help="Clear saved auth tokens")
+
+    # adk claude-account — manage multiple Claude Code logins
+    claude_account_p = sub.add_parser(
+        "claude-account",
+        help="Manage multiple Claude Code (Anthropic) account profiles",
+    )
+    claude_account_sub = claude_account_p.add_subparsers(dest="claude_account_command")
+
+    ca_save_p = claude_account_sub.add_parser("save", help="Save current Claude Code login")
+    ca_save_p.add_argument("name", help="Profile name (e.g., personal, work)")
+    ca_save_p.add_argument("--force", action="store_true", help="Overwrite existing profile without asking")
+
+    claude_account_sub.add_parser("list", help="List saved profiles")
+
+    ca_switch_p = claude_account_sub.add_parser("switch", help="Switch to a saved profile")
+    ca_switch_p.add_argument("name", help="Profile name")
+
+    claude_account_sub.add_parser("current", help="Show current profile name")
+
+    ca_remove_p = claude_account_sub.add_parser("remove", help="Delete a saved profile")
+    ca_remove_p.add_argument("name", help="Profile name")
+
+    # adk claude — scoped headless Claude Code subagent runner
+    claude_p = sub.add_parser(
+        "claude",
+        help="Run scoped headless Claude Code subagents (serve/spawn/runs/kill)",
+    )
+    claude_sub = claude_p.add_subparsers(dest="claude_command")
+
+    cl_serve_p = claude_sub.add_parser("serve", help="Run the subagent runner daemon")
+    cl_serve_p.add_argument("--host", default="", help="Bind host (default 127.0.0.1)")
+    cl_serve_p.add_argument("--port", type=int, default=0, help="Bind port (default 8360)")
+    cl_serve_p.add_argument("--token", default="", help="Bearer token (default: resolved/generated)")
+
+    cl_spawn_p = claude_sub.add_parser("spawn", help="Spawn a scoped subagent run")
+    cl_spawn_p.add_argument("--task", default="", help="Task prompt text")
+    cl_spawn_p.add_argument("--task-file", default="", help="Read task prompt from file")
+    cl_spawn_p.add_argument("--allow", default="", help="Comma list of allowed tools (REQUIRED)")
+    cl_spawn_p.add_argument("--deny", default="", help="Comma list of disallowed tools")
+    cl_spawn_p.add_argument("--model", default="", help="Model override (e.g. haiku)")
+    cl_spawn_p.add_argument("--append-system-prompt", default="", help="Appended system prompt")
+    cl_spawn_p.add_argument("--mcp-config", default="", help="Path to scoped MCP config JSON")
+    cl_spawn_p.add_argument("--cwd", default="", help="Working directory (default: isolated workdir)")
+    cl_spawn_p.add_argument("--timeout", type=int, default=0, help="Run timeout seconds (default 600)")
+    cl_spawn_p.add_argument("--budget-usd", type=float, default=0, help="Max spend for this run")
+    cl_spawn_p.add_argument("--account", default="", help="Saved claude-account profile for this run")
+    cl_spawn_p.add_argument("--goal", default="", help="Goal id to attribute this run to")
+    cl_spawn_p.add_argument("--url", default="", help="Runner URL (default http://127.0.0.1:8360)")
+    cl_spawn_p.add_argument("--token", default="", help="Bearer token")
+    cl_spawn_p.add_argument("--no-wait", action="store_true", help="Return run_id immediately")
+
+    cl_runs_p = claude_sub.add_parser("runs", help="List subagent runs")
+    cl_runs_p.add_argument("--url", default="", help="Runner URL")
+    cl_runs_p.add_argument("--token", default="", help="Bearer token")
+
+    cl_kill_p = claude_sub.add_parser("kill", help="Cancel a run")
+    cl_kill_p.add_argument("run_id", help="Run id to cancel")
+    cl_kill_p.add_argument("--url", default="", help="Runner URL")
+    cl_kill_p.add_argument("--token", default="", help="Bearer token")
 
     # adk agent-prompt
     ap_p = sub.add_parser("agent-prompt", help="Print the setup prompt for AI coding agents")
@@ -9888,11 +10502,44 @@ def _register_commands(sub):
     sub.add_parser("disconnect", help="Disconnect from desktop AitherOS mesh")
 
     # adk backend — manage LLM backends
+    relay_p = sub.add_parser("relay", help="Connect this agent to AitherRelay chat (join + serve DMs)")
+    relay_sub = relay_p.add_subparsers(dest="relay_command")
+    relay_join_p = relay_sub.add_parser("join", help="Join AitherRelay and answer DMs on this agent's own inference")
+    relay_join_p.add_argument("--nick", help="Agent nick on the relay (default: your login username)")
+    relay_join_p.add_argument("--url", help="Relay API base (default: cloud relay.aitherium.com)")
+    relay_join_p.add_argument("--local", action="store_true", help="Use the local fleet relay (https://localhost:8205/v1)")
+    relay_join_p.add_argument("--channel", default="#agents", help="Channel to join (default: #agents)")
+    relay_join_p.add_argument("--token", help="Bearer credential (default: provisioned/saved login / $AITHER_RELAY_TOKEN)")
+
+    relay_prov_p = relay_sub.add_parser(
+        "provision", help="Enroll a fleet agent so it may DM humans (binds nick -> your owner identity)")
+    relay_prov_p.add_argument("nick", help="Agent nick to enroll (e.g. optiplex-agent)")
+    relay_prov_p.add_argument("--local", action="store_true", help="Use the local mesh ACTA/portal-gateway (https://localhost:8206)")
+    relay_prov_p.add_argument("--acta-url", help="ACTA/portal-gateway base URL (serves /v1/auth/keys)")
+    relay_prov_p.add_argument("--roster", help="Path to the relay fleet_trust.json (default: ./AitherOS/config/relay/fleet_trust.json or $AITHER_RELAY_FLEET_TRUST_FILE)")
+    relay_prov_p.add_argument("--user-id", help="Assert your owner user_id (skips ACTA lookup)")
+    relay_prov_p.add_argument("--agent-key", help="Pre-minted agent-scoped ACTA key (skip minting)")
+    relay_prov_p.add_argument("--token", help="Owner bearer credential (default: your saved login / $AITHER_API_KEY)")
+    relay_prov_p.add_argument("--internal-token", help="Service-internal token to MINT a revocable agent key + write the vault (default: $AITHER_INTERNAL_SECRET; on-mesh only)")
+    relay_prov_p.add_argument("--secrets-url", help="AitherSecrets base URL for storing the minted key (default: on-mesh vault)")
+    relay_prov_p.add_argument("--no-mint", action="store_true", help="Do not mint; reuse your login key even if an internal token is present")
+
+    relay_notif_p = relay_sub.add_parser(
+        "notifications", help="Get stored notifications for this agent (one-shot)")
+    relay_notif_p.add_argument("--nick", help="Agent nick on the relay (default: your login username)")
+    relay_notif_p.add_argument("--url", help="Relay API base (default: cloud relay.aitherium.com)")
+    relay_notif_p.add_argument("--local", action="store_true", help="Use the local fleet relay (https://localhost:8205/v1)")
+    relay_notif_p.add_argument("--unread", action="store_true", help="Only show unread notifications")
+    relay_notif_p.add_argument("--ack", action="store_true", help="Mark retrieved notifications as read")
+    relay_notif_p.add_argument("--token", help="Bearer credential (default: provisioned/saved login / $AITHER_RELAY_TOKEN)")
+
     backend_p = sub.add_parser("backend", help="Manage LLM backends (list, set, test, switch, status)")
     backend_sub = backend_p.add_subparsers(dest="backend_command")
     backend_sub.add_parser("list", help="Show detected and configured backends")
+    backend_guide_p = backend_sub.add_parser("guide", help="Step-by-step setup guide for a backend (no arg = menu)")
+    backend_guide_p.add_argument("provider", nargs="?", help="Backend or model name (e.g. moonshot, ollama, kimi-k3, gemma4)")
     backend_set_p = backend_sub.add_parser("set", help="Set default backend")
-    backend_set_p.add_argument("provider", help="Provider: ollama, vllm, openai, anthropic, deepseek, groq, together, gateway")
+    backend_set_p.add_argument("provider", help="Provider: ollama, vllm, openai, anthropic, deepseek, moonshot, groq, together, gateway")
     backend_set_p.add_argument("--api-key", help="API key for the provider")
     backend_set_p.add_argument("--base-url", help="Custom base URL")
     backend_set_p.add_argument("--model", help="Default model")
@@ -9904,6 +10551,13 @@ def _register_commands(sub):
     backend_switch_p = backend_sub.add_parser("switch", help="Switch to a different inference backend")
     backend_switch_p.add_argument("target_backend", choices=["ollama", "llamacpp", "vllm"],
                                   help="Target backend to switch to")
+    backend_use_p = backend_sub.add_parser(
+        "use", help="Switch the RUNNING agent live to a preset (no restart)")
+    backend_use_p.add_argument(
+        "preset",
+        choices=["local", "bonsai", "genesis", "mcp", "gateway", "managed", "claude", "anthropic", "deepseek"],
+        help="local/bonsai=sovereign Bonsai-27B; genesis/mcp/gateway/managed=mesh/cloud; "
+             "claude/deepseek=BYO-key (set key first)")
     backend_sub.add_parser("status", help="Show current backend configuration and connectivity")
 
     # adk keys — manage cloud provider API keys
@@ -10234,6 +10888,10 @@ def _register_commands(sub):
     fleet_connect_p.add_argument("agent_name", help="Name/identifier for the local agent")
     fleet_connect_p.add_argument("mcp_url", help="Public URL where the local agent's MCP is reachable")
     fleet_connect_p.add_argument("--json", dest="json_output", action="store_true", help="JSON output")
+    fleet_applypack_p = fleet_sub.add_parser(
+        "apply-pack", help="Push+enable a bundled pack on a mesh agent (no SSH; 'self' = this node)")
+    fleet_applypack_p.add_argument("agent", help="Agent name (or 'self' for this node)")
+    fleet_applypack_p.add_argument("pack", help="Bundled pack name")
 
     # adk support — help and community links
     sub.add_parser("support", help="Get help — Discord, GitHub, docs")
@@ -10751,6 +11409,12 @@ def main():
         sys.exit(cmd_whoami(args))
     elif args.command == "logout":
         sys.exit(cmd_logout(args))
+    elif args.command == "claude-account":
+        from adk.claude_accounts import cmd_claude_account
+        sys.exit(cmd_claude_account(args))
+    elif args.command == "claude":
+        from adk.claude_runner import cmd_claude
+        sys.exit(cmd_claude(args))
     elif args.command == "agent-prompt":
         from adk.agent_prompt import cmd_agent_prompt
         sys.exit(cmd_agent_prompt(args))
@@ -10806,6 +11470,8 @@ def main():
         sys.exit(cmd_status(args))
     elif args.command == "admin":
         sys.exit(cmd_admin(args))
+    elif args.command == "relay":
+        sys.exit(cmd_relay(args))
     elif args.command == "backend":
         sys.exit(cmd_backend(args))
     elif args.command == "keys":

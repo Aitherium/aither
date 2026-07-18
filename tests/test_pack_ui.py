@@ -508,3 +508,234 @@ def register(registry):
         n = loader.register_on_adk_agent(manifest, agent)
         # With the fix, the relative imports should succeed and register the tool
         assert n == 1, f"Pack should register 1 tool, but got {n}"
+
+
+# ── Fail-closed entitlement gating ──────────────────────────────────────
+
+class TestEntitlementGating:
+    def test_enforce_true_raises_on_unmet_hard_gate(self, tmp_path):
+        """When enforce_entitlements=True (default), discover() raises RuntimeError
+        when a pack's hard entitlement gate is not met."""
+        from adk import tool_pack_loader
+        from unittest.mock import patch
+
+        # Create a pack with require_all_entitlements=true and unmet entitlements
+        pack_dir = tmp_path / "strict_pack"
+        pack_dir.mkdir()
+        (pack_dir / ".toolpack.yaml").write_text(
+            """
+id: strict_pack
+name: Strict Pack
+version: 1.0.0
+description: A pack that requires all entitlements
+entitlements:
+  - premium_feature
+  - advanced_ai
+require_all_entitlements: true
+mcp_tools:
+  - strict_tool
+tool_modules:
+  - strict_pack
+""",
+            encoding="utf-8",
+        )
+        (pack_dir / "__init__.py").write_text(
+            """
+def register(registry):
+    return 1
+""",
+            encoding="utf-8",
+        )
+
+        tool_pack_loader._LOADERS.clear()
+        # Mock: caller has NO entitlements (both checks return False)
+        with patch(
+            "adk.tool_pack_loader.ToolPackLoader._entitled",
+            return_value=False,
+        ):
+            with patch.dict(os.environ, {"AITHER_TOOLPACK_DIRS": str(tmp_path)},
+                           clear=False):
+                loader = tool_pack_loader.ToolPackLoader(enforce_entitlements=True)
+                with pytest.raises(RuntimeError) as exc_info:
+                    loader.discover()
+                # Exception message should mention the pack and the reason
+                assert "strict_pack" in str(exc_info.value)
+                assert "missing entitlements" in str(exc_info.value)
+
+    def test_enforce_false_allows_unmet_entitlements(self, tmp_path):
+        """When enforce_entitlements=False (sovereign mode), discover() loads
+        packs even if their entitlements are unmet."""
+        from adk import tool_pack_loader
+        from unittest.mock import patch
+
+        pack_dir = tmp_path / "strict_pack"
+        pack_dir.mkdir()
+        (pack_dir / ".toolpack.yaml").write_text(
+            """
+id: strict_pack
+name: Strict Pack
+version: 1.0.0
+description: A pack that requires all entitlements
+entitlements:
+  - premium_feature
+  - advanced_ai
+require_all_entitlements: true
+mcp_tools:
+  - strict_tool
+tool_modules:
+  - strict_pack
+""",
+            encoding="utf-8",
+        )
+        (pack_dir / "__init__.py").write_text(
+            """
+def register(registry):
+    return 1
+""",
+            encoding="utf-8",
+        )
+
+        tool_pack_loader._LOADERS.clear()
+        # Mock: caller has NO entitlements
+        with patch(
+            "adk.tool_pack_loader.ToolPackLoader._entitled",
+            return_value=False,
+        ):
+            with patch.dict(os.environ, {"AITHER_TOOLPACK_DIRS": str(tmp_path)},
+                           clear=False):
+                # When enforce_entitlements=False, pack should load successfully
+                loader = tool_pack_loader.ToolPackLoader(enforce_entitlements=False)
+                manifests = loader.discover()
+                assert "strict_pack" in manifests
+
+    def test_enforce_true_raises_on_tier_gate(self, tmp_path):
+        """When enforce_entitlements=True, discover() raises RuntimeError
+        when a pack's min_tier requirement is not met."""
+        from adk import tool_pack_loader
+        from unittest.mock import patch
+
+        pack_dir = tmp_path / "enterprise_pack"
+        pack_dir.mkdir()
+        (pack_dir / ".toolpack.yaml").write_text(
+            """
+id: enterprise_pack
+name: Enterprise Pack
+version: 1.0.0
+description: A pack requiring enterprise tier
+min_tier: enterprise
+mcp_tools:
+  - enterprise_tool
+tool_modules:
+  - enterprise_pack
+""",
+            encoding="utf-8",
+        )
+        (pack_dir / "__init__.py").write_text(
+            """
+def register(registry):
+    return 1
+""",
+            encoding="utf-8",
+        )
+
+        tool_pack_loader._LOADERS.clear()
+        # Mock: active tier is 'free' (lower than required 'enterprise')
+        with patch(
+            "adk.tool_pack_loader.ToolPackLoader._active_tier",
+            return_value="free",
+        ):
+            with patch.dict(os.environ, {"AITHER_TOOLPACK_DIRS": str(tmp_path)},
+                           clear=False):
+                loader = tool_pack_loader.ToolPackLoader(enforce_entitlements=True)
+                with pytest.raises(RuntimeError) as exc_info:
+                    loader.discover()
+                assert "enterprise_pack" in str(exc_info.value)
+                assert "requires tier" in str(exc_info.value)
+
+    def test_enforce_true_passes_met_entitlements(self, tmp_path):
+        """When enforce_entitlements=True and all entitlements are met,
+        discover() succeeds."""
+        from adk import tool_pack_loader
+        from unittest.mock import patch
+
+        pack_dir = tmp_path / "premium_pack"
+        pack_dir.mkdir()
+        (pack_dir / ".toolpack.yaml").write_text(
+            """
+id: premium_pack
+name: Premium Pack
+version: 1.0.0
+description: A pack that requires premium entitlements
+entitlements:
+  - premium_feature
+require_all_entitlements: true
+mcp_tools:
+  - premium_tool
+tool_modules:
+  - premium_pack
+""",
+            encoding="utf-8",
+        )
+        (pack_dir / "__init__.py").write_text(
+            """
+def register(registry):
+    return 1
+""",
+            encoding="utf-8",
+        )
+
+        tool_pack_loader._LOADERS.clear()
+        # Mock: caller HAS the premium_feature entitlement
+        with patch(
+            "adk.tool_pack_loader.ToolPackLoader._entitled",
+            return_value=True,
+        ):
+            with patch.dict(os.environ, {"AITHER_TOOLPACK_DIRS": str(tmp_path)},
+                           clear=False):
+                loader = tool_pack_loader.ToolPackLoader(enforce_entitlements=True)
+                manifests = loader.discover()
+                assert "premium_pack" in manifests
+
+    def test_soft_gate_allows_unmet_entitlements(self, tmp_path):
+        """Packs without require_all_entitlements=true (soft gate) are allowed
+        regardless of enforce_entitlements setting."""
+        from adk import tool_pack_loader
+        from unittest.mock import patch
+
+        pack_dir = tmp_path / "soft_pack"
+        pack_dir.mkdir()
+        (pack_dir / ".toolpack.yaml").write_text(
+            """
+id: soft_pack
+name: Soft Pack
+version: 1.0.0
+description: A pack with optional entitlements (soft gate)
+entitlements:
+  - premium_feature
+require_all_entitlements: false
+mcp_tools:
+  - soft_tool
+tool_modules:
+  - soft_pack
+""",
+            encoding="utf-8",
+        )
+        (pack_dir / "__init__.py").write_text(
+            """
+def register(registry):
+    return 1
+""",
+            encoding="utf-8",
+        )
+
+        tool_pack_loader._LOADERS.clear()
+        # Mock: caller has NO entitlements (but soft gate allows it)
+        with patch(
+            "adk.tool_pack_loader.ToolPackLoader._entitled",
+            return_value=False,
+        ):
+            with patch.dict(os.environ, {"AITHER_TOOLPACK_DIRS": str(tmp_path)},
+                           clear=False):
+                loader = tool_pack_loader.ToolPackLoader(enforce_entitlements=True)
+                manifests = loader.discover()
+                assert "soft_pack" in manifests

@@ -1,6 +1,6 @@
 """Cloudflare pack — cf_* agent tools.
 
-Design rules (same doctrine as the roboflow pack):
+Design rules (same doctrine as other tool packs):
   * Pure HTTP (httpx). No wrangler, no cloudflare SDK, no browser OAuth.
   * Fail soft with actionable guidance — a missing token or an under-scoped
     token is a STATUS with a fix, never an exception into the agent loop.

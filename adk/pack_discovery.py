@@ -13,12 +13,12 @@ A "pack" is a pip-installable package that ships:
 - ``skills/``          — skill assets (.md files)
 - ``packs/``           — tool pack manifests
 
-Customers install: ``pip install aither-adk aither-pack-gargbot``
+Customers install: ``pip install aither-adk aither-pack-myapp``
 Then run: ``adk-workspace`` — auto-discovers the brain pack.
 
 Entry point registration in the pack's pyproject.toml:
     [project.entry-points."aither.brain_packs"]
-    gargbot = "aither_pack_gargbot:get_pack_dir"
+    myapp = "aither_pack_myapp:get_pack_dir"
 """
 
 from __future__ import annotations

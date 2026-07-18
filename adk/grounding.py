@@ -8,7 +8,7 @@ of temporal truth — Genesis ``FluxContextState`` — surfaced by
 ``lib.core.AitherContextAssembler.get_system_state_block``. This helper reuses
 it when AitherOS is co-located (Genesis / portal-kit containers), and otherwise
 computes the same block locally from ``AITHER_TIMEZONE`` so the standalone ADK
-(public front-door, GargBot) is grounded too.
+agents are grounded too.
 
 Kept adk-internal and dependency-optional on purpose: the ``lib.core`` import is
 lazy + guarded, so importing this never creates a hard AitherOS dependency and

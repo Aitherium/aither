@@ -76,7 +76,16 @@ button.stop{background:#c0392b}
   <select id="agentPick" title="Which agent answers" style="margin-left:10px;background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:4px 8px;font:inherit;font-size:13px">
     <option value="">this agent (local)</option>
   </select>
+  <select id="backendPick" title="Which brain runs inference — switch at will" style="margin-left:8px;background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:4px 8px;font:inherit;font-size:13px">
+    <option value="local">🖥 Local Bonsai-27B</option>
+    <option value="genesis">🧠 Genesis (local mesh)</option>
+    <option value="mcp">☁ MCP Cloud</option>
+    <option value="managed">☁ Managed (gateway)</option>
+    <option value="claude">🅰 Claude (BYO key)</option>
+    <option value="deepseek">🐳 DeepSeek (BYO key)</option>
+  </select>
   <span class="spacer"></span>
+  <button class="icon" id="packsBtn" title="Manage packs on the selected agent">📦 Packs</button>
   <button class="icon" id="clearBtn" title="New conversation">＋ New</button>
   <button class="icon" id="gearBtn" title="Settings">⚙ Settings</button>
 </header>
@@ -181,6 +190,87 @@ button.stop{background:#c0392b}
       pick.appendChild(o);
     });
   }).catch(function(){});
+
+  // Backend switcher — flip the running agent's brain live (no restart).
+  // Sovereign Bonsai by default; escalate to genesis/mesh/cloud at will.
+  var BACKENDS={
+    local:{provider:'openai',base_url:'http://localhost:8201/v1',model:'bonsai-27b'},
+    genesis:{provider:'openai',base_url:'http://localhost:8001/v1',model:'aither-orchestrator'},
+    mcp:{provider:'openai',base_url:'https://mcp.aitherium.com/v1',model:'aither-orchestrator'},
+    managed:{provider:'gateway',base_url:'https://gateway.aitherium.com/v1',model:'aither-orchestrator'},
+    claude:{provider:'anthropic',model:'claude-sonnet-4-6',byoKey:true},
+    deepseek:{provider:'deepseek',model:'deepseek-chat',byoKey:true}
+  };
+  var backendPick=document.getElementById('backendPick');
+  // Target the SELECTED mesh agent (agentPick) via the /mesh/agents/{name}/admin
+  // proxy — so you manage ANY registered agent from here, no SSH. "" = this local agent.
+  function adminBase(){var a=agentPick.value;return a?('/mesh/agents/'+encodeURIComponent(a)+'/admin/'):'/admin/';}
+  function targetName(){return agentPick.value||'this agent';}
+  function doSwitch(p,label,note){
+    var body={provider:p.provider,persist:true};
+    if(p.base_url)body.base_url=p.base_url; if(p.model)body.model=p.model;
+    fetch(adminBase()+'llm/switch',{method:'POST',headers:hdrs({'Content-Type':'application/json'}),body:JSON.stringify(body)})
+      .then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j}})})
+      .then(function(res){
+        if(res.ok){note.innerHTML='<span style="color:var(--dim)"><b>'+esc(targetName())+'</b> now using <b>'+label+'</b>'+(p.base_url?(' — '+p.base_url):'')+' ('+p.model+').</span>';return;}
+        if(p.byoKey){promptKeyAndRetry(p,label,note);return;}
+        note.innerHTML='<span style="color:#e66">Switch failed on '+esc(targetName())+': '+esc(res.j.error||res.j.detail||'error')+'</span>';
+      })
+      .catch(function(e){note.innerHTML='<span style="color:#e66">Switch error: '+esc(e.message)+'</span>';});
+  }
+  function promptKeyAndRetry(p,label,note){
+    note.innerHTML='';
+    var wrap=document.createElement('div');
+    wrap.innerHTML='<div style="color:var(--dim);margin-bottom:6px">'+label+' needs an API key (stored locally on this box):</div>';
+    var inp=document.createElement('input');inp.type='password';inp.placeholder=p.provider+' API key';
+    inp.style.cssText='padding:8px 10px;border-radius:8px;border:1px solid #333;background:#111;color:#eee;width:55%;margin-right:8px';
+    var go=document.createElement('button');go.textContent='Save & switch';
+    go.style.cssText='padding:8px 14px;border-radius:8px;border:0;background:#3b82f6;color:#fff;cursor:pointer';
+    wrap.appendChild(inp);wrap.appendChild(go);note.appendChild(wrap);inp.focus();
+    function save(){var k=inp.value.trim();if(!k)return;
+      note.innerHTML='<span style="color:var(--dim)">Saving key on '+esc(targetName())+'…</span>';
+      fetch(adminBase()+'llm/keys',{method:'POST',headers:hdrs({'Content-Type':'application/json'}),body:JSON.stringify({provider:p.provider,api_key:k})})
+        .then(function(r){return r.json()}).then(function(){doSwitch(p,label,note);})
+        .catch(function(e){note.innerHTML='<span style="color:#e66">Key save error: '+esc(e.message)+'</span>';});
+    }
+    go.addEventListener('click',save);
+    inp.addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();save();}});
+  }
+  backendPick.addEventListener('change',function(){
+    var p=BACKENDS[backendPick.value]; if(!p)return;
+    var label=backendPick.options[backendPick.selectedIndex].text;
+    var note=turn('assistant','<span style="color:var(--dim)">Switching <b>'+esc(targetName())+'</b> to '+label+'…</span>');
+    doSwitch(p,label,note);
+  });
+
+  // Pack manager — list / enable / disable / apply packs on the SELECTED agent
+  // (through the same proxy). Applying a NOT-enabled pack materializes it too.
+  document.getElementById('packsBtn').addEventListener('click',function(){
+    var note=turn('assistant','<span style="color:var(--dim)">Loading packs for '+esc(targetName())+'…</span>');
+    fetch(adminBase()+'packs',{headers:hdrs({})})
+      .then(function(r){return r.ok?r.json():r.json().then(function(j){throw new Error(j.error||('HTTP '+r.status))})})
+      .then(function(d){
+        var enabled=d.enabled_packs||[], avail=d.available||[];
+        note.innerHTML='<div style="color:var(--dim);margin-bottom:6px">Packs on <b>'+esc(targetName())+'</b> — click to enable/apply or disable:</div>';
+        var box=document.createElement('div');box.style.cssText='display:flex;flex-wrap:wrap;gap:6px';
+        avail.forEach(function(p){
+          var on=enabled.indexOf(p.id)>=0;
+          var b=document.createElement('button');
+          b.textContent=(on?'✓ ':'+ ')+p.id;
+          b.style.cssText='padding:6px 10px;border-radius:8px;border:1px solid '+(on?'#3b82f6':'#333')+';background:'+(on?'#1e3a5f':'#111')+';color:#eee;cursor:pointer;font-size:13px';
+          b.addEventListener('click',function(){
+            b.textContent='…';
+            fetch(adminBase()+(on?'packs/disable':'packs/apply'),{method:'POST',headers:hdrs({'Content-Type':'application/json'}),body:JSON.stringify({pack:p.id})})
+              .then(function(r){return r.json()}).then(function(){document.getElementById('packsBtn').click();})
+              .catch(function(){b.textContent='err';});
+          });
+          box.appendChild(b);
+        });
+        note.appendChild(box);
+        if(!avail.length)note.innerHTML+='<span style="color:var(--dim)">(no packs reported)</span>';
+      })
+      .catch(function(e){note.innerHTML='<span style="color:#e66">Packs unavailable on '+esc(targetName())+': '+esc(e.message)+' (older agent?)</span>';});
+  });
 
   // Settings drawer
   var temp=document.getElementById('temp'), tempV=document.getElementById('tempV');

@@ -142,13 +142,13 @@ class ReActLoop:
                         raise ValueError("args must be a JSON object")
                 except (ValueError, json.JSONDecodeError) as e:
                     observation = f"ERROR: invalid Action Input JSON: {e}"
-                    messages.append(Message(role="tool", content=observation, name=tool_name))
+                    messages.append(Message(role="user", content=observation))
                     continue
 
                 tool = tools_by_name.get(tool_name)
                 if tool is None:
                     observation = f"ERROR: unknown tool {tool_name!r}"
-                    messages.append(Message(role="tool", content=observation, name=tool_name))
+                    messages.append(Message(role="user", content=observation))
                     continue
 
                 with tracer.span("agent.tool", tool=tool_name, step=step) as tool_span:
@@ -164,7 +164,7 @@ class ReActLoop:
                 observation = (
                     str(result.value) if result.ok else f"ERROR: {result.error}"
                 )
-                messages.append(Message(role="tool", content=observation, name=tool_name))
+                messages.append(Message(role="user", content=observation))
             run_span.set_attr("steps", step)
             run_span.set_attr("finish_reason", finish)
 
