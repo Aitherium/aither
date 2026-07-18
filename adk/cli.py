@@ -5174,49 +5174,65 @@ def _test_provider_key(provider: str, key: str) -> tuple:
 def _push_key_to_vault(provider: str, key: str) -> bool:
     """Push key to AitherOS via the BYOK endpoint (tenant-scoped) or Secrets vault.
 
-    Tries the proper tenant LLM keys endpoint first (scoped to tenant),
-    falls back to raw AitherSecrets (platform-level).
+    Tries the proper tenant LLM keys endpoint first (scoped to tenant), falls
+    back to raw AitherSecrets (platform-level, owner/fleet boxes with the
+    internal secret in env). NEVER fails silently — prints why sync didn't
+    happen and how to enable it (owner directive: keys set locally must sync
+    to the workspace/tenant in portal.aitherium.com, and errors must guide).
     """
-    import urllib.request
-    import urllib.error
+    import httpx
+
+    reasons = []
 
     # Try 1: Genesis BYOK endpoint (properly scoped to tenant)
     genesis_url = os.environ.get("AITHER_URL", "http://localhost:8001")
+    saved = load_saved_config()
     try:
-        payload = json.dumps({"api_key": key}).encode()
         headers = {"Content-Type": "application/json"}
-        # Forward tenant context if available
-        saved = load_saved_config()
         if saved.get("tenant_id"):
             headers["X-Tenant-ID"] = saved["tenant_id"]
         if saved.get("api_key"):
             headers["Authorization"] = f"Bearer {saved['api_key']}"
-        req = urllib.request.Request(
+        r = httpx.put(
             f"{genesis_url}/tenants/me/llm-keys/{provider}",
-            data=payload, headers=headers, method="PUT",
+            json={"api_key": key}, headers=headers, timeout=8,
         )
-        with urllib.request.urlopen(req, timeout=5):
+        if r.status_code == 200:
             return True
-    except Exception:
-        pass
+        reasons.append(f"tenant sync HTTP {r.status_code}"
+                       + (" (not logged in — run `aither register` / `adk login`)"
+                          if r.status_code in (401, 403) else ""))
+    except Exception as e:
+        reasons.append(f"tenant endpoint unreachable ({type(e).__name__})")
 
-    # Try 2: Direct AitherSecrets (platform-level fallback)
+    # Try 2: Direct AitherSecrets (platform-level; needs the internal secret,
+    # present on owner/fleet boxes). Vault is HTTPS with the internal CA.
     info = _KNOWN_PROVIDERS.get(provider, {})
     env_name = info.get("env", f"{provider.upper()}_API_KEY")
-    try:
-        payload = json.dumps({
-            "name": env_name, "value": key, "secret_type": "api_key",
-        }).encode()
-        req = urllib.request.Request(
-            "http://localhost:8111/api/secrets",
-            data=payload,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=5):
-            return True
-    except Exception:
-        return False
+    internal = os.environ.get("AITHER_INTERNAL_SECRET") or os.environ.get("AITHER_MASTER_KEY")
+    if internal:
+        try:
+            from adk._tls import tls_verify
+            r = httpx.post(
+                "https://localhost:8111/secrets",
+                json={"name": env_name, "value": key,
+                      "secret_type": "api_key", "access_level": "internal"},
+                headers={"X-API-Key": internal},
+                timeout=8, verify=tls_verify(),
+            )
+            if r.status_code == 200:
+                return True
+            reasons.append(f"vault HTTP {r.status_code}")
+        except Exception as e:
+            reasons.append(f"vault unreachable ({type(e).__name__})")
+    else:
+        reasons.append("no AITHER_INTERNAL_SECRET in env (platform vault path needs it)")
+
+    print("  NOT synced to AitherOS: " + "; ".join(reasons))
+    print("  Key works locally. To sync it to your workspace "
+          "(portal.aitherium.com -> Settings -> keys): log in first, then re-run "
+          f"`adk keys set {provider} <key>`.")
+    return False
 
 
 def cmd_secret(args):
@@ -5456,6 +5472,39 @@ def cmd_keys(args):
         # Try to push to vault
         if _push_key_to_vault(provider, key):
             print("  Synced to AitherSecrets vault")
+        return 0
+
+    elif sub == "pull":
+        # Two-way sync, DOWN direction. Key VALUES never leave the vault (by
+        # design) — this pulls per-provider STATUS from the tenant BYOK
+        # endpoint so `adk keys list` and agents agree with the portal.
+        import httpx
+        genesis_url = os.environ.get("AITHER_URL", "http://localhost:8001")
+        saved = load_saved_config()
+        headers = {}
+        if saved.get("tenant_id"):
+            headers["X-Tenant-ID"] = saved["tenant_id"]
+        if saved.get("api_key"):
+            headers["Authorization"] = f"Bearer {saved['api_key']}"
+        try:
+            r = httpx.get(f"{genesis_url}/tenants/me/llm-keys", headers=headers, timeout=10)
+        except Exception as e:
+            print(f"Workspace unreachable ({type(e).__name__}). Is the fleet up / are you logged in?")
+            return 1
+        if r.status_code in (401, 403):
+            print("Not authenticated — run `aither register` / `adk login`, then retry `adk keys pull`.")
+            return 1
+        if r.status_code != 200:
+            print(f"Workspace sync failed: HTTP {r.status_code}")
+            return 1
+        data = r.json()
+        print(f"\nWorkspace provider keys (tenant: {data.get('tenant_id', '?')})")
+        print("=" * 55)
+        for p in data.get("providers", []):
+            mark = "[+]" if p.get("has_key") else "[-]"
+            src = f" ({p['source']})" if p.get("has_key") else ""
+            print(f"  {mark} {p.get('display_name', p.get('provider')):18s}{src}")
+        print("\nValues stay in the vault; agents resolve them server-side.")
         return 0
 
     elif sub == "list":
@@ -10598,6 +10647,7 @@ def _register_commands(sub):
     keys_set_p.add_argument("provider", help="Provider: openai, anthropic, deepseek, moonshot, google, openrouter, groq, together")
     keys_set_p.add_argument("key", nargs="?", help="API key value (omit to be guided + prompted securely)")
     keys_sub.add_parser("list", help="Show configured provider keys and status")
+    keys_sub.add_parser("pull", help="Sync DOWN from AitherOS: show which providers have keys in your workspace vault")
     keys_test_p = keys_sub.add_parser("test", help="Test API keys (all or specific)")
     keys_test_p.add_argument("provider", nargs="?", help="Specific provider to test (default: all)")
     keys_rm_p = keys_sub.add_parser("remove", help="Remove a provider key")
