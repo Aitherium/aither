@@ -227,21 +227,24 @@ _REGISTRY_KEYS_TTL = float(os.getenv("AITHER_A2A_TRUST_CACHE_TTL", "60") or "60"
 
 
 async def _fetch_registry_trusted_keys() -> set[str]:
-    """Set of a2a public keys from the AUTHORITATIVE cloud agent registry.
+    """Set of a2a public keys from the AUTHORITATIVE platform A2A fleet.
 
-    Reuses ``mesh_discovery._fetch_registry`` — the owner-authed, per-tenant
-    registry at ``{portal}/api/genesis/v1/agent/agent-endpoints`` (a source the
-    calling peer does NOT control, unlike its own agent card). Fail-CLOSED: no
-    owner token / unreachable registry -> empty set -> nothing trusted."""
+    Uses ``mesh_discovery._fetch_a2a_fleet`` — the server-side A2A fleet endpoint
+    ``{portal}/api/genesis/a2a/fleet``, which is the ONLY discovery source that
+    actually carries each agent's ``public_key`` (the sibling ``_fetch_registry``
+    at ``/agent-endpoints`` deliberately does NOT return pubkeys, so using it here
+    would make this lookup INERT — an empty set that silently rejects everything).
+    The fleet is served by genesis (not the calling peer), so it cannot be forged.
+    Fail-CLOSED: unreachable / no token / no pubkeys -> empty set -> nothing trusted."""
     try:
-        from adk.mesh_discovery import _fetch_registry
+        from adk.mesh_discovery import _fetch_a2a_fleet
     except Exception:
         return set()
     warnings: list = []
     try:
-        agents = await _fetch_registry(warnings)
-    except Exception as e:  # _fetch_registry is already best-effort, but be safe
-        logger.debug("registry trusted-key fetch failed: %s", e)
+        agents = await _fetch_a2a_fleet(warnings)
+    except Exception as e:  # already best-effort, but be safe on the hot path
+        logger.debug("a2a-fleet trusted-key fetch failed: %s", e)
         return set()
     return {a.public_key for a in agents if getattr(a, "public_key", "")}
 
