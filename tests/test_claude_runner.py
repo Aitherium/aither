@@ -353,3 +353,53 @@ class TestViewsAndToken:
         monkeypatch.setenv("AITHER_CLAUDE_RUNNER_TOKEN", "env-token")
         assert resolve_token() == "env-token"
         assert resolve_token("explicit") == "explicit"
+
+
+class TestAccountAutoSelect:
+    """submit()/_autoselect_account: account-less run auto-picks via the scheduler,
+    best-effort (never fails the spawn on account selection)."""
+
+    class _P:
+        def __init__(self, name: str):
+            self.name = name
+
+    def test_picks_when_no_profile(self, runner_root: Path, monkeypatch: pytest.MonkeyPatch):
+        runner = ClaudeRunner()
+        import adk.claude_account_usage as usage
+        import adk.claude_accounts as acc
+        monkeypatch.setattr(acc.ClaudeAccountStore, "list_profiles",
+                            lambda self: [TestAccountAutoSelect._P("alice"),
+                                          TestAccountAutoSelect._P("bob")])
+        monkeypatch.setattr(usage.UsageMonitor, "select_account", lambda self, names: names[0])
+        scope = _scope()
+        runner._autoselect_account(scope)
+        assert scope.account_profile == "alice"
+
+    def test_noop_when_explicit(self, runner_root: Path, monkeypatch: pytest.MonkeyPatch):
+        runner = ClaudeRunner()
+        scope = _scope(account_profile="chosen")
+        runner._autoselect_account(scope)
+        assert scope.account_profile == "chosen"
+
+    def test_soft_fallback_no_profiles(self, runner_root: Path, monkeypatch: pytest.MonkeyPatch):
+        runner = ClaudeRunner()
+        import adk.claude_accounts as acc
+        monkeypatch.setattr(acc.ClaudeAccountStore, "list_profiles", lambda self: [])
+        scope = _scope()
+        runner._autoselect_account(scope)
+        assert scope.account_profile == ""  # falls back to default login
+
+    def test_soft_fallback_all_cooldown(self, runner_root: Path, monkeypatch: pytest.MonkeyPatch):
+        runner = ClaudeRunner()
+        import adk.claude_account_usage as usage
+        import adk.claude_accounts as acc
+        monkeypatch.setattr(acc.ClaudeAccountStore, "list_profiles",
+                            lambda self: [TestAccountAutoSelect._P("alice")])
+
+        def _raise(self, names):
+            raise usage.UsageMonitorError("all in cooldown")
+
+        monkeypatch.setattr(usage.UsageMonitor, "select_account", _raise)
+        scope = _scope()
+        runner._autoselect_account(scope)
+        assert scope.account_profile == ""  # never fails the spawn

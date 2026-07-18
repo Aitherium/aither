@@ -472,6 +472,7 @@ class ClaudeRunner:
         if not task or not task.strip():
             raise ScopeError("task must be a non-empty string")
         scope.validate()
+        self._autoselect_account(scope)
         with self._lock:
             counts = self.counts()
             if counts["active"] + counts["queued"] >= self.max_concurrency + self.queue_max:
@@ -499,6 +500,34 @@ class ClaudeRunner:
                     # can carry credentials (account/store errors) — redact it.
                     self._mark_failed(rec, redact(f"spawn failed: {e}") or "spawn failed")
             return rec
+
+    def _autoselect_account(self, scope: RunScope) -> None:
+        """No explicit account_profile → pick one via the usage scheduler
+        (least-loaded + round-robin over saved accounts) so subagent fan-out
+        spans accounts instead of hammering one toward its limit.
+
+        Best-effort load-balancing: no saved profiles, all in cooldown, an
+        invalid selection, or ANY error → leave account_profile empty, which
+        falls back to the default login. It NEVER fails the spawn on account
+        selection (a spawn shouldn't die because usage bookkeeping hiccupped).
+        """
+        if scope.account_profile:
+            return
+        try:
+            from adk.claude_account_usage import UsageMonitor, UsageMonitorError
+            from adk.claude_accounts import ClaudeAccountStore
+
+            names = [p.name for p in ClaudeAccountStore().list_profiles()]
+            if not names:
+                return
+            try:
+                selected = UsageMonitor(root=self.store.root.parent).select_account(names)
+            except UsageMonitorError:
+                return  # all in cooldown → default login
+            if selected and selected.isidentifier():
+                scope.account_profile = selected
+        except Exception as e:  # noqa: BLE001 — account auto-select is best-effort
+            _log.debug("account auto-select skipped: %s", e)
 
     def _mark_failed(self, rec: RunRecord, error: str) -> None:
         with self._lock:
@@ -668,6 +697,7 @@ class ClaudeRunner:
         # Parse outside the lock (disk I/O), commit the record inside it so a
         # concurrent kill() can never interleave with our load-modify-save.
         result = self._parse_result(run_id)
+        rate_limited = self._check_rate_limit_error(run_id)
         with self._lock:
             rec = self.store.load(run_id)
             self._active_ids.discard(run_id)
@@ -687,6 +717,9 @@ class ClaudeRunner:
             if timed_out:
                 rec.status = "failed"
                 rec.error = f"timed out after {rec.scope.get('timeout_sec')}s"
+            elif rate_limited:
+                rec.status = "failed"
+                rec.error = "rate_limited (429): quota exceeded, try again later"
             elif exit_code == 0 and result and not result.get("is_error"):
                 rec.status = "completed"
             else:
@@ -695,6 +728,9 @@ class ClaudeRunner:
                     f"exit_code={exit_code}, subtype={rec.result_subtype or 'no result event'}"
                 )
             self.store.save(rec)
+
+            # Record usage and handle rate-limit cooldown.
+            self._record_usage(rec, rate_limited)
 
     def _parse_result(self, run_id: str) -> Optional[dict[str, Any]]:
         path = self.store.stream_path(run_id)
@@ -720,6 +756,73 @@ class ClaudeRunner:
                 extra={"run_id": run_id, "bad_lines": bad_lines},
             )
         return result
+
+    def _check_rate_limit_error(self, run_id: str) -> bool:
+        """Scan stream.jsonl for 429 rate-limit error events."""
+        path = self.store.stream_path(run_id)
+        if not path.exists():
+            return False
+        try:
+            with path.open("r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or "429" not in line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                        # Look for error events with 429 status.
+                        if obj.get("type") == "error" and obj.get("error", {}).get("status") == 429:
+                            return True
+                    except json.JSONDecodeError:
+                        continue
+        except OSError:
+            pass
+        return False
+
+    def _record_usage(self, rec: RunRecord, rate_limited: bool) -> None:
+        """Record usage to the multi-account monitor and handle rate-limit cooldown.
+
+        Safely handles errors: if usage monitor fails, logs warning but doesn't
+        fail the run (usage tracking is auxiliary).
+        """
+        profile_name = rec.scope.get("account_profile", "")
+        if not profile_name:
+            return  # No account specified, skip usage tracking.
+
+        try:
+            from adk.claude_account_usage import UsageMonitor, UsageMonitorError
+        except ImportError:
+            # Usage monitor not available; skip (shouldn't happen in normal flow).
+            return
+
+        try:
+            monitor = UsageMonitor(root=self.store.root.parent)
+            usage_dict = rec.usage or {}
+            input_tokens = int(usage_dict.get("input_tokens", 0))
+            output_tokens = int(usage_dict.get("output_tokens", 0))
+            total_cost = rec.total_cost_usd
+
+            if rate_limited:
+                # Mark profile in cooldown.
+                monitor.mark_rate_limited(profile_name)
+                _log.info(
+                    "Marked account in rate-limit cooldown",
+                    extra={"profile": profile_name},
+                )
+            elif rec.status == "completed" and (input_tokens > 0 or output_tokens > 0):
+                # Record successful run usage.
+                monitor.record_run(
+                    profile_name,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    total_cost_usd=total_cost,
+                )
+        except (UsageMonitorError, OSError) as e:
+            # Log but don't fail the run; usage tracking is observability only.
+            _log.warning(
+                "Failed to record usage",
+                extra={"profile": profile_name, "err": str(e)},
+            )
 
     # -- queries / control -------------------------------------------------
 

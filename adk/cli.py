@@ -10158,6 +10158,10 @@ def _register_commands(sub):
     ca_remove_p = claude_account_sub.add_parser("remove", help="Delete a saved profile")
     ca_remove_p.add_argument("name", help="Profile name")
 
+    claude_account_sub.add_parser(
+        "usage", help="Show multi-account usage and scheduling status"
+    )
+
     # adk claude — scoped headless Claude Code subagent runner
     claude_p = sub.add_parser(
         "claude",

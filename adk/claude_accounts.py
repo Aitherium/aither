@@ -449,14 +449,17 @@ def cmd_claude_account(args: Any) -> int:
             return cmd_claude_account_current(args)
         elif subcommand == "remove":
             return cmd_claude_account_remove(args)
+        elif subcommand == "usage":
+            return cmd_claude_account_usage(args)
         else:
-            print("Usage: adk claude-account [save|list|switch|current|remove]")
+            print("Usage: adk claude-account [save|list|switch|current|remove|usage]")
             print()
             print("  save <name>       Save current Claude Code login as a profile")
             print("  list              List all saved profiles")
             print("  switch <name>     Switch to a saved profile")
             print("  current           Show the name of the current profile (if matched)")
             print("  remove <name>     Delete a saved profile")
+            print("  usage             Show multi-account usage and scheduling status")
             return 1
     except ClaudeAccountError as e:
         print(f"Error: {e}", file=sys.stderr)
@@ -583,5 +586,65 @@ def cmd_claude_account_remove(args: Any) -> int:
         print(f"Removed profile: {name}")
         return 0
     except ClaudeAccountError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+
+def cmd_claude_account_usage(args: Any) -> int:
+    """adk claude-account usage — show multi-account usage and scheduling status."""
+    try:
+        from adk.claude_account_usage import UsageMonitor, UsageMonitorError
+    except ImportError as e:
+        print(f"Error: failed to import usage monitor: {e}", file=sys.stderr)
+        return 1
+
+    try:
+        monitor = UsageMonitor()
+        profiles = monitor.list_profiles()
+
+        if not profiles:
+            print("No usage records found. Run 'adk claude spawn' with profiles to create them.")
+            return 0
+
+        # Table header.
+        print()
+        print("  Multi-Account Usage Summary")
+        print("  " + "=" * 100)
+        print(
+            f"  {'Profile':<20} {'Runs':<6} {'Input Tokens':<15} {'Output Tokens':<15} "
+            f"{'Total Cost USD':<15} {'Status':<12}"
+        )
+        print("  " + "-" * 100)
+
+        # Table rows.
+        for rec in profiles:
+            status = "COOLDOWN" if rec.is_in_cooldown() else "ready"
+            print(
+                f"  {rec.profile_name:<20} {rec.num_runs:<6} "
+                f"{rec.rolling_input_tokens:<15} {rec.rolling_output_tokens:<15} "
+                f"${rec.rolling_total_cost_usd:<14.2f} {status:<12}"
+            )
+
+        print("  " + "=" * 100)
+
+        # Show cooldown details if any.
+        cooldown_profiles = [p for p in profiles if p.is_in_cooldown()]
+        if cooldown_profiles:
+            print()
+            print("  Rate-Limited (Cooldown):")
+            for rec in cooldown_profiles:
+                from datetime import datetime, timezone
+                try:
+                    reset_time = datetime.fromisoformat(rec.rate_limit_reset_at)
+                    now = datetime.now(timezone.utc)
+                    remaining = (reset_time - now).total_seconds()
+                    remaining_str = f"{max(0, int(remaining))}s"
+                    print(f"    {rec.profile_name:<20} resets in {remaining_str}")
+                except (ValueError, TypeError):
+                    print(f"    {rec.profile_name:<20} (reset time unknown)")
+
+        print()
+        return 0
+    except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
