@@ -902,6 +902,567 @@ def serve(host: str = "", port: int = 0, token: str = "") -> int:
 
 
 # ---------------------------------------------------------------------------
+# Service registration (Windows scheduled task / Linux systemd)
+# ---------------------------------------------------------------------------
+
+
+def _get_wrapper_ps1_content(repo_root: str, host: str, port: int) -> str:
+    """Generate Windows wrapper script content."""
+    return f"""# Claude runner wrapper — sources AITHER_INTERNAL_SECRET from .env at runtime
+# This script is called by the scheduled task and must NOT embed secrets.
+
+$RepoRoot = {shlex.quote(repo_root)}
+$Env:AITHER_CLAUDE_RUNNER_HOST = {shlex.quote(host)}
+$Env:AITHER_CLAUDE_RUNNER_PORT = {shlex.quote(str(port))}
+
+# Load AITHER_INTERNAL_SECRET from .env (fail-closed if missing)
+$EnvFile = Join-Path $RepoRoot ".env"
+if (-not (Test-Path $EnvFile)) {{
+    [Console]::Error.WriteLine("ERROR: .env file not found at $EnvFile")
+    Exit 1
+}}
+
+# Simple .env parser: KEY=VALUE lines only (no quotes, no comments)
+$Lines = @(Get-Content $EnvFile -ErrorAction SilentlyContinue |
+    Where-Object {{ $_.Trim() -and -not $_.TrimStart().StartsWith("#") }})
+foreach ($Line in $Lines) {{
+    $Parts = $Line -Split "=", 2
+    if ($Parts.Count -eq 2) {{
+        $Key = $Parts[0].Trim()
+        $Value = $Parts[1].Trim()
+        if ($Key -eq "AITHER_INTERNAL_SECRET") {{
+            if (-not $Value) {{
+                [Console]::Error.WriteLine("ERROR: AITHER_INTERNAL_SECRET is empty in .env")
+                Exit 1
+            }}
+            Set-Item -Path "Env:AITHER_INTERNAL_SECRET" -Value $Value
+            break
+        }}
+    }}
+}}
+
+if (-not $Env:AITHER_INTERNAL_SECRET) {{
+    [Console]::Error.WriteLine("ERROR: AITHER_INTERNAL_SECRET not found in .env")
+    Exit 1
+}}
+
+# Append output to log file
+$LogDir = Join-Path $Env:USERPROFILE ".aither\\logs"
+$LogFile = Join-Path $LogDir "claude-runner.log"
+New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
+
+# Run daemon (invoke with env vars, output to log)
+& python -m adk.cli claude serve `
+    --host $Env:AITHER_CLAUDE_RUNNER_HOST `
+    --port $Env:AITHER_CLAUDE_RUNNER_PORT 2>&1 | Add-Content -Path $LogFile
+"""
+
+
+def _get_wrapper_sh_content(repo_root: str, host: str, port: int) -> str:
+    """Generate Linux/macOS wrapper script content."""
+    return f"""#!/bin/bash
+# Claude runner wrapper — sources AITHER_INTERNAL_SECRET from .env at runtime
+# This script is called by systemd/launchd and must NOT embed secrets.
+
+set -e
+cd {shlex.quote(repo_root)}
+
+# Load .env file (fail-closed if missing or unreadable)
+EnvFile=".env"
+if [ ! -f "$EnvFile" ]; then
+    echo "ERROR: .env file not found at $(pwd)/$EnvFile" >&2
+    exit 1
+fi
+
+# Source .env and validate AITHER_INTERNAL_SECRET is set and non-empty
+set -a
+source "$EnvFile"
+set +a
+
+if [ -z "$AITHER_INTERNAL_SECRET" ]; then
+    echo "ERROR: AITHER_INTERNAL_SECRET not found or empty in .env" >&2
+    exit 1
+fi
+
+# Ensure log directory exists
+mkdir -p "$HOME/.aither/logs"
+
+# Run daemon
+export AITHER_CLAUDE_RUNNER_HOST={shlex.quote(host)}
+export AITHER_CLAUDE_RUNNER_PORT={shlex.quote(str(port))}
+exec python -m adk.cli claude serve
+"""
+
+
+def _get_systemd_unit_content(wrapper_path: str, repo_root: str) -> str:
+    """Generate systemd --user unit file content."""
+    return f"""[Unit]
+Description=AitherOS Claude Runner (durable daemon)
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+WorkingDirectory={repo_root}
+ExecStart={wrapper_path}
+Restart=on-failure
+RestartSec=5s
+StandardOutput=append:{Path.home() / '.aither/logs/claude-runner.log'}
+StandardError=append:{Path.home() / '.aither/logs/claude-runner.log'}
+KillMode=mixed
+
+[Install]
+WantedBy=default.target
+"""
+
+
+def _get_launchd_plist_content(wrapper_path: str, repo_root: str) -> str:
+    """Generate macOS launchd plist content."""
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.aither.claude-runner</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{wrapper_path}</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>{repo_root}</string>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>{Path.home() / '.aither/logs/claude-runner.log'}</string>
+    <key>StandardErrorPath</key>
+    <string>{Path.home() / '.aither/logs/claude-runner.log'}</string>
+</dict>
+</plist>
+"""
+
+
+def _find_repo_root() -> str:
+    """Detect repository root by searching for .git or .env."""
+    cwd = Path.cwd()
+    for ancestor in [cwd] + list(cwd.parents):
+        if (ancestor / ".git").exists() or (ancestor / ".env").exists():
+            return str(ancestor)
+    return str(cwd)
+
+
+def cmd_register_claude(args: Any) -> int:
+    """Register Claude runner as a durable service (Windows/Linux/macOS)."""
+    host = getattr(args, "host", "") or "127.0.0.1"
+    port = int(getattr(args, "port", 0) or 8365)
+    force = getattr(args, "force", False)
+    repo_root = _find_repo_root()
+
+    # Validate that .env exists and is readable
+    env_file = Path(repo_root) / ".env"
+    if not env_file.exists():
+        print(f"Error: .env not found in {repo_root}", file=sys.stderr)
+        return 1
+
+    try:
+        _ = env_file.read_text(encoding="utf-8")
+    except OSError as e:
+        print(f"Error: cannot read .env: {e}", file=sys.stderr)
+        return 1
+
+    # Ensure log directory exists
+    log_dir = Path.home() / ".aither" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    if sys.platform == "win32":
+        return _register_windows(repo_root, host, port, force)
+    elif sys.platform == "darwin":
+        return _register_macos(repo_root, host, port, force)
+    else:
+        return _register_linux(repo_root, host, port, force)
+
+
+def _register_windows(repo_root: str, host: str, port: int, force: bool) -> int:
+    """Register Windows scheduled task."""
+    wrapper_dir = Path.home() / ".aither" / "bin"
+    wrapper_dir.mkdir(parents=True, exist_ok=True)
+    wrapper_path = wrapper_dir / "claude-runner-wrapper.ps1"
+
+    try:
+        wrapper_path.write_text(_get_wrapper_ps1_content(repo_root, host, port), encoding="utf-8")
+        restrict_file(wrapper_path)
+    except OSError as e:
+        print(f"Error: cannot write wrapper script: {e}", file=sys.stderr)
+        return 1
+
+    # Kill any existing listener on the target port (idempotence)
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             f"Get-NetTCPConnection -LocalPort {port} -ErrorAction SilentlyContinue | "
+             "Where-Object State -eq 'Listen' | Select-Object -ExpandProperty OwningProcess | "
+             "ForEach-Object {{ Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }}"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+
+    # Register scheduled task
+    task_name = "AitherOS-ClaudeRunner"
+    user = f"{os.environ.get('USERDOMAIN', 'localhost')}\\{os.environ.get('USERNAME', 'user')}"
+
+    ps_script = f"""
+$TaskName = '{task_name}'
+$User = '{user}'
+$ScriptPath = '{wrapper_path}'
+$RepoRoot = '{repo_root}'
+
+# Idempotent unregister
+Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
+
+# Create action: run PowerShell with the wrapper script
+$Action = New-ScheduledTaskAction `
+    -Execute 'pwsh' `
+    -Argument "-NoProfile -ExecutionPolicy Bypass -File '$ScriptPath'" `
+    -WorkingDirectory '{repo_root}'
+
+# Create triggers: AtStartup + 5-minute heartbeat
+$TriggerStartup = New-ScheduledTaskTrigger -AtStartup
+$TriggerHeartbeat = New-ScheduledTaskTrigger -Once -At (Get-Date) `
+    -RepetitionInterval (New-TimeSpan -Minutes 5) `
+    -RepetitionDuration (New-TimeSpan -Days 3650)
+
+# Create principal: S4U (Service-for-User) at RunLevel Highest
+$Principal = New-ScheduledTaskPrincipal `
+    -UserID $User `
+    -LogonType S4U `
+    -RunLevel Highest
+
+# Create settings: multiple instances ignored, no timeout, auto-restart
+$Settings = New-ScheduledTaskSettingsSet `
+    -MultipleInstances IgnoreNew `
+    -ExecutionTimeLimit ([TimeSpan]::Zero) `
+    -RestartCount 999 `
+    -RestartInterval (New-TimeSpan -Minutes 1) `
+    -AllowStartIfOnBatteries `
+    -DontStopIfGoingOnBatteries `
+    -StartWhenAvailable
+
+# Register task
+Register-ScheduledTask `
+    -TaskName $TaskName `
+    -Action $Action `
+    -Trigger $TriggerStartup, $TriggerHeartbeat `
+    -Principal $Principal `
+    -Settings $Settings `
+    -Force `
+    -Description @"
+Claude runner: AtStartup + 5-min heartbeat, S4U principal, no embedded secrets
+"@
+
+# Start it immediately
+Start-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+Write-Host "Claude runner registered and started. Host: {host}, Port: {port}"
+"""
+
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", ps_script],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode != 0:
+            print(f"Error: failed to register task: {result.stderr}", file=sys.stderr)
+            return 1
+        print(result.stdout)
+        return 0
+    except (subprocess.TimeoutExpired, OSError) as e:
+        print(f"Error: failed to register scheduled task: {e}", file=sys.stderr)
+        return 1
+
+
+def _register_linux(repo_root: str, host: str, port: int, force: bool) -> int:
+    """Register Linux systemd --user unit."""
+    wrapper_dir = Path.home() / ".aither" / "bin"
+    wrapper_dir.mkdir(parents=True, exist_ok=True)
+    wrapper_path = wrapper_dir / "claude-runner-wrapper.sh"
+
+    try:
+        wrapper_path.write_text(_get_wrapper_sh_content(repo_root, host, port), encoding="utf-8")
+        wrapper_path.chmod(0o755)
+    except OSError as e:
+        print(f"Error: cannot write wrapper script: {e}", file=sys.stderr)
+        return 1
+
+    unit_dir = Path.home() / ".config" / "systemd" / "user"
+    unit_dir.mkdir(parents=True, exist_ok=True)
+    unit_path = unit_dir / "aither-claude-runner.service"
+
+    try:
+        unit_content = _get_systemd_unit_content(str(wrapper_path), repo_root)
+        unit_path.write_text(unit_content, encoding="utf-8")
+    except OSError as e:
+        print(f"Error: cannot write systemd unit: {e}", file=sys.stderr)
+        return 1
+
+    # Reload, enable, and start
+    commands = [
+        ["systemctl", "--user", "daemon-reload"],
+        ["systemctl", "--user", "enable", "aither-claude-runner.service"],
+        ["systemctl", "--user", "start", "aither-claude-runner.service"],
+        ["loginctl", "enable-linger"],  # Ensure user session persists
+    ]
+
+    for cmd in commands:
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            if result.returncode != 0:
+                _log.warning(f"Command failed: {' '.join(cmd)}: {result.stderr}")
+        except (subprocess.TimeoutExpired, OSError) as e:
+            _log.warning(f"Failed to run {cmd}: {e}")
+
+    print(f"Claude runner registered with systemd --user. Host: {host}, Port: {port}")
+    print("Note: User session will persist across logouts (linger enabled)")
+    return 0
+
+
+def _register_macos(repo_root: str, host: str, port: int, force: bool) -> int:
+    """Register macOS launchd agent."""
+    wrapper_dir = Path.home() / ".aither" / "bin"
+    wrapper_dir.mkdir(parents=True, exist_ok=True)
+    wrapper_path = wrapper_dir / "claude-runner-wrapper.sh"
+
+    try:
+        wrapper_path.write_text(_get_wrapper_sh_content(repo_root, host, port), encoding="utf-8")
+        wrapper_path.chmod(0o755)
+    except OSError as e:
+        print(f"Error: cannot write wrapper script: {e}", file=sys.stderr)
+        return 1
+
+    plist_path = Path.home() / "Library" / "LaunchAgents" / "com.aither.claude-runner.plist"
+    plist_path.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        plist_content = _get_launchd_plist_content(str(wrapper_path), repo_root)
+        plist_path.write_text(plist_content, encoding="utf-8")
+    except OSError as e:
+        print(f"Error: cannot write launchd plist: {e}", file=sys.stderr)
+        return 1
+
+    # Unload and reload
+    subprocess.run(["launchctl", "unload", str(plist_path)], capture_output=True)
+    try:
+        result = subprocess.run(
+            ["launchctl", "load", str(plist_path)],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode != 0:
+            _log.warning(f"launchctl load failed: {result.stderr}")
+    except (subprocess.TimeoutExpired, OSError) as e:
+        _log.warning(f"Failed to load launchd agent: {e}")
+
+    print(f"Claude runner registered with launchd. Host: {host}, Port: {port}")
+    return 0
+
+
+def cmd_unregister_claude(args: Any) -> int:
+    """Unregister Claude runner service (stop and remove)."""
+    force = getattr(args, "force", False)
+
+    if sys.platform == "win32":
+        return _unregister_windows(force)
+    elif sys.platform == "darwin":
+        return _unregister_macos(force)
+    else:
+        return _unregister_linux(force)
+
+
+def _unregister_windows(force: bool) -> int:
+    """Unregister Windows scheduled task."""
+    task_name = "AitherOS-ClaudeRunner"
+
+    ps_script = f"""
+$TaskName = '{task_name}'
+
+# Stop the task if running
+Stop-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
+
+# Unregister
+Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
+
+Write-Host "Claude runner service unregistered."
+"""
+
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", ps_script],
+            capture_output=True, text=True, timeout=15,
+        )
+        print(result.stdout)
+        if result.returncode != 0 and "not found" not in result.stderr.lower():
+            _log.warning(f"Unregister warning: {result.stderr}")
+        return 0
+    except (subprocess.TimeoutExpired, OSError) as e:
+        print(f"Error: failed to unregister task: {e}", file=sys.stderr)
+        return 1
+
+
+def _unregister_linux(force: bool) -> int:
+    """Unregister Linux systemd --user unit."""
+    commands = [
+        ["systemctl", "--user", "stop", "aither-claude-runner.service"],
+        ["systemctl", "--user", "disable", "aither-claude-runner.service"],
+    ]
+
+    for cmd in commands:
+        try:
+            subprocess.run(cmd, capture_output=True, timeout=10)
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+
+    unit_path = Path.home() / ".config" / "systemd" / "user" / "aither-claude-runner.service"
+    try:
+        unit_path.unlink()
+    except OSError:
+        pass
+
+    try:
+        subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True, timeout=10)
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+
+    print("Claude runner service unregistered.")
+    return 0
+
+
+def _unregister_macos(force: bool) -> int:
+    """Unregister macOS launchd agent."""
+    plist_path = Path.home() / "Library" / "LaunchAgents" / "com.aither.claude-runner.plist"
+
+    subprocess.run(["launchctl", "unload", str(plist_path)], capture_output=True)
+    try:
+        plist_path.unlink()
+    except OSError:
+        pass
+
+    print("Claude runner service unregistered.")
+    return 0
+
+
+def cmd_status_claude(args: Any) -> int:
+    """Report Claude runner service status."""
+    if sys.platform == "win32":
+        return _status_windows()
+    elif sys.platform == "darwin":
+        return _status_macos()
+    else:
+        return _status_linux()
+
+
+def _status_windows() -> int:
+    """Report Windows scheduled task status."""
+    task_name = "AitherOS-ClaudeRunner"
+
+    ps_script = f"""
+$TaskName = '{task_name}'
+$Task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+
+if ($null -eq $Task) {{
+    Write-Host "Registered: no"
+    return
+}}
+
+Write-Host "Registered: yes"
+Write-Host "State: $($Task.State)"
+if ($Task.State -eq "Ready" -or $Task.State -eq "Running") {{
+    Write-Host "Running: yes"
+}} else {{
+    Write-Host "Running: no"
+}}
+
+if ($Task.LastRunTime) {{
+    Write-Host "Last started: $($Task.LastRunTime)"
+}}
+if ($Task.NextRunTime) {{
+    Write-Host "Next scheduled: $($Task.NextRunTime)"
+}}
+"""
+
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", ps_script],
+            capture_output=True, text=True, timeout=10,
+        )
+        print(result.stdout)
+        return 0
+    except (subprocess.TimeoutExpired, OSError) as e:
+        print(f"Error: failed to get status: {e}", file=sys.stderr)
+        return 1
+
+
+def _status_linux() -> int:
+    """Report Linux systemd status."""
+    unit_name = "aither-claude-runner.service"
+
+    try:
+        # Check if enabled
+        enabled = subprocess.run(
+            ["systemctl", "--user", "is-enabled", unit_name],
+            capture_output=True, timeout=5,
+        )
+        is_enabled = enabled.returncode == 0
+
+        # Check if active
+        active = subprocess.run(
+            ["systemctl", "--user", "is-active", unit_name],
+            capture_output=True, timeout=5,
+        )
+        is_active = active.returncode == 0
+
+        print(f"Registered: {'yes' if is_enabled else 'no'}")
+        print(f"Running: {'yes' if is_active else 'no'}")
+
+        # Get more details
+        status = subprocess.run(
+            ["systemctl", "--user", "status", unit_name],
+            capture_output=True, text=True, timeout=5,
+        )
+        if status.stdout:
+            lines = status.stdout.split("\n")
+            for line in lines[1:4]:
+                if line.strip():
+                    print(line.strip())
+        return 0
+    except (subprocess.TimeoutExpired, OSError) as e:
+        print(f"Error: failed to get status: {e}", file=sys.stderr)
+        return 1
+
+
+def _status_macos() -> int:
+    """Report macOS launchd status."""
+    plist_path = Path.home() / "Library" / "LaunchAgents" / "com.aither.claude-runner.plist"
+
+    if not plist_path.exists():
+        print("Registered: no")
+        return 0
+
+    print("Registered: yes")
+
+    # Check if loaded
+    try:
+        result = subprocess.run(
+            ["launchctl", "list", "com.aither.claude-runner"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            print("Running: yes")
+        else:
+            print("Running: no")
+        return 0
+    except (subprocess.TimeoutExpired, OSError) as e:
+        print(f"Error: failed to get status: {e}", file=sys.stderr)
+        return 1
+
+
+# ---------------------------------------------------------------------------
 # CLI (adk claude ...)
 # ---------------------------------------------------------------------------
 
@@ -915,10 +1476,16 @@ def _client_base_and_token(args: Any) -> tuple[str, str]:
 
 
 def cmd_claude(args: Any) -> int:
-    """Dispatcher for `adk claude <serve|spawn|runs|kill>`."""
+    """Dispatcher for `adk claude <serve|spawn|runs|kill|register|unregister|status>`."""
     sub = getattr(args, "claude_command", None)
     try:
         if sub == "serve":
+            if getattr(args, "register", False):
+                return cmd_register_claude(args)
+            if getattr(args, "unregister", False):
+                return cmd_unregister_claude(args)
+            if getattr(args, "status", False):
+                return cmd_status_claude(args)
             return serve(
                 host=getattr(args, "host", "") or "",
                 port=int(getattr(args, "port", 0) or 0),

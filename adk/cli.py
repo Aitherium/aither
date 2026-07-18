@@ -10169,6 +10169,10 @@ def _register_commands(sub):
     cl_serve_p.add_argument("--host", default="", help="Bind host (default 127.0.0.1)")
     cl_serve_p.add_argument("--port", type=int, default=0, help="Bind port (default 8360)")
     cl_serve_p.add_argument("--token", default="", help="Bearer token (default: resolved/generated)")
+    cl_serve_p.add_argument("--register", action="store_true", help="Register as durable service")
+    cl_serve_p.add_argument("--unregister", action="store_true", help="Unregister durable service")
+    cl_serve_p.add_argument("--status", action="store_true", help="Report service status")
+    cl_serve_p.add_argument("--force", action="store_true", help="Skip confirmation prompts")
 
     cl_spawn_p = claude_sub.add_parser("spawn", help="Spawn a scoped subagent run")
     cl_spawn_p.add_argument("--task", default="", help="Task prompt text")

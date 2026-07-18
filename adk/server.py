@@ -1494,6 +1494,16 @@ def create_app(
                 invoke_url = f"http://localhost:{config.server_port}"
         tenant_id = saved.get("tenant_id", "") or os.getenv("AITHER_TENANT_ID", "")
         agent_name = _state.get("identity", identity)
+        # Advertise this agent's Ed25519 A2A public key so a peer verifying a
+        # signed inbound request can look it up (a2a_trust._is_key_trusted) from
+        # the AUTHORITATIVE fleet directory instead of a static allowlist. Same
+        # deterministic keypair the agent signs with (load_or_generate_keypair).
+        a2a_public_key = ""
+        try:
+            from adk.a2a_client import load_or_generate_keypair
+            _, a2a_public_key = load_or_generate_keypair(agent_name)
+        except Exception as _pk_exc:
+            logger.debug("A2A pubkey unavailable for fleet registration: %s", _pk_exc)
         try:
             portal_url = os.getenv("AITHER_PORTAL_URL", "https://portal.aitherium.com")
             import httpx
@@ -1510,6 +1520,7 @@ def create_app(
                         # (`adk agents ls`) shows "optiplex → bonsai (llamacpp)".
                         "model": getattr(config, "model", "") or "",
                         "provider_hint": getattr(config, "llm_backend", "") or "",
+                        "public_key": a2a_public_key,
                     },
                     headers={"Authorization": f"Bearer {api_key}"},
                 )
