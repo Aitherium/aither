@@ -30,7 +30,7 @@ _PORTAL = os.getenv("AITHER_PORTAL_URL", "https://veil.aitherium.com").rstrip("/
 
 
 def _verify() -> Any:
-    """Internal-CA verify for genesis; never verify=False."""
+    """Internal-CA verify for genesis; never disables TLS verification."""
     try:
         from lib.security.TLSConfig import get_internal_httpx_verify  # type: ignore
         return get_internal_httpx_verify()

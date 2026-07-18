@@ -415,7 +415,14 @@ class TestVLLMSafety:
             assert report.backend == "cloud"
 
     @pytest.mark.asyncio
-    async def test_full_setup_not_ready_when_nothing_works(self, tmp_path):
+    async def test_full_setup_not_ready_when_nothing_works(self, tmp_path, monkeypatch):
+        # "Nothing works" must include no cloud keys: an earlier test (or
+        # Config._load_provider_keys, which exports provider_keys.json entries
+        # into os.environ process-wide) can leave OPENAI/ANTHROPIC keys in env,
+        # flipping full_setup's cloud fallback to ready=True (broke public CI
+        # full-suite runs while the test passed in isolation).
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         setup = AgentSetup(data_dir=str(tmp_path))
         with patch.object(setup, "detect_hardware") as mock_detect, \
              patch.object(setup, "ensure_ollama") as mock_ollama:

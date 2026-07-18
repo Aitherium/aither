@@ -68,7 +68,7 @@ class RelayClient:
         self.agent_service = agent_service
         self.poll_interval = poll_interval
         # TLS: default to the AitherNet CA bundle (internal-CA endpoints fail the
-        # system trust store) — never verify=False. `tls_verify()` honours
+        # system trust store) — never disable verification. `tls_verify()` honours
         # AITHER_TLS_VERIFY / AITHER_CA_BUNDLE; an explicit `verify=` overrides it.
         self.verify: Union[bool, str] = tls_verify() if verify is None else verify
         # Highest message id we've already handled per partner — so we reply once.

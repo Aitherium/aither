@@ -490,7 +490,10 @@ class TestRegistration:
 
         count = bt.register_builtin_tools(mock_agent, categories=["shell"])
         assert count == 1
-        mock_agent._tools.register.assert_called_once_with(bt.shell_exec)
+        mock_agent._tools.register.assert_called_once_with(
+            bt.shell_exec,
+            intent_categories=bt.TOOL_INTENT_CATEGORIES.get(bt.shell_exec, []),
+        )
 
     def test_register_builtin_tools_auto_for_demiurge(self):
         mock_agent = MagicMock()
