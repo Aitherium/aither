@@ -237,12 +237,21 @@ button.stop{background:#c0392b}
     go.addEventListener('click',save);
     inp.addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();save();}});
   }
+  function odHint(){ hint.innerHTML = backendPick.value==='ondevice'
+    ? '⚡ Runs in your browser on your GPU — free &amp; private. First message downloads the model once (~900&nbsp;MB), then it&#39;s cached.'
+    : ''; }
   backendPick.addEventListener('change',function(){
+    odHint();
+    if(backendPick.value==='ondevice'){  // not a server backend — nothing to switch
+      turn('assistant','<span style="color:var(--dim)">Switched to <b>on-device</b> — replies run in this browser on your GPU (free, private). The model downloads once on your first message.</span>');
+      return;
+    }
     var p=BACKENDS[backendPick.value]; if(!p)return;
     var label=backendPick.options[backendPick.selectedIndex].text;
     var note=turn('assistant','<span style="color:var(--dim)">Switching <b>'+esc(targetName())+'</b> to '+label+'…</span>');
     doSwitch(p,label,note);
   });
+  odHint();  // on-device is the default-selected backend — show the download expectation up front
 
   // Pack manager — list / enable / disable / apply packs on the SELECTED agent
   // (through the same proxy). Applying a NOT-enabled pack materializes it too.
@@ -288,7 +297,7 @@ button.stop{background:#c0392b}
   //    so light chats cost ZERO server compute. transformers.js loads in a blob module
   //    worker (UI never freezes) from the CDN (local GUI, no CSP). First message triggers
   //    a one-time ~900MB download, then it's cached. Single history kept per page.
-  var odWorker=null, odFiles={}, odHistory=[];
+  var odWorker=null, odFiles={}, odHistory=[], odLoaded=false, odEl=null;
   function odEnsure(){
     if(odWorker) return odWorker;
     var src='import {pipeline,TextStreamer} from "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.0";'+
@@ -305,7 +314,20 @@ button.stop{background:#c0392b}
   function sendOnDevice(text, el){
     if(!('gpu' in navigator)){el.classList.remove('cursor');
       el.innerHTML='⚠ WebGPU not available here — use Chrome or Edge (or pick another backend).';setBusy(false);return;}
-    var w=odEnsure(), acc='';
+    // First use: make the one-time download explicit and get consent before fetching ~900MB.
+    if(!odLoaded){
+      el.classList.remove('cursor');
+      el.innerHTML='<div style="color:var(--dim);line-height:1.55">⚡ <b>On-device</b> runs the model right here in your browser on your GPU — free, private, nothing leaves this machine. '+
+        'It needs a <b>one-time ~900&nbsp;MB download</b> the first time you use it (cached after — it never downloads again).</div>';
+      var go=document.createElement('button');go.textContent='Download & start  (~900 MB)';
+      go.style.cssText='margin-top:10px;padding:9px 16px;border-radius:8px;border:0;background:#3b82f6;color:#fff;cursor:pointer;font-size:14px';
+      go.addEventListener('click',function(){el.innerHTML='';el.classList.add('cursor');setBusy(true);odRun(text,el);});
+      el.appendChild(go);setBusy(false);return;
+    }
+    odRun(text, el);
+  }
+  function odRun(text, el){
+    var w=odEnsure(), acc=''; odEl=el;
     var msgs=[{role:'system',content:'You are the on-device helper. Be concise.'}].concat(odHistory).concat([{role:'user',content:text}]);
     w.onmessage=function(e){
       var m=e.data;
@@ -313,13 +335,21 @@ button.stop{background:#c0392b}
         var fs=Object.values(odFiles),ld=fs.reduce(function(a,f){return a+f.loaded},0),tot=fs.reduce(function(a,f){return a+f.total},0);
         var pct=tot>0?Math.round(ld/tot*100):0;
         el.innerHTML='<span style="color:var(--dim)">Downloading on-device model… '+pct+'% · '+(ld/1048576|0)+' / '+(tot/1048576|0)+' MB (one-time, cached)</span>'; log.scrollTop=log.scrollHeight; }
-      else if(m.type==='ready'){ el.innerHTML='<span style="color:var(--dim)">Compiling on your GPU…</span>'; }
+      else if(m.type==='ready'){ odLoaded=true; el.innerHTML='<span style="color:var(--dim)">Compiling on your GPU…</span>'; }
       else if(m.type==='token'){ acc+=m.text; el.innerHTML=md(acc); log.scrollTop=log.scrollHeight; }
       else if(m.type==='done'){ el.classList.remove('cursor'); if(!acc)el.innerHTML='<span style="color:var(--dim)">(no response)</span>';
-        odHistory.push({role:'user',content:text}); odHistory.push({role:'assistant',content:acc}); setBusy(false); }
-      else if(m.type==='error'){ el.classList.remove('cursor'); el.innerHTML='⚠ '+esc(m.message); setBusy(false); }
+        odHistory.push({role:'user',content:text}); odHistory.push({role:'assistant',content:acc}); odEl=null; setBusy(false); }
+      else if(m.type==='error'){ el.classList.remove('cursor'); el.innerHTML='⚠ '+esc(m.message); odEl=null; setBusy(false); }
     };
     w.postMessage({type:'chat',messages:msgs,temperature:parseFloat(temp.value),maxTokens:parseInt(document.getElementById('maxtok').value,10)});
+  }
+  // Stop for the on-device path: terminate the worker (it re-loads from browser cache next
+  // time — no re-download). Returns true if it handled a stop.
+  function odStop(){
+    if(backendPick.value!=='ondevice') return false;
+    if(odWorker){ odWorker.terminate(); odWorker=null; }
+    if(odEl){ odEl.classList.remove('cursor'); odEl.innerHTML=(odEl.innerHTML||'')+' <span style="color:var(--dim)">…[stopped]</span>'; odEl=null; }
+    setBusy(false); return true;
   }
 
   async function send(text){
@@ -363,7 +393,7 @@ button.stop{background:#c0392b}
 
   form.addEventListener('submit',function(e){
     e.preventDefault();
-    if(busy){if(controller)controller.abort();return;}
+    if(busy){if(odStop())return;if(controller)controller.abort();return;}
     var t=input.value.trim();if(!t)return;input.value='';autosize();send(t);
   });
   function autosize(){input.style.height='auto';input.style.height=Math.min(input.scrollHeight,180)+'px';}
