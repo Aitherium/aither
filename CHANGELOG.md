@@ -1,22 +1,5 @@
 # Changelog
 
-## [2.29.1]
-
-### Added
-- `adk onboard --webgpu` — self-bootstrap onto in-browser inference: sets the on-device
-  GUI as default and records the choice (no server model; the browser runs the model on
-  the user's GPU).
-
-
-## [2.29.0]
-
-### Added — on-device WebGPU inference in the local GUI
-- New "⚡ On-device (WebGPU)" backend in the default console: runs a small model
-  (Gemma-4-E2B) 100% in the browser on the user's GPU — no server, no API cost, private.
-- One-time ~900 MB model download with a consent gate + aggregated progress; cached after.
-- Streaming replies, multi-turn history, Stop, and a graceful WebGPU-absent fallback.
-
-
 All notable changes to aither-adk will be documented in this file.
 
 ## [2.27.0] - 2026-07-18

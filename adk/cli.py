@@ -4331,6 +4331,145 @@ def _relay_store_credential(relay_base: str, nick: str, value: str, auth_token: 
         return f"{type(exc).__name__}"
 
 
+def _relay_up(args) -> int:
+    """Start a sovereign AitherNet relay using Docker compose.
+
+    Writes a docker-compose.yml and .env file, then runs `docker compose up -d`.
+    The relay is configured for optional hub federation and directory registration.
+    """
+    import socket
+    import subprocess as _sp
+    import secrets as _secrets
+
+    # Resolve compose file path
+    if getattr(args, "compose_file", None):
+        compose_path = Path(args.compose_file)
+    else:
+        # Auto-detect: look in deploy/compose, then aither-adk/deploy/compose
+        candidates = [
+            Path("deploy/compose/docker-compose.relay.yml"),
+            Path(__file__).resolve().parent.parent / "deploy/compose/docker-compose.relay.yml",
+        ]
+        compose_path = None
+        for candidate in candidates:
+            if candidate.exists():
+                compose_path = candidate
+                break
+        if not compose_path:
+            print(f"  [x] docker-compose.relay.yml not found in: {[str(c) for c in candidates]}")
+            print(f"      Expected at: {candidates[0]} or {candidates[1]}")
+            return 1
+
+    # Resolve values: flags > env > defaults
+    slug = (getattr(args, "slug", "") or os.environ.get("AITHERNET_NODE_SLUG", "")
+            or os.environ.get("AITHER_NODE_SLUG", "")
+            or f"relay-{socket.gethostname()}").strip()
+    rooms = (getattr(args, "rooms", "") or os.environ.get("AITHERNET_ADVERTISED_ROOMS", "")
+             or "#general").strip()
+    hub_url = (getattr(args, "hub_url", "") or os.environ.get("AITHERNET_HUB_URL", "")
+               or "wss://demo.aitherium.com/ws/chat").strip()
+    federation = (not getattr(args, "no_federation", False)
+                  and os.environ.get("AITHERNET_FEDERATION", "").lower() not in ("0", "false", "no"))
+    directory_url = (getattr(args, "directory_url", "") or os.environ.get("AITHERNET_DIRECTORY_URL", "")
+                     or "").strip()
+    token = (getattr(args, "token", "") or os.environ.get("AITHER_NODE_TOKEN", "")).strip()
+    port = getattr(args, "port", 8205) or 8205
+    foreground = bool(getattr(args, "foreground", False))
+    dry_run = bool(getattr(args, "dry_run", False))
+
+    # Create working directory structure
+    work_dir = Path.cwd()
+    env_file = work_dir / ".env.relay"
+    env_lines = [
+        "# AitherNet Relay Environment",
+        f"AITHERNET_NODE_SLUG={slug}",
+        f"AITHERNET_ADVERTISED_ROOMS={rooms}",
+        f"AITHERNET_HUB_URL={hub_url}",
+        f"AITHERNET_FEDERATION={'true' if federation else 'false'}",
+        f"RELAY_PORT={port}",
+        f"REDIS_PORT={6379}",
+        f"AITHER_LOG_LEVEL=INFO",
+    ]
+    public_endpoint = (getattr(args, "public_endpoint", "")
+                       or os.environ.get("AITHERNET_PUBLIC_ENDPOINT", "") or "").strip()
+    if directory_url:
+        env_lines.append(f"AITHERNET_DIRECTORY_URL={directory_url}")
+        if not public_endpoint:
+            print("  [!] --directory-url set but no --public-endpoint: the relay will "
+                  "skip directory registration (nothing to list as your join address)")
+    if public_endpoint:
+        env_lines.append(f"AITHERNET_PUBLIC_ENDPOINT={public_endpoint}")
+    if token:
+        env_lines.append(f"AITHER_NODE_TOKEN={token}")
+
+    if dry_run:
+        print("DRY RUN: Would write .env and start relay")
+        print()
+        print("Compose file:", compose_path)
+        print("Working dir:", work_dir)
+        print(".env file:", env_file)
+        print()
+        print(".env contents:")
+        for line in env_lines:
+            print(f"  {line}")
+        print()
+        print("Command: docker compose -f {compose} --env-file {env} up {flag}".format(
+            compose=compose_path.name if compose_path.parent == work_dir else compose_path,
+            env=env_file.name,
+            flag="-d" if not foreground else ""
+        ))
+        return 0
+
+    # Write .env file
+    try:
+        env_file.write_text("\n".join(env_lines) + "\n", encoding="utf-8")
+        print(f"  [+] Wrote {env_file}")
+    except OSError as e:
+        print(f"  [x] Failed to write {env_file}: {e}")
+        return 1
+
+    # Run docker compose
+    compose_cmd = [
+        "docker", "compose",
+        "-f", str(compose_path),
+        "--env-file", str(env_file),
+        "up",
+    ]
+    if not foreground:
+        compose_cmd.append("-d")
+
+    print(f"  [+] Starting relay at localhost:{port}...")
+    if not foreground:
+        print(f"      docker compose -f {compose_path.name} --env-file {env_file.name} up -d")
+
+    try:
+        result = _sp.run(compose_cmd, cwd=work_dir)
+        if result.returncode != 0:
+            print(f"  [x] docker compose failed with exit code {result.returncode}")
+            return result.returncode
+    except Exception as e:
+        print(f"  [x] Failed to run docker compose: {e}")
+        return 1
+
+    # Print next steps
+    print()
+    print("  ✓ Relay started!")
+    print()
+    print("  Next steps:")
+    print(f"    - Local chat:  ws://localhost:{port}/ws/chat")
+    if federation:
+        print(f"    - Hub URL:     {hub_url}")
+        print(f"    - Federation:  enabled (node slug: {slug})")
+    if directory_url:
+        print(f"    - Directory:   {directory_url} (auto-registering)")
+    print()
+    print(f"  Manage:")
+    print(f"    - Logs:     docker compose -f {compose_path.name} logs -f relay")
+    print(f"    - Stop:     docker compose -f {compose_path.name} down")
+    print()
+    return 0
+
+
 def _relay_provision(args) -> int:
     """Provision a fleet agent as a human-facing AitherRelay participant (no manual curling).
 
@@ -4562,6 +4701,7 @@ def _relay_notifications(args) -> int:
 def cmd_relay(args):
     """Connect this agent to AitherRelay as a chat participant — one command.
 
+    `adk relay up` starts a sovereign relay bundle (Docker compose).
     `adk relay join` joins the relay and serves DMs: a human DMs this agent and
     it replies on its OWN inference (no SSH, no manual curling). Credential and
     URL are auto-resolved from your login/config; override with flags.
@@ -4570,6 +4710,9 @@ def cmd_relay(args):
     """
     import asyncio
 
+    if getattr(args, "relay_command", None) == "up":
+        return _relay_up(args)
+
     if getattr(args, "relay_command", None) == "provision":
         return _relay_provision(args)
 
@@ -4577,7 +4720,8 @@ def cmd_relay(args):
         return _relay_notifications(args)
 
     if getattr(args, "relay_command", None) != "join":
-        print("Usage: adk relay join [--nick NAME] [--url BASE] [--local] [--channel #agents]")
+        print("Usage: adk relay up [--slug NAME] [--rooms #general,#agents] [--hub-url URL]")
+        print("       adk relay join [--nick NAME] [--url BASE] [--local] [--channel #agents]")
         print("       adk relay provision <nick> [--local] [--acta-url URL] [--roster PATH]")
         print("       adk relay notifications [--nick NAME] [--local] [--unread] [--ack]")
         return 1
@@ -10658,6 +10802,19 @@ def _register_commands(sub):
     relay_notif_p.add_argument("--unread", action="store_true", help="Only show unread notifications")
     relay_notif_p.add_argument("--ack", action="store_true", help="Mark retrieved notifications as read")
     relay_notif_p.add_argument("--token", help="Bearer credential (default: provisioned/saved login / $AITHER_RELAY_TOKEN)")
+
+    relay_up_p = relay_sub.add_parser("up", help="Start a sovereign AitherNet relay (Docker compose bundle)")
+    relay_up_p.add_argument("--slug", help="Node identifier for this relay (default: relay-<hostname>)")
+    relay_up_p.add_argument("--rooms", help="Comma-separated advertised rooms (default: #general)")
+    relay_up_p.add_argument("--hub-url", help="Hub relay endpoint for federation (default: wss://demo.aitherium.com/ws/chat)")
+    relay_up_p.add_argument("--no-federation", action="store_true", help="Disable hub federation (default: enabled)")
+    relay_up_p.add_argument("--directory-url", help="Directory service URL for registration (optional)")
+    relay_up_p.add_argument("--public-endpoint", help="This relay's own public wss:// or https:// address, listed in the community directory (required for directory registration)")
+    relay_up_p.add_argument("--token", help="Node token for hub auth (default: $AITHER_NODE_TOKEN)")
+    relay_up_p.add_argument("--port", type=int, default=8205, help="Local relay port (default: 8205)")
+    relay_up_p.add_argument("--compose-file", help="Path to docker-compose file (default: auto-detect)")
+    relay_up_p.add_argument("--foreground", action="store_true", help="Run in foreground (default: detached)")
+    relay_up_p.add_argument("--dry-run", action="store_true", help="Show what would run, don't start")
 
     backend_p = sub.add_parser("backend", help="Manage LLM backends (list, set, test, switch, status)")
     backend_sub = backend_p.add_subparsers(dest="backend_command")
