@@ -1097,6 +1097,16 @@ class LLMRouter:
                 ),
             )
 
+        # headroom context compression — flag-gated (AITHER_HEADROOM_ENABLED, default
+        # OFF), sidecar-based, graceful no-op. Mirrors the AitherOS fleet's LLMGateway
+        # pre-send hook so standalone / BYO adk agents get the same token savings against
+        # their own backend. ONE point before every provider dispatch below. Never raises.
+        try:
+            from adk.compression import maybe_compress
+            messages = await maybe_compress(messages, model=model)
+        except Exception:  # never let compression break the LLM path
+            pass
+
         # Perception routing: explicit role or image detection
         perception_prov = getattr(self, "_perception_provider", None)
         if perception_prov is not None and (role == "perception" or self._has_image_content(messages)):
