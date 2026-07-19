@@ -2665,6 +2665,38 @@ def _onboard_agent(agent_name: str, tenant_slug: str, args) -> int:
     return asyncio.run(_do_onboard())
 
 
+def _onboard_webgpu(args) -> int:
+    """Self-bootstrap onto in-browser (WebGPU) inference — no server model.
+
+    The local GUI runs the model entirely in the visitor's browser on their GPU
+    (zero server compute, no API cost, private). This sets the on-device-capable UI
+    pack as the default and records the choice, then points the user at `adk up`.
+    """
+    saved_path = None
+    try:
+        saved_path = save_saved_config({"agent_ui": "llamacpp", "inference_mode": "webgpu"})
+    except Exception as e:  # noqa: BLE001 — config write is best-effort; still print guidance
+        print(f"  [!] could not persist config ({e}); the GUI still defaults to on-device.")
+
+    print()
+    print("  ON-DEVICE (WebGPU) SETUP")
+    print("  ────────────────────────")
+    print()
+    print("  This agent runs inference IN THE BROWSER on the user's GPU — no server")
+    print("  model, no API cost, and nothing leaves the machine.")
+    print()
+    print("  - Default model: Gemma-4-E2B (small QAT model, ~900 MB, cached after first load)")
+    print("  - Needs a WebGPU browser (Chrome or Edge).")
+    if saved_path:
+        print(f"  - Saved: agent_ui=llamacpp, inference_mode=webgpu  ({saved_path})")
+    print()
+    print("  NEXT:")
+    print("    adk up        # open the console; the '(WebGPU) On-device' backend is the default")
+    print()
+    print("  (Want a server model instead? run:  adk onboard --quick)")
+    return 0
+
+
 def _onboard_quick(args) -> int:
     """One-command onboarding chain: inference -> pack -> enroll.
 
@@ -2773,6 +2805,10 @@ def cmd_onboard(args):
     # would raise "cannot be called from a running event loop" if nested.
     if getattr(args, 'quick', False):
         return _onboard_quick(args)
+
+    # ── WebGPU mode: self-bootstrap onto in-browser inference (no server model) ──
+    if getattr(args, 'webgpu', False):
+        return _onboard_webgpu(args)
 
     async def _onboard():
         # Inline ProductDetector (no AitherOS lib dependency)
@@ -10503,6 +10539,8 @@ def _register_commands(sub):
     onboard_p.add_argument("--quick", action="store_true",
                            help="One-command: auto-run inference, install default pack, enroll")
     onboard_p.add_argument("--pack", default="openclaw", help="Pack to install (default: openclaw)")
+    onboard_p.add_argument("--webgpu", action="store_true",
+        help="Self-bootstrap onto in-browser WebGPU inference (no server model — the GUI runs the model on the user's GPU)")
 
     # adk enroll — register workstation with control plane
     enroll_p = sub.add_parser("enroll", help="Register this workstation with the control plane")

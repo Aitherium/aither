@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.29.1]
+
+### Added
+- `adk onboard --webgpu` — self-bootstrap onto in-browser inference: sets the on-device
+  GUI as default and records the choice (no server model; the browser runs the model on
+  the user's GPU).
+
+
 ## [2.29.0]
 
 ### Added — on-device WebGPU inference in the local GUI
