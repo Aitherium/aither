@@ -10938,6 +10938,8 @@ def _register_commands(sub):
     # the clipboard by default so they never hit scrollback.
     vault_p = sub.add_parser("vault", help="Lockbox for the live secrets vault (setup, ls, get, search, rotate, lock)")
     vault_sub = vault_p.add_subparsers(dest="vault_command")
+    vault_gui_p = vault_sub.add_parser("gui", help="Open the vault in a browser (starts the console, opens the panel)")
+    vault_gui_p.add_argument("--port", type=int, help="Serve on this port (default: an auto-picked free port, remembered)")
     vault_setup_p = vault_sub.add_parser("setup", help="One-time: seal the vault master key into the OS keychain")
     vault_setup_p.add_argument("--from-env", dest="from_env", action="store_true", help="Import AITHER_INTERNAL_SECRET from .env instead of pasting it")
     vault_setup_p.add_argument("--env-file", dest="env_file", help="Path to the .env holding AITHER_INTERNAL_SECRET")
@@ -10945,7 +10947,9 @@ def _register_commands(sub):
     vault_setup_p.add_argument("--pin", action="store_true", help="Also set a PIN that guards value reveals")
     vault_sub.add_parser("status", help="Show setup + reachability + secret count")
     vault_ls_p = vault_sub.add_parser("ls", help="List secret names + metadata (never values)")
-    vault_ls_p.add_argument("--filter", help="Only names containing this text")
+    vault_ls_p.add_argument("--filter", help="Only names containing this text (searches all scopes)")
+    vault_ls_p.add_argument("--scope", choices=["mine", "tenant", "providers", "platform", "all"],
+                            default="mine", help="Which tier to show (default: mine — hides platform/system)")
     vault_get_p = vault_sub.add_parser("get", help="Reveal one secret (clipboard by default)")
     vault_get_p.add_argument("name", help="Secret name")
     vault_get_p.add_argument("--show", action="store_true", help="Print the value to the terminal (PIN-gated if set)")

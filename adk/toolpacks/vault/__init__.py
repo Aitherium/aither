@@ -48,15 +48,25 @@ def vault_status() -> dict:
     return out
 
 
-def vault_list(filter: str = "") -> dict:
-    """List secret NAMES and metadata from the vault (never values). Optional
-    ``filter`` keeps only names containing that text (case-insensitive)."""
+def vault_list(filter: str = "", scope: str = "mine") -> dict:
+    """List secret NAMES and metadata from the vault (never values). ``filter``
+    keeps only names containing that text. ``scope`` limits which tier is shown —
+    "mine" (default; hides platform/system), "tenant", "providers", "platform", or
+    "all". A non-empty ``filter`` searches ACROSS all scopes so you can always find a
+    secret by name; an empty filter respects ``scope``. Also returns per-scope counts
+    for the scope selector."""
+    from collections import Counter
     lb = _lb()
     items = lb.list_secrets()
+    counts = Counter(i.get("scope", "mine") for i in items)
     f = (filter or "").lower()
     if f:
-        items = [i for i in items if f in i["name"].lower()]
-    return {"count": len(items), "secrets": items}
+        shown = [i for i in items if f in i["name"].lower()]  # search ignores scope
+    else:
+        allowed = lb.SCOPE_VIEWS.get(scope, lb.SCOPE_VIEWS["mine"])
+        shown = [i for i in items if i.get("scope", "mine") in allowed]
+    return {"count": len(shown), "scope": scope, "total": len(items),
+            "scope_counts": dict(counts), "secrets": shown}
 
 
 def vault_search(term: str) -> dict:

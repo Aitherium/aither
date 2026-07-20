@@ -232,25 +232,103 @@ def _local_set(name: str, value: str) -> bool:
     return True
 
 
+# -- categorization: turn a flat 300+ list into navigable groups ---------------
+# The vault has no single clean owner field, so we derive a category from the
+# scope prefix (platform::/tenant::/… — the real owner axis) when present, and
+# fall back to naming/purpose conventions for the large flat legacy pile.
+import re as _re
+
+_PROVIDER_RE = _re.compile(
+    r"^(cloudflare|aws|openai|anthropic|github|gitlab|stripe|solana|vast|runpod|gcp|google|"
+    r"azure|linkedin|discord|deepseek|hf|hugging|proton|slack|twilio|sendgrid|groq|"
+    r"together|replicate|fireworks|mistral|cohere|perplexity|elevenlabs|notion)[_:]?", _re.I)
+_INFRA_RE = _re.compile(r"^(postgres|minio|redis|smtp|mail|tunnel_wg|wg_|s3_|db_|database)", _re.I)
+
+
+def _categorize(item: dict) -> str:
+    n = item.get("name", "")
+    low = n.lower()
+    # Explicit scope prefix (scope::id::name or scope/id/name) — the real owner axis.
+    m = _re.match(r"^(platform|tenant|workspace|user)[:/]", low)
+    if m:
+        return {"platform": "Platform", "tenant": "Tenant", "workspace": "Workspace",
+                "user": "User"}[m.group(1)]
+    if n.startswith("MESH__") or low.startswith("optiplex"):
+        return "Hosts & mesh"
+    if n.endswith("_MTLS_ISSUED") or "mtls" in low:
+        return "Service certs (mTLS)"
+    # A NAMED external provider always wins (google_client_id, CLOUDFLARE_…).
+    if _PROVIDER_RE.match(n):
+        return "Provider keys"
+    # Aither-internal wins over the generic _token/_api_key suffix (AITHER_*_TOKEN
+    # is internal, not a third-party key).
+    if _re.match(r"^aither", low):
+        return "Aither services"
+    if (low.endswith("_client_id") or low.endswith("_client_secret")
+            or low.endswith("_api_key") or low.endswith("_token")):
+        return "Provider keys"
+    if _INFRA_RE.match(n) or low.endswith("_password"):
+        return "Infrastructure"
+    return "Other / misc"
+
+
+# Stable display order (buckets not listed here sort after, alphabetically).
+CATEGORY_ORDER = ["User", "Workspace", "Tenant", "Platform", "Provider keys",
+                  "Aither services", "Infrastructure", "Service certs (mTLS)",
+                  "Hosts & mesh", "Other / misc"]
+
+# ── scope tiers ──────────────────────────────────────────────────────────────
+# A local user / agent should NOT be buried in platform/system secrets by default.
+# Each category maps to a scope tier; the named views below are what the UI/CLI
+# expose, and the default view ("mine") hides platform/system/provider/tenant —
+# they're opt-in via the scope selector. For a real end user the vault already
+# returns only their token-scoped secrets, so the same views apply to what they see.
+_CATEGORY_SCOPE = {
+    "User": "mine", "Workspace": "mine", "Hosts & mesh": "mine", "Other / misc": "mine",
+    "Tenant": "tenant",
+    "Platform": "platform", "Aither services": "platform",
+    "Infrastructure": "platform", "Service certs (mTLS)": "platform",
+    "Provider keys": "provider",
+}
+SCOPE_VIEWS = {
+    "mine":      {"mine"},
+    "tenant":    {"tenant"},
+    "platform":  {"platform"},
+    "providers": {"provider"},
+    "all":       {"mine", "tenant", "platform", "provider"},
+}
+SCOPE_ORDER = ["mine", "tenant", "providers", "platform", "all"]
+DEFAULT_SCOPE = "mine"
+
+
+def _scope_of(category: str) -> str:
+    return _CATEGORY_SCOPE.get(category, "mine")
+
+
 # -- backend-routed operations (pick live vault OR local keyring) -------------
 
 def list_secrets() -> list[dict]:
     if not _use_remote():
-        return [{"name": k, "type": "local", "store": "keyring"}
-                for k in sorted(_local_all(), key=str.lower)]
-    with _client() as c:
-        r = c.get("/secrets")
-        r.raise_for_status()
-        data = r.json()
-    if isinstance(data, dict):
-        data = data.get("secrets", [])
-    out = []
-    for item in data:
-        if isinstance(item, str):
-            out.append({"name": item})
-        elif isinstance(item, dict) and item.get("name"):
-            out.append(item)
-    return sorted(out, key=lambda d: d["name"].lower())
+        out = [{"name": k, "type": "local", "store": "keyring"}
+               for k in sorted(_local_all(), key=str.lower)]
+    else:
+        with _client() as c:
+            r = c.get("/secrets")
+            r.raise_for_status()
+            data = r.json()
+        if isinstance(data, dict):
+            data = data.get("secrets", [])
+        out = []
+        for item in data:
+            if isinstance(item, str):
+                out.append({"name": item})
+            elif isinstance(item, dict) and item.get("name"):
+                out.append(item)
+        out.sort(key=lambda d: d["name"].lower())
+    for item in out:
+        item["category"] = _categorize(item)
+        item["scope"] = _scope_of(item["category"])
+    return out
 
 
 def get_secret(name: str) -> Optional[str]:
@@ -385,23 +463,42 @@ def cmd_status(args) -> int:
 
 def cmd_ls(args) -> int:
     flt = (getattr(args, "filter", None) or "").lower()
+    scope = getattr(args, "scope", None) or DEFAULT_SCOPE
     try:
         items = list_secrets()
     except Exception as exc:
         print(f"Error: {exc}")
         return 1
-    if flt:
-        items = [i for i in items if flt in i["name"].lower()]
-    print(f"\n{len(items)} secret(s){' matching ' + repr(flt) if flt else ''}:")
-    print("=" * 60)
+    counts = {}
     for i in items:
-        meta = []
-        if i.get("type"):
-            meta.append(i["type"])
-        if i.get("version"):
-            meta.append(f"v{i['version']}")
-        suffix = f"   ({', '.join(meta)})" if meta else ""
-        print(f"  {i['name']}{suffix}")
+        counts[i.get("scope", "mine")] = counts.get(i.get("scope", "mine"), 0) + 1
+    if flt:  # a name search crosses every scope
+        shown = [i for i in items if flt in i["name"].lower()]
+        header = f"{len(shown)} secret(s) matching {flt!r} (all scopes)"
+    else:
+        allowed = SCOPE_VIEWS.get(scope, SCOPE_VIEWS["mine"])
+        shown = [i for i in items if i.get("scope", "mine") in allowed]
+        others = ", ".join(f"{label}={counts.get(tier, 0)}"
+                           for label, tier in (("tenant", "tenant"), ("providers", "provider"),
+                                               ("platform", "platform"))
+                           if counts.get(tier, 0))
+        header = (f"{len(shown)} secret(s) in scope '{scope}' "
+                  f"(of {len(items)}; other scopes: {others})")
+    print(f"\n{header}")
+    print("=" * 64)
+    # Group by category for readability.
+    by_cat = {}
+    for i in shown:
+        by_cat.setdefault(i.get("category", "Other / misc"), []).append(i)
+    cats = sorted(by_cat, key=lambda c: (CATEGORY_ORDER.index(c) if c in CATEGORY_ORDER else 99, c))
+    for cat in cats:
+        print(f"\n  {cat}  ({len(by_cat[cat])})")
+        for i in by_cat[cat]:
+            meta = [m for m in (i.get("type"), f"v{i['version']}" if i.get("version") else "") if m]
+            suffix = f"   ({', '.join(meta)})" if meta else ""
+            print(f"    {i['name']}{suffix}")
+    if not flt and scope != "all":
+        print(f"\n  (showing '{scope}'. Use --scope all|tenant|platform|providers to see more.)")
     return 0
 
 
@@ -490,16 +587,90 @@ def cmd_lock(args) -> int:
     return 0
 
 
+def _console_up(port: int) -> bool:
+    import urllib.request, urllib.error
+    try:
+        urllib.request.urlopen(f"http://127.0.0.1:{port}/ui", timeout=2)
+        return True
+    except urllib.error.HTTPError:
+        return True  # any HTTP response = something is serving
+    except Exception:
+        return False
+
+
+def cmd_gui(args) -> int:
+    """Open the vault in a browser — one command, nothing to remember. Makes the
+    console UI + vault pack the defaults, starts a local server if one isn't
+    already up, and opens the browser straight to the Vault panel."""
+    import shutil
+    import socket
+    import subprocess
+    import sys
+    import time
+    import webbrowser
+    from adk.config import load_saved_config, save_saved_config
+
+    # Ensure the console shows the vault out of the box.
+    cfg = load_saved_config()
+    packs = list(cfg.get("required_packs") or [])
+    if "vault" not in packs:
+        packs.append("vault")
+    save_saved_config({"agent_ui": "console", "required_packs": packs})
+
+    # Reuse a running console (remembered port) if it's still up; else pick a fresh
+    # free port and remember it, so re-running gives you the same URL.
+    port = getattr(args, "port", None) or cfg.get("vault_gui_port")
+    if not (port and _console_up(int(port))):
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+        s.close()
+        save_saved_config({"vault_gui_port": port})
+        exe = shutil.which("adk-serve")
+        cmd = ([exe] if exe else [sys.executable, "-m", "adk.server"]) + \
+            ["--port", str(port), "--host", "127.0.0.1"]
+        env = dict(os.environ)
+        env.setdefault("AITHER_OFFLINE", "1")
+        log = Path.home() / ".aither" / "vault-gui.log"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        logf = open(log, "ab")
+        kw = {"stdout": logf, "stderr": logf, "stdin": subprocess.DEVNULL}
+        if os.name == "nt":
+            kw["creationflags"] = 0x00000008 | 0x00000200  # DETACHED_PROCESS | NEW_GROUP
+        else:
+            kw["start_new_session"] = True
+        print("Starting the vault console…")
+        subprocess.Popen(cmd, env=env, **kw)
+        for _ in range(40):
+            if _console_up(port):
+                break
+            time.sleep(0.75)
+        else:
+            print(f"Console didn't come up on port {port} — see {log}")
+            return 1
+
+    url = f"http://127.0.0.1:{port}/ui#k=local"
+    try:
+        webbrowser.open(url)
+    except Exception:
+        pass
+    print(f"\n  Vault GUI:  {url}")
+    print("  Opened in your browser — click the Vault tab. Bookmark it; it stays at this URL.")
+    print("  (The console runs in the background; it's loopback-only.)")
+    return 0
+
+
 def dispatch(args) -> int:
     sub = getattr(args, "vault_command", None)
     handlers = {
         "setup": cmd_setup, "status": cmd_status, "ls": cmd_ls, "list": cmd_ls,
         "get": cmd_get, "search": cmd_search, "rotate": cmd_rotate, "lock": cmd_lock,
+        "gui": cmd_gui,
     }
     fn = handlers.get(sub)
     if not fn:
-        print("Usage: adk vault {setup|status|ls|get|search|rotate|lock}")
-        print("First time?  adk vault setup --from-env")
+        print("Usage: adk vault {gui|setup|status|ls|get|search|rotate|lock}")
+        print("Just want the GUI?  adk vault gui")
         return 1
     return fn(args)
 
