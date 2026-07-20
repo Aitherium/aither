@@ -305,6 +305,70 @@ def _scope_of(category: str) -> str:
     return _CATEGORY_SCOPE.get(category, "mine")
 
 
+# ── scope/owner overlay (non-destructive organization) ───────────────────────
+# The vault has no owner field and everything is read by name, so we do NOT rename
+# secrets to organize them. Instead an OVERLAY assigns scope/owner per name:
+#   1. a bundled default map (adk/toolpacks/vault/scope_map.json), then
+#   2. the user's own overrides (~/.aither/vault-scope.json) — what `adk vault
+#      scope` / the panel's re-file control write.
+# The overlay only affects how the lockbox GROUPS a secret; the secret itself is
+# never touched. Valid scope tiers: mine / workspace / tenant / provider / platform / host.
+_VALID_SCOPES = {"mine", "workspace", "tenant", "provider", "platform", "host"}
+_USER_SCOPE_FILE = Path.home() / ".aither" / "vault-scope.json"
+_BUNDLED_SCOPE_FILE = Path(__file__).resolve().parent / "toolpacks" / "vault" / "scope_map.json"
+_scope_overlay_cache: Optional[tuple] = None  # (mtime_signature, merged_dict)
+
+
+def _load_scope_overlay() -> dict:
+    # Cache keyed on the files' mtimes so an external edit (or the panel's re-file
+    # write) is picked up without a restart, but we don't re-parse on every call.
+    global _scope_overlay_cache
+    sig = tuple((str(p), p.stat().st_mtime if p.exists() else 0)
+                for p in (_BUNDLED_SCOPE_FILE, _USER_SCOPE_FILE))
+    if _scope_overlay_cache is not None and _scope_overlay_cache[0] == sig:
+        return _scope_overlay_cache[1]
+    merged: dict = {}
+    for p in (_BUNDLED_SCOPE_FILE, _USER_SCOPE_FILE):
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                for name, ent in data.items():
+                    if name.startswith("_"):
+                        continue  # _comment and other metadata keys
+                    if isinstance(ent, str):
+                        ent = {"scope": ent}
+                    if isinstance(ent, dict):
+                        merged.setdefault(name, {}).update(ent)
+        except Exception:
+            pass
+    _scope_overlay_cache = (sig, merged)
+    return merged
+
+
+def set_scope(name: str, scope: str, owner: str = "") -> bool:
+    """Persist a per-secret scope/owner override to the user overlay. Non-destructive
+    — the secret's name and value are untouched."""
+    global _scope_overlay_cache
+    if scope not in _VALID_SCOPES:
+        raise ValueError(f"scope must be one of {sorted(_VALID_SCOPES)}")
+    m = {}
+    try:
+        m = json.loads(_USER_SCOPE_FILE.read_text(encoding="utf-8"))
+        if not isinstance(m, dict):
+            m = {}
+    except Exception:
+        m = {}
+    ent = m.get(name) if isinstance(m.get(name), dict) else {}
+    ent["scope"] = scope
+    if owner:
+        ent["owner"] = owner
+    m[name] = ent
+    _USER_SCOPE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _USER_SCOPE_FILE.write_text(json.dumps(m, indent=2, sort_keys=True), encoding="utf-8")
+    _scope_overlay_cache = None  # invalidate
+    return True
+
+
 # -- backend-routed operations (pick live vault OR local keyring) -------------
 
 def list_secrets() -> list[dict]:
@@ -325,9 +389,17 @@ def list_secrets() -> list[dict]:
             elif isinstance(item, dict) and item.get("name"):
                 out.append(item)
         out.sort(key=lambda d: d["name"].lower())
+    overlay = _load_scope_overlay()
     for item in out:
         item["category"] = _categorize(item)
-        item["scope"] = _scope_of(item["category"])
+        ov = overlay.get(item["name"], {})
+        item["scope"] = ov.get("scope") or _scope_of(item["category"])
+        if ov.get("owner"):
+            item["owner"] = ov["owner"]
+        # A redundant duplicate can be marked alias_of a canonical name — the secret
+        # is NOT deleted (services still read it), it's just collapsed out of the view.
+        if ov.get("alias_of"):
+            item["alias_of"] = ov["alias_of"]
     return out
 
 
@@ -660,16 +732,31 @@ def cmd_gui(args) -> int:
     return 0
 
 
+def cmd_scope(args) -> int:
+    name = args.name
+    scope = args.scope
+    owner = getattr(args, "owner", "") or ""
+    try:
+        set_scope(name, scope, owner)
+    except ValueError as exc:
+        print(f"Error: {exc}")
+        return 1
+    print(f"Filed '{name}' under scope '{scope}'"
+          + (f" (owner: {owner})" if owner else "")
+          + ".  The secret's name and value are unchanged.")
+    return 0
+
+
 def dispatch(args) -> int:
     sub = getattr(args, "vault_command", None)
     handlers = {
         "setup": cmd_setup, "status": cmd_status, "ls": cmd_ls, "list": cmd_ls,
         "get": cmd_get, "search": cmd_search, "rotate": cmd_rotate, "lock": cmd_lock,
-        "gui": cmd_gui,
+        "gui": cmd_gui, "scope": cmd_scope,
     }
     fn = handlers.get(sub)
     if not fn:
-        print("Usage: adk vault {gui|setup|status|ls|get|search|rotate|lock}")
+        print("Usage: adk vault {gui|setup|status|ls|get|search|rotate|scope|lock}")
         print("Just want the GUI?  adk vault gui")
         return 1
     return fn(args)

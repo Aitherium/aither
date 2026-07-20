@@ -10956,6 +10956,11 @@ def _register_commands(sub):
     vault_get_p.add_argument("--copy", action="store_true", help="Copy to clipboard (default when not --show)")
     vault_search_p = vault_sub.add_parser("search", help="Fuzzy-search secret names")
     vault_search_p.add_argument("term", help="Substring to search for")
+    vault_scope_p = vault_sub.add_parser("scope", help="Re-file a secret's scope/owner (overlay — non-destructive)")
+    vault_scope_p.add_argument("name", help="Secret name")
+    vault_scope_p.add_argument("scope", choices=["mine", "workspace", "tenant", "provider", "platform", "host"],
+                               help="Scope tier to file it under")
+    vault_scope_p.add_argument("--owner", help="Optional owner label")
     vault_rotate_p = vault_sub.add_parser("rotate", help="Mint a fresh strong value for a secret and store it")
     vault_rotate_p.add_argument("name", help="Secret name to rotate")
     vault_rotate_p.add_argument("--length", type=int, default=28, help="New value length (default 28)")
@@ -11075,6 +11080,37 @@ def _register_commands(sub):
         "--auth-token",
         default=os.getenv("AITHER_AUTH_TOKEN", ""),
         help="Bearer token for API calls (auto-resolved from ~/.aither/config.json if not given)"
+    )
+
+    # adk mesh create — one-command self-service: mint your OWN isolated mesh
+    mesh_create_p = mesh_sub.add_parser(
+        "create",
+        help="Create your OWN isolated mesh (per-tenant overlay CIDR + Headscale key + registry)"
+    )
+    mesh_create_p.add_argument("--name", required=True, help="Human name for the mesh")
+    mesh_create_p.add_argument(
+        "--tenant-id",
+        default=os.getenv("AITHER_TENANT_ID", ""),
+        help="Owner tenant ID (authenticated identity; fail-closed — must match your token)"
+    )
+    mesh_create_p.add_argument(
+        "--discoverable", action="store_true",
+        help="Opt this mesh into the AitherNet public directory (others can discover + link)"
+    )
+    mesh_create_p.add_argument(
+        "--federation-role", default="standalone",
+        choices=["standalone", "hub", "spoke"],
+        help="Federation role for mesh-to-mesh linking (default: standalone)"
+    )
+    mesh_create_p.add_argument(
+        "--conductor-url",
+        default=os.getenv("AITHER_CONDUCTOR_URL", "https://gateway.aitherium.com"),
+        help="Conductor endpoint (default: $AITHER_CONDUCTOR_URL)"
+    )
+    mesh_create_p.add_argument(
+        "--auth-token",
+        default=os.getenv("AITHER_AUTH_TOKEN", ""),
+        help="Bearer token (auto-resolved from ~/.aither/config.json if not given)"
     )
 
     # adk routing — per-intent model routing

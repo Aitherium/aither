@@ -27,6 +27,8 @@
     padding:7px 12px; font:inherit; cursor:pointer }
   button.ghost { background:var(--chip); color:var(--ink) }
   button.tiny { padding:3px 9px; font-size:12px }
+  select.refile { padding:2px 6px; font-size:11px; border-radius:6px; background:var(--bg);
+    color:var(--muted); border:1px solid var(--line); cursor:pointer; min-width:auto }
   button:disabled { opacity:.55; cursor:default }
   .item { display:flex; align-items:center; gap:8px; border:1px solid var(--line);
     border-radius:8px; padding:7px 10px; margin:6px 0 }
@@ -147,9 +149,13 @@
         return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || a.localeCompare(b);
       });
       list.innerHTML = "";
+      const SCOPES = ["mine", "workspace", "tenant", "provider", "platform", "host"];
       function rowHTML(it) {
         const meta = [it.type, it.version ? "v" + it.version : ""].filter(Boolean).join(" · ");
+        const opts = SCOPES.map((s) =>
+          `<option value="${s}"${s === (it.scope || "mine") ? " selected" : ""}>${s}</option>`).join("");
         return `<span class="t">${esc(it.name)}<span class="meta"> ${esc(meta)}</span></span>` +
+          `<select class="tiny refile" data-refile="${esc(it.name)}" title="Re-file scope (non-destructive)">${opts}</select>` +
           `<button class="tiny ghost" data-copy="${esc(it.name)}">Copy</button>` +
           `<button class="tiny ghost" data-reveal="${esc(it.name)}">Reveal</button>` +
           `<button class="tiny" data-rotate="${esc(it.name)}">Rotate</button>`;
@@ -211,6 +217,21 @@
                            + (r.copied ? " (new value copied)" : ""), "ok");
       } catch (e) { aither.notify(e.message, "error"); }
       t.disabled = false;
+    }
+  });
+
+  // Re-file a secret's scope (the <select> fires "change", not "click").
+  $("list").addEventListener("change", async (ev) => {
+    const sel = ev.target;
+    if (sel.dataset && sel.dataset.refile != null) {
+      const name = sel.dataset.refile, scope = sel.value;
+      sel.disabled = true;
+      try {
+        const r = await aither.invokeTool("vault_set_scope", { name, scope });
+        if (r.ok) aither.notify(`${name} filed under “${scope}”`, "ok");
+        else aither.notify(name + ": " + (r.error || "failed"), "error");
+      } catch (e) { aither.notify(e.message, "error"); }
+      sel.disabled = false;
     }
   });
 
