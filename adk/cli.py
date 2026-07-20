@@ -5961,8 +5961,62 @@ def cmd_mesh(args) -> int:
 
         return asyncio.run(_ls())
 
+    elif sub == "provide":
+        async def _provide():
+            from adk.mesh_provider import provide
+
+            inference_url = getattr(args, "inference_url", "").strip()
+            model = getattr(args, "model", "").strip()
+            peer_id = getattr(args, "peer_id", "").strip() or None
+            tenant_id = getattr(args, "tenant_id", "").strip() or None
+            wait = getattr(args, "wait", 30)
+            strata_url = getattr(args, "strata_url", "").strip() or None
+            conductor_url = getattr(args, "conductor_url", "").strip() or None
+            auth_token = getattr(args, "auth_token", "").strip() or None
+
+            if not inference_url or not model:
+                print("ERROR: --inference-url and --model are required")
+                return 1
+
+            try:
+                report = await provide(
+                    inference_url=inference_url,
+                    inference_model=model,
+                    peer_id=peer_id,
+                    tenant_id=tenant_id,
+                    wait_seconds=wait,
+                    strata_url=strata_url,
+                    conductor_url=conductor_url,
+                    auth_token=auth_token,
+                )
+
+                # Print report
+                print("\n  AitherNet Provider Setup")
+                print("  " + "=" * 60)
+
+                for step in report.get("steps", []):
+                    step_name = step.get("step", "unknown").upper()
+                    if step.get("ok"):
+                        print(f"  [OK] {step_name}")
+                    else:
+                        print(f"  [FAIL] {step_name}: {step.get('error', 'unknown error')}")
+
+                if report.get("message"):
+                    print(f"\n  {report['message']}")
+
+                if report.get("next_action"):
+                    print(f"\n  Next Step:\n{report['next_action']}")
+
+                print()
+                return 0 if report.get("ok") else 1
+            except Exception as e:
+                print(f"ERROR: {e}", file=sys.stderr)
+                return 1
+
+        return asyncio.run(_provide())
+
     else:
-        print("Usage: adk mesh [onboard|ls]")
+        print("Usage: adk mesh [onboard|ls|provide]")
         return 1
 
 
@@ -10879,6 +10933,32 @@ def _register_commands(sub):
     secret_sync_p.add_argument("--gateway-url", help="Gateway URL (fallback, default: from env)")
     secret_sync_p.add_argument("--api-key", help="API key (default: from env)")
 
+    # adk vault — on-demand lockbox over the LIVE AitherSecrets vault. The master
+    # key is sealed in the OS keychain (unlocked by your OS login); values copy to
+    # the clipboard by default so they never hit scrollback.
+    vault_p = sub.add_parser("vault", help="Lockbox for the live secrets vault (setup, ls, get, search, rotate, lock)")
+    vault_sub = vault_p.add_subparsers(dest="vault_command")
+    vault_setup_p = vault_sub.add_parser("setup", help="One-time: seal the vault master key into the OS keychain")
+    vault_setup_p.add_argument("--from-env", dest="from_env", action="store_true", help="Import AITHER_INTERNAL_SECRET from .env instead of pasting it")
+    vault_setup_p.add_argument("--env-file", dest="env_file", help="Path to the .env holding AITHER_INTERNAL_SECRET")
+    vault_setup_p.add_argument("--url", help=f"Vault base URL (default: from env or 127.0.0.1:8111)")
+    vault_setup_p.add_argument("--pin", action="store_true", help="Also set a PIN that guards value reveals")
+    vault_sub.add_parser("status", help="Show setup + reachability + secret count")
+    vault_ls_p = vault_sub.add_parser("ls", help="List secret names + metadata (never values)")
+    vault_ls_p.add_argument("--filter", help="Only names containing this text")
+    vault_get_p = vault_sub.add_parser("get", help="Reveal one secret (clipboard by default)")
+    vault_get_p.add_argument("name", help="Secret name")
+    vault_get_p.add_argument("--show", action="store_true", help="Print the value to the terminal (PIN-gated if set)")
+    vault_get_p.add_argument("--copy", action="store_true", help="Copy to clipboard (default when not --show)")
+    vault_search_p = vault_sub.add_parser("search", help="Fuzzy-search secret names")
+    vault_search_p.add_argument("term", help="Substring to search for")
+    vault_rotate_p = vault_sub.add_parser("rotate", help="Mint a fresh strong value for a secret and store it")
+    vault_rotate_p.add_argument("name", help="Secret name to rotate")
+    vault_rotate_p.add_argument("--length", type=int, default=28, help="New value length (default 28)")
+    vault_rotate_p.add_argument("--show", action="store_true", help="Print the new value")
+    vault_lock_p = vault_sub.add_parser("lock", help="Drop the PIN session (--forget wipes the sealed key)")
+    vault_lock_p.add_argument("--forget", action="store_true", help="Also delete the master key + PIN from the keychain")
+
     # adk voice serve — standalone HTTP voice server for AitherShell
     voice_p = sub.add_parser("voice", help="Voice services (serve standalone HTTP server)")
     voice_sub = voice_p.add_subparsers(dest="voice_command")
@@ -10916,7 +10996,7 @@ def _register_commands(sub):
     mesh_onboard_p = mesh_sub.add_parser("onboard", help="Onboard this node into AitherMesh overlay (WireGuard)")
     mesh_onboard_p.add_argument(
         "--conductor",
-        default=os.getenv("AITHER_CONDUCTOR_URL", "https://aitheros-conductor:8193"),
+        default=os.getenv("AITHER_CONDUCTOR_URL", "https://gateway.aitherium.com"),
         help="Conductor URL (default: $AITHER_CONDUCTOR_URL or internal address)")
     mesh_onboard_p.add_argument(
         "--node-id",
@@ -10938,13 +11018,60 @@ def _register_commands(sub):
     mesh_ls_p = mesh_sub.add_parser("ls", help="List peer agents in the mesh and their A2A services")
     mesh_ls_p.add_argument(
         "--mesh-url",
-        default=os.getenv("AITHER_MESH_URL", "https://aitheros-aithernet:8125"),
+        default=os.getenv("AITHER_MESH_URL", "https://gateway.aitherium.com"),
         help="AitherMesh directory URL (default: $AITHER_MESH_URL or internal)")
     mesh_ls_p.add_argument(
         "--format",
         choices=["table", "json"],
         default="table",
         help="Output format (default: table)")
+
+    # adk mesh provide — one-command community inference provider setup
+    mesh_provide_p = mesh_sub.add_parser(
+        "provide",
+        help="Become a community inference provider (advertise → consent → await operator trust)"
+    )
+    mesh_provide_p.add_argument(
+        "--inference-url",
+        required=True,
+        help="OpenAI-compatible inference server URL (e.g., http://10.77.x.x:8000/v1)"
+    )
+    mesh_provide_p.add_argument(
+        "--model",
+        required=True,
+        help="Model name advertised (e.g., gemma4-12b)"
+    )
+    mesh_provide_p.add_argument(
+        "--peer-id",
+        default=os.getenv("AITHER_PEER_ID", ""),
+        help="Peer ID (auto-resolved if not given; must have run 'adk mesh onboard' first)"
+    )
+    mesh_provide_p.add_argument(
+        "--tenant-id",
+        default=os.getenv("AITHER_TENANT_ID", ""),
+        help="Owner tenant ID (authenticated identity; required for fail-closed gate)"
+    )
+    mesh_provide_p.add_argument(
+        "--wait",
+        type=int,
+        default=30,
+        help="Timeout for polling operator trust grant (default: 30s; 0=no wait)"
+    )
+    mesh_provide_p.add_argument(
+        "--strata-url",
+        default=os.getenv("AITHER_STRATA_URL", "https://gateway.aitherium.com"),
+        help="Strata endpoint override"
+    )
+    mesh_provide_p.add_argument(
+        "--conductor-url",
+        default=os.getenv("AITHER_CONDUCTOR_URL", "https://gateway.aitherium.com"),
+        help="Conductor endpoint override"
+    )
+    mesh_provide_p.add_argument(
+        "--auth-token",
+        default=os.getenv("AITHER_AUTH_TOKEN", ""),
+        help="Bearer token for API calls (auto-resolved from ~/.aither/config.json if not given)"
+    )
 
     # adk routing — per-intent model routing
     routing_p = sub.add_parser("routing", help="Manage per-intent model routing (which model handles which task)")
@@ -11762,6 +11889,9 @@ def main():
         sys.exit(cmd_keys(args))
     elif args.command == "secret":
         sys.exit(cmd_secret(args))
+    elif args.command == "vault":
+        from adk import vault_lockbox
+        sys.exit(vault_lockbox.dispatch(args))
     elif args.command == "voice":
         sys.exit(cmd_voice(args))
     elif args.command == "routing":
