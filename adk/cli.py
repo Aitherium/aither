@@ -1225,6 +1225,91 @@ def _autostart_up_argv(identity: str, port: int, provider: str, offline: bool) -
     return argv
 
 
+def cmd_bonsai_local(args) -> int:
+    """One command: run Bonsai-27B locally on :8090 (the ladder's `local` tier).
+
+    Runs the baked PrismML llama.cpp fork image (aither-llamacpp-bonsai:latest) —
+    llama-server on the 1-bit Q1_0 GGUF — mapped to host :8090, so the Living OS at
+    aitherium.com detects it (localhost:8090/health) and chats on YOUR hardware.
+    GPU is used automatically when present (the image requests -ngl 99); on a CPU-only
+    box llama.cpp falls back to CPU (AVX). No GPU required to run — just slower.
+
+    Serves OpenAI-compat: GET /health, POST /v1/chat/completions, POST /completion.
+    """
+    import shutil
+    import subprocess
+
+    image = os.environ.get("AITHER_BONSAI_IMAGE", "aither-llamacpp-bonsai:latest")
+    name = os.environ.get("AITHER_BONSAI_CONTAINER", "aither-bonsai-local")
+    port = int(getattr(args, "port", 0) or os.environ.get("AITHER_BONSAI_PORT", "8090"))
+    gpus = os.environ.get("AITHER_BONSAI_GPUS", "all")
+
+    if not shutil.which("docker"):
+        print("  [!] Docker not found. Install Docker Desktop, or use `adk up` with a cloud provider.")
+        return 1
+
+    if getattr(args, "stop", False):
+        subprocess.run(["docker", "rm", "-f", name], capture_output=True)
+        print(f"  [+] Stopped and removed {name}.")
+        return 0
+
+    # Use the GPU when the nvidia runtime is available; else CPU (llama.cpp handles both).
+    gpu_args = []
+    probe = subprocess.run(["docker", "info", "--format", "{{json .Runtimes}}"], capture_output=True, text=True)
+    if "nvidia" in (probe.stdout or ""):
+        gpu_args = ["--gpus", gpus]
+
+    run_cmd = [
+        "docker", "run", "-d", "--name", name, "--restart", "unless-stopped",
+        *gpu_args, "-p", f"127.0.0.1:{port}:8090", image,
+    ]
+
+    if getattr(args, "dry_run", False):
+        print("  [dry-run] would run Bonsai-27B locally:")
+        print("    image      :", image)
+        print("    serve on   : http://localhost:%d  (/health, /v1/chat/completions)" % port)
+        print("    gpu        :", "yes (nvidia runtime)" if gpu_args else "no — CPU (AVX) fallback")
+        print("    command    :", " ".join(run_cmd))
+        print("  Then the Living OS at aitherium.com auto-detects it and chats on your box.")
+        return 0
+
+    # Reuse an existing container if already up.
+    existing = subprocess.run(["docker", "ps", "-q", "-f", f"name=^{name}$"], capture_output=True, text=True)
+    if (existing.stdout or "").strip():
+        print(f"  [=] {name} already running on :{port}.")
+        return 0
+    subprocess.run(["docker", "rm", "-f", name], capture_output=True)  # clear any stopped remnant
+
+    print(f"  [*] Starting Bonsai-27B ({image}) on :{port} ...")
+    res = subprocess.run(run_cmd, capture_output=True, text=True)
+    if res.returncode != 0:
+        err = (res.stderr or "").strip()
+        if "No such image" in err or "not found" in err:
+            print(f"  [!] Image {image} not present. Build/pull it first (PrismML llama.cpp fork "
+                  f"+ Bonsai Q1_0 GGUF baked), then re-run `adk bonsai-local`.")
+        else:
+            print(f"  [!] docker run failed: {err}")
+        return 1
+
+    # Poll health.
+    import urllib.request
+    import time
+    healthy = False
+    for _ in range(30):
+        try:
+            with urllib.request.urlopen(f"http://localhost:{port}/health", timeout=2) as r:
+                if r.status == 200:
+                    healthy = True
+                    break
+        except Exception:
+            time.sleep(2)
+    if healthy:
+        print(f"  [+] Bonsai-27B live on http://localhost:{port} — open aitherium.com; it'll chat on your hardware.")
+        return 0
+    print(f"  [!] Container started but :{port}/health didn't come up in ~60s. Check `docker logs {name}`.")
+    return 1
+
+
 def cmd_down(args):
     """Stop the running agent + tunnel and remove its autostart entry."""
     from adk import agent_daemon as daemon
@@ -10333,6 +10418,14 @@ def _register_commands(sub):
                       help="Connectivity mode: tunnel (Cloudflare, default) or mesh (overlay IP)")
     up_p.add_argument("--dry-run", action="store_true", help="Show what would happen without starting anything")
 
+    # adk bonsai-local — one command: run Bonsai-27B locally on :8090 (the ladder's local tier)
+    bonsai_p = sub.add_parser(
+        "bonsai-local",
+        help="Run Bonsai-27B on your own hardware (:8090) — GPU or CPU; aitherium.com then chats locally")
+    bonsai_p.add_argument("--port", type=int, default=8090, help="Host port to serve on (default: 8090)")
+    bonsai_p.add_argument("--dry-run", action="store_true", help="Show what would run without starting anything")
+    bonsai_p.add_argument("--stop", action="store_true", help="Stop and remove the local Bonsai container")
+
     # adk down — stop the agent started by `adk up`
     down_p = sub.add_parser("down", help="Stop the agent + tunnel and remove its autostart")
     down_p.add_argument("--keep-autostart", action="store_true",
@@ -11843,6 +11936,8 @@ def main():
         cmd_run(args)
     elif args.command == "up":
         sys.exit(cmd_up(args))
+    elif args.command == "bonsai-local":
+        sys.exit(cmd_bonsai_local(args))
     elif args.command == "down":
         sys.exit(cmd_down(args))
     elif args.command == "stack":
