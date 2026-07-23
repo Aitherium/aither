@@ -269,20 +269,10 @@ button.stop{background:#c0392b}
           b.textContent=(on?'✓ ':'+ ')+p.id;
           b.style.cssText='padding:6px 10px;border-radius:8px;border:1px solid '+(on?'#3b82f6':'#333')+';background:'+(on?'#1e3a5f':'#111')+';color:#eee;cursor:pointer;font-size:13px';
           b.addEventListener('click',function(){
-            var prev=b.textContent; b.disabled=true; b.textContent='…';
-            // Toggle the pack IN PLACE. This used to re-trigger packsBtn.click(),
-            // which appended a whole fresh "Packs on this agent" list as a new chat
-            // message on every click — the runaway-repeat the console showed.
-            fetch(adminBase()+(on?'packs/disable':'packs/enable'),{method:'POST',headers:hdrs({'Content-Type':'application/json'}),body:JSON.stringify({pack:p.id})})
-              .then(function(r){return r.ok?r.json():r.json().then(function(j){throw new Error(j.error||('HTTP '+r.status))})})
-              .then(function(){
-                on=!on;
-                b.textContent=(on?'✓ ':'+ ')+p.id;
-                b.style.borderColor=on?'#3b82f6':'#333';
-                b.style.background=on?'#1e3a5f':'#111';
-              })
-              .catch(function(){b.textContent=prev;})
-              .then(function(){b.disabled=false;});
+            b.textContent='…';
+            fetch(adminBase()+(on?'packs/disable':'packs/apply'),{method:'POST',headers:hdrs({'Content-Type':'application/json'}),body:JSON.stringify({pack:p.id})})
+              .then(function(r){return r.json()}).then(function(){document.getElementById('packsBtn').click();})
+              .catch(function(){b.textContent='err';});
           });
           box.appendChild(b);
         });

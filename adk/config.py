@@ -348,12 +348,6 @@ class Config:
             config.cluster_base_url = saved["cluster_url"]
         if not config.cluster_model and saved.get("cluster_model"):
             config.cluster_model = saved["cluster_model"]
-        # Tool packs persisted by `adk ui`/`adk vault`/save_saved_config live in the
-        # SAVED config; without this backfill they never reached config.required_packs,
-        # so a required pack (e.g. vault) enabled but its tools never registered at
-        # startup — you had to re-enable it after every restart.
-        if not config.required_packs and saved.get("required_packs"):
-            config.required_packs = list(saved["required_packs"])
 
         # `adk backend set <provider> --base-url URL --model MODEL` persists
         # default_backend / inference_url / default_model into saved config.
