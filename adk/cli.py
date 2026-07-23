@@ -6189,6 +6189,39 @@ def cmd_mesh(args) -> int:
 
         return asyncio.run(_provide())
 
+    elif sub == "federation-token":
+        async def _fed_token():
+            from adk.mesh_provider import _get_auth_token, _resolve_peer_id, federation_token
+
+            peer_id = getattr(args, "peer_id", "").strip() or None
+            conductor_url = getattr(args, "conductor_url", "").strip() or None
+            auth_token = getattr(args, "auth_token", "").strip() or _get_auth_token()
+
+            if not peer_id:
+                try:
+                    peer_id = await _resolve_peer_id()
+                except RuntimeError as e:
+                    print(f"ERROR: {e}", file=sys.stderr)
+                    return 1
+            try:
+                kwargs = {"peer_id": peer_id, "auth_token": auth_token}
+                if conductor_url:
+                    kwargs["conductor_url"] = conductor_url
+                result = await federation_token(**kwargs)
+                if result.get("ok"):
+                    print("  [OK] federation node token minted (shown ONCE — store it now):")
+                    print(f"       AITHER_NODE_TOKEN={result.get('node_token', '')}")
+                    print(f"       AITHERNET_NODE_SLUG={result.get('node_slug', peer_id)}")
+                    print(f"       expires in {result.get('expires_in_days')} days")
+                    return 0
+                print(f"  [FAIL] {result.get('error', 'unknown error')}")
+                return 1
+            except Exception as e:
+                print(f"ERROR: {e}", file=sys.stderr)
+                return 1
+
+        return asyncio.run(_fed_token())
+
     elif sub == "leave":
         async def _leave():
             from adk.mesh_provider import _get_auth_token, _resolve_peer_id, leave_pool
@@ -11478,6 +11511,27 @@ def _register_commands(sub):
         help="Conductor endpoint override"
     )
     mesh_leave_p.add_argument(
+        "--auth-token",
+        default=os.getenv("AITHER_AUTH_TOKEN", ""),
+        help="Bearer token for API calls (auto-resolved from ~/.aither/config.json if not given)"
+    )
+
+    # adk mesh federation-token — mint the relay AITHER_NODE_TOKEN (D-699 self-service)
+    mesh_fedtok_p = mesh_sub.add_parser(
+        "federation-token",
+        help="Mint your node's relay-federation token (AITHER_NODE_TOKEN for the community hub)"
+    )
+    mesh_fedtok_p.add_argument(
+        "--peer-id",
+        default=os.getenv("AITHER_PEER_ID", ""),
+        help="Peer ID (auto-resolved if not given); also becomes AITHERNET_NODE_SLUG"
+    )
+    mesh_fedtok_p.add_argument(
+        "--conductor-url",
+        default=os.getenv("AITHER_CONDUCTOR_URL", "https://gateway.aitherium.com"),
+        help="Conductor endpoint override"
+    )
+    mesh_fedtok_p.add_argument(
         "--auth-token",
         default=os.getenv("AITHER_AUTH_TOKEN", ""),
         help="Bearer token for API calls (auto-resolved from ~/.aither/config.json if not given)"

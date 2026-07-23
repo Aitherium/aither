@@ -498,6 +498,62 @@ async def leave_pool(
         return {"ok": False, "error": f"leave_pool transport error: {e}", "step": "leave_pool"}
 
 
+async def federation_token(
+    peer_id: str,
+    conductor_url: str = DEFAULT_CONDUCTOR_URL,
+    auth_token: str | None = None,
+) -> dict[str, Any]:
+    """SELF-SERVICE relay-federation credential (D-699): mint the AITHER_NODE_TOKEN
+    this node's sovereign relay presents on the community hub's /ws/chat.
+
+    POST /v1/mesh/peers/{peer_id}/federation-token — ownership enforced server-side
+    (404 = not your peer). The key is bound to USER ID == peer_id: the hub's
+    federation gate only trusts a bridge whose join nick equals the token's
+    authenticated user id, so run the relay with AITHERNET_NODE_SLUG=<peer_id>.
+    The token is returned ONCE — store it in the relay's gitignored env.
+    """
+    import httpx
+
+    if not peer_id:
+        return {"ok": False, "error": "peer_id required", "step": "federation_token"}
+    if not auth_token:
+        return {
+            "ok": False,
+            "error": "auth_token required (authentication mandatory for token mint)",
+            "step": "federation_token",
+        }
+
+    url = conductor_url.rstrip("/") + f"/v1/mesh/peers/{peer_id}/federation-token"
+    headers = {"Content-Type": "application/json",
+               "Authorization": f"Bearer {auth_token}"}
+    try:
+        async with httpx.AsyncClient(timeout=30.0, verify=_tls_verify()) as c:
+            r = await c.post(url, json={}, headers=headers)
+            r.raise_for_status()
+            result = r.json()
+            return {
+                "ok": True,
+                "step": "federation_token",
+                "peer_id": peer_id,
+                "node_token": result.get("node_token", ""),
+                "node_slug": result.get("node_slug", peer_id),
+                "expires_in_days": result.get("expires_in_days"),
+            }
+    except httpx.HTTPStatusError as e:
+        code = e.response.status_code
+        if code == 404:
+            error = f"Unknown peer (or not your peer): {peer_id}"
+        elif code == 401:
+            error = "Authentication required for federation-token mint"
+        else:
+            error = f"federation_token failed: {code}"
+        logger.error("federation_token failed: %s %s", code, e.response.text[:200])
+        return {"ok": False, "error": error, "step": "federation_token"}
+    except httpx.HTTPError as e:
+        return {"ok": False, "error": f"federation_token transport error: {e}",
+                "step": "federation_token"}
+
+
 async def provide(
     inference_url: str,
     inference_model: str,

@@ -514,3 +514,53 @@ class TestProvideFullFlow:
                 assert result["ok"] is False
                 assert "auth_token required" in result["error"].lower()
                 assert result["step"] == "init"
+
+
+class TestFederationToken:
+    """Self-service relay-federation token mint (D-699 productization)."""
+
+    @pytest.mark.asyncio
+    async def test_federation_token_success_returns_key_once(self):
+        from adk.mesh_provider import federation_token
+
+        with patch("httpx.AsyncClient") as mock_client_class:
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = {
+                "peer_id": "node-abc",
+                "node_token": "aither_sk_live_x",
+                "node_slug": "node-abc",
+                "expires_in_days": 30,
+            }
+            mock_response.raise_for_status = MagicMock()
+
+            mock_client = AsyncMock()
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.__aexit__.return_value = None
+            mock_client.post = AsyncMock(return_value=mock_response)
+            mock_client_class.return_value = mock_client
+
+            result = await federation_token("node-abc", auth_token="tok")
+
+            assert result["ok"] is True
+            assert result["node_token"] == "aither_sk_live_x"
+            assert result["node_slug"] == "node-abc"
+            # Positive-path assertion: the endpoint actually got called
+            called_url = mock_client.post.call_args[0][0]
+            assert called_url.endswith("/v1/mesh/peers/node-abc/federation-token")
+
+    @pytest.mark.asyncio
+    async def test_federation_token_missing_auth_fails_closed(self):
+        from adk.mesh_provider import federation_token
+
+        result = await federation_token("node-abc", auth_token=None)
+        assert result["ok"] is False
+        assert "auth_token required" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_federation_token_missing_peer_fails_closed(self):
+        from adk.mesh_provider import federation_token
+
+        result = await federation_token("", auth_token="tok")
+        assert result["ok"] is False
+        assert "peer_id required" in result["error"]
