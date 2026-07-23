@@ -406,6 +406,98 @@ async def poll_trust_tier(
         await asyncio.sleep(poll_interval)
 
 
+async def join_pool(
+    peer_id: str,
+    conductor_url: str = DEFAULT_CONDUCTOR_URL,
+    auth_token: str | None = None,
+) -> dict[str, Any]:
+    """SELF-SERVICE pool entry: put this owner's gated peer into the routable pool.
+
+    POST /v1/mesh/peers/{peer_id}/join-pool — the platform re-runs the fail-closed
+    community gate server-side (trust>=1 AND consent AND advertised endpoint) and
+    derives the backend from the AUTHENTICATED peer record. Nothing routable is
+    caller-supplied. 403 = not eligible yet (with the reason); 404 = not your peer.
+    """
+    import httpx
+
+    if not peer_id:
+        return {"ok": False, "error": "peer_id required", "step": "join_pool"}
+    if not auth_token:
+        return {
+            "ok": False,
+            "error": "auth_token required (authentication mandatory for pool entry)",
+            "step": "join_pool",
+        }
+
+    url = conductor_url.rstrip("/") + f"/v1/mesh/peers/{peer_id}/join-pool"
+    headers = {"Content-Type": "application/json",
+               "Authorization": f"Bearer {auth_token}"}
+    try:
+        async with httpx.AsyncClient(timeout=25.0, verify=_tls_verify()) as c:
+            r = await c.post(url, json={}, headers=headers)
+            r.raise_for_status()
+            result = r.json()
+            return {
+                "ok": True,
+                "step": "join_pool",
+                "peer_id": peer_id,
+                "backend_name": result.get("backend_name", ""),
+                "joined": bool(result.get("joined")),
+            }
+    except httpx.HTTPStatusError as e:
+        code = e.response.status_code
+        if code == 403:
+            error = ("Not eligible for the pool yet: needs trust tier >= 1, owner "
+                     "consent, and an advertised inference endpoint")
+        elif code == 404:
+            error = f"Unknown peer (or not your peer): {peer_id}"
+        elif code == 401:
+            error = "Authentication required for pool entry"
+        else:
+            error = f"join_pool failed: {code}"
+        logger.error("join_pool failed: %s %s", code, e.response.text[:200])
+        return {"ok": False, "error": error, "step": "join_pool"}
+    except httpx.HTTPError as e:
+        return {"ok": False, "error": f"join_pool transport error: {e}", "step": "join_pool"}
+
+
+async def leave_pool(
+    peer_id: str,
+    conductor_url: str = DEFAULT_CONDUCTOR_URL,
+    auth_token: str | None = None,
+) -> dict[str, Any]:
+    """SELF-SERVICE pool exit (drain): remove this owner's backend from routing."""
+    import httpx
+
+    if not peer_id:
+        return {"ok": False, "error": "peer_id required", "step": "leave_pool"}
+    if not auth_token:
+        return {
+            "ok": False,
+            "error": "auth_token required (authentication mandatory for pool exit)",
+            "step": "leave_pool",
+        }
+
+    url = conductor_url.rstrip("/") + f"/v1/mesh/peers/{peer_id}/leave-pool"
+    headers = {"Content-Type": "application/json",
+               "Authorization": f"Bearer {auth_token}"}
+    try:
+        async with httpx.AsyncClient(timeout=25.0, verify=_tls_verify()) as c:
+            r = await c.post(url, json={}, headers=headers)
+            r.raise_for_status()
+            result = r.json()
+            return {"ok": True, "step": "leave_pool", "peer_id": peer_id,
+                    "backend_name": result.get("backend_name", "")}
+    except httpx.HTTPStatusError as e:
+        code = e.response.status_code
+        error = (f"Unknown peer (or not your peer): {peer_id}" if code == 404
+                 else f"leave_pool failed: {code}")
+        logger.error("leave_pool failed: %s %s", code, e.response.text[:200])
+        return {"ok": False, "error": error, "step": "leave_pool"}
+    except httpx.HTTPError as e:
+        return {"ok": False, "error": f"leave_pool transport error: {e}", "step": "leave_pool"}
+
+
 async def provide(
     inference_url: str,
     inference_model: str,
@@ -540,15 +632,29 @@ async def provide(
     report["steps"].append(trust_result)
 
     if trust_result.get("ok"):
-        # Trust granted! Ready for registration (operator-gated genesis call —
-        # NOT something this node can do; see skill step 6).
+        # Trust granted — complete the loop SELF-SERVICE: join the routable pool.
+        # The platform re-runs the fail-closed gate server-side; nothing routable
+        # comes from this client. (Previously this printed an operator command —
+        # owner directive 2026-07-23: no manual operator step.)
         report["trust_granted"] = True
-        report["next_action"] = (
-            f"Operator: register the backend (can_execute-gated) with:\n"
-            f"  POST http://localhost:8001/deploy/cloud-model/register-backend\n"
-            f'  {{"name": "community_{peer_id.replace("-", "_")}", '
-            f'"reach": "aithernet", "peer_id": "{peer_id}"}}'
+        logger.info("join_pool: peer=%s", peer_id)
+        join_result = await join_pool(
+            peer_id=peer_id,
+            conductor_url=conductor_url,
+            auth_token=auth_token,
         )
+        report["steps"].append(join_result)
+        if join_result.get("ok"):
+            report["joined_pool"] = True
+            report["backend_name"] = join_result.get("backend_name", "")
+            report["message"] = (
+                "You are now serving the AitherNet community pool and earning "
+                "settlement. Leave anytime with: adk mesh leave"
+            )
+        else:
+            report["ok"] = False
+            report["joined_pool"] = False
+            report["message"] = join_result.get("error", "pool entry failed")
     else:
         # Still guest (trust 0) — awaiting operator promotion
         report["ok"] = False

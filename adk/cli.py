@@ -6189,6 +6189,37 @@ def cmd_mesh(args) -> int:
 
         return asyncio.run(_provide())
 
+    elif sub == "leave":
+        async def _leave():
+            from adk.mesh_provider import _get_auth_token, _resolve_peer_id, leave_pool
+
+            peer_id = getattr(args, "peer_id", "").strip() or None
+            conductor_url = getattr(args, "conductor_url", "").strip() or None
+            auth_token = getattr(args, "auth_token", "").strip() or _get_auth_token()
+
+            if not peer_id:
+                try:
+                    peer_id = await _resolve_peer_id()
+                except RuntimeError as e:
+                    print(f"ERROR: {e}", file=sys.stderr)
+                    return 1
+            try:
+                kwargs = {"peer_id": peer_id, "auth_token": auth_token}
+                if conductor_url:
+                    kwargs["conductor_url"] = conductor_url
+                result = await leave_pool(**kwargs)
+                if result.get("ok"):
+                    print(f"  [OK] left the community pool "
+                          f"(backend {result.get('backend_name', '')} drained)")
+                    return 0
+                print(f"  [FAIL] {result.get('error', 'unknown error')}")
+                return 1
+            except Exception as e:
+                print(f"ERROR: {e}", file=sys.stderr)
+                return 1
+
+        return asyncio.run(_leave())
+
     elif sub == "create":
         async def _create():
             import json as _json
@@ -11426,6 +11457,27 @@ def _register_commands(sub):
         help="Conductor endpoint override"
     )
     mesh_provide_p.add_argument(
+        "--auth-token",
+        default=os.getenv("AITHER_AUTH_TOKEN", ""),
+        help="Bearer token for API calls (auto-resolved from ~/.aither/config.json if not given)"
+    )
+
+    # adk mesh leave — self-service pool exit (drain this node's community backend)
+    mesh_leave_p = mesh_sub.add_parser(
+        "leave",
+        help="Leave the community inference pool (drain your node's backend from routing)"
+    )
+    mesh_leave_p.add_argument(
+        "--peer-id",
+        default=os.getenv("AITHER_PEER_ID", ""),
+        help="Peer ID (auto-resolved if not given)"
+    )
+    mesh_leave_p.add_argument(
+        "--conductor-url",
+        default=os.getenv("AITHER_CONDUCTOR_URL", "https://gateway.aitherium.com"),
+        help="Conductor endpoint override"
+    )
+    mesh_leave_p.add_argument(
         "--auth-token",
         default=os.getenv("AITHER_AUTH_TOKEN", ""),
         help="Bearer token for API calls (auto-resolved from ~/.aither/config.json if not given)"

@@ -74,23 +74,40 @@ class AgentPlugin(SlashCommand):
             return self.get_help()
 
         agent_name = args[0].lower()
-        task = " ".join(args[1:])
+        rest = list(args[1:])
+
+        # /agent <name> --expedition <id> <task…> — charge the run to an
+        # expedition budget envelope (AgentForge reads context.expedition_id).
+        expedition_id = ""
+        if "--expedition" in rest:
+            i = rest.index("--expedition")
+            if i + 1 >= len(rest):
+                return "Usage: /agent <name> --expedition <id> <task>"
+            expedition_id = rest[i + 1]
+            del rest[i:i + 2]
+
+        task = " ".join(rest)
 
         if not task:
-            return f"Usage: /agent {agent_name} <task>\n  Example: /agent {agent_name} find all infrastructure services"
+            return f"Usage: /agent {agent_name} [--expedition <id>] <task>\n  Example: /agent {agent_name} find all infrastructure services"
 
-        return await self._dispatch(agent_name, task)
+        return await self._dispatch(agent_name, task, expedition_id=expedition_id)
 
-    async def _dispatch(self, agent_name: str, task: str) -> str:
+    async def _dispatch(self, agent_name: str, task: str, expedition_id: str = "") -> str:
         import httpx
 
         url = f"{_genesis_url()}/forge/dispatch/sync"
         payload = {
-            "agent": agent_name,
+            # ForgeDispatchRequest's field is agent_type — the old "agent" key
+            # was silently DROPPED by pydantic, so every named dispatch actually
+            # ran agent_type="auto" (MCTS routing) instead of the named agent.
+            "agent_type": agent_name,
             "task": task,
             "parent_agent": "system",
             "effort_level": 5,
         }
+        if expedition_id:
+            payload["context"] = {"expedition_id": expedition_id}
 
         try:
             async with httpx.AsyncClient(timeout=120, verify=tls_verify()) as c:
@@ -126,6 +143,7 @@ class AgentPlugin(SlashCommand):
 | Command | Description |
 |---------|-------------|
 | `/agent <name> <task>` | Dispatch a task to a named agent |
+| `/agent <name> --expedition <id> <task>` | Dispatch charged to an expedition budget |
 | `/agents` | List workspace agents |
 | `/agents fleet` | Show federated fleet |
 | `/agents deploy <slug>` | Deploy agent to workspace |
@@ -696,6 +714,7 @@ class AgentsPlugin(SlashCommand):
 | Command | Description |
 |---------|-------------|
 | `/agent <name> <task>` | Dispatch a task to a named agent |
+| `/agent <name> --expedition <id> <task>` | Dispatch charged to an expedition budget |
 | `/agents` | List workspace agents |
 | `/agents fleet` | Show federated fleet |
 | `/agents deploy <slug>` | Deploy agent to workspace |

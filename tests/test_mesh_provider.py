@@ -349,12 +349,34 @@ class TestProvideFullFlow:
                         mock_poll_response.status_code = 200
                         mock_poll_response.json.return_value = {"trust_level": 1}
 
+                        mock_trust_req_response = MagicMock()
+                        mock_trust_req_response.status_code = 200
+                        mock_trust_req_response.json.return_value = {
+                            "status": "auto_granted", "auto_tier_eligible": True,
+                        }
+                        mock_trust_req_response.raise_for_status = MagicMock()
+
+                        # Self-service pool entry (2026-07-23): provide() now
+                        # completes the loop with join-pool — no operator step.
+                        mock_join_response = MagicMock()
+                        mock_join_response.status_code = 200
+                        mock_join_response.json.return_value = {
+                            "joined": True,
+                            "backend_name": "community_peer_10_77_0_39",
+                        }
+                        mock_join_response.raise_for_status = MagicMock()
+
                         mock_client = AsyncMock()
                         mock_client.__aenter__.return_value = mock_client
                         mock_client.__aexit__.return_value = None
 
                         # Set up post and get responses
-                        responses = [mock_ad_response, mock_consent_response]
+                        responses = [
+                            mock_ad_response,
+                            mock_consent_response,
+                            mock_trust_req_response,
+                            mock_join_response,
+                        ]
                         mock_client.post = AsyncMock(side_effect=responses)
                         mock_client.get = AsyncMock(return_value=mock_poll_response)
                         mock_client_class.return_value = mock_client
@@ -367,9 +389,9 @@ class TestProvideFullFlow:
 
                         assert result["ok"] is True
                         assert result["trust_granted"] is True
-                        assert len(result["steps"]) == 3
+                        assert result["joined_pool"] is True
+                        assert result["backend_name"] == "community_peer_10_77_0_39"
                         assert all(step["ok"] for step in result["steps"][:2])
-                        assert result["steps"][2]["ok"] is True
 
     @pytest.mark.asyncio
     async def test_provide_awaiting_operator_trust(self):
