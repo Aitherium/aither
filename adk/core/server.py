@@ -20,6 +20,7 @@ This is a thin FastAPI wrapper; install with ``pip install 'aither-adk[full]'``
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from adk.core.agent import Agent
@@ -33,6 +34,7 @@ def build_app(agent: Agent) -> Any:
     try:
         from fastapi import Body, FastAPI, HTTPException
         from fastapi.responses import StreamingResponse
+        from fastapi.middleware.cors import CORSMiddleware
     except ImportError as e:  # pragma: no cover
         raise RuntimeError(
             "HTTP serve mode requires fastapi. "
@@ -40,6 +42,63 @@ def build_app(agent: Agent) -> Any:
         ) from e
 
     app = FastAPI(title=f"AitherADK agent: {agent.name}")
+
+    # CORS for the browser "is a local node running?" probe and for letting the
+    # Aitherium web app talk to the node the user is running on their own machine.
+    #
+    # allow_origins is an explicit ALLOWLIST (never "*") — this server listens on
+    # loopback, so without a list any site the user visits could reach their agent.
+    # The aitherium origins must be present: the whole point is a probe from
+    # https://portal.aitherium.com to http://127.0.0.1:8000, which is cross-origin.
+    # POST is included because /chat is the endpoint the web app calls once it has
+    # detected the node; GET/OPTIONS alone made the feature dead on arrival.
+    # Override with AITHER_ADK_CORS_ORIGINS (comma-separated) for a custom portal.
+    _extra_origins = [
+        o.strip()
+        for o in os.environ.get("AITHER_ADK_CORS_ORIGINS", "").split(",")
+        if o.strip()
+    ]
+    _allowed_origins = [
+        "https://aitherium.com",
+        "https://www.aitherium.com",
+        "https://portal.aitherium.com",
+        "http://localhost",
+        "http://127.0.0.1",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:8085",
+        "http://127.0.0.1:8085",
+    ] + _extra_origins
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_allowed_origins,
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["*"],
+        allow_credentials=False,
+    )
+
+    # Private Network Access (PNA) support for Chrome.
+    # When an HTTPS page (e.g., https://portal.aitherium.com) probes a private/loopback
+    # HTTP endpoint (e.g., http://127.0.0.1:8000/health), Chrome requires a preflight
+    # OPTIONS response with 'Access-Control-Allow-Private-Network: true' to allow the
+    # health check. This middleware adds that header ONLY for /health and /info routes,
+    # and ONLY when the Origin is in the CORS allowlist.
+    #
+    # Scope: Narrowly applied only to health/info routes + allowlisted origins.
+    # This prevents any cross-site from requesting PNA access via this server.
+    @app.middleware("http")
+    async def add_private_network_access(request, call_next):
+        from starlette.datastructures import MutableHeaders
+
+        origin = request.headers.get("origin", "")
+        # Only add PNA header for health/info routes when Origin is in allowlist
+        if request.url.path in ("/health", "/info") and origin in _allowed_origins:
+            response = await call_next(request)
+            # Add PNA header to allow Chrome to proceed with cross-origin private requests
+            response.headers["Access-Control-Allow-Private-Network"] = "true"
+            return response
+        return await call_next(request)
 
     @app.get("/health")
     async def health() -> dict[str, str]:

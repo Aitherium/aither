@@ -889,8 +889,14 @@ def cmd_up(args):
         login_url = _resolve_identity_url(
             getattr(args, "login_url", "") or os.environ.get("AITHER_PORTAL_URL", "")
             or portal or _DEFAULT_IDENTITY_URL)
-        print(f"  Signing in at {login_url} …")
-        dev = _device_flow_login(login_url, client_name=client)
+        # `--github` federates GitHub's device flow (Identity mints the Aither
+        # token from the GitHub identity); otherwise the standard Aither flow.
+        use_github = bool(getattr(args, "github", False))
+        print(f"  Signing in at {login_url} … ({'GitHub' if use_github else 'email'})")
+        if use_github:
+            dev = _github_device_flow_login(login_url, client_name=client)
+        else:
+            dev = _device_flow_login(login_url, client_name=client)
         tok = dev.get("access_token", "") or dev.get("token", "")
         if tok:
             try:
@@ -1717,6 +1723,89 @@ def _device_flow_login(identity_url: str, client_name: str = "adk") -> dict:
 
     print()
     raise RuntimeError("Timed out waiting for approval. Run `adk login` again.")
+
+
+def _github_device_flow_login(identity_url: str, client_name: str = "adk") -> dict:
+    """Log in with a GitHub identity via GitHub's device flow.
+
+    Identity drives GitHub's RFC-8628 device flow server-side (the GitHub
+    client secret never touches the CLI) and mints an Aither session token from
+    the GitHub identity. Returns the same {access_token, ...} shape as
+    `_device_flow_login`, so callers are interchangeable.
+    """
+    import json as _json
+    import time
+    import urllib.request
+    import urllib.error
+    import webbrowser
+
+    try:
+        from adk import __version__ as _v
+    except Exception:  # noqa: BLE001
+        _v = "0"
+    _ua = f"aither-adk/{_v} ({client_name})"
+    _hdrs = {"Content-Type": "application/json", "Accept": "application/json", "User-Agent": _ua}
+
+    try:
+        data = _post_json_resilient(f"{identity_url}/auth/github/device/start", {}, _hdrs)
+    except RuntimeError:
+        raise
+    except (urllib.error.URLError, OSError) as exc:
+        raise RuntimeError(f"Cannot reach {identity_url}: {exc}") from exc
+
+    handle = data.get("handle")
+    user_code = data.get("user_code", "")
+    verification_uri = data.get("verification_uri", "https://github.com/login/device")
+    interval = max(2, int(data.get("interval", 5)))
+    expires_in = int(data.get("expires_in", 900))
+    if not handle or not user_code:
+        raise RuntimeError("GitHub device start returned no code. Try `adk login` (email) instead.")
+
+    print()
+    print(f"  Your GitHub code: {user_code}")
+    print()
+    print(f"  Opening browser to: {verification_uri}")
+    print("  (If it doesn't open, visit the URL manually and enter the code)")
+    print()
+    try:
+        webbrowser.open(verification_uri)
+    except OSError:
+        pass
+    print("  Waiting for GitHub approval", end="", flush=True)
+
+    deadline = time.time() + expires_in
+    while time.time() < deadline:
+        time.sleep(interval)
+        poll_req = urllib.request.Request(
+            f"{identity_url}/auth/github/device/poll",
+            data=_json.dumps({"handle": handle}).encode(),
+            headers=_hdrs,
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(poll_req, timeout=10) as resp:
+                result = _json.loads(resp.read())
+        except urllib.error.HTTPError:
+            print(".", end="", flush=True)
+            continue
+        except (urllib.error.URLError, OSError):
+            print(".", end="", flush=True)
+            continue
+        status = result.get("status", "")
+        if status == "pending":
+            interval = max(interval, int(result.get("interval", interval)))
+            print(".", end="", flush=True)
+            continue
+        if status == "error":
+            print()
+            raise RuntimeError(f"GitHub login failed: {result.get('error', 'unknown')}. Run `adk login --github` again.")
+        if status == "complete" and result.get("access_token"):
+            print(" approved!")
+            return result
+        print(".", end="", flush=True)
+
+    print()
+    raise RuntimeError("Timed out waiting for GitHub approval. Run `adk login --github` again.")
 
 
 def _save_account_license(result: dict) -> str:
@@ -6046,8 +6135,227 @@ def cmd_mesh(args) -> int:
 
         return asyncio.run(_ls())
 
+    elif sub == "provide":
+        async def _provide():
+            from adk.mesh_provider import provide
+
+            inference_url = getattr(args, "inference_url", "").strip()
+            model = getattr(args, "model", "").strip()
+            peer_id = getattr(args, "peer_id", "").strip() or None
+            tenant_id = getattr(args, "tenant_id", "").strip() or None
+            wait = getattr(args, "wait", 30)
+            strata_url = getattr(args, "strata_url", "").strip() or None
+            conductor_url = getattr(args, "conductor_url", "").strip() or None
+            auth_token = getattr(args, "auth_token", "").strip() or None
+
+            if not inference_url or not model:
+                print("ERROR: --inference-url and --model are required")
+                return 1
+
+            try:
+                report = await provide(
+                    inference_url=inference_url,
+                    inference_model=model,
+                    peer_id=peer_id,
+                    tenant_id=tenant_id,
+                    wait_seconds=wait,
+                    strata_url=strata_url,
+                    conductor_url=conductor_url,
+                    auth_token=auth_token,
+                )
+
+                # Print report
+                print("\n  AitherNet Provider Setup")
+                print("  " + "=" * 60)
+
+                for step in report.get("steps", []):
+                    step_name = step.get("step", "unknown").upper()
+                    if step.get("ok"):
+                        print(f"  [OK] {step_name}")
+                    else:
+                        print(f"  [FAIL] {step_name}: {step.get('error', 'unknown error')}")
+
+                if report.get("message"):
+                    print(f"\n  {report['message']}")
+
+                if report.get("next_action"):
+                    print(f"\n  Next Step:\n{report['next_action']}")
+
+                print()
+                return 0 if report.get("ok") else 1
+            except Exception as e:
+                print(f"ERROR: {e}", file=sys.stderr)
+                return 1
+
+        return asyncio.run(_provide())
+
+    elif sub == "create":
+        async def _create():
+            import json as _json
+            import httpx
+            from adk.mesh import _resolve_conductor_url, _verify
+
+            name = getattr(args, "name", "").strip()
+            tenant_id = getattr(args, "tenant_id", "").strip()
+            discoverable = bool(getattr(args, "discoverable", False))
+            federation_role = getattr(args, "federation_role", "standalone")
+            conductor = getattr(args, "conductor_url", "").strip() or os.getenv("AITHER_CONDUCTOR_URL", "")
+            auth_token = getattr(args, "auth_token", "").strip()
+
+            if not name:
+                print("ERROR: --name required")
+                return 1
+            if not conductor:
+                print("ERROR: --conductor-url required (or set AITHER_CONDUCTOR_URL)")
+                return 1
+            # Bearer resolution: flag -> env -> ~/.aither/config.json (never fabricate).
+            if not auth_token:
+                auth_token = os.getenv("AITHER_AUTH_TOKEN", "").strip()
+            if not auth_token:
+                try:
+                    cfg = os.path.expanduser("~/.aither/config.json")
+                    if os.path.exists(cfg):
+                        with open(cfg) as f:
+                            auth_token = (_json.load(f).get("auth_token") or "").strip()
+                except Exception:  # noqa: BLE001
+                    auth_token = ""
+            if not auth_token:
+                print("ERROR: no auth token — a mesh is created under YOUR authenticated tenant, "
+                      "never anonymously. Set AITHER_AUTH_TOKEN, pass --auth-token, or run 'adk auth'.")
+                return 1
+            if not tenant_id:
+                print("ERROR: --tenant-id required (or set AITHER_TENANT_ID) — verified against "
+                      "your token (fail-closed; you can only create under your own tenant).")
+                return 1
+
+            conductor = _resolve_conductor_url(conductor)
+            payload = {"tenant_id": tenant_id, "name": name,
+                       "discoverable": discoverable, "federation_role": federation_role}
+            headers = {"Content-Type": "application/json", "Authorization": f"Bearer {auth_token}"}
+            try:
+                async with httpx.AsyncClient(verify=_verify()) as client:
+                    r = await client.post(f"{conductor}/v1/mesh/create", json=payload,
+                                          headers=headers, timeout=45.0)
+            except Exception as e:
+                print(f"ERROR: could not reach conductor at {conductor}: {e}", file=sys.stderr)
+                return 1
+            if r.status_code != 200:
+                print(f"ERROR: mesh create failed ({r.status_code}): {r.text[:300]}", file=sys.stderr)
+                return 1
+            rep = r.json()
+            print("\n  AitherNet Mesh Created")
+            print("  " + "=" * 55)
+            print(f"  Mesh ID:       {rep.get('mesh_id','')}")
+            print(f"  Name:          {rep.get('name','')}")
+            print(f"  Tenant:        {rep.get('tenant_id','')}")
+            print(f"  Overlay CIDR:  {rep.get('cidr','')}")
+            print(f"  Headscale key: {'issued' if rep.get('headscale_key_issued') else 'not issued'}")
+            print(f"  Discoverable:  {rep.get('discoverable', False)}")
+            print(f"  ACL entry:     {'applied' if rep.get('acl_tenant_entry_applied') else 'skipped'}")
+            for step in rep.get("next_steps", []):
+                print(f"    -> {step}")
+            print()
+            return 0
+
+        return asyncio.run(_create())
+
+    elif sub == "link":
+        async def _link():
+            import json as _json
+            import httpx
+            from adk.mesh import _resolve_conductor_url, _verify
+
+            action = getattr(args, "link_action", "") or ""
+            tenant_id = getattr(args, "tenant_id", "").strip()
+            conductor = getattr(args, "conductor_url", "").strip() or os.getenv("AITHER_CONDUCTOR_URL", "")
+            auth_token = getattr(args, "auth_token", "").strip()
+            if not conductor:
+                print("ERROR: --conductor-url required (or set AITHER_CONDUCTOR_URL)")
+                return 1
+            # Bearer resolution: flag -> env -> ~/.aither/config.json (never fabricate).
+            if not auth_token:
+                auth_token = os.getenv("AITHER_AUTH_TOKEN", "").strip()
+            if not auth_token:
+                try:
+                    cfg = os.path.expanduser("~/.aither/config.json")
+                    if os.path.exists(cfg):
+                        with open(cfg) as f:
+                            auth_token = (_json.load(f).get("auth_token") or "").strip()
+                except Exception:  # noqa: BLE001
+                    auth_token = ""
+            if not auth_token:
+                print("ERROR: no auth token — mesh links act under YOUR authenticated tenant. "
+                      "Set AITHER_AUTH_TOKEN, pass --auth-token, or run 'adk auth'.")
+                return 1
+            if not tenant_id:
+                print("ERROR: --tenant-id required (or set AITHER_TENANT_ID).")
+                return 1
+
+            conductor = _resolve_conductor_url(conductor)
+            headers = {"Content-Type": "application/json", "Authorization": f"Bearer {auth_token}"}
+            try:
+                async with httpx.AsyncClient(verify=_verify()) as client:
+                    if action == "request":
+                        src = getattr(args, "source_mesh", "").strip()
+                        tgt = getattr(args, "target_mesh", "").strip()
+                        if not src or not tgt:
+                            print("ERROR: --source-mesh and --target-mesh required")
+                            return 1
+                        r = await client.post(
+                            f"{conductor}/v1/mesh/link/request",
+                            json={"tenant_id": tenant_id, "source_mesh": src, "target_mesh": tgt},
+                            headers=headers, timeout=45.0)
+                    elif action == "approve":
+                        lid = getattr(args, "link_id", "").strip()
+                        if not lid:
+                            print("ERROR: --link-id required")
+                            return 1
+                        r = await client.post(
+                            f"{conductor}/v1/mesh/link/approve",
+                            json={"tenant_id": tenant_id, "link_id": lid},
+                            headers=headers, timeout=45.0)
+                    elif action == "revoke":
+                        lid = getattr(args, "link_id", "").strip()
+                        if not lid:
+                            print("ERROR: --link-id required")
+                            return 1
+                        r = await client.post(
+                            f"{conductor}/v1/mesh/link/revoke",
+                            json={"tenant_id": tenant_id, "link_id": lid},
+                            headers=headers, timeout=45.0)
+                    elif action == "list":
+                        r = await client.get(
+                            f"{conductor}/v1/mesh/link/list",
+                            params={"tenant_id": tenant_id}, headers=headers, timeout=45.0)
+                    else:
+                        print("Usage: adk mesh link [request|approve|revoke|list]")
+                        return 1
+            except Exception as e:
+                print(f"ERROR: could not reach conductor at {conductor}: {e}", file=sys.stderr)
+                return 1
+            if r.status_code != 200:
+                print(f"ERROR: mesh link {action} failed ({r.status_code}): {r.text[:300]}", file=sys.stderr)
+                return 1
+            rep = r.json()
+            if action == "list":
+                links = rep.get("links", [])
+                print(f"\n  Mesh Links ({len(links)})")
+                print("  " + "=" * 55)
+                for lk in links:
+                    print(f"  {lk.get('link_id','')}  {lk.get('status','')}  "
+                          f"{lk.get('source_mesh','')} -> {lk.get('target_mesh','')}")
+                print()
+            else:
+                print(f"\n  Mesh link {action}: {rep.get('status', rep)}")
+                if rep.get("link_id"):
+                    print(f"  Link ID: {rep.get('link_id')}")
+                print()
+            return 0
+
+        return asyncio.run(_link())
+
     else:
-        print("Usage: adk mesh [onboard|ls]")
+        print("Usage: adk mesh [onboard|ls|provide|create|link]")
         return 1
 
 
@@ -10400,6 +10708,8 @@ def _register_commands(sub):
     login_p = sub.add_parser("login", help="Authenticate with Aitherium (browser device flow)")
     login_p.add_argument("--email", help="Use email/password instead of browser flow")
     login_p.add_argument("--password", help="Password (prompted if --email given without it)")
+    login_p.add_argument("--github", action="store_true",
+                         help="Sign in with your GitHub identity (device flow)")
     login_p.add_argument("--api-key", help="Save an API key directly (no login flow)")
     login_p.add_argument("--portal-url", default="",
                          help="Portal/Identity URL (default: portal.aitherium.com)")
@@ -10972,6 +11282,41 @@ def _register_commands(sub):
     secret_sync_p.add_argument("--gateway-url", help="Gateway URL (fallback, default: from env)")
     secret_sync_p.add_argument("--api-key", help="API key (default: from env)")
 
+    # adk vault — on-demand lockbox over the LIVE AitherSecrets vault. The master
+    # key is sealed in the OS keychain (unlocked by your OS login); values copy to
+    # the clipboard by default so they never hit scrollback.
+    vault_p = sub.add_parser("vault", help="Lockbox for the live secrets vault (setup, ls, get, search, rotate, lock)")
+    vault_sub = vault_p.add_subparsers(dest="vault_command")
+    vault_gui_p = vault_sub.add_parser("gui", help="Open the vault in a browser (starts the console, opens the panel)")
+    vault_gui_p.add_argument("--port", type=int, help="Serve on this port (default: an auto-picked free port, remembered)")
+    vault_setup_p = vault_sub.add_parser("setup", help="One-time: seal the vault master key into the OS keychain")
+    vault_setup_p.add_argument("--from-env", dest="from_env", action="store_true", help="Import AITHER_INTERNAL_SECRET from .env instead of pasting it")
+    vault_setup_p.add_argument("--env-file", dest="env_file", help="Path to the .env holding AITHER_INTERNAL_SECRET")
+    vault_setup_p.add_argument("--url", help=f"Vault base URL (default: from env or 127.0.0.1:8111)")
+    vault_setup_p.add_argument("--pin", action="store_true", help="Also set a PIN that guards value reveals")
+    vault_sub.add_parser("status", help="Show setup + reachability + secret count")
+    vault_ls_p = vault_sub.add_parser("ls", help="List secret names + metadata (never values)")
+    vault_ls_p.add_argument("--filter", help="Only names containing this text (searches all scopes)")
+    vault_ls_p.add_argument("--scope", choices=["mine", "tenant", "providers", "platform", "all"],
+                            default="mine", help="Which tier to show (default: mine — hides platform/system)")
+    vault_get_p = vault_sub.add_parser("get", help="Reveal one secret (clipboard by default)")
+    vault_get_p.add_argument("name", help="Secret name")
+    vault_get_p.add_argument("--show", action="store_true", help="Print the value to the terminal (PIN-gated if set)")
+    vault_get_p.add_argument("--copy", action="store_true", help="Copy to clipboard (default when not --show)")
+    vault_search_p = vault_sub.add_parser("search", help="Fuzzy-search secret names")
+    vault_search_p.add_argument("term", help="Substring to search for")
+    vault_scope_p = vault_sub.add_parser("scope", help="Re-file a secret's scope/owner (overlay — non-destructive)")
+    vault_scope_p.add_argument("name", help="Secret name")
+    vault_scope_p.add_argument("scope", choices=["mine", "workspace", "tenant", "provider", "platform", "host"],
+                               help="Scope tier to file it under")
+    vault_scope_p.add_argument("--owner", help="Optional owner label")
+    vault_rotate_p = vault_sub.add_parser("rotate", help="Mint a fresh strong value for a secret and store it")
+    vault_rotate_p.add_argument("name", help="Secret name to rotate")
+    vault_rotate_p.add_argument("--length", type=int, default=28, help="New value length (default 28)")
+    vault_rotate_p.add_argument("--show", action="store_true", help="Print the new value")
+    vault_lock_p = vault_sub.add_parser("lock", help="Drop the PIN session (--forget wipes the sealed key)")
+    vault_lock_p.add_argument("--forget", action="store_true", help="Also delete the master key + PIN from the keychain")
+
     # adk voice serve — standalone HTTP voice server for AitherShell
     voice_p = sub.add_parser("voice", help="Voice services (serve standalone HTTP server)")
     voice_sub = voice_p.add_subparsers(dest="voice_command")
@@ -11009,7 +11354,7 @@ def _register_commands(sub):
     mesh_onboard_p = mesh_sub.add_parser("onboard", help="Onboard this node into AitherMesh overlay (WireGuard)")
     mesh_onboard_p.add_argument(
         "--conductor",
-        default=os.getenv("AITHER_CONDUCTOR_URL", "https://aitheros-conductor:8193"),
+        default=os.getenv("AITHER_CONDUCTOR_URL", "https://gateway.aitherium.com"),
         help="Conductor URL (default: $AITHER_CONDUCTOR_URL or internal address)")
     mesh_onboard_p.add_argument(
         "--node-id",
@@ -11031,13 +11376,118 @@ def _register_commands(sub):
     mesh_ls_p = mesh_sub.add_parser("ls", help="List peer agents in the mesh and their A2A services")
     mesh_ls_p.add_argument(
         "--mesh-url",
-        default=os.getenv("AITHER_MESH_URL", "https://aitheros-aithernet:8125"),
+        default=os.getenv("AITHER_MESH_URL", "https://gateway.aitherium.com"),
         help="AitherMesh directory URL (default: $AITHER_MESH_URL or internal)")
     mesh_ls_p.add_argument(
         "--format",
         choices=["table", "json"],
         default="table",
         help="Output format (default: table)")
+
+    # adk mesh provide — one-command community inference provider setup
+    mesh_provide_p = mesh_sub.add_parser(
+        "provide",
+        help="Become a community inference provider (advertise → consent → await operator trust)"
+    )
+    mesh_provide_p.add_argument(
+        "--inference-url",
+        required=True,
+        help="OpenAI-compatible inference server URL (e.g., http://10.77.x.x:8000/v1)"
+    )
+    mesh_provide_p.add_argument(
+        "--model",
+        required=True,
+        help="Model name advertised (e.g., gemma4-12b)"
+    )
+    mesh_provide_p.add_argument(
+        "--peer-id",
+        default=os.getenv("AITHER_PEER_ID", ""),
+        help="Peer ID (auto-resolved if not given; must have run 'adk mesh onboard' first)"
+    )
+    mesh_provide_p.add_argument(
+        "--tenant-id",
+        default=os.getenv("AITHER_TENANT_ID", ""),
+        help="Owner tenant ID (authenticated identity; required for fail-closed gate)"
+    )
+    mesh_provide_p.add_argument(
+        "--wait",
+        type=int,
+        default=30,
+        help="Timeout for polling operator trust grant (default: 30s; 0=no wait)"
+    )
+    mesh_provide_p.add_argument(
+        "--strata-url",
+        default=os.getenv("AITHER_STRATA_URL", "https://gateway.aitherium.com"),
+        help="Strata endpoint override"
+    )
+    mesh_provide_p.add_argument(
+        "--conductor-url",
+        default=os.getenv("AITHER_CONDUCTOR_URL", "https://gateway.aitherium.com"),
+        help="Conductor endpoint override"
+    )
+    mesh_provide_p.add_argument(
+        "--auth-token",
+        default=os.getenv("AITHER_AUTH_TOKEN", ""),
+        help="Bearer token for API calls (auto-resolved from ~/.aither/config.json if not given)"
+    )
+
+    # adk mesh create — one-command self-service: mint your OWN isolated mesh
+    mesh_create_p = mesh_sub.add_parser(
+        "create",
+        help="Create your OWN isolated mesh (per-tenant overlay CIDR + Headscale key + registry)"
+    )
+    mesh_create_p.add_argument("--name", required=True, help="Human name for the mesh")
+    mesh_create_p.add_argument(
+        "--tenant-id",
+        default=os.getenv("AITHER_TENANT_ID", ""),
+        help="Owner tenant ID (authenticated identity; fail-closed — must match your token)"
+    )
+    mesh_create_p.add_argument(
+        "--discoverable", action="store_true",
+        help="Opt this mesh into the AitherNet public directory (others can discover + link)"
+    )
+    mesh_create_p.add_argument(
+        "--federation-role", default="standalone",
+        choices=["standalone", "hub", "spoke"],
+        help="Federation role for mesh-to-mesh linking (default: standalone)"
+    )
+    mesh_create_p.add_argument(
+        "--conductor-url",
+        default=os.getenv("AITHER_CONDUCTOR_URL", "https://gateway.aitherium.com"),
+        help="Conductor endpoint (default: $AITHER_CONDUCTOR_URL)"
+    )
+    mesh_create_p.add_argument(
+        "--auth-token",
+        default=os.getenv("AITHER_AUTH_TOKEN", ""),
+        help="Bearer token (auto-resolved from ~/.aither/config.json if not given)"
+    )
+
+    # adk mesh link — federate two meshes into ONE inference pool (owner-consented both sides)
+    mesh_link_p = mesh_sub.add_parser(
+        "link",
+        help="Link your mesh with another (both owners consent -> shared inference pool)"
+    )
+    mesh_link_sub = mesh_link_p.add_subparsers(dest="link_action")
+    for _act, _help in (
+        ("request", "Offer your mesh into a link with a discovered target mesh"),
+        ("approve", "Approve an incoming link request (consent to federate)"),
+        ("revoke", "Revoke a link (either side; drops it from the pool)"),
+        ("list", "List links your tenant is a party to"),
+    ):
+        _p = mesh_link_sub.add_parser(_act, help=_help)
+        _p.add_argument("--tenant-id", default=os.getenv("AITHER_TENANT_ID", ""),
+                        help="Your authenticated tenant ID (fail-closed; must match your token)")
+        _p.add_argument("--conductor-url",
+                        default=os.getenv("AITHER_CONDUCTOR_URL", "https://gateway.aitherium.com"),
+                        help="Conductor endpoint (default: $AITHER_CONDUCTOR_URL)")
+        _p.add_argument("--auth-token", default=os.getenv("AITHER_AUTH_TOKEN", ""),
+                        help="Bearer token (auto-resolved from ~/.aither/config.json if not given)")
+        if _act == "request":
+            _p.add_argument("--source-mesh", required=True, help="YOUR mesh_id to offer into the link")
+            _p.add_argument("--target-mesh", required=True,
+                            help="Target mesh_id (from 'adk mesh' discovery / AitherNet directory)")
+        if _act in ("approve", "revoke"):
+            _p.add_argument("--link-id", required=True, help="The link_id to act on")
 
     # adk routing — per-intent model routing
     routing_p = sub.add_parser("routing", help="Manage per-intent model routing (which model handles which task)")
@@ -11857,6 +12307,9 @@ def main():
         sys.exit(cmd_keys(args))
     elif args.command == "secret":
         sys.exit(cmd_secret(args))
+    elif args.command == "vault":
+        from adk import vault_lockbox
+        sys.exit(vault_lockbox.dispatch(args))
     elif args.command == "voice":
         sys.exit(cmd_voice(args))
     elif args.command == "routing":

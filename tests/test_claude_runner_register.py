@@ -129,6 +129,13 @@ class TestRegisterCommands:
         env_file = repo_root / ".env"
         env_file.write_text("AITHER_INTERNAL_SECRET=test-secret-123\n")
         monkeypatch.chdir(repo_root)
+        # Isolate Path.home(): register writes ~/.aither/bin/claude-runner-wrapper.*
+        # BEFORE the (mocked) subprocess call — without a fake home the test
+        # overwrites the user's REAL wrapper with a pytest tmp repo path.
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setenv("USERPROFILE", str(fake_home))
         return repo_root
 
     @pytest.fixture
@@ -187,12 +194,7 @@ class TestRegisterCommands:
     def test_register_creates_log_directory(
         self, env_setup: Path, mock_args_register, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
-        """Registration creates ~/.aither/logs directory."""
-        fake_home = tmp_path / "home"
-        fake_home.mkdir()
-        monkeypatch.setenv("HOME", str(fake_home))
-        monkeypatch.setenv("USERPROFILE", str(fake_home))  # Windows
-
+        """Registration creates ~/.aither/logs directory (fake home via env_setup)."""
         with mock.patch("subprocess.run") as mock_run:
             mock_run.return_value = mock.Mock(returncode=0, stdout="", stderr="")
             result = cmd_register_claude(mock_args_register)
@@ -314,6 +316,11 @@ class TestDispatcher:
         env_file = repo_root / ".env"
         env_file.write_text("AITHER_INTERNAL_SECRET=secret\n")
         monkeypatch.chdir(repo_root)
+        # Isolate Path.home() — register writes the real ~/.aither wrapper otherwise.
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setenv("USERPROFILE", str(fake_home))
 
         class Args:
             claude_command = "serve"

@@ -269,7 +269,7 @@ ruff check . --fix  # auto-fix
 
 ## License & Attribution
 
-Built with [aither-adk](https://github.com/anthropics/aither-adk), the portable AitherAgent library for building sign-in-free LLM apps.
+Built with [aither-adk](https://github.com/Aitherium/aither-adk), the portable AitherAgent library for building sign-in-free LLM apps.
 
 ---
 

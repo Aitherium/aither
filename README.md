@@ -14,11 +14,11 @@ adk init my-agent && cd my-agent && python agent.py
 
 ```bash
 # macOS / Linux
-curl -LsSf https://github.com/Aitherium/aither-adk/releases/latest/download/install.sh | sh
+curl -fsSL https://aitherium.com/install.sh | sh
 ```
 ```powershell
 # Windows
-powershell -ExecutionPolicy ByPass -c "irm https://github.com/Aitherium/aither-adk/releases/latest/download/install.ps1 | iex"
+powershell -ExecutionPolicy ByPass -c "irm https://aitherium.com/install.ps1 | iex"
 ```
 
 **No GPU? No problem.** Set an API key and your agents use cloud inference. Have a GPU? They auto-detect vLLM/Ollama. Both? They route intelligently by task complexity.

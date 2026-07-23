@@ -754,7 +754,14 @@ class GraphMemory:
         MUST be api-key protected — set ``AITHER_FLEET_QDRANT_API_KEY``. Empty for
         a network-internal Qdrant. Qdrant reads the ``api-key`` header."""
         key = os.environ.get("AITHER_FLEET_QDRANT_API_KEY", "").strip()
-        return {"api-key": key} if key else {}
+        hdr = {"api-key": key} if key else {}
+        # Routed through mesh-core's /proxy/qdrant (e.g. a tailnet-joined CI
+        # runner with no public Qdrant route): the proxy authorizes callers by
+        # their registered mesh node identity, not a Qdrant api-key.
+        node_id = os.environ.get("AITHER_MESH_NODE_ID", "").strip()
+        if node_id:
+            hdr["X-Aither-Node-ID"] = node_id
+        return hdr
 
     @staticmethod
     def _qdrant_verify():

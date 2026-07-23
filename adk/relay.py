@@ -112,10 +112,17 @@ class AitherNetRelay:
     ):
         self.api_key = api_key or os.getenv("AITHER_API_KEY", "")
         self.gateway_url = (gateway_url or os.getenv("AITHER_GATEWAY_URL", _GATEWAY_URL)).rstrip("/")
-        self.relay_hub_url = relay_hub_url or os.getenv("AITHERNET_RELAY_URL", _RELAY_HUB_URL)
+        # Support both AITHERNET_RELAY_URL (adk) and AITHERNET_HUB_URL (server, D-586),
+        # with AITHERNET_RELAY_URL taking precedence for backward compat
+        self.relay_hub_url = (
+            relay_hub_url
+            or os.getenv("AITHERNET_RELAY_URL")
+            or os.getenv("AITHERNET_HUB_URL", _RELAY_HUB_URL)
+        )
 
         # Override relay hub URL from saved config (for desktop direct relay)
-        if not relay_hub_url and not os.getenv("AITHERNET_RELAY_URL"):
+        if (not relay_hub_url and not os.getenv("AITHERNET_RELAY_URL")
+                and not os.getenv("AITHERNET_HUB_URL")):
             try:
                 from adk.config import load_saved_config  # noqa: lazy import
                 saved = load_saved_config()

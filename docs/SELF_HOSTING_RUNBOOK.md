@@ -475,5 +475,6 @@ A: Every 60 seconds by default. Configurable via `GraphMemory(..., auto_sync=...
 
 For more, see:
 - [AGENT_DEV_GUIDE.md](./AGENT_DEV_GUIDE.md) — agent development
-- [AitherOS CLAUDE.md](../CLAUDE.md) — fleet architecture
-- AitherOS GitHub — [mesh integration](https://github.com/aitherium/aitheros/tree/develop/docs/mesh), [entitlements](https://github.com/aitherium/aitheros/tree/develop/lib/billing)
+- Mesh integration & billing/entitlement internals live in the AitherOS platform repo
+  (private). Customers don't need them for self-hosting; if you believe you do, ask
+  support@aitherium.com for the relevant excerpt.
