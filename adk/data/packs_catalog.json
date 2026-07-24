@@ -806,6 +806,25 @@
       ]
     },
     {
+      "id": "distributed-inference",
+      "name": "Distributed Inference",
+      "type": "tool_pack",
+      "version": "1.0.0",
+      "description": "Run LLM inference across heterogeneous fleet nodes using llama.cpp RPC. Build GGML_RPC backends per-arch, join the distributed pool, and serve models too big for a single node. Proven 2-node split (RTX 5090 + DGX) at ~10 tok/s coherent output.",
+      "tier": "free",
+      "category": "infrastructure",
+      "tags": [
+        "llm",
+        "distributed",
+        "inference",
+        "rpc",
+        "llama.cpp",
+        "scale",
+        "heterogeneous",
+        "free"
+      ]
+    },
+    {
       "id": "core-skills",
       "name": "Core Skills",
       "type": "skill_pack",

@@ -2083,6 +2083,123 @@ def cmd_logout(args) -> int:
     return 0
 
 
+def cmd_balance(args) -> int:
+    """Show Aitherium credit account (balance, earnings, spending)."""
+    import requests
+    import json as _json
+
+    saved = load_saved_config()
+    api_key = saved.get("api_key", "")
+    username = saved.get("username", "")
+    email = saved.get("email", "")
+    tenant_id = saved.get("tenant_id", "")
+
+    if not api_key:
+        print("  Error: Not logged in. Run: adk login")
+        return 1
+
+    # Resolve user_id: use tenant_id if set, else username or email
+    user_id = tenant_id or username or email
+    if not user_id:
+        print("  Error: Could not determine user ID from config")
+        return 1
+
+    # Call the ACTA endpoint: GET /v1/billing/member/{user_id}
+    # Try several possible endpoints (local, cloud, configured)
+    acta_urls = [
+        "http://localhost:8200",  # Local fleet
+        "https://localhost:8200",  # Local fleet with TLS
+        "https://portal-gateway.aitherium.com",  # Cloud
+    ]
+
+    account_info = None
+    last_error = None
+
+    for base_url in acta_urls:
+        try:
+            url = f"{base_url}/v1/billing/member/{user_id}"
+            headers = {"Authorization": f"Bearer {api_key}"}
+            resp = requests.get(url, headers=headers, timeout=5, verify=False)
+            if resp.status_code == 200:
+                account_info = resp.json()
+                break
+            elif resp.status_code == 401:
+                print("  Error: Authentication failed (invalid API key)")
+                return 1
+            elif resp.status_code == 403:
+                print("  Error: Access denied (cannot view this account)")
+                return 1
+            elif resp.status_code == 404:
+                print("  Error: Account not found")
+                return 1
+        except Exception as e:
+            last_error = str(e)
+            continue
+
+    if not account_info:
+        print("  Error: Could not reach ACTA service")
+        if last_error:
+            print(f"  Last error: {last_error}")
+        print("  Make sure you are connected to AitherOS (adk login / adk connect)")
+        return 1
+
+    # Format and display the account info
+    print()
+    print("  Aitherium Credit Account")
+    print("  ════════════════════════")
+    print()
+
+    # Spendable balance
+    spendable = account_info.get("spendable_tokens", 0)
+    print(f"  Spendable Credits:  {spendable:,} tokens")
+
+    # Monthly allotment
+    monthly = account_info.get("monthly", {})
+    allotment = monthly.get("plan_allotment", 0)
+    used = monthly.get("used_this_month", 0)
+    remaining = monthly.get("remaining", 0)
+    if allotment > 0:
+        pct = (used / allotment * 100) if allotment else 0
+        print(f"  Monthly Plan:       {used:,}/{allotment:,} used ({pct:.1f}%)")
+        print(f"  Remaining This Mo:  {remaining:,} tokens")
+
+    print()
+    print("  Lifetime Earnings")
+    print("  ─────────────────")
+    earning = account_info.get("earning", {})
+    earned_tokens = earning.get("lifetime_settled_tokens", 0)
+    earned_usd = earning.get("lifetime_usd", 0)
+    print(f"  Total Earned:       {earned_tokens:,} tokens (${earned_usd:.2f})")
+
+    recent_earnings = earning.get("recent_earnings", [])
+    if recent_earnings:
+        print(f"  Recent Serves:      {len(recent_earnings)} (last 10)")
+        for rc in recent_earnings[:3]:
+            ts = rc.get("created_at", "")[:10]
+            toks = rc.get("tokens", 0)
+            print(f"    • {ts}: {toks} tokens")
+        if len(recent_earnings) > 3:
+            print(f"    + {len(recent_earnings) - 3} more...")
+
+    print()
+    print("  Lifetime Spending")
+    print("  ─────────────────")
+    spending = account_info.get("spending", {})
+    spent_tokens = spending.get("lifetime_consumed_tokens", 0)
+    spent_usd = spending.get("lifetime_usd", 0)
+    print(f"  Total Spent:        {spent_tokens:,} tokens (${spent_usd:.2f})")
+
+    print()
+    print("  Account Summary")
+    print("  ───────────────")
+    net = account_info.get("net", {})
+    net_earned = net.get("earned_minus_spent", 0)
+    print(f"  Net Position:       {net_earned:,} tokens")
+
+    print()
+    return 0
+
+
 def cmd_connect(args):
     """Connect to AitherOS — detect local LLMs, activate cloud, join mesh."""
     import asyncio
@@ -10907,6 +11024,9 @@ def _register_commands(sub):
     # adk logout
     sub.add_parser("logout", help="Clear saved auth tokens")
 
+    # adk balance — show Aitherium credit account info
+    sub.add_parser("balance", help="Show your Aitherium credit balance and earnings")
+
     # adk claude-account — manage multiple Claude Code logins
     claude_account_p = sub.add_parser(
         "claude-account",
@@ -12244,6 +12364,39 @@ def _register_commands(sub):
                          help="Don't stream progress")
     forge_p.set_defaults(watch=True)
 
+    # adk notebook — plan, run, and inspect Agent Notebooks (.anb) on Genesis
+    nb_p = sub.add_parser(
+        "notebook", help="Plan, run, and inspect Agent Notebooks (.anb) on Genesis")
+    nb_sub = nb_p.add_subparsers(dest="nb_command")
+
+    nb_plan_p = nb_sub.add_parser("plan", help="Create a notebook from a natural-language task")
+    nb_plan_p.add_argument("prompt", nargs="+", help="The task to plan a notebook for")
+    nb_plan_p.add_argument("--agent", default="atlas", help="Planning agent (default: atlas)")
+    nb_plan_p.add_argument("--effort", type=int, default=5, help="Planner effort 1-10 (default: 5)")
+    nb_plan_p.add_argument("--context", default="", help="Extra context to ground the plan")
+
+    nb_list_p = nb_sub.add_parser("list", help="List Agent Notebooks")
+    nb_list_p.add_argument("--workspace", default="", help="Filter by workspace")
+    nb_list_p.add_argument("--status", default="", help="Filter by status (draft/ready/running/completed)")
+    nb_list_p.add_argument("--limit", type=int, default=50, help="Max notebooks to return (default: 50)")
+
+    nb_get_p = nb_sub.add_parser("get", help="Show a notebook definition (cells, spec, variables)")
+    nb_get_p.add_argument("notebook_id", help="Notebook id")
+
+    nb_run_p = nb_sub.add_parser("run", help="Execute a notebook; returns a run handle")
+    nb_run_p.add_argument("notebook_id", help="Notebook id")
+    nb_run_p.add_argument("--var", action="append", default=[], metavar="KEY=VALUE",
+                          help="Set a run variable (repeatable)")
+    nb_run_p.add_argument("--mode", default="sequential",
+                          choices=["sequential", "parallel"], help="Execution mode")
+
+    nb_status_p = nb_sub.add_parser("status", help="Show a run's status, cell traces, and cost")
+    nb_status_p.add_argument("run_id", help="Run id (from `notebook run`)")
+
+    nb_export_p = nb_sub.add_parser("export", help="Export a notebook to a Jupyter .ipynb file")
+    nb_export_p.add_argument("notebook_id", help="Notebook id")
+    nb_export_p.add_argument("-o", "--output", default="", help="Output path (default: ./<id>.ipynb)")
+
 
 # ── Forge subcommand handler ─────────────────────────────────────────────
 
@@ -12318,6 +12471,53 @@ def cmd_forge(args) -> int:
     except Exception as e:
         print(f"Error: {type(e).__name__}: {e}", file=sys.stderr)
         return 1
+
+
+def cmd_notebook(args) -> int:
+    """Plan, run, and inspect Agent Notebooks via the ADK notebook tools."""
+    from adk import notebook_tools as nt
+
+    sub = getattr(args, "nb_command", None)
+    if not sub:
+        print("Usage: adk notebook <plan|list|get|run|status|export> ...", file=sys.stderr)
+        return 1
+
+    if sub == "plan":
+        prompt = " ".join(getattr(args, "prompt", []) or [])
+        out = nt.notebook_plan(prompt, agent=args.agent, effort=args.effort,
+                               context=args.context)
+    elif sub == "list":
+        out = nt.notebook_list(workspace=args.workspace, status=args.status,
+                               limit=args.limit)
+    elif sub == "get":
+        out = nt.notebook_get(args.notebook_id)
+    elif sub == "run":
+        variables: dict = {}
+        for pair in getattr(args, "var", []) or []:
+            if "=" in pair:
+                k, v = pair.split("=", 1)
+                variables[k.strip()] = v
+            else:
+                print(f"Warning: ignoring malformed --var '{pair}' (expected KEY=VALUE)",
+                      file=sys.stderr)
+        out = nt.notebook_execute(args.notebook_id, variables=variables or None,
+                                  mode=args.mode)
+    elif sub == "status":
+        out = nt.notebook_run_status(args.run_id)
+    elif sub == "export":
+        out = nt.notebook_export(args.notebook_id, path=args.output)
+    else:
+        print(f"Unknown notebook subcommand: {sub}", file=sys.stderr)
+        return 1
+
+    # Tools return JSON strings; pretty-print and set exit code on error.
+    try:
+        parsed = json.loads(out)
+    except Exception:
+        print(out)
+        return 0
+    print(json.dumps(parsed, indent=2, default=str))
+    return 1 if isinstance(parsed, dict) and parsed.get("error") else 0
 
 
 def _stream_forge_session(genesis_url: str, session_id: str) -> int:
@@ -12542,6 +12742,8 @@ def main():
         sys.exit(cmd_whoami(args))
     elif args.command == "logout":
         sys.exit(cmd_logout(args))
+    elif args.command == "balance":
+        sys.exit(cmd_balance(args))
     elif args.command == "claude-account":
         from adk.claude_accounts import cmd_claude_account
         sys.exit(cmd_claude_account(args))
@@ -12724,6 +12926,8 @@ def main():
         sys.exit(0)
     elif args.command == "forge":
         sys.exit(cmd_forge(args))
+    elif args.command == "notebook":
+        sys.exit(cmd_notebook(args))
     elif args.command == "train":
         sys.exit(_cmd_train(args))
     elif args.command is None:

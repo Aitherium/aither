@@ -771,6 +771,16 @@ class AitherAgent:
     async def _learn_after(self, message: str, content: str, tool_calls_made: list) -> None:
         """Continual learning after a run: reinforce skills we reused (success_count++),
         and extract+save a NEW skill from a successful multi-tool run. Non-fatal."""
+        # KEYSTONE (per-agent world-model training): emit each tool this turn chose onto the fleet bus as an
+        # `agent.action` event, tagged by agent identity + timestamp. Gated OFF by default and fire-and-forget;
+        # the lazy, guarded import keeps the adk fully decoupled from AitherOS's lib (the feed only activates
+        # where that lib is importable and AITHER_AGENT_ACTION_FEED=1). Runs before the skills early-return so
+        # it fires for every turn, and can never affect the turn's outcome.
+        try:
+            from lib.cognitive.agent_action_feed import emit_turn_action_names
+            await emit_turn_action_names(self.name, tool_calls_made)
+        except Exception:
+            pass
         if not self._skills:
             return
         try:

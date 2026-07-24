@@ -1936,6 +1936,9 @@ TOOL_INTENT_CATEGORIES = {
     check_safety_gate: [],
 }
 
+# Agent Notebook tools are registered lazily (they proxy the Genesis /notebooks/*
+# router) — their intent categories are attached in _init_notebook_tools().
+
 # Tool category definitions
 TOOL_CATEGORIES: dict = {
     "file_io": [file_read, file_write, file_edit, file_list, file_search],
@@ -1957,15 +1960,16 @@ TOOL_CATEGORIES: dict = {
     "self": [],
     "voice": [],  # populated lazily by _init_voice_tools()
     "formbridge": [],  # populated lazily by _init_formbridge_tools()
+    "notebooks": [],  # populated lazily by _init_notebook_tools()
 }
 
 # Default categories for common identity profiles
 # Every identity gets "self" by default — self-introspection is universally safe and
 # directly addresses Reddit pain ("I asked the agent what it did and it lied").
 IDENTITY_DEFAULTS = {
-    "demiurge": ["file_io", "shell", "python", "web", "git", "code", "repowise", "swarm", "graph", "workspace", "safety", "self"],
-    "analyst": ["file_io", "web", "python", "code", "graph", "structured_ml", "workspace", "safety", "self"],
-    "atlas": ["file_io", "web", "secrets", "code", "graph", "workspace", "safety", "self"],
+    "demiurge": ["file_io", "shell", "python", "web", "git", "code", "repowise", "swarm", "graph", "workspace", "notebooks", "safety", "self"],
+    "analyst": ["file_io", "web", "python", "code", "graph", "structured_ml", "workspace", "notebooks", "safety", "self"],
+    "atlas": ["file_io", "web", "secrets", "code", "graph", "workspace", "notebooks", "safety", "self"],
     "aither": ["file_io", "shell", "web", "creative", "self"],
     "lyra": ["file_io", "web", "graph", "workspace", "voice", "safety", "self"],
     "hydra": ["file_io", "shell", "python", "git", "code", "repowise", "graph", "workspace", "safety", "self"],
@@ -2024,6 +2028,26 @@ def _init_formbridge_tools():
         TOOL_CATEGORIES["formbridge"] = []
 
 
+def _init_notebook_tools():
+    """Lazily populate the notebooks category (Agent Notebook proxy tools).
+
+    These proxy the Genesis /notebooks/* router — plan, run, inspect, and export
+    ``.anb`` Agent Notebooks. They no-op cleanly if the module can't be imported.
+    """
+    if TOOL_CATEGORIES.get("notebooks"):
+        return  # Already initialized
+    try:
+        from adk.notebook_tools import NOTEBOOK_TOOLS
+        TOOL_CATEGORIES["notebooks"] = list(NOTEBOOK_TOOLS)
+        # Notebook orchestration is code/analysis work.
+        for fn in NOTEBOOK_TOOLS:
+            TOOL_INTENT_CATEGORIES.setdefault(fn, ["code", "analysis"])
+        logger.info("Agent Notebook tools initialized (%d tools)", len(NOTEBOOK_TOOLS))
+    except ImportError:
+        logger.debug("Notebook tools not available; notebooks category remains empty")
+        TOOL_CATEGORIES["notebooks"] = []
+
+
 def register_builtin_tools(
     agent: AitherAgent,
     categories: list[str] | None = None,
@@ -2044,6 +2068,7 @@ def register_builtin_tools(
     _init_workspace_tools()  # lazily populate workspace category
     _init_voice_tools()  # lazily populate voice category
     _init_formbridge_tools()  # lazily populate formbridge category
+    _init_notebook_tools()  # lazily populate notebooks category
 
     if categories is None and auto:
         # Unknown identities get a minimal, fully-local default. "workspace"
