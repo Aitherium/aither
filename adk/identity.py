@@ -4,17 +4,32 @@ Enhanced with:
   - Skill manifests: structured capability declarations per identity
   - A2A protocol support: /.well-known/agent.json generation
   - Capability requirements for sandbox enforcement
+  - GitHub device flow authentication for CLI login
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import os
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import yaml
+
+__all__ = [
+    "Identity",
+    "SkillManifest",
+    "load_identity",
+    "list_identities",
+    "load_soul_md",
+    "export_soul_md",
+    "github_device_flow",
+    "AuthError",
+]
 
 logger = logging.getLogger("adk.identity")
 
@@ -369,3 +384,187 @@ def _parse_identity(path: Path) -> Identity:
         version=data.get("version", "1.0"),
         raw=data,
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GitHub Device Flow Authentication
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class AuthError(RuntimeError):
+    """Raised on credential lookup / device flow authentication failures."""
+
+
+async def github_device_flow(
+    no_browser: bool = False,
+    base: str | None = None,
+    *,
+    poll_timeout: float = 300.0,
+    poll_interval: float = 1.0,
+) -> Dict[str, Any]:
+    """Authenticate via GitHub device flow against AitherIdentity.
+
+    Initiates RFC 8628 OAuth device flow by POST-ing /auth/github/device/start,
+    prints the verification_uri + user_code, and polls
+    /auth/github/device/poll(handle) until success/timeout/denial. Returns
+    {user_id, workspace_id, bearer_token} on success (fail-closed).
+
+    Args:
+        no_browser: Ignored (reserved for future browser-launch support).
+        base: AitherIdentity base URL (default: env AITHER_IDENTITY_URL or
+              https://aitheros-security-core:8115). Must support TLS + internal
+              CA verification.
+        poll_timeout: Seconds to wait for user to authorize (default: 300s).
+        poll_interval: Seconds between poll attempts (default: 1s).
+
+    Returns:
+        {
+            "user_id": str,
+            "workspace_id": str,
+            "bearer_token": str,
+            "username": str,
+        }
+
+    Raises:
+        AuthError: timeout/denied/error from GitHub or service. Never raises
+                   HTTPException or returns partial dict.
+    """
+    try:
+        import httpx
+    except ImportError as e:
+        raise AuthError(f"httpx not installed: {e}") from e
+
+    # Resolve base URL
+    if not base:
+        base = os.getenv(
+            "AITHER_IDENTITY_URL",
+            "https://aitheros-security-core:8115",
+        ).strip()
+    base = base.rstrip("/")
+
+    # Get TLS verify setting (prefer internal CA bundle, fall back to system CAs)
+    try:
+        from adk._tls import tls_verify
+        verify = tls_verify()
+    except (ImportError, Exception):
+        verify = True  # Fallback: system CAs only
+
+    # Step 1: POST /auth/github/device/start
+    try:
+        async with httpx.AsyncClient(verify=verify, timeout=15.0) as client:
+            start_resp = await client.post(f"{base}/auth/github/device/start")
+    except asyncio.TimeoutError as e:
+        raise AuthError(f"Device start timeout: {e}") from e
+    except httpx.HTTPError as e:
+        raise AuthError(f"Device start failed: {e}") from e
+
+    if start_resp.status_code != 200:
+        detail = start_resp.text[:200] if start_resp.text else ""
+        raise AuthError(
+            f"Device start HTTP {start_resp.status_code}: {detail}"
+        )
+
+    try:
+        data = start_resp.json()
+    except ValueError as e:
+        raise AuthError(f"Device start response invalid JSON: {e}") from e
+
+    handle = data.get("handle", "").strip()
+    user_code = data.get("user_code", "").strip()
+    verification_uri = data.get("verification_uri", "").strip()
+    expires_in = int(data.get("expires_in", 900))
+    interval = int(data.get("interval", 5))
+
+    if not handle or not user_code or not verification_uri:
+        raise AuthError(
+            "Device start response incomplete: missing handle/user_code/"
+            "verification_uri"
+        )
+
+    # Step 2: Display verification URI + user code (never print token)
+    print(
+        f"\nGitHub Device Authorization\n"
+        f"Visit: {verification_uri}\n"
+        f"Enter code: {user_code}\n",
+        file=sys.stderr,
+    )
+
+    # Step 3: Poll /auth/github/device/poll until complete/timeout
+    start_time = asyncio.get_event_loop().time()
+    poll_wait = min(interval, 2)  # User-friendly polling interval
+
+    while True:
+        elapsed = asyncio.get_event_loop().time() - start_time
+        if elapsed > poll_timeout:
+            raise AuthError(
+                f"Device authorization timeout after {poll_timeout}s "
+                "(check GitHub app at {verification_uri})"
+            )
+
+        await asyncio.sleep(poll_wait)
+
+        try:
+            async with httpx.AsyncClient(
+                verify=verify, timeout=15.0
+            ) as client:
+                poll_resp = await client.post(
+                    f"{base}/auth/github/device/poll",
+                    json={"handle": handle},
+                )
+        except asyncio.TimeoutError as e:
+            # Timeout on this poll attempt — retry
+            logger.debug("Poll attempt timeout: %s", e)
+            continue
+        except httpx.HTTPError as e:
+            raise AuthError(f"Poll request failed: {e}") from e
+
+        if poll_resp.status_code != 200:
+            detail = poll_resp.text[:200] if poll_resp.text else ""
+            raise AuthError(f"Poll HTTP {poll_resp.status_code}: {detail}")
+
+        try:
+            poll_data = poll_resp.json()
+        except ValueError as e:
+            raise AuthError(f"Poll response invalid JSON: {e}") from e
+
+        status = poll_data.get("status", "").strip().lower()
+
+        if status == "complete":
+            # Success: extract fields (fail-closed if any required field missing)
+            bearer_token = poll_data.get("access_token", "").strip()
+            user_id = poll_data.get("user_id", "").strip()
+            workspace_id = poll_data.get("tenant_id", "").strip()
+
+            if not bearer_token or not user_id:
+                raise AuthError(
+                    "Poll complete but missing access_token or user_id"
+                )
+
+            # Never print/log the bearer token
+            logger.debug(
+                "Device auth complete: user_id=%s workspace_id=%s",
+                user_id, workspace_id,
+            )
+            return {
+                "user_id": user_id,
+                "workspace_id": workspace_id,
+                "bearer_token": bearer_token,
+                "username": poll_data.get("username", ""),
+            }
+
+        elif status == "pending":
+            # Keep polling
+            new_interval = int(poll_data.get("interval", interval))
+            if new_interval != interval:
+                interval = new_interval
+                poll_wait = min(interval, 2)
+            continue
+
+        elif status == "error":
+            # Denied or error
+            error = poll_data.get("error", "unknown_error").strip()
+            raise AuthError(f"GitHub authorization denied: {error}")
+
+        else:
+            # Unknown status
+            raise AuthError(f"Unexpected poll status: {status}")

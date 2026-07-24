@@ -16,6 +16,7 @@ import asyncio
 import json
 import logging
 import os
+import subprocess
 import time
 from typing import Any
 from urllib.parse import urlparse
@@ -725,3 +726,148 @@ async def provide(
         )
 
     return report
+
+
+async def flux_node(
+    flux_image: str | None = None,
+    flux_port: int | None = None,
+    mesh_src: str | None = None,
+    node_id: str | None = None,
+    aither_internal_secret: str | None = None,
+) -> dict[str, Any]:
+    """Start a Flux event-plane listener on this node.
+
+    The Flux listener participates in the AitherMesh event-plane and serves
+    on the given port. This is a node-local operation (runs via subprocess).
+
+    Args:
+        flux_image: Docker image to run (default: aitheros-mesh-agent:dgx-arm64)
+        flux_port: Port to bind the listener (default: 8117)
+        mesh_src: Host path to mount as /app (default: /opt/aitheros/mesh-src)
+        node_id: Mesh node identifier (required; e.g., spark-dgx, computed-node-1)
+        aither_internal_secret: Service-internal secret from vault (required; never
+                                echoed). If not provided, attempts to resolve from
+                                AITHER_INTERNAL_SECRET environment variable.
+
+    Returns:
+        dict with keys:
+          - ok: True if the container started and passed health checks
+          - message: Human-readable status
+          - error: (if ok=False) error description
+          - container: container name (aither-flux)
+          - port: bound port
+    """
+    from pathlib import Path
+
+    # Explicit param > environment > built-in default (library callers get the
+    # same env resolution the CLI layer performs).
+    if flux_image is None:
+        flux_image = os.getenv("FLUX_IMAGE", "aitheros-mesh-agent:dgx-arm64")
+    if flux_port is None:
+        flux_port = int(os.getenv("FLUX_PORT", "8117"))
+    if mesh_src is None:
+        mesh_src = os.getenv("MESH_SRC", "/opt/aitheros/mesh-src")
+
+    # Fail-closed: node_id is required and identifies the node on the mesh.
+    if not node_id:
+        return {
+            "ok": False,
+            "error": "node_id required (e.g., spark-dgx, computed-node-1)",
+            "step": "flux_node_init",
+        }
+
+    # Fail-closed: aither_internal_secret is required and must not be echoed.
+    if not aither_internal_secret:
+        aither_internal_secret = os.getenv("AITHER_INTERNAL_SECRET", "").strip()
+    if not aither_internal_secret:
+        return {
+            "ok": False,
+            "error": (
+                "aither_internal_secret required. "
+                "Set AITHER_INTERNAL_SECRET environment variable or pass "
+                "--aither-internal-secret (never echoed)"
+            ),
+            "step": "flux_node_init",
+        }
+
+    # Find the flux-node-up.sh script. Try common paths:
+    # 1. In the adk package (relative to this file)
+    # 2. In the system PATH via 'which aither-flux-node-up.sh'
+    # 3. In aither-skills/scripts/ from the repo root
+    script_paths = [
+        Path(__file__).parent.parent.parent / "aither-skills" / "scripts" / "flux-node-up.sh",
+        Path("/usr/local/bin/flux-node-up.sh"),
+        Path("/opt/aitheros/scripts/flux-node-up.sh"),
+    ]
+
+    script_path = None
+    for p in script_paths:
+        if p.exists() and p.is_file():
+            script_path = p
+            break
+
+    if not script_path:
+        return {
+            "ok": False,
+            "error": (
+                "flux-node-up.sh not found in expected locations. "
+                "Ensure aither-skills is installed or the script is in PATH."
+            ),
+            "step": "flux_node_init",
+        }
+
+    # Prepare environment for subprocess (secret is NOT echoed in logs).
+    env = os.environ.copy()
+    env["FLUX_IMAGE"] = flux_image
+    env["FLUX_PORT"] = str(flux_port)
+    env["MESH_SRC"] = mesh_src
+    env["NODE_ID"] = node_id
+    env["AITHER_INTERNAL_SECRET"] = aither_internal_secret
+
+    logger.info("starting flux listener: node=%s port=%d", node_id, flux_port)
+
+    try:
+        # Run the script as subprocess (no-shell to avoid injection).
+        # Redirect stdout/stderr to capture output.
+        result = subprocess.run(
+            [str(script_path)],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60.0,  # 60s timeout for the script
+        )
+
+        if result.returncode == 0:
+            # Success: extract the final message from stdout
+            output_lines = result.stdout.strip().split("\n")
+            return {
+                "ok": True,
+                "message": "Flux listener started and healthy",
+                "container": "aither-flux",
+                "port": flux_port,
+                "node_id": node_id,
+                "output": "\n".join(output_lines[-5:]),  # Last few lines
+            }
+        else:
+            # Failure: extract error from stderr or stdout
+            error_output = result.stderr.strip() or result.stdout.strip()
+            logger.error("flux_node script failed: %s", error_output)
+            return {
+                "ok": False,
+                "error": f"flux-node-up.sh exited with code {result.returncode}",
+                "details": error_output[:500],  # Truncate long errors
+                "step": "flux_node_start",
+            }
+    except subprocess.TimeoutExpired:
+        return {
+            "ok": False,
+            "error": "flux-node-up.sh timed out (60s)",
+            "step": "flux_node_start",
+        }
+    except Exception as e:
+        logger.error("flux_node error: %s", e)
+        return {
+            "ok": False,
+            "error": f"flux_node error: {e}",
+            "step": "flux_node_start",
+        }

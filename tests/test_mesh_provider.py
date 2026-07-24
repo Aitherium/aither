@@ -564,3 +564,157 @@ class TestFederationToken:
         result = await federation_token("", auth_token="tok")
         assert result["ok"] is False
         assert "peer_id required" in result["error"]
+
+
+class TestFluxNode:
+    """Test flux_node: start Flux event-plane listener on a node."""
+
+    @pytest.mark.asyncio
+    async def test_flux_node_missing_node_id_fails_closed(self):
+        from adk.mesh_provider import flux_node
+
+        result = await flux_node(node_id="")
+        assert result["ok"] is False
+        assert "node_id required" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_flux_node_missing_aither_internal_secret_fails_closed(self):
+        from adk.mesh_provider import flux_node
+
+        with patch.dict("os.environ", {"AITHER_INTERNAL_SECRET": ""}, clear=False):
+            result = await flux_node(node_id="spark-dgx", aither_internal_secret="")
+            assert result["ok"] is False
+            assert "aither_internal_secret required" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_flux_node_script_not_found(self):
+        from adk.mesh_provider import flux_node
+
+        with patch("pathlib.Path.exists", return_value=False):
+            result = await flux_node(
+                node_id="spark-dgx",
+                aither_internal_secret="test_secret_xyz",
+            )
+            assert result["ok"] is False
+            assert "flux-node-up.sh not found" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_flux_node_success_starts_container(self):
+        from adk.mesh_provider import flux_node
+
+        with patch("pathlib.Path.exists", return_value=True):
+            with patch("pathlib.Path.is_file", return_value=True):
+                with patch("subprocess.run") as mock_run:
+                    mock_result = MagicMock()
+                    mock_result.returncode = 0
+                    mock_result.stdout = """
+== starting flux listener container
+== FLUX OK — listener ready on port 8117
+                    """
+                    mock_result.stderr = ""
+                    mock_run.return_value = mock_result
+
+                    result = await flux_node(
+                        flux_image="aitheros-mesh-agent:dgx-arm64",
+                        flux_port=8117,
+                        mesh_src="/opt/aitheros/mesh-src",
+                        node_id="spark-dgx",
+                        aither_internal_secret="test_secret_xyz",
+                    )
+
+                    assert result["ok"] is True
+                    assert result["message"] == "Flux listener started and healthy"
+                    assert result["container"] == "aither-flux"
+                    assert result["port"] == 8117
+                    assert result["node_id"] == "spark-dgx"
+
+                    # Verify subprocess was called with correct environment
+                    mock_run.assert_called_once()
+                    call_args = mock_run.call_args
+                    call_env = call_args[1]["env"]
+                    assert call_env["NODE_ID"] == "spark-dgx"
+                    assert call_env["FLUX_PORT"] == "8117"
+                    assert call_env["AITHER_INTERNAL_SECRET"] == "test_secret_xyz"
+                    # Never echo the secret
+                    assert call_args[1]["capture_output"] is True
+
+    @pytest.mark.asyncio
+    async def test_flux_node_script_failure_returns_error(self):
+        from adk.mesh_provider import flux_node
+
+        with patch("pathlib.Path.exists", return_value=True):
+            with patch("pathlib.Path.is_file", return_value=True):
+                with patch("subprocess.run") as mock_run:
+                    mock_result = MagicMock()
+                    mock_result.returncode = 1
+                    mock_result.stdout = ""
+                    mock_result.stderr = "ERROR: docker run failed — image not found"
+                    mock_run.return_value = mock_result
+
+                    result = await flux_node(
+                        node_id="spark-dgx",
+                        aither_internal_secret="test_secret_xyz",
+                    )
+
+                    assert result["ok"] is False
+                    assert "exited with code 1" in result["error"]
+                    assert "image not found" in result["details"]
+
+    @pytest.mark.asyncio
+    async def test_flux_node_timeout_raises_error(self):
+        from adk.mesh_provider import flux_node
+
+        with patch("pathlib.Path.exists", return_value=True):
+            with patch("pathlib.Path.is_file", return_value=True):
+                with patch("subprocess.run") as mock_run:
+                    import subprocess
+
+                    mock_run.side_effect = subprocess.TimeoutExpired("cmd", 60)
+
+                    result = await flux_node(
+                        node_id="spark-dgx",
+                        aither_internal_secret="test_secret_xyz",
+                    )
+
+                    assert result["ok"] is False
+                    assert "timed out" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_flux_node_env_resolution(self):
+        from adk.mesh_provider import flux_node
+
+        with patch.dict(
+            "os.environ",
+            {
+                "FLUX_IMAGE": "custom-image:v1",
+                "FLUX_PORT": "9000",
+                "MESH_SRC": "/custom/mesh",
+                "AITHER_NODE_ID": "custom-node",
+                "AITHER_INTERNAL_SECRET": "env_secret_xyz",
+            },
+            clear=False,
+        ):
+            with patch("pathlib.Path.exists", return_value=True):
+                with patch("pathlib.Path.is_file", return_value=True):
+                    with patch("subprocess.run") as mock_run:
+                        mock_result = MagicMock()
+                        mock_result.returncode = 0
+                        mock_result.stdout = "OK"
+                        mock_result.stderr = ""
+                        mock_run.return_value = mock_result
+
+                        # Call with some args, verify env resolution
+                        result = await flux_node(
+                            flux_image="override-image:v2",  # Should override env
+                            node_id="custom-node",
+                            # aither_internal_secret not passed, should resolve from env
+                        )
+
+                        assert result["ok"] is True
+                        call_env = mock_run.call_args[1]["env"]
+                        # Explicit arg overrides env
+                        assert call_env["FLUX_IMAGE"] == "override-image:v2"
+                        # But port should come from env
+                        assert call_env["FLUX_PORT"] == "9000"
+                        # And secret should resolve from env when not passed
+                        assert call_env["AITHER_INTERNAL_SECRET"] == "env_secret_xyz"

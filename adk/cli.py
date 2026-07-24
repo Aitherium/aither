@@ -270,6 +270,81 @@ def cmd_create_app(args):
     return result.returncode
 
 
+def cmd_ssh_cert(args):
+    """Fetch a short-lived SSH certificate from the AitherCert SSH CA.
+
+    Signs your SSH public key with the tenant SSH CA (the one whose public key
+    is registered in GitHub org settings -> SSH certificate authorities) and
+    installs the certificate next to the private key, where OpenSSH picks it
+    up automatically. Renewal = re-run this command.
+
+    Passphrase resolution order (never echoed, never stored by adk):
+      1. $AITHER_SSH_CA_PASSPHRASE
+      2. interactive prompt (getpass)
+    """
+    import getpass
+
+    import requests
+
+    key_path = Path(getattr(args, "key", None)
+                    or os.path.expanduser("~/.ssh/id_ed25519.pub"))
+    if not key_path.name.endswith(".pub"):
+        print(f"--key must point at a PUBLIC key (.pub): {key_path}")
+        return 1
+    if not key_path.exists():
+        print(f"Public key not found: {key_path} (generate one: ssh-keygen -t ed25519)")
+        return 1
+    public_key = key_path.read_text().strip()
+
+    github_user = getattr(args, "github_user", None)
+    if not github_user:
+        cfg = load_saved_config()
+        github_user = cfg.get("github_username") or ""
+    if not github_user:
+        print("No GitHub username. Pass --github-user <login>.")
+        return 1
+
+    base = (getattr(args, "cert_url", None)
+            or os.environ.get("AITHER_CERT_URL", "https://localhost:8113")).rstrip("/")
+    passphrase = os.environ.get("AITHER_SSH_CA_PASSPHRASE") or getpass.getpass(
+        "SSH CA passphrase: ")
+    if not passphrase:
+        print("A passphrase is required (the CA signs nothing without it).")
+        return 1
+
+    body = {
+        "passphrase": passphrase,
+        "public_key": public_key,
+        "github_username": github_user,
+        "ttl_hours": int(getattr(args, "ttl_hours", 24) or 24),
+    }
+    try:
+        resp = requests.post(f"{base}/ssh-ca/sign", json=body,
+                             timeout=60, verify=tls_verify())
+    except requests.RequestException as e:
+        print(f"SSH CA unreachable at {base}: {e}")
+        return 1
+    if resp.status_code == 403:
+        print("Wrong SSH CA passphrase (fail-closed; nothing was issued).")
+        return 1
+    if resp.status_code == 404:
+        print("No SSH CA exists yet — create it first: POST /ssh-ca/create on AitherCert.")
+        return 1
+    if resp.status_code != 200:
+        print(f"Signing failed: HTTP {resp.status_code}: {resp.text[:300]}")
+        return 1
+
+    data = resp.json()
+    cert_path = key_path.with_name(key_path.name[:-len(".pub")] + "-cert.pub")
+    cert_path.write_text(data["certificate"] + "\n")
+    print(f"Certificate installed: {cert_path}")
+    print(f"  github user: {data.get('github_username', github_user)}")
+    print(f"  serial:      {data.get('serial', '?')}")
+    print(f"  valid until: {data.get('valid_until', '?')}")
+    print("OpenSSH picks the cert up automatically. Verify: ssh -T git@github.com")
+    return 0
+
+
 def cmd_ssh(args):
     """Open a raw interactive terminal into a prod/dev environment via the tunnel.
 
@@ -6253,6 +6328,54 @@ def cmd_mesh(args) -> int:
 
         return asyncio.run(_leave())
 
+    elif sub == "flux-node":
+        async def _flux_node():
+            from adk.mesh_provider import flux_node
+
+            flux_image = getattr(args, "flux_image", "").strip() \
+                or "aitheros-mesh-agent:dgx-arm64"
+            flux_port = getattr(args, "flux_port", 8117)
+            mesh_src = getattr(args, "mesh_src", "").strip() \
+                or "/opt/aitheros/mesh-src"
+            node_id = getattr(args, "node_id", "").strip() or None
+            aither_internal_secret = getattr(args, "aither_internal_secret",
+                                             "").strip() or None
+
+            try:
+                result = await flux_node(
+                    flux_image=flux_image,
+                    flux_port=flux_port,
+                    mesh_src=mesh_src,
+                    node_id=node_id,
+                    aither_internal_secret=aither_internal_secret,
+                )
+
+                print("\n  Flux Event-Plane Listener")
+                print("  " + "=" * 60)
+
+                if result.get("ok"):
+                    print(f"  [OK] {result['message']}")
+                    print(f"  Container: {result.get('container', 'aither-flux')}")
+                    print(f"  Port:      {result.get('port', flux_port)}")
+                    print(f"  Node ID:   {result.get('node_id', node_id)}")
+                    if result.get("output"):
+                        print("\n  Startup output:")
+                        for line in result["output"].split("\n"):
+                            print(f"    {line}")
+                    print()
+                    return 0
+                else:
+                    print(f"  [FAIL] {result.get('error', 'unknown error')}")
+                    if result.get("details"):
+                        print(f"\n  Details:\n{result['details']}")
+                    print()
+                    return 1
+            except Exception as e:
+                print(f"ERROR: {e}", file=sys.stderr)
+                return 1
+
+        return asyncio.run(_flux_node())
+
     elif sub == "create":
         async def _create():
             import json as _json
@@ -11112,6 +11235,18 @@ def _register_commands(sub):
     ssh_p.add_argument("--tunnel-url", default="tunnel.aitherium.com",
                        help="Tunnel host (default: tunnel.aitherium.com)")
 
+    sshcert_p = sub.add_parser(
+        "ssh-cert",
+        help="Fetch a short-lived SSH certificate from the AitherCert SSH CA (GitHub org SSH)")
+    sshcert_p.add_argument("--github-user", dest="github_user", default=None,
+                           help="GitHub login the cert is bound to")
+    sshcert_p.add_argument("--key", default=None,
+                           help="Public key to certify (default: ~/.ssh/id_ed25519.pub)")
+    sshcert_p.add_argument("--ttl-hours", dest="ttl_hours", type=int, default=24,
+                           help="Certificate lifetime in hours, max 168 (default: 24)")
+    sshcert_p.add_argument("--cert-url", dest="cert_url", default=None,
+                           help="AitherCert base URL (default: $AITHER_CERT_URL or https://localhost:8113)")
+
     ws_p = sub.add_parser("workspace", help="Manage dev workspaces on AitherOS tunnel")
     ws_sub = ws_p.add_subparsers(dest="ws_command")
 
@@ -11412,6 +11547,35 @@ def _register_commands(sub):
     grid_rm_mesh_p = grid_sub.add_parser("deregister", help="Remove an enrolled mesh node from the registry")
     grid_rm_mesh_p.add_argument("node_id", help="Node id or name to deregister")
 
+    # adk join — one-command community node onboarding (GitHub → hardware →
+    # serve → mesh → earn)
+    join_p = sub.add_parser(
+        "join",
+        help="One-command community node onboarding (GitHub auth + hardware "
+             "detection + serve + mesh join + earnings)"
+    )
+    join_p.add_argument(
+        "--no-github", action="store_true",
+        help="Skip GitHub auth (use existing token or env)"
+    )
+    join_p.add_argument(
+        "--cloud-provider",
+        choices=["aws", "gcp", "azure", "vast"],
+        help="Cloud provider for remote deployment (deferred to P2)"
+    )
+    join_p.add_argument(
+        "--model",
+        help="Override the resolved inference model"
+    )
+    join_p.add_argument(
+        "--no-browser", action="store_true",
+        help="Do not attempt browser open for GitHub auth"
+    )
+    join_p.add_argument(
+        "--dry-run", action="store_true",
+        help="Walk the full plan without side effects"
+    )
+
     # adk mesh — AitherMesh overlay and A2A operations
     mesh_p = sub.add_parser("mesh", help="AitherMesh overlay operations (onboard, list peers)")
     mesh_sub = mesh_p.add_subparsers(dest="mesh_command")
@@ -11535,6 +11699,38 @@ def _register_commands(sub):
         "--auth-token",
         default=os.getenv("AITHER_AUTH_TOKEN", ""),
         help="Bearer token for API calls (auto-resolved from ~/.aither/config.json if not given)"
+    )
+
+    # adk mesh flux-node — start a Flux event-plane listener on this node
+    mesh_flux_p = mesh_sub.add_parser(
+        "flux-node",
+        help="Start a Flux event-plane listener on this node (participates in AitherMesh)"
+    )
+    mesh_flux_p.add_argument(
+        "--flux-image",
+        default=os.getenv("FLUX_IMAGE", "aitheros-mesh-agent:dgx-arm64"),
+        help="Docker image to run (default: aitheros-mesh-agent:dgx-arm64)"
+    )
+    mesh_flux_p.add_argument(
+        "--flux-port",
+        type=int,
+        default=int(os.getenv("FLUX_PORT", "8117")),
+        help="Port to bind the listener (default: 8117)"
+    )
+    mesh_flux_p.add_argument(
+        "--mesh-src",
+        default=os.getenv("MESH_SRC", "/opt/aitheros/mesh-src"),
+        help="Host path to mount as /app (default: /opt/aitheros/mesh-src)"
+    )
+    mesh_flux_p.add_argument(
+        "--node-id",
+        default=os.getenv("AITHER_NODE_ID", ""),
+        help="Mesh node identifier (required; e.g., spark-dgx)"
+    )
+    mesh_flux_p.add_argument(
+        "--aither-internal-secret",
+        default=os.getenv("AITHER_INTERNAL_SECRET", ""),
+        help="Service-internal secret from vault (required; never echoed in output)"
     )
 
     # adk mesh create — one-command self-service: mint your OWN isolated mesh
@@ -12333,6 +12529,8 @@ def main():
         sys.exit(cmd_stack(args))
     elif args.command == "ssh":
         sys.exit(cmd_ssh(args))
+    elif args.command == "ssh-cert":
+        sys.exit(cmd_ssh_cert(args))
     elif args.command == "wizard":
         from adk.setup_cli import cmd_wizard
         sys.exit(cmd_wizard(args))
@@ -12420,6 +12618,9 @@ def main():
         sys.exit(cmd_voice(args))
     elif args.command == "routing":
         sys.exit(cmd_routing(args))
+    elif args.command == "join":
+        from adk.commands.join import cmd_join
+        sys.exit(cmd_join(args))
     elif args.command == "mesh":
         sys.exit(cmd_mesh(args))
     elif args.command == "costs":

@@ -1015,8 +1015,8 @@ def _get_wrapper_ps1_content(repo_root: str, host: str, port: int) -> str:
 # This script is called by the scheduled task and must NOT embed secrets.
 
 $RepoRoot = {shlex.quote(repo_root)}
-$Env:AITHER_CLAUDE_RUNNER_HOST = {shlex.quote(host)}
-$Env:AITHER_CLAUDE_RUNNER_PORT = {shlex.quote(str(port))}
+$Env:AITHER_CLAUDE_RUNNER_HOST = '{host}'
+$Env:AITHER_CLAUDE_RUNNER_PORT = '{port}'
 
 # Load AITHER_INTERNAL_SECRET from .env (fail-closed if missing)
 $EnvFile = Join-Path $RepoRoot ".env"
