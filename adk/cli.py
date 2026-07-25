@@ -12397,6 +12397,22 @@ def _register_commands(sub):
     nb_export_p.add_argument("notebook_id", help="Notebook id")
     nb_export_p.add_argument("-o", "--output", default="", help="Output path (default: ./<id>.ipynb)")
 
+    # adk wm — world model management (status, inspect, train, reset)
+    wm_p = sub.add_parser("wm", help="World model management (status, inspect, train, reset)")
+    wm_sub = wm_p.add_subparsers(dest="wm_command")
+
+    wm_status_p = wm_sub.add_parser("status", help="List all agents with checkpoints")
+
+    wm_inspect_p = wm_sub.add_parser("inspect", help="Show learned effects for an agent")
+    wm_inspect_p.add_argument("agent", help="Agent ID (e.g., agent.aither)")
+
+    wm_train_p = wm_sub.add_parser("train", help="Force a bootstrap/refit now")
+    wm_train_p.add_argument("agent", help="Agent ID (e.g., agent.aither)")
+
+    wm_reset_p = wm_sub.add_parser("reset", help="Delete checkpoint + transitions")
+    wm_reset_p.add_argument("agent", help="Agent ID (e.g., agent.aither)")
+    wm_reset_p.add_argument("--yes", action="store_true", help="Skip confirmation prompt")
+
 
 # ── Forge subcommand handler ─────────────────────────────────────────────
 
@@ -12928,6 +12944,28 @@ def main():
         sys.exit(cmd_forge(args))
     elif args.command == "notebook":
         sys.exit(cmd_notebook(args))
+    elif args.command == "wm":
+        wm_cmd = getattr(args, "wm_command", None)
+        if wm_cmd == "status":
+            from adk.commands.wm import cmd_wm_status
+            sys.exit(cmd_wm_status(args))
+        elif wm_cmd == "inspect":
+            from adk.commands.wm import cmd_wm_inspect
+            sys.exit(cmd_wm_inspect(args))
+        elif wm_cmd == "train":
+            from adk.commands.wm import cmd_wm_train
+            sys.exit(cmd_wm_train(args))
+        elif wm_cmd == "reset":
+            from adk.commands.wm import cmd_wm_reset
+            sys.exit(cmd_wm_reset(args))
+        else:
+            print("Usage: adk wm [status|inspect|train|reset]")
+            print()
+            print("  status    List all agents with checkpoints")
+            print("  inspect   Show learned effects for an agent")
+            print("  train     Force a bootstrap/refit now")
+            print("  reset     Delete checkpoint + transitions")
+            sys.exit(1)
     elif args.command == "train":
         sys.exit(_cmd_train(args))
     elif args.command is None:

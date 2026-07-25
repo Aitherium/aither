@@ -346,6 +346,19 @@ class AitherAgent:
             except Exception:
                 self._skills = None
 
+        # World model faculty — per-agent learned predictor, gated by AITHER_AGENT_WM env.
+        # Never affects turn outcome (shadow/steer modes are separate; default off).
+        # Non-fatal: lazy load on first use, exception-safe.
+        self._wm = None
+        self._wm_stage = "cold"
+        self._wm_turns = 0
+        self._wm_prev_state = None
+        try:
+            from adk.worldmodel import get_world_model
+            self._wm = get_world_model(self.name)
+        except Exception:
+            pass
+
         # Neuron auto-fire (context gathering before LLM) — non-fatal.
         # GATED: proactive context gathering is a paid-tier capability. Free
         # (COMMUNITY) agents call tools explicitly instead of pre-firing them.
@@ -781,6 +794,40 @@ class AitherAgent:
             await emit_turn_action_names(self.name, tool_calls_made)
         except Exception:
             pass
+
+        # World model learning: record transitions from previous state. Build context from
+        # this turn's observable outcomes (tools used, errors encountered, depth, success).
+        try:
+            if self._wm is not None:
+                # Build state context from turn observables
+                errors_made = sum(1 for t in (tool_calls_made or []) if "[" in t)
+                success = bool(content and len(content.strip()) > 0)
+                context = {
+                    "tools": len([t for t in (tool_calls_made or []) if "[" not in t]),
+                    "errors": errors_made / max(1, len(tool_calls_made or [1])),
+                    "success": 1.0 if success else 0.0,
+                    "depth": self._wm_turns,
+                }
+                state_after = self._wm.observe(context)
+                # Record one transition per tool used this turn against the prior state
+                if state_after is not None and self._wm_prev_state is not None:
+                    for tool_name in (tool_calls_made or []):
+                        ok = "[" not in tool_name  # success if no bracket (error marker)
+                        self._wm.record(self._wm_prev_state, tool_name, state_after, ok=ok)
+                # Update stage and state for next turn. bootstrap() refits the model when
+                # due, which is CPU-bound pure Python: measured 0.5ms at 200 buffered
+                # transitions but ~67ms at the 20k cap. That is fine for this agent (it
+                # already finished its turn) but it would stall every OTHER coroutine on
+                # the loop, so hand it to a worker thread and yield.
+                self._wm_stage = await asyncio.to_thread(self._wm.bootstrap)
+                self._wm_prev_state = state_after
+                self._wm_turns += 1
+                # Periodically save (bootstrap may already have, but don't double-save every turn)
+                if self._wm_turns % 20 == 0:
+                    await asyncio.to_thread(self._wm.save)
+        except Exception:
+            pass
+
         if not self._skills:
             return
         try:
@@ -1595,6 +1642,42 @@ class AitherAgent:
                 ],
                 content_blocks=(resp.raw_content_blocks or None),
             ))
+
+            # World model advisory: consult the learned model to reorder tool choices.
+            # In shadow mode, log the advice; in steer mode, reorder the execution.
+            try:
+                if (self._wm is not None and self._wm_prev_state is not None
+                        and len(resp.tool_calls) > 1):
+                    from adk.worldmodel import wm_mode, MODE_SHADOW, MODE_STEER
+                    mode = wm_mode()
+                    if mode in (MODE_SHADOW, MODE_STEER):
+                        candidates = [tc.name for tc in resp.tool_calls]
+                        adv = self._wm.advise(self._wm_prev_state, candidates)
+                        if adv:
+                            logger.info("[WM] Advisory: stage=%s, order=%s, scores=%s",
+                                        adv.get("stage"), adv.get("order"), adv.get("scores"))
+                            if mode == MODE_STEER and adv.get("order"):
+                                # Reorder tool_calls by the advisory order (stable permutation)
+                                advised_order = adv["order"]
+                                known_order = {tc.name: i for i, tc in enumerate(resp.tool_calls)}
+                                # Separate known tools (in advised order) + unknowns (append at end)
+                                reordered = []
+                                seen = set()
+                                for tool_name in advised_order:
+                                    if tool_name in known_order and tool_name not in seen:
+                                        reordered.append(resp.tool_calls[known_order[tool_name]])
+                                        seen.add(tool_name)
+                                # Append any tools not in the advice (maintain relative order)
+                                for tc in resp.tool_calls:
+                                    if tc.name not in seen:
+                                        reordered.append(tc)
+                                # Verify it's a valid permutation (same set, same count)
+                                if (len(reordered) == len(resp.tool_calls) and
+                                        set(tc.name for tc in reordered) == set(tc.name for tc in resp.tool_calls)):
+                                    resp.tool_calls = reordered
+                                    logger.debug("[WM] Reordered tool calls: %s", advised_order)
+            except Exception:
+                pass
 
             _deferred_nudges: list[str] = []
             for tc in resp.tool_calls:
