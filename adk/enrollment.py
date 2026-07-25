@@ -195,69 +195,49 @@ async def heartbeat_loop(
             log.debug("Heartbeat error: %s", e)
 
 
-async def _request_device_cert(
-    base_url: str,
-    token: str,
-    node_id: str,
-    tenant_id: str,
-) -> Dict[str, Any]:
-    """Request a device mTLS client cert from the identity service.
+def _persist_device_cert(register_response: Dict[str, Any]) -> Dict[str, Any]:
+    """Persist the device mTLS client cert that ``POST /v1/nodes/register`` already returned.
 
-    After successful node registration, the client can request a client cert
-    for mTLS authentication to AitherOS services. The cert is bound to the
-    tenant+node (CN = devcert--<tenant>--<node>) so the cloud derives the
-    tenant cryptographically instead of from a spoofable header.
+    The cert is bound to tenant+node (CN = devcert--<tenant>--<node>) so the cloud derives
+    the tenant CRYPTOGRAPHICALLY instead of from a spoofable header.
+
+    FIXED 2026-07-25: this used to POST to ``/v1/nodes/mtls-cert``, **a route that has
+    never existed on the identity service**. Every enrollment logged
+    ``mtls-cert request HTTP 405: {"detail":"Method Not Allowed"}`` — 405 rather than 404
+    because the path matched the GET-only ``/v1/nodes/{node_id}`` route with
+    node_id="mtls-cert". The failure was swallowed as "best-effort", so every node silently
+    enrolled WITHOUT a device cert and fell back to bearer-token auth, which is exactly the
+    spoofable-header posture the cert exists to remove. Meanwhile ``register_node`` already
+    mints the cert and returns the full ``{certificate, private_key, chain, cn}`` bundle in
+    its own response (identity_nodes.py, `response["mtls"]`) — so the second call was both
+    broken AND redundant. Read what we were already handed.
 
     Args:
-        base_url: Control-plane base (Identity service)
-        token: Bearer token from the enrollment response
-        node_id: Node identifier
-        tenant_id: Tenant ID from the enrollment response
+        register_response: The parsed JSON body of ``POST /v1/nodes/register``.
 
     Returns:
         ``{"success": bool, "mtls": {...}, "error": str}`` — never raises.
-        On success, mtls is ``{certificate, private_key, chain}``.
     """
-    if not token or not tenant_id:
-        return {"success": False, "error": "missing token or tenant_id"}
+    mtls_bundle = register_response.get("mtls", {}) or {}
+
+    if not mtls_bundle.get("issued", bool(mtls_bundle.get("certificate"))):
+        reason = mtls_bundle.get("reason", "no mtls bundle in register response")
+        log.warning("Device cert NOT issued at registration: %s", reason)
+        return {"success": False, "error": reason}
+
+    if not mtls_bundle.get("certificate") or not mtls_bundle.get("private_key"):
+        log.warning("Device cert bundle incomplete (no certificate/private_key)")
+        return {"success": False, "error": "incomplete cert bundle"}
 
     try:
-        import httpx
-
         from adk.sync import device_identity
 
-        base = base_url.rstrip("/")
-        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-        payload = {"node_id": node_id, "tenant_id": tenant_id}
-
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(
-                f"{base}/v1/nodes/mtls-cert", json=payload, headers=headers
-            )
-
-        if resp.status_code != 200:
-            detail = resp.text[:200]
-            log.warning("mtls-cert request HTTP %s: %s", resp.status_code, detail)
-            return {"success": False, "error": f"HTTP {resp.status_code}: {detail}"}
-
-        data = resp.json()
-        mtls_bundle = data.get("mtls", {}) or {}
-        if not mtls_bundle or not mtls_bundle.get("certificate"):
-            log.debug("No device cert in response (best-effort; device will use bearer-token auth)")
-            return {"success": False, "error": "no cert in response"}
-
-        # Persist the cert locally
-        try:
-            device_identity.save_enrolled_identity(mtls_bundle)
-            log.info("Device mTLS cert enrolled and persisted")
-            return {"success": True, "mtls": mtls_bundle}
-        except Exception as e:
-            log.warning("Failed to persist device cert: %s", e)
-            return {"success": False, "error": f"cert persistence failed: {e}"}
-
+        device_identity.save_enrolled_identity(mtls_bundle)
+        log.info("Device mTLS cert enrolled and persisted (cn=%s)", mtls_bundle.get("cn", "?"))
+        return {"success": True, "mtls": mtls_bundle}
     except Exception as e:
-        log.debug("Device cert request failed (best-effort): %s", e)
-        return {"success": False, "error": str(e)}
+        log.warning("Failed to persist device cert: %s", e)
+        return {"success": False, "error": f"cert persistence failed: {e}"}
 
 
 async def rich_enroll(
@@ -301,9 +281,11 @@ async def rich_enroll(
         workspace = data.get("workspace", {}) or {}
         _save_workspace(workspace)
 
-        # After successful registration, request a device client cert (best-effort).
+        # Registration already minted and returned the device client cert — persist it.
+        # (It used to fire a second request at a route that does not exist; see
+        # _persist_device_cert.)
         tenant_id = data.get("tenant_id", "")
-        cert_result = await _request_device_cert(base, token, node_id, tenant_id)
+        cert_result = _persist_device_cert(data)
         cert_enrolled = cert_result.get("success", False)
 
         if enable_heartbeat:

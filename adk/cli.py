@@ -151,7 +151,7 @@ def cmd_init(args):
         if not aither_integrated:
             print()
             print("  OpenClaw detected! Connect it to AitherOS agents:")
-            print("  aither integrate openclaw")
+            print("  adk integrate openclaw")
 
     return 0
 
@@ -1159,9 +1159,12 @@ def cmd_up(args):
             reg = (getattr(args, "register_url", "")
                    or f"{portal}/api/genesis/v1/agent/fleet/register")
             public_url = f"http://{mesh_overlay_ip}:{port}"
+            from adk.a2a_identity import get_a2a_public_key
+            public_key = get_a2a_public_key()
             body = {"name": name, "invoke_url": public_url, "reach": "mesh",
                     "agent_type": "adk-agent", "token": auth_token,
-                    "model": getattr(args, "model", None) or "", "provider_hint": provider}
+                    "model": getattr(args, "model", None) or "", "provider_hint": provider,
+                    "public_key": public_key}
             hdrs = {"Content-Type": "application/json"}
             if portal_token:
                 hdrs["Authorization"] = f"Bearer {portal_token}"
@@ -1201,9 +1204,12 @@ def cmd_up(args):
                 print(f"  [+] Tunnel live: {public_url}")
             reg = (getattr(args, "register_url", "")
                    or f"{portal}/api/genesis/v1/agent/fleet/register")
+            from adk.a2a_identity import get_a2a_public_key
+            public_key = get_a2a_public_key()
             body = {"name": name, "invoke_url": public_url, "reach": "tunnel",
                     "agent_type": "adk-agent", "token": auth_token,
-                    "model": getattr(args, "model", None) or "", "provider_hint": provider}
+                    "model": getattr(args, "model", None) or "", "provider_hint": provider,
+                    "public_key": public_key}
             hdrs = {"Content-Type": "application/json"}
             if portal_token:
                 hdrs["Authorization"] = f"Bearer {portal_token}"
@@ -1427,6 +1433,116 @@ def cmd_down(args):
 
     daemon.clear_status()
     return 0
+
+
+def cmd_reregister(args):
+    """Re-register one or more endpoints with their new A2A public keys.
+
+    Useful for backfilling existing endpoints that were registered before
+    public_key support was added. Fetches the endpoint(s) from the registry
+    and re-sends the registration with the current agent's public key.
+
+    Usage:
+        adk reregister --name <endpoint>  # Re-register one endpoint
+        adk reregister --all              # Re-register all endpoints for this agent
+    """
+    import httpx
+
+    name = getattr(args, "name", None)
+    all_endpoints = bool(getattr(args, "all", False))
+
+    if not name and not all_endpoints:
+        print("  Error: provide --name <endpoint> or --all")
+        return 1
+
+    # Load config and token
+    saved = load_saved_config()
+    token = (getattr(args, "token", "") or os.environ.get("AITHER_PORTAL_TOKEN", "")
+             or saved.get("api_key", "") or saved.get("access_token", ""))
+    if not token:
+        print("  Error: Not authenticated. Run: adk login")
+        return 1
+
+    portal = (getattr(args, "portal", "") or "https://veil.aitherium.com").rstrip("/")
+
+    # Get current public key
+    from adk.a2a_identity import get_a2a_public_key
+    public_key = get_a2a_public_key()
+
+    hdrs = {"Content-Type": "application/json", "Authorization": f"Bearer {token}"}
+
+    if all_endpoints:
+        # Fetch all endpoints, then re-register each with updated public_key
+        try:
+            list_url = f"{portal}/api/genesis/v1/agent/agent-endpoints"
+            list_resp = httpx.get(list_url, headers=hdrs, timeout=20)
+            if list_resp.status_code != 200:
+                print(f"  Error: Could not fetch endpoint list ({list_resp.status_code})")
+                return 1
+            endpoints = list_resp.json()
+            if not isinstance(endpoints, list):
+                endpoints = endpoints.get("data", []) if isinstance(endpoints, dict) else []
+        except (httpx.HTTPError, OSError, ValueError) as e:
+            print(f"  Error: Failed to fetch endpoints: {e}")
+            return 1
+
+        if not endpoints:
+            print("  No endpoints found to re-register.")
+            return 0
+
+        print(f"  Re-registering {len(endpoints)} endpoint(s) with public_key...")
+        success_count = 0
+        for ep in endpoints:
+            ep_name = ep.get("name", "")
+            if not ep_name:
+                continue
+            # Re-register with updated public_key
+            reg_url = f"{portal}/api/genesis/v1/agent/agent-endpoints/{ep_name}"
+            ep_copy = dict(ep)
+            ep_copy["public_key"] = public_key
+            try:
+                rr = httpx.put(reg_url, json=ep_copy, headers=hdrs, timeout=20)
+                if rr.status_code < 300:
+                    print(f"    [+] {ep_name}")
+                    success_count += 1
+                else:
+                    print(f"    [!] {ep_name} ({rr.status_code})")
+            except (httpx.HTTPError, OSError) as e:
+                print(f"    [!] {ep_name}: {e}")
+        print(f"  Re-registered {success_count}/{len(endpoints)} endpoint(s).")
+        return 0 if success_count == len(endpoints) else 1
+    else:
+        # Re-register single endpoint
+        print(f"  Re-registering {name} with public_key...")
+        # Fetch current endpoint details
+        get_url = f"{portal}/api/genesis/v1/agent/agent-endpoints/{name}"
+        try:
+            get_resp = httpx.get(get_url, headers=hdrs, timeout=20)
+            if get_resp.status_code != 200:
+                print(f"  Error: Endpoint not found or access denied ({get_resp.status_code})")
+                return 1
+            ep = get_resp.json()
+        except (httpx.HTTPError, OSError, ValueError) as e:
+            print(f"  Error: Failed to fetch endpoint: {e}")
+            return 1
+
+        # Update with new public_key
+        ep["public_key"] = public_key
+
+        # Re-register
+        reg_url = f"{portal}/api/genesis/v1/agent/agent-endpoints/{name}"
+        try:
+            rr = httpx.put(reg_url, json=ep, headers=hdrs, timeout=20)
+            if rr.status_code < 300:
+                print(f"  [+] {name} re-registered with public_key: {public_key[:16]}...")
+                return 0
+            else:
+                print(f"  Error: Re-registration failed ({rr.status_code})")
+                print(f"  Response: {rr.text[:300]}")
+                return 1
+        except (httpx.HTTPError, OSError) as e:
+            print(f"  Error: {e}")
+            return 1
 
 
 def _provision_qdrant() -> tuple[bool, str, str]:
@@ -2480,7 +2596,7 @@ def cmd_connect(args):
                 print("  OPENCLAW DETECTED")
                 print()
                 print("  Connect OpenClaw to AitherOS agent fleet:")
-                print("    aither integrate openclaw")
+                print("    adk integrate openclaw")
                 print()
                 print("  This gives OpenClaw access to 29 agents, swarm coding,")
                 print("  memory graph, and 100+ MCP tools.")
@@ -3282,7 +3398,7 @@ def cmd_onboard(args):
                 print(f"  [OK] OpenClaw v{version} — integrated with AitherOS")
             else:
                 print(f"  [!!] OpenClaw v{version} — detected but NOT integrated")
-                print("       Run 'aither integrate openclaw' to connect agent fleets")
+                print("       Run 'adk integrate openclaw' to connect agent fleets")
 
         # GPU
         gpu_name = ""
@@ -3337,7 +3453,7 @@ def cmd_onboard(args):
 
         if openclaw_detected and not aither_integrated:
             print(f"  {step_num}. Connect OpenClaw to AitherOS agent fleet")
-            print("     -> aither integrate openclaw")
+            print("     -> adk integrate openclaw")
             step_num += 1
 
         print(f"  {step_num}. Create your first agent")
@@ -3435,7 +3551,7 @@ def cmd_onboard(args):
         else:
             print("  [--] Cursor — not detected (~/.cursor/ not found)")
 
-        # OpenClaw — use aither integrate openclaw
+        # OpenClaw — use adk integrate openclaw
         if openclaw_detected and not aither_integrated:
             try:
                 oc_config_path = openclaw_dir / "openclaw.json"
@@ -3482,7 +3598,7 @@ def cmd_onboard(args):
         print("  aither register        — Create account + get API key")
         print("  aither connect         — Detect backends + test cloud")
         print("  aither init <name>     — Scaffold new agent project")
-        print("  aither integrate       — Connect external tools (OpenClaw, etc.)")
+        print("  adk integrate       — Connect external tools (OpenClaw, etc.)")
         print("  aither publish         — Submit agent to Elysium marketplace")
         print("  aither aeon            — Multi-agent group chat")
         print()
@@ -3499,7 +3615,7 @@ def cmd_onboard(args):
         if openclaw_detected and not aither_integrated:
             print("  " + "=" * 50)
             print("  OPENCLAW DETECTED — Integration available!")
-            print("  Run 'aither integrate openclaw' to connect:")
+            print("  Run 'adk integrate openclaw' to connect:")
             print("    - 29 specialized AI agents")
             print("    - 100+ MCP tools (code, memory, search)")
             print("    - Swarm coding (11 agents in parallel)")
@@ -3899,9 +4015,11 @@ def cmd_host(args):
         print(f"    1. aither-serve --backend {provider} --port {port} --identity {identity}")
         print(f"    2. cloudflared tunnel --url http://localhost:{port}")
         reg = register_url or f"{portal}/api/genesis/v1/agent/fleet/register"
+        from adk.a2a_identity import get_a2a_public_key
+        public_key = get_a2a_public_key()
         body = {"name": name, "invoke_url": "https://<tunnel>.trycloudflare.com",
                 "reach": "tunnel", "agent_type": "adk-agent", "token": "<callback-bearer>",
-                "model": model, "provider_hint": provider}
+                "model": model, "provider_hint": provider, "public_key": public_key}
         print(f"    3. POST {reg}  {json.dumps(body)}")
         return 0
 
@@ -3987,9 +4105,11 @@ def cmd_host(args):
         # re-authenticate via device flow and retry once. This is what keeps the
         # one-command flow autonomous even when ~/.aither holds an old token.
         reg = register_url or f"{portal}/api/genesis/v1/agent/fleet/register"
+        from adk.a2a_identity import get_a2a_public_key
+        public_key = get_a2a_public_key()
         body = {"name": name, "invoke_url": public_url, "reach": "tunnel",
                 "agent_type": "adk-agent", "token": auth_token,
-                "model": model, "provider_hint": provider}
+                "model": model, "provider_hint": provider, "public_key": public_key}
 
         def _do_register(tok: str):
             hdrs = {"Content-Type": "application/json"}
@@ -4071,11 +4191,11 @@ def cmd_integrate(args):
         print("  openclaw    — Connect OpenClaw to AitherOS agent fleet")
         print("  (more coming: cursor, windsurf, continue, cline)")
         print()
-        print("  Usage: aither integrate <target>")
+        print("  Usage: adk integrate <target>")
         return 0
     else:
         print(f"  Unknown integration target: {target}")
-        print("  Run 'aither integrate list' to see available integrations")
+        print("  Run 'adk integrate list' to see available integrations")
         return 1
 
 
@@ -4099,7 +4219,7 @@ def _integrate_openclaw(args):
         if not openclaw_dir.exists():
             print("  [!!] OpenClaw not found at ~/.openclaw/")
             print()
-            print("  Install OpenClaw first: https://openclaw.dev")
+            print("  Install OpenClaw first: https://openclaw.ai")
             print("  Then run this command again.")
             return 1
 
@@ -4287,7 +4407,7 @@ def _integrate_openclaw(args):
         if not api_key:
             print("  Want cloud agents too?")
             print("    aither register     — Get free API key")
-            print("    aither integrate openclaw --mode hybrid")
+            print("    adk integrate openclaw --mode hybrid")
             print()
 
         agents_str = ", ".join(a["name"] for a in fleet_config["agents"])
@@ -11037,6 +11157,18 @@ def _register_commands(sub):
     down_p.add_argument("--keep-autostart", action="store_true",
                         help="Stop now but leave the reboot-autostart entry in place")
 
+    # adk reregister — re-register endpoints with their A2A public keys
+    reregister_p = sub.add_parser(
+        "reregister",
+        help="Re-register endpoint(s) with A2A public keys (backfill for existing endpoints)")
+    reregister_group = reregister_p.add_mutually_exclusive_group(required=True)
+    reregister_group.add_argument("--name", help="Re-register one endpoint by name")
+    reregister_group.add_argument("--all", action="store_true",
+                                 help="Re-register all endpoints for this agent")
+    reregister_p.add_argument("--token", help="Portal token (or $AITHER_PORTAL_TOKEN / 'adk login')")
+    reregister_p.add_argument("--portal", default="https://veil.aitherium.com",
+                              help="Portal URL (default: veil.aitherium.com)")
+
     # adk stack — supervise the consumer stack (Room + Ollama); was `adk up`
     stack_p = sub.add_parser("stack", help="Start the consumer stack (Room + Ollama) as native processes")
     stack_p.add_argument("service", nargs="?", default="default",
@@ -11482,7 +11614,7 @@ def _register_commands(sub):
     host_p.add_argument("--no-register", action="store_true", help="Run locally only — no tunnel, no fleet registration")
     host_p.add_argument("--dry-run", action="store_true", help="Show what would happen without starting anything")
 
-    # aither integrate — connect external tools
+    # adk integrate — connect external tools
     integrate_p = sub.add_parser("integrate", help="Connect external tools (OpenClaw, etc.)")
     integrate_p.add_argument("target", nargs="?", default="list",
                              help="Integration target: openclaw, list")
@@ -12789,6 +12921,8 @@ def main():
         sys.exit(cmd_bonsai_local(args))
     elif args.command == "down":
         sys.exit(cmd_down(args))
+    elif args.command == "reregister":
+        sys.exit(cmd_reregister(args))
     elif args.command == "stack":
         sys.exit(cmd_stack(args))
     elif args.command == "ssh":

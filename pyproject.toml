@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "aither-adk"
-version = "2.40.0"
+version = "2.41.0"
 description = "Build AI agents with real memory + faculties on any backend, local or cloud. Open-core: free local runtime with typed memory, knowledge graph, code graph and ReAct; paid tiers (portal.aitherium.com) unlock fleets, channels, reasoning and marketplace packs."
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -151,6 +151,9 @@ artifacts = [
     # selects one; a custom pack is a folder with index.html dropped into
     # ~/.aither/ui-packs/. Ship the built-ins inside the wheel.
     "adk/webui/packs/**/*",
+    # Vendored ODS model catalog and hardware database (deterministic model resolution).
+    # JSON files needed at runtime by adk.ods.resolver; force-include via importlib.resources.
+    "adk/ods/**/*",
 ]
 
 [tool.hatch.build.targets.wheel]

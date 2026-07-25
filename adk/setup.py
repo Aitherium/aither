@@ -328,10 +328,16 @@ def _recommended_models(profile: str) -> list[str]:
 
 
 async def _recommended_models_llmfit() -> list[str] | None:
-    """Query llmfit for hardware-scored Ollama model recommendations.
+    """Query llmfit for hardware-scored Ollama model recommendations (OPTIONAL).
 
-    Returns a curated list of model names suitable for ``ollama pull``,
-    or ``None`` if llmfit is unavailable (caller falls back to static list).
+    NOTE: llmfit is now optional. Primary model selection uses OdsResolver
+    (deterministic, offline). This function provides optional refinement
+    via llmfit if available.
+
+    Returns a curated list of model names suitable for ``ollama pull``, or
+    ``None`` only if model selection genuinely failed (missing/corrupt catalog),
+    in which case the caller falls back to the static list. A merely-absent
+    llmfit binary is NOT a failure — ODS answers offline.
 
     The recommendations cover all ADK tiers:
     - fast (chat)
@@ -346,9 +352,12 @@ async def _recommended_models_llmfit() -> list[str] | None:
         return None
 
     fit = get_llmfit()
-    if not await fit.is_available():
-        return None
-
+    # NOTE: deliberately NOT gated on fit.is_available(). That probes the external
+    # llmfit REST/CLI only, and recommend_config() now resolves from the vendored
+    # ODS catalog offline with llmfit as optional refinement. Keeping the gate here
+    # meant that on any box without the llmfit binary — i.e. the normal case — this
+    # returned None and the caller silently fell back to the static model list,
+    # so the offline resolver was never reached and the feature was inert.
     config = await fit.recommend_config()
     if "error" in config:
         return None

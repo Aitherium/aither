@@ -33,6 +33,7 @@ CLI entrypoint:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import platform
@@ -272,7 +273,48 @@ def _pick_release_asset(assets: list, accel: AccelInfo) -> Optional[str]:
     return None
 
 
-def _download(url: str, dest: Path, label: str = "download") -> bool:
+def verify_sha256(path: Path, expected: str, label: str = "artifact") -> bool:
+    """Verify a downloaded artifact against an expected sha256. Fail closed.
+
+    The vendored ODS catalog pins `gguf_sha256` for 49 of its 52 models. Carrying
+    those pins and never checking them is a silent no-op: the integrity guarantee
+    reads as present while nothing enforces it. A mismatching file is DELETED, so
+    a corrupted or substituted download can never be picked up by the >100MB
+    "looks like a real model" size check on the next run.
+
+    An empty/absent `expected` returns True with a warning — the catalog genuinely
+    has no pin for 3 multi-part models, and refusing those would break installs
+    that upstream supports.
+    """
+    if not expected:
+        print(f"  WARNING: no sha256 pin for {label}; integrity NOT verified")
+        return True
+    h = hashlib.sha256()
+    try:
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                h.update(chunk)
+    except OSError as e:
+        print(f"  ERROR: cannot hash {path}: {e}", file=sys.stderr)
+        return False
+    actual = h.hexdigest()
+    if actual == expected.strip().lower():
+        print(f"  sha256 OK: {label} ({actual[:16]}...)")
+        return True
+    print(
+        f"  ERROR: sha256 MISMATCH for {label}\n"
+        f"    expected {expected}\n"
+        f"    actual   {actual}\n"
+        f"  Deleting the file; refusing to use an unverified model artifact.",
+        file=sys.stderr,
+    )
+    path.unlink(missing_ok=True)
+    return False
+
+
+def _download(
+    url: str, dest: Path, label: str = "download", expected_sha256: str = ""
+) -> bool:
     dest.parent.mkdir(parents=True, exist_ok=True)
     print(f"  Downloading {label}: {url}")
     try:
@@ -293,7 +335,7 @@ def _download(url: str, dest: Path, label: str = "download") -> bool:
                         print(f"\r    {pct:5.1f}%  ({written / 1e6:.1f} / {total / 1e6:.1f} MB)",
                               end="", flush=True)
             print()
-        return True
+        return verify_sha256(dest, expected_sha256, label)
     except Exception as e:
         print(f"  ERROR: download failed: {e}", file=sys.stderr)
         return False
@@ -363,8 +405,41 @@ def install_llamacpp(accel: AccelInfo, dry_run: bool = False) -> Optional[Path]:
 # GGUF model download
 # ---------------------------------------------------------------------------
 
-def install_model(repo: str, quant: str, dry_run: bool = False) -> Optional[Path]:
-    """Download the requested quant GGUF from HuggingFace; return path to file."""
+def catalog_sha256_for(filename: str) -> str:
+    """Look up the vendored ODS catalog's sha256 pin for a GGUF filename.
+
+    Returns "" when the catalog is unavailable or the file is not a catalog model
+    (this module must keep working for arbitrary HF repos, and it is pure-stdlib
+    by contract, so adk.ods is imported lazily and best-effort).
+
+    This lookup is what makes the pins actually load-bearing. Adding an
+    `expected_sha256` parameter and leaving every caller to pass it would have
+    been inert plumbing — nothing did.
+    """
+    try:
+        from adk.ods import OdsResolver
+    except Exception:
+        return ""
+    try:
+        for model in OdsResolver().catalog.get("models", []):
+            if model.get("gguf_file") == filename:
+                return str(model.get("gguf_sha256") or "")
+    except Exception as e:  # catalog missing/corrupt must not block an install
+        print(f"  WARNING: ODS catalog unavailable for sha256 lookup: {e}")
+    return ""
+
+
+def install_model(
+    repo: str, quant: str, dry_run: bool = False, expected_sha256: str = ""
+) -> Optional[Path]:
+    """Download the requested quant GGUF from HuggingFace; return path to file.
+
+    Args:
+        expected_sha256: sha256 pin for the artifact, e.g. from the vendored ODS
+            catalog (`ModelRecord.gguf_sha256`). When supplied, a mismatching
+            download is deleted and treated as a failure. Empty means unpinned
+            (3 of the 52 catalog models are multi-part and carry no single hash).
+    """
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
     # Convention: <repo-base>-<quant>.gguf (matches bartowski/nvidia layout)
     # Try standard naming first
@@ -398,14 +473,19 @@ def install_model(repo: str, quant: str, dry_run: bool = False) -> Optional[Path
             })
             # HEAD-style: try to download. urllib doesn't HEAD cleanly across mirrors, just GET.
             print(f"  Trying: {url}")
-            if _download(url, dest, f"{quant} GGUF"):
+            # Explicit pin wins; otherwise resolve it from the vendored catalog so
+            # catalog models are verified without every caller having to opt in.
+            pin = expected_sha256 or catalog_sha256_for(filename)
+            if _download(url, dest, f"{quant} GGUF", expected_sha256=pin):
                 if dest.stat().st_size > 100 * 1024 * 1024:
                     return dest
                 else:
                     dest.unlink(missing_ok=True)
                     last_err = "file too small (likely 404 HTML)"
             else:
-                last_err = "download failed"
+                # _download() now also returns False on a sha256 mismatch, and has
+                # already deleted the bad file — do not fall through to the size check.
+                last_err = "download failed or failed integrity verification"
         except Exception as e:
             last_err = str(e)
             continue

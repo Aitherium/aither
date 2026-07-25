@@ -1,0 +1,108 @@
+NOTICE FOR VENDORED COMPONENTS
+
+=== Open Data Systems (ODS) ===
+
+Project:     Open Data Systems (ODS)
+Repository:  https://github.com/Osmantic/ODS
+License:     Apache License 2.0
+Copyright:   (c) Osmantic contributors
+
+COMPONENTS VENDORED FROM ODS:
+- Model catalog (model-library.json) — list of LLM models with GGUF files, performance profiles, and compatibility metadata
+- GPU hardware database (gpu-database.json) — hardware tier mapping, bandwidth LUT, and heuristic classes
+- Legacy hardware classification (hardware-classes.json) — deprecated tier definitions (included for backward compatibility)
+- Selection algorithm (_upstream_select.py) — ODS scripts/select-model.py carried
+  VERBATIM, byte-for-byte. This is upstream Apache-2.0 source code, not a port.
+
+MATERIAL CHANGES FROM UPSTREAM:
+1. NO port of the selection algorithm. adk/ods/_upstream_select.py is ODS's
+   scripts/select-model.py copied verbatim (it is already Python 3 and stdlib-only);
+   adk/ods/resolver.py is a thin wrapper that calls into it and adapts the result to
+   typed dataclasses. Selection semantics are therefore upstream's, unmodified.
+   HISTORY / WHY THIS MATTERS: an earlier revision of this integration reimplemented
+   the algorithm in Python from a prose description of its behaviour. Differential
+   testing against the real script over 20 hardware envelopes showed it returned a
+   DIFFERENT model in 16 of 20 cases (it returned one identical model for 8/12/24/48/96GB
+   NVIDIA envelopes) while its own unit tests were green — because those tests asserted
+   against hand-written expectations derived from placeholder data. The reimplementation
+   was discarded. adk/ods/tests/test_differential.py now enforces agreement permanently.
+2. Namespace adaptation: Schema keys adapted to Python dataclass fields (no functional changes)
+3. Import packaging: JSON files packaged via importlib.resources for wheel distribution (importlib.abc compatibility)
+4. Integration: Module exports OdsResolver, OdsRecommendation, ModelRecord classes for adk use
+5. Primary role in LLMFitClient.recommend_config(): the ODS resolver is now the PRIMARY
+   selector (not just a fallback); the external llmfit binary/REST is optional refinement
+   used only when actually reachable. See adk/ods/adk_integration.md for architecture.
+6. Test harness: POSITIVE and NEGATIVE test suites added (adk/ods/tests/)
+7. Packaging: JSON catalogs and documentation bundled via pyproject.toml `artifacts` section
+   for wheel distribution (force-include in hatchling build)
+
+RE-VENDOR TRACEABILITY:
+- adk/ods/__init__.py exports ODS_VENDORED_REF, ODS_VENDORED_RELEASE,
+  ODS_LAST_VENDORED_DATE and ODS_VENDORED_SHA256.
+- ODS_VENDORED_COMMIT is None on purpose: this snapshot came from a GitHub zipball,
+  which carries no commit SHA. Integrity is anchored on the per-file sha256 map
+  instead. Do not substitute a guessed SHA — a plausible-looking invented commit id
+  reads as verified provenance and is worse than an honest "unknown".
+- Every vendored file is byte-identical to upstream and is verified by:
+      python adk/ods/tools/validate_catalog.py --verify-vendored
+
+RE-VENDOR VALIDATION:
+When re-vendoring from upstream, schema validation is mandatory:
+  * python adk/ods/tools/validate_catalog.py --verify-vendored   (byte-identity)
+  * python adk/ods/tools/validate_catalog.py adk/ods/model-library.json  (schema)
+  * python adk/ods/tools/validate_catalog.py adk/ods/gpu-database.json   (schema)
+  * python -m pytest adk/ods/tests/ — test_differential.py MUST stay green; it is the
+    only check that catches wrapper drift from upstream selection semantics.
+  * python adk/ods/tools/sweep_differential.py 250 — DEEP differential sweep over
+    tier-threshold VRAM values, installable_only and size ceilings. Not in the default
+    pytest run (subprocess per case, several minutes). Run it after every re-vendor and
+    after any resolver.py change; last full run 2026-07-25 was 250/250 match.
+  * Exit non-zero on any schema mismatch; never commit incompatible catalogs.
+  * After re-vendoring, update ODS_VENDORED_SHA256 with the new hashes.
+
+LICENSE PRESERVATION:
+This code retains the Apache License 2.0 as required by ODS. The full text of the Apache 2.0
+license is available in this directory as LICENSE.apache2.txt.
+
+Modifications are made available under the same Apache License 2.0 to satisfy the "derivative
+works" requirement.
+
+RE-VENDOR PROCEDURE:
+When ODS updates its catalog or schema, this vendored data can be refreshed. See DETAILED
+STEPS in adk/ods/README.md (section "Re-vendor Procedure").
+
+Quick reference:
+1. `git clone` (NOT a zipball) the target commit of https://github.com/Osmantic/ODS
+   so a real commit SHA is available to record.
+2. Copy VERBATIM — do not hand-edit any of these:
+     ods/config/model-library.json      -> adk/ods/model-library.json
+     ods/config/gpu-database.json       -> adk/ods/gpu-database.json
+     ods/config/hardware-classes.json   -> adk/ods/hardware-classes.json
+     ods/scripts/select-model.py        -> adk/ods/_upstream_select.py
+3. Recompute sha256 for all four and update ODS_VENDORED_SHA256, plus
+   ODS_VENDORED_COMMIT / ODS_VENDORED_REF / ODS_VENDORED_RELEASE /
+   ODS_LAST_VENDORED_DATE in adk/ods/__init__.py.
+4. Verify byte-identity: python adk/ods/tools/validate_catalog.py --verify-vendored
+5. Verify schema:      python adk/ods/tools/validate_catalog.py adk/ods/model-library.json
+                       python adk/ods/tools/validate_catalog.py adk/ods/gpu-database.json
+6. Run tests: python -m pytest adk/ods/tests/ -v
+   If test_differential.py fails, upstream changed its selection semantics —
+   fix the wrapper in resolver.py, never the vendored file.
+7. If upstream changed the catalog schema, the required-field sets in
+   adk/ods/data.py and adk/ods/tools/validate_catalog.py may need widening;
+   check FIELD COVERAGE across all records, not just the first one.
+8. Commit pathspec: adk/ods/
+
+---
+Vendored: 2026-07-25
+Upstream ref: main (GitHub zipball; ods/manifest.json declared ods_version 2.5.3,
+              with unreleased CHANGELOG entries on top of that tag)
+Last upstream commit: UNKNOWN — the source was a zipball, which carries no commit
+              SHA. No commit id is published here on purpose: a plausible-looking
+              but invented SHA reads as verified provenance and is worse than an
+              honest "unknown". Integrity is anchored instead on the sha256 of each
+              vendored file, recorded in adk/ods/__init__.py::ODS_VENDORED_SHA256
+              and re-checked by adk/ods/tools/validate_catalog.py --verify-vendored.
+              A future re-vendor via `git clone` should record the real SHA.
+Maintainer: Aither ADK team
+Documentation: See adk/ods/adk_integration.md for architecture details

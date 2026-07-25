@@ -1,13 +1,19 @@
-"""Brain hub sync client — push embedding deltas to CompanyBrain.
+"""Brain hub sync client — push embedding deltas to AitherBrain service.
 
-Posts embedding deltas to POST /api/v1/brain/sync with tenant/workspace context,
+Posts embedding deltas to POST /brain/sync on the platform AitherBrain service
+(port 8271 local, or AITHER_BRAIN_URL env var), with tenant/workspace context,
 tracks watermarks for incremental sync, and handles transient failures gracefully.
+
+Architecture (D-878):
+  PLATFORM-HOME decision — brain sync is a platform capability, not app-scoped.
+  Client resolves AitherBrain service URL and POSTs to /brain/sync with proper
+  tenant context. AitherBrain validates tenant isolation server-side.
 
 Usage:
     from adk.sync.brain import BrainSyncClient, SyncDeltaItem
 
     client = BrainSyncClient(
-        brain_url="http://localhost:8001",
+        brain_url="http://aitheros-aitherbrain:8271",  # or AITHER_BRAIN_URL env
         tenant_id="tenant-123",
         workspace_id="default",
     )
@@ -24,6 +30,10 @@ Usage:
 
     response = await client.post_deltas(deltas)
     # response.accepted, response.rejected, response.watermark
+
+Environment variables:
+  - AITHER_BRAIN_URL: Override AitherBrain service URL (default: http://localhost:8271)
+  - AITHER_BRAIN_TIMEOUT: HTTP timeout in seconds (default: 30)
 """
 
 from __future__ import annotations
@@ -31,6 +41,7 @@ from __future__ import annotations
 import gzip
 import json
 import logging
+import os
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("adk.brain_sync")
@@ -44,7 +55,7 @@ __all__ = [
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Data models (mirror brain.py contracts)
+# Data models (mirror AitherBrain.py contracts)
 # ─────────────────────────────────────────────────────────────────────────────
 
 class SyncDeltaItem:
@@ -157,40 +168,69 @@ class SyncResponse:
 # ─────────────────────────────────────────────────────────────────────────────
 
 class BrainSyncClient:
-    """Client for pushing embeddings to CompanyBrain hub.
+    """Client for pushing embeddings to AitherBrain platform service.
 
+    Resolves AitherBrain URL via AITHER_BRAIN_URL env var or sensible defaults.
     Implements graceful degradation:
       - Connection errors: log warning, return empty response (no crash)
       - 400 schema error: log error, return rejection
       - 401 auth: log error, ask user to re-enroll
+      - 403 tenant mismatch: log error (tenant isolation enforced server-side)
       - 503 unavailable: log, queue for retry
     """
 
     def __init__(
         self,
-        brain_url: str,
-        tenant_id: str,
+        brain_url: Optional[str] = None,
+        tenant_id: str = "",
         workspace_id: str = "default",
         timeout: float = 30.0,
     ):
         """Initialize sync client.
 
         Args:
-            brain_url: Brain hub URL (e.g., http://localhost:8001)
+            brain_url: AitherBrain service URL. If None, resolve via env or defaults.
             tenant_id: Tenant identifier
             workspace_id: Workspace scope (default: 'default')
             timeout: HTTP timeout in seconds (default: 30)
         """
-        if not brain_url:
-            raise ValueError("brain_url required")
         if not tenant_id:
             raise ValueError("tenant_id required")
 
-        self.brain_url = brain_url.rstrip("/")
+        # Resolve brain_url with fallbacks (D-878: platform-home architecture)
+        self.brain_url = (
+            brain_url
+            or os.environ.get("AITHER_BRAIN_URL", "")
+            or self._resolve_brain_service_url()
+        ).rstrip("/")
+
+        if not self.brain_url:
+            logger.warning("Brain sync: no brain_url configured; will fail at POST")
+            self.brain_url = "http://localhost:8271"  # Last fallback
+
         self.tenant_id = tenant_id
         self.workspace_id = workspace_id
         self.timeout = timeout
         self.watermark = ""
+
+    @staticmethod
+    def _resolve_brain_service_url() -> str:
+        """Resolve AitherBrain service URL via platform SDK if available.
+
+        Falls back to localhost:8271 (local development default).
+        In production, AITHER_BRAIN_URL env var should be set.
+        """
+        try:
+            from adk.config import load_saved_config
+            config = load_saved_config()
+            # If config has a brain endpoint, use it
+            if config.get("brain_url"):
+                return config.get("brain_url")
+        except Exception:
+            pass
+
+        # Development default
+        return "http://localhost:8271"
 
     async def post_deltas(
         self,
@@ -198,7 +238,7 @@ class BrainSyncClient:
         watermark: str = "",
         compress: bool = True,
     ) -> SyncResponse:
-        """Post embedding deltas to brain hub.
+        """Post embedding deltas to AitherBrain service.
 
         Args:
             deltas: List of SyncDeltaItem to sync
@@ -236,10 +276,10 @@ class BrainSyncClient:
 
         headers["Content-Type"] = "application/json"
 
-        url = f"{self.brain_url}/api/v1/brain/sync"
+        url = f"{self.brain_url}/brain/sync"
 
         try:
-            # Get TLS verify from portal_kit_backend if available, else True
+            # Get TLS verify from config if available, else True
             verify = self._tls_verify()
 
             async with httpx.AsyncClient(timeout=self.timeout, verify=verify) as http:
@@ -249,13 +289,18 @@ class BrainSyncClient:
                     data = response.json()
                     result = SyncResponse.from_dict(data)
                     self.watermark = result.watermark
-                    logger.info("Brain sync: %d accepted, %d rejected",
-                               result.accepted, result.rejected)
+                    logger.info(
+                        "Brain sync: %d accepted, %d rejected",
+                        result.accepted,
+                        result.rejected,
+                    )
                     return result
 
                 elif response.status_code == 400:
-                    logger.error("Brain sync schema error (400): %s",
-                               response.text[:200])
+                    logger.error(
+                        "Brain sync schema error (400): %s",
+                        response.text[:200],
+                    )
                     return SyncResponse(
                         accepted=0,
                         rejected=len(deltas),
@@ -263,8 +308,10 @@ class BrainSyncClient:
                     )
 
                 elif response.status_code == 401:
-                    logger.error("Brain sync auth failed (401): "
-                               "not enrolled or invalid credentials")
+                    logger.error(
+                        "Brain sync auth failed (401): "
+                        "not enrolled or invalid credentials"
+                    )
                     logger.info("Run 'adk enroll' to re-authenticate")
                     return SyncResponse(
                         accepted=0,
@@ -272,9 +319,22 @@ class BrainSyncClient:
                         watermark=watermark,
                     )
 
+                elif response.status_code == 403:
+                    logger.error(
+                        "Brain sync tenant mismatch (403): "
+                        "you can only sync to your own tenant"
+                    )
+                    return SyncResponse(
+                        accepted=0,
+                        rejected=len(deltas),
+                        watermark=watermark,
+                    )
+
                 elif response.status_code == 503:
-                    logger.warning("Brain hub temporarily unavailable (503): "
-                                  "will retry on next run")
+                    logger.warning(
+                        "Brain service temporarily unavailable (503): "
+                        "will retry on next run"
+                    )
                     return SyncResponse(
                         accepted=0,
                         rejected=len(deltas),
@@ -282,8 +342,11 @@ class BrainSyncClient:
                     )
 
                 else:
-                    logger.error("Brain sync failed (%d): %s",
-                               response.status_code, response.text[:200])
+                    logger.error(
+                        "Brain sync failed (%d): %s",
+                        response.status_code,
+                        response.text[:200],
+                    )
                     return SyncResponse(
                         accepted=0,
                         rejected=len(deltas),
@@ -291,7 +354,9 @@ class BrainSyncClient:
                     )
 
         except (httpx.TimeoutException, httpx.NetworkError) as exc:
-            logger.warning("Brain sync network error: %s; will retry on next run", exc)
+            logger.warning(
+                "Brain sync network error: %s; will retry on next run", exc
+            )
             return SyncResponse(
                 accepted=0,
                 rejected=len(deltas),

@@ -172,7 +172,13 @@ class TestLLMFitClientSystemInfo:
         client._client = mock_httpx_client
 
         info = await client.system_info()
-        assert info is None
+        # CONTRACT CHANGE (ODS vendoring): an unreachable llmfit is no longer a
+        # dead end. system_info() falls back to local psutil/probe detection, so
+        # it returns real hardware instead of None. Asserting None here would
+        # re-encode the old llmfit-required behaviour.
+        assert info is not None
+        assert info["cpu_cores"] > 0
+        assert "backend" in info
 
 
 class TestLLMFitClientModels:
@@ -313,7 +319,10 @@ class TestLLMFitClientRecommendConfig:
         mock_httpx_client.get = mock_get
         client._client = mock_httpx_client
 
-        config = await client.recommend_config()
+        # ODS is now the PRIMARY selector, so exercise the llmfit branch
+        # explicitly — otherwise this llmfit-mocking test would silently stop
+        # testing llmfit at all and just re-assert the ODS path.
+        config = await client.recommend_config(use_llmfit=True)
 
         assert "hardware" in config
         assert config["hardware"]["gpu"] == "RTX 4090"
@@ -333,7 +342,14 @@ class TestLLMFitClientRecommendConfig:
         client._client = mock_httpx_client
 
         config = await client.recommend_config()
-        assert "error" in config
+        # CONTRACT CHANGE (ODS vendoring): with llmfit unreachable, the vendored
+        # ODS catalog still resolves offline. POSITIVE assertion — a real model id
+        # per tier — so an inert resolver returning nothing fails this test.
+        assert "error" not in config
+        for tier in ("fast", "balanced", "reasoning", "coding", "embedding"):
+            assert isinstance(config[tier], dict), f"{tier} tier missing"
+            assert config[tier]["model"], f"{tier} tier has no model"
+            assert config[tier]["provider"] == "ods"
 
 
 class TestLLMFitClientOllamaModels:
@@ -422,12 +438,46 @@ class TestSetupIntegration:
         assert "nomic-embed-text" in models  # always appended
 
     @pytest.mark.asyncio
-    async def test_recommended_models_llmfit_unavailable(self):
-        """Returns None when llmfit is not available."""
+    async def test_recommended_models_still_work_when_llmfit_unavailable(self):
+        """An absent llmfit must NOT disable model recommendations.
+
+        REGRESSION: this previously asserted `result is None` when
+        `is_available()` was False, and `_recommended_models_llmfit` short-circuited
+        on that gate. Once ODS became the offline primary selector, that gate meant
+        every box without the llmfit binary — i.e. the normal case — silently fell
+        back to the static model list and never reached the resolver. The gate is
+        gone; an unreachable llmfit is no longer a failure.
+        """
+        from adk.llmfit import LLMFitClient
+        from adk.setup import _recommended_models_llmfit
+
+        # Use a REAL client with llmfit genuinely unreachable (REST dead, no CLI
+        # binary) rather than an AsyncMock, so this exercises the actual offline
+        # ODS resolution path instead of asserting against a stubbed return value.
+        client = LLMFitClient(base_url="http://localhost:8793")
+        dead = AsyncMock()
+        dead.get = AsyncMock(side_effect=ConnectionError())
+        client._client = dead
+        client._find_binary = lambda: None
+        client._available = None
+
+        with patch("adk.llmfit.get_llmfit", return_value=client):
+            assert await client.is_available() is False
+            result = await _recommended_models_llmfit()
+
+        # POSITIVE assertion: real model names come back with llmfit absent.
+        assert result, "llmfit absent must still yield ODS-resolved models"
+        assert all(isinstance(m, str) and m for m in result)
+        assert "nomic-embed-text" in result  # always appended
+
+    @pytest.mark.asyncio
+    async def test_recommended_models_none_on_genuine_failure(self):
+        """A real selection failure (error dict) still returns None — fail closed."""
         from adk.setup import _recommended_models_llmfit
 
         mock_client = AsyncMock()
-        mock_client.is_available = AsyncMock(return_value=False)
+        mock_client.is_available = AsyncMock(return_value=True)
+        mock_client.recommend_config = AsyncMock(return_value={"error": "catalog missing"})
 
         with patch("adk.llmfit.get_llmfit", return_value=mock_client):
             result = await _recommended_models_llmfit()
@@ -511,3 +561,47 @@ class TestConfigIntegration:
         assert client._base_url == "http://test:1234"
 
         llmfit_mod._instance = None
+
+
+class TestOdsBackendMapping:
+    """Regression: versioned backends must not silently degrade to CPU."""
+
+    def test_versioned_backends_map_to_vendor(self):
+        from adk.llmfit import _to_ods_backend
+
+        # Real probes report versioned backends. An exact-match map sent these
+        # to "cpu", which sized the pick from RAM and handed a 24GB GPU a 3B model.
+        assert _to_ods_backend("cuda_12") == "nvidia"
+        assert _to_ods_backend("cuda_11") == "nvidia"
+        assert _to_ods_backend("rocm_6") == "amd"
+        assert _to_ods_backend("cpu_x86") == "cpu"
+        assert _to_ods_backend("metal") == "apple"
+        assert _to_ods_backend("sycl") == "intel"
+
+    def test_unknown_backend_is_unknown_not_cpu(self):
+        from adk.llmfit import _to_ods_backend
+
+        # "unknown" preserves the reported VRAM envelope; "cpu" would discard it.
+        assert _to_ods_backend("wgpu") == "unknown"
+        assert _to_ods_backend(None) == "unknown"
+
+    @pytest.mark.asyncio
+    async def test_gpu_backend_is_not_sized_from_ram(self):
+        """A 24GB GPU must not receive a tiny RAM-sized model."""
+        from adk.llmfit import LLMFitClient
+
+        client = LLMFitClient(base_url="http://localhost:8793")
+        mock = AsyncMock()
+        mock.get = AsyncMock(side_effect=ConnectionError())
+        client._client = mock
+        client._find_binary = lambda: None
+        client._system_cache = {
+            "backend": "cuda_12", "gpu_vram_gb": 24.0, "total_ram_gb": 64.0,
+            "cpu_cores": 16, "gpu_name": "RTX 4090", "has_gpu": True,
+        }
+        client._system_cache_time = float("inf")
+
+        config = await client.recommend_config()
+        assert "error" not in config
+        # 24GB VRAM must yield a substantial model, not a ~3B RAM-tier fallback.
+        assert config["fast"]["params_b"] >= 10, config["fast"]
