@@ -39,6 +39,25 @@ def _safe_extract(tar: tarfile.TarFile, path: str) -> None:
         tar.extractall(path)
 
 
+def _credential_hooks():
+    """Return ``(mint_install_credential, revoke_install_credential)`` or ``(None, None)``.
+
+    Per-install ACTA-scoped credentials (:mod:`adk.pack_credentials`) replace a
+    shared client credential with a token bound to this pack_id + install_id, so
+    one install can be revoked without affecting any other. Both functions are
+    documented never-raise/best-effort, so a credential-plane outage can never
+    block a pack install. The import is guarded so a trimmed build still installs.
+    """
+    try:
+        from adk.pack_credentials import (
+            mint_install_credential,
+            revoke_install_credential,
+        )
+    except ImportError:  # credential plane absent (trimmed build)
+        return None, None
+    return mint_install_credential, revoke_install_credential
+
+
 class AuthStore:
     """Simple auth token storage for marketplace API calls."""
 
@@ -473,11 +492,19 @@ class PacksPlugin(SlashCommand):
             import shutil
             import tempfile
 
+            mint_install_credential, revoke_install_credential = _credential_hooks()
+
             dest.parent.mkdir(parents=True, exist_ok=True)
             with tempfile.TemporaryDirectory(dir=str(dest.parent)) as tmp:
                 with tarfile.open(fileobj=io.BytesIO(tarball), mode="r:gz") as tar:
                     _safe_extract(tar, tmp)
                 if dest.exists():
+                    # Replacing an existing install: its per-install credential is
+                    # about to become undiscoverable, so revoke it FIRST. This is
+                    # the whole point of per-install tokens — one install's
+                    # credential dies without touching any other install's.
+                    if revoke_install_credential is not None:
+                        revoke_install_credential(pack_id)
                     shutil.rmtree(dest, ignore_errors=True)
                 # If the tar has a single top dir, promote it; else move tmp itself.
                 children = [p for p in Path(tmp).iterdir()]
@@ -486,6 +513,8 @@ class PacksPlugin(SlashCommand):
                 else:
                     shutil.move(tmp, str(dest))
                     Path(tmp).mkdir(exist_ok=True)  # keep context manager happy
+            if mint_install_credential is not None:
+                mint_install_credential(pack_id)
             return True, f"{pack_id}"
         except Exception as e:  # noqa: BLE001
             return False, f"{pack_id}: {type(e).__name__}: {e}"
@@ -724,11 +753,17 @@ async def sync_entitled_packs(
             import shutil
             import tempfile
 
+            mint_install_credential, revoke_install_credential = _credential_hooks()
+
             dest.parent.mkdir(parents=True, exist_ok=True)
             with tempfile.TemporaryDirectory(dir=str(dest.parent)) as tmp:
                 with tarfile.open(fileobj=io.BytesIO(tarball), mode="r:gz") as tar:
                     _safe_extract(tar, tmp)
                 if dest.exists():
+                    # Replacing an install → revoke its credential before the
+                    # metadata becomes unreachable (see _credential_hooks).
+                    if revoke_install_credential is not None:
+                        revoke_install_credential(pack_id)
                     shutil.rmtree(dest, ignore_errors=True)
                 # If the tar has a single top dir, promote it; else move tmp itself.
                 children = [p for p in Path(tmp).iterdir()]
@@ -737,6 +772,8 @@ async def sync_entitled_packs(
                 else:
                     shutil.move(tmp, str(dest))
                     Path(tmp).mkdir(exist_ok=True)  # keep context manager happy
+            if mint_install_credential is not None:
+                mint_install_credential(pack_id)
             log.info("Pack %s: installed", pack_id)
             return True
         except Exception as e:  # noqa: BLE001

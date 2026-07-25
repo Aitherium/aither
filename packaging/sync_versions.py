@@ -61,10 +61,15 @@ def sync_brew(version: str, check: bool) -> bool:
         return False
 
     new_url = f'https://files.pythonhosted.org/packages/source/a/aither-adk/aither_adk-{version}.tar.gz'
+    # count=1: ONLY the formula's own `url` may be rewritten. Without it this
+    # repointed every `resource "<dep>"` block at the aither-adk tarball too, so
+    # `brew install` fetched the adk sdist and called it httpx — silently
+    # corrupting the formula on every single release.
     text = re.sub(
         r'url "https://files\.pythonhosted\.org/[^"]*"',
         f'url "{new_url}"',
         text,
+        count=1,
     )
     text = re.sub(
         r'sha256 "[^"]*"',

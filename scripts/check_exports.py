@@ -49,13 +49,22 @@ def check_ghost_exports():
             for alias in node.names:
                 eager_names.add(alias.asname or alias.name)
 
-        # __getattr__ function: find all `if name == "X"` comparisons
+        # __getattr__ function: collect the names each branch can serve. Both
+        # dispatch forms are idiomatic and must be understood:
+        #   if name == "X":                 -> Constant comparator
+        #   if name in ("X", "Y", "Z"):     -> Tuple/List/Set comparator
+        # Only handling the first form false-flags every grouped branch as a
+        # ghost export, which is what used to fail this gate on a green package.
         if isinstance(node, ast.FunctionDef) and node.name == "__getattr__":
             for child in ast.walk(node):
                 if isinstance(child, ast.Compare):
                     for comp in child.comparators:
                         if isinstance(comp, ast.Constant) and isinstance(comp.value, str):
                             lazy_names.add(comp.value)
+                        elif isinstance(comp, (ast.Tuple, ast.List, ast.Set)):
+                            for elt in comp.elts:
+                                if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
+                                    lazy_names.add(elt.value)
 
     resolvable = eager_names | lazy_names
     for name in all_names:
