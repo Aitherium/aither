@@ -206,10 +206,21 @@ class CodeActLoop:
        ``time.sleep(1e9)`` or catastrophic regex backtracking, and a cell may
        disable it with ``sys.settrace(None)``.
 
-       Untrusted input requires real process/container isolation — e.g. drive
-       the cell through :meth:`adk.sandbox.AitherSandbox.execute_subprocess`,
-       which gives a separate process, a scrubbed environment, and a killable
-       timeout, at the cost of the live-object namespace.
+       **For untrusted code, pass an isolating** ``executor``. With
+       :class:`adk.core.cell_executors.DockerCellExecutor` each cell runs in a
+       container with no network, a read-only root filesystem, dropped
+       capabilities, a memory/pids cap, a non-root user, and a **killable**
+       timeout. Verified: the escapes that succeed in-process (host file write,
+       network egress, root) all fail there, and an infinite loop is killed
+       rather than merely interrupted.
+
+       The trade-off is stated, not hidden: a container is a fresh process, so an
+       isolated cell has **no live host namespace and no cross-cell state** —
+       ``return_result()`` still works (it crosses via stdout). Containment *and*
+       a live namespace together require fork-from-warm snapshotting, which is
+       what :mod:`adk.forkd_client` targets (Firecracker over KVM); that needs
+       Linux ≥ 5.7 + a reachable forkd daemon and is a subagent fan-out adapter
+       today, not a cell executor.
 
     Args:
         max_steps: Maximum reasoning steps before terminating (default 8).
@@ -220,6 +231,11 @@ class CodeActLoop:
             Enforced by BOTH ``asyncio.wait_for`` (for cells that await) and a
             trace-based deadline (for cells that never yield).
         max_output_bytes: Maximum observation output size in bytes (default 10000).
+        executor: Optional isolating backend (see
+            :mod:`adk.core.cell_executors`). ``None`` (default) keeps today's
+            in-process execution with a live namespace. Pass
+            ``DockerCellExecutor()`` for untrusted code — real containment, no
+            cross-cell state.
     """
 
     def __init__(
@@ -230,13 +246,20 @@ class CodeActLoop:
         max_preview_chars: int | None = None,
         cell_timeout: float = 5.0,
         max_output_bytes: int = 10000,
+        executor: Any = None,
     ) -> None:
         self.max_steps = max_steps
         self.model = model  # Per-loop model override (NOOA pattern)
         self.max_preview_chars = max_preview_chars
         self.cell_timeout = cell_timeout
         self.max_output_bytes = max_output_bytes
+        self.executor = executor
         self._validator = CodeValidator()
+
+    @property
+    def is_isolated(self) -> bool:
+        """True when cells run in an isolating backend rather than in-process."""
+        return self.executor is not None
 
     async def run(self, agent: Agent, prompt: str) -> AgentResult:
         """Execute the CodeAct loop.
@@ -436,6 +459,53 @@ Do NOT:
                 lines.append(f"    Hint: {issue.fix_hint}")
         return "\n".join(lines)
 
+    async def _execute_isolated(self, code: str) -> _ExecutionResult:
+        """Run one cell in the isolating executor instead of in this process.
+
+        A container is a separate process, so the in-process
+        ``_ReturnResultSignal`` exception cannot cross the boundary — the value
+        is carried on stdout by the injected prelude and reconstructed here.
+        There is deliberately NO namespace persistence: an isolated cell cannot
+        hold references to host objects, and pretending otherwise would be worse
+        than saying so.
+        """
+        from adk.core.cell_executors import extract_result, isolated_prelude
+
+        outcome = await self.executor.run(
+            isolated_prelude() + code, timeout=self.cell_timeout
+        )
+
+        if outcome.blocked_reason:
+            return _ExecutionResult(
+                stderr=f"cell blocked: {outcome.blocked_reason}",
+                exception=RuntimeError(outcome.blocked_reason),
+            )
+        if outcome.timed_out:
+            return _ExecutionResult(
+                stderr=outcome.stderr,
+                exception=TimeoutError("Cell execution exceeded timeout"),
+            )
+
+        result_repr, stdout = extract_result(outcome.stdout)
+        if result_repr is not None:
+            # The value crossed as a repr(): keep it as the string the model sees
+            # rather than eval()-ing attacker-influenced text back into this
+            # process (which would undo the isolation entirely).
+            return _ExecutionResult(
+                stdout=stdout,
+                stderr=outcome.stderr,
+                return_signal=_ReturnResultSignal(result_repr),
+            )
+        if outcome.exit_code not in (0, None):
+            return _ExecutionResult(
+                stdout=stdout,
+                stderr=outcome.stderr,
+                exception=RuntimeError(
+                    f"cell exited {outcome.exit_code}"
+                ),
+            )
+        return _ExecutionResult(stdout=stdout, stderr=outcome.stderr)
+
     async def _execute_code(
         self, code: str, namespace: dict[str, Any]
     ) -> _ExecutionResult:
@@ -448,6 +518,9 @@ Do NOT:
         defined in the code are captured and updated back to the namespace after
         execution, so they persist across cells.
         """
+        if self.executor is not None:
+            return await self._execute_isolated(code)
+
         stdout_buf = io.StringIO()
         stderr_buf = io.StringIO()
 

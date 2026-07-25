@@ -5,7 +5,7 @@ from importlib.metadata import PackageNotFoundError, version as _pkg_version
 try:  # single source of truth = the installed package metadata (pyproject version)
     __version__ = _pkg_version("aither-adk")
 except PackageNotFoundError:  # running from a source checkout without install
-    __version__ = "2.39.0"  # kept in sync by packaging/sync_versions.py
+    __version__ = "2.40.0"  # kept in sync by packaging/sync_versions.py
 
 from adk.agent import AitherAgent
 from adk.gate import CompletionGate, GateVerdict, gated_run, hard_checks
@@ -134,6 +134,10 @@ __all__ = [
     "ValidationContext",
     # Code-as-action: the model writes and runs Python over live objects.
     "CodeActLoop",
+    # Real containment for untrusted cells (no network / read-only / killable).
+    "DockerCellExecutor",
+    "CellOutcome",
+    "docker_available",
     # Pass-by-reference: bounded observations + handles to live objects.
     "ObjectRegistry",
     "get_registry",
@@ -428,6 +432,9 @@ def __getattr__(name):
     if name == "CodeActLoop":
         from adk.core.codeact import CodeActLoop
         return CodeActLoop
+    if name in ("DockerCellExecutor", "CellOutcome", "docker_available"):
+        import adk.core.cell_executors as _ce
+        return getattr(_ce, name)
     if name in ("ObjectRegistry", "get_registry", "render_observation"):
         import adk.object_registry as _or
         return getattr(_or, name)

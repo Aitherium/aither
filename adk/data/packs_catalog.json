@@ -50,41 +50,6 @@
       ]
     },
     {
-      "id": "headroom",
-      "name": "Headroom \u2014 Context Compression",
-      "type": "tool_pack",
-      "version": "1.0.0",
-      "description": "Free efficiency wedge \u2014 shrink bulky agent context (verbose tool output, RAG dumps, file dumps) with headroom's SmartCrusher (~46% measured token savings on JSON tool output) while protecting conversation for accuracy. headroom_compress(content) crushes a blob and returns the real savings; headroom_stats() reports whether compression is on. Guarded: a disabled/unreachable sidecar degrades to a readable message, never an error.",
-      "tier": "free",
-      "category": "infrastructure",
-      "tags": [
-        "efficiency",
-        "compression",
-        "tokens",
-        "cost",
-        "headroom",
-        "free"
-      ]
-    },
-    {
-      "id": "prospector",
-      "name": "Prospector \u2014 Codebase File-Explorer",
-      "type": "tool_pack",
-      "version": "1.0.0",
-      "description": "Free semantic file-explorer \u2014 cluster a codebase into purpose-tagged landmarks (auth/api/data/ui/\u2026) so an agent asks 'where is rate limiting enforced?' and gets the dirs to search FIRST, making CodeGraph/grep cheaper. map_build scans + persists the map (dependency-free); map_localize returns the top dirs+files; map_subsystems/map_status. Guarded: a missing map yields a readable 'run map_build first', never an error.",
-      "tier": "free",
-      "category": "infrastructure",
-      "tags": [
-        "codebase",
-        "file-explorer",
-        "landmark-map",
-        "prospector",
-        "navigation",
-        "codegraph",
-        "free"
-      ]
-    },
-    {
       "id": "atlas-pack",
       "name": "Atlas Agent Pack",
       "type": "agent_pack",
@@ -803,25 +768,6 @@
         "model",
         "fleet",
         "enterprise"
-      ]
-    },
-    {
-      "id": "distributed-inference",
-      "name": "Distributed Inference",
-      "type": "tool_pack",
-      "version": "1.0.0",
-      "description": "Run LLM inference across heterogeneous fleet nodes using llama.cpp RPC. Build GGML_RPC backends per-arch, join the distributed pool, and serve models too big for a single node. Proven 2-node split (RTX 5090 + DGX) at ~10 tok/s coherent output.",
-      "tier": "free",
-      "category": "infrastructure",
-      "tags": [
-        "llm",
-        "distributed",
-        "inference",
-        "rpc",
-        "llama.cpp",
-        "scale",
-        "heterogeneous",
-        "free"
       ]
     },
     {

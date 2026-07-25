@@ -2119,7 +2119,16 @@ def cmd_balance(args) -> int:
         try:
             url = f"{base_url}/v1/billing/member/{user_id}"
             headers = {"Authorization": f"Bearer {api_key}"}
-            resp = requests.get(url, headers=headers, timeout=5, verify=False)
+            # Never disable verification here: this request carries a bearer
+            # token, so an unverified TLS session hands the API key to any MITM.
+            # tls_verify() verifies by default and returns the AitherNet CA
+            # bundle when present, so self-signed internal certs are trusted
+            # *with* verification rather than by turning it off.
+            from adk._tls import tls_verify
+
+            resp = requests.get(
+                url, headers=headers, timeout=5, verify=tls_verify()
+            )
             if resp.status_code == 200:
                 account_info = resp.json()
                 break
@@ -6450,7 +6459,7 @@ def cmd_mesh(args) -> int:
             from adk.mesh_provider import flux_node
 
             flux_image = getattr(args, "flux_image", "").strip() \
-                or "aitheros-mesh-agent:dgx-arm64"
+                or "ghcr.io/aitherium/mesh-agent:latest"
             flux_port = getattr(args, "flux_port", 8117)
             mesh_src = getattr(args, "mesh_src", "").strip() \
                 or "/opt/aitheros/mesh-src"
@@ -11867,8 +11876,8 @@ def _register_commands(sub):
     )
     mesh_flux_p.add_argument(
         "--flux-image",
-        default=os.getenv("FLUX_IMAGE", "aitheros-mesh-agent:dgx-arm64"),
-        help="Docker image to run (default: aitheros-mesh-agent:dgx-arm64)"
+        default=os.getenv("FLUX_IMAGE", "ghcr.io/aitherium/mesh-agent:latest"),
+        help="Docker image to run (default: ghcr.io/aitherium/mesh-agent:latest)"
     )
     mesh_flux_p.add_argument(
         "--flux-port",

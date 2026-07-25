@@ -31,6 +31,36 @@ All notable changes to aither-adk will be documented in this file.
   names what a cell can actually do (`import os`, `subprocess`, `open(..., "w")`).
   Do not run cells from an untrusted source.
 
+### Added — real containment for CodeAct cells
+
+- **`CodeActLoop(executor=DockerCellExecutor())`** runs each cell in a container
+  with `--network none`, a read-only root filesystem plus a noexec/nosuid tmpfs,
+  `--cap-drop ALL`, `no-new-privileges`, memory and pid caps, a non-root user, and
+  `python -I`. The escapes that succeed in-process — writing a host file, network
+  egress, running as root — all fail there, and an infinite loop's container is
+  **killed** rather than merely interrupted.
+- `return_result()` crosses the process boundary via a stdout sentinel and is
+  deliberately **not** `eval`'d back into the host.
+- Trade-off stated plainly: an isolated cell is a fresh process, so there is no
+  live host namespace and no cross-cell state. Containment *and* a live namespace
+  together need fork-from-warm snapshotting (`adk/forkd_client.py`'s Firecracker
+  target), which requires Linux ≥ 5.7 + KVM.
+- The in-process default is unchanged. Do not point CodeAct at untrusted input
+  without `executor=`.
+
+### Fixed — TLS and test-suite integrity
+
+- **`adk/cli.py` sent an `Authorization: Bearer` API key over TLS with
+  verification disabled**, exposing it to a machine-in-the-middle. Now routed
+  through `adk._tls.tls_verify()`.
+- The `verify=False` ratchet regex-scanned raw lines, so docstrings that merely
+  *named* the antipattern were reported as violations — noise that hid the real
+  hole above. It now walks the AST for actual keyword arguments.
+- Five `test_inference_proxy` failures were stale assertions pinning the
+  pre-MicroScheduler routing and a 5-model roster (it is 6 since `aither-bonsai`).
+  Assertions now derive from the roster and encode the tier-access rule, so a
+  future model addition doesn't break them.
+
 ### Fixed — MCP stdio hung silently on Windows
 
 - `adk/mcp_stdio.py` and `adk/shell/mcp_bridge.py` attached stdin with

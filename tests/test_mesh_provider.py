@@ -615,7 +615,7 @@ class TestFluxNode:
                     mock_run.return_value = mock_result
 
                     result = await flux_node(
-                        flux_image="aitheros-mesh-agent:dgx-arm64",
+                        flux_image="ghcr.io/aitherium/mesh-agent:latest",
                         flux_port=8117,
                         mesh_src="/opt/aitheros/mesh-src",
                         node_id="spark-dgx",

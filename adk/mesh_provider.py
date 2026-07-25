@@ -741,7 +741,7 @@ async def flux_node(
     on the given port. This is a node-local operation (runs via subprocess).
 
     Args:
-        flux_image: Docker image to run (default: aitheros-mesh-agent:dgx-arm64)
+        flux_image: Docker image to run (default: ghcr.io/aitherium/mesh-agent:latest)
         flux_port: Port to bind the listener (default: 8117)
         mesh_src: Host path to mount as /app (default: /opt/aitheros/mesh-src)
         node_id: Mesh node identifier (required; e.g., spark-dgx, computed-node-1)
@@ -762,7 +762,7 @@ async def flux_node(
     # Explicit param > environment > built-in default (library callers get the
     # same env resolution the CLI layer performs).
     if flux_image is None:
-        flux_image = os.getenv("FLUX_IMAGE", "aitheros-mesh-agent:dgx-arm64")
+        flux_image = os.getenv("FLUX_IMAGE", "ghcr.io/aitherium/mesh-agent:latest")
     if flux_port is None:
         flux_port = int(os.getenv("FLUX_PORT", "8117"))
     if mesh_src is None:

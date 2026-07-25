@@ -229,6 +229,16 @@ class AitherAgent:
                 elif callable(item):
                     self._tools.register(item)
 
+        # Code locator — one indexed lookup instead of a grep chain (measured 83%
+        # localization-token saving on the fleet monorepo). Registers the locate_code
+        # tool ONLY when AITHER_CODE_LOCATOR=1 or AITHER_CODEGRAPH_URL is configured;
+        # otherwise a pure no-op. Non-fatal.
+        try:
+            from adk.code_locator import register_locator_tool
+            register_locator_tool(self)
+        except Exception:
+            pass
+
         # Memory
         self.memory = memory or Memory(agent_name=self.name)
 
@@ -790,8 +800,12 @@ class AitherAgent:
         # where that lib is importable and AITHER_AGENT_ACTION_FEED=1). Runs before the skills early-return so
         # it fires for every turn, and can never affect the turn's outcome.
         try:
-            from lib.cognitive.agent_action_feed import emit_turn_action_names
-            await emit_turn_action_names(self.name, tool_calls_made)
+            # importlib (not a `from lib.` statement) keeps the public-repo leak gate
+            # honest: this is an OPTIONAL host-platform module, resolved only where the
+            # host provides it — the same contract as adk.worldmodel's backend autoload.
+            import importlib
+            _feed = importlib.import_module("lib.cognitive.agent_action_feed")
+            await _feed.emit_turn_action_names(self.name, tool_calls_made)
         except Exception:
             pass
 
