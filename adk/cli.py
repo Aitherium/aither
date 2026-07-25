@@ -7400,6 +7400,38 @@ def cmd_upgrade(args) -> int:
 # ── Version check (runs once per day, non-blocking) ─────────────────────
 
 
+def _version_is_newer(latest: str, current: str) -> bool:
+    """True only when `latest` is strictly newer than `current`.
+
+    Uses packaging.version when available (correct pre-release/post-release
+    ordering) and falls back to a numeric-tuple compare so this never becomes a
+    hard dependency — a version check must never break the CLI it decorates.
+    Unparseable input returns False: stay quiet rather than nag wrongly.
+    """
+    if not latest or not current:
+        return False
+    try:
+        from packaging.version import InvalidVersion, Version
+        try:
+            return Version(latest) > Version(current)
+        except InvalidVersion:
+            return False
+    except ImportError:
+        pass
+
+    def _parts(v: str) -> tuple:
+        out = []
+        for chunk in v.split("."):
+            digits = "".join(ch for ch in chunk if ch.isdigit())
+            if not digits:
+                break
+            out.append(int(digits))
+        return tuple(out)
+
+    lp, cp = _parts(latest), _parts(current)
+    return bool(lp and cp and lp > cp)
+
+
 def _check_for_updates() -> None:
     """Check PyPI for newer aither-adk version. Runs at most once per day."""
     marker = Path.home() / ".aither" / ".last_update_check"
@@ -7427,7 +7459,14 @@ def _check_for_updates() -> None:
         except Exception:
             current = ""
 
-        if latest and current and latest != current:
+        # Only nag when the published version is genuinely NEWER. This used to be a
+        # bare `latest != current`, which fires in BOTH directions: a user running a
+        # newer build than PyPI (a dev install, or the minutes-long window right after
+        # a release while the index propagates) was told
+        #   "Update available: aither-adk 2.36.0 -> 2.35.0"
+        # i.e. instructed to DOWNGRADE — and this prints on `adk join`, the first
+        # command a new contributor ever runs. Seen live on the DGX 2026-07-24.
+        if latest and current and _version_is_newer(latest, current):
             print(f"\n  Update available: aither-adk {current} -> {latest}")
             print("  Run: pip install --upgrade aither-adk\n")
 

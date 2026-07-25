@@ -179,7 +179,8 @@ def _pickle_hmac_key() -> bytes:
 
 def _compute_file_hmac(filepath: str) -> str:
     """Compute HMAC-SHA256 of a file's contents."""
-    import hmac as _hmac_mod, hashlib as _hashlib_mod
+    import hmac as _hmac_mod
+    import hashlib as _hashlib_mod
     with open(filepath, "rb") as f:
         data = f.read()
     return _hmac_mod.new(_pickle_hmac_key(), data, _hashlib_mod.sha256).hexdigest()

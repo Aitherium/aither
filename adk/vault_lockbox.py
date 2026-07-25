@@ -660,7 +660,8 @@ def cmd_lock(args) -> int:
 
 
 def _console_up(port: int) -> bool:
-    import urllib.request, urllib.error
+    import urllib.request
+    import urllib.error
     try:
         urllib.request.urlopen(f"http://127.0.0.1:{port}/ui", timeout=2)
         return True

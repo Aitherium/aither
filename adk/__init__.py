@@ -112,6 +112,47 @@ __all__ = [
     "AitherClient",
     "AitherResponse",
     "GatewayClient",
+    # Agent Onboarding Fabric — onboard an external agent (any framework) or run
+    # a managed one: ACP drive-rail, universal Agent Pack, scoped managed identity,
+    # zero-code connect templates, best-effort code validation.
+    "ACPClient",
+    "ACPServer",
+    "serve_stdio",
+    "ACPPromptResult",
+    "ACPToolCall",
+    "AgentPackManifest",
+    "AgentHandle",
+    "Supervisor",
+    "load_agent_pack",
+    "ManagedAgentIdentityProvider",
+    "ManagedAgentIdentity",
+    "ManagedAgentState",
+    "render_connect",
+    "SUPPORTED_FRAMEWORKS",
+    "CodeValidator",
+    "ValidationIssue",
+    "ValidationContext",
+    # Code-as-action: the model writes and runs Python over live objects.
+    "CodeActLoop",
+    # Pass-by-reference: bounded observations + handles to live objects.
+    "ObjectRegistry",
+    "get_registry",
+    "render_observation",
+    # Managed packs: drive a pack over its own protocol, and distribute it.
+    "ToolCall",
+    "DriverResult",
+    "ProtocolDriver",
+    "get_driver",
+    "PackRegistry",
+    "PublishReceipt",
+    "PackSummary",
+    "validate_pack",
+    # Harness APIs the model itself can call, + NOOA-style `...` ergonomics.
+    "EventLog",
+    "ContextBlocks",
+    "has_ellipsis_body",
+    "strategy",
+    "get_strategy_meta",
 ]
 
 
@@ -361,4 +402,45 @@ def __getattr__(name):
     if name == "GatewayClient":
         from adk.client import GatewayClient
         return GatewayClient
+    # ── Agent Onboarding Fabric ───────────────────────────────────────────
+    if name in ("ACPClient", "ACPPromptResult", "ACPToolCall"):
+        import adk.acp as _acp
+        return getattr(_acp, name)
+    if name in ("ACPServer", "serve_stdio"):
+        import adk.acp_server as _acps
+        return getattr(_acps, name)
+    if name in ("AgentPackManifest", "AgentHandle", "Supervisor", "load_agent_pack"):
+        import adk.agent_pack as _ap
+        return getattr(_ap, name)
+    if name in (
+        "ManagedAgentIdentityProvider",
+        "ManagedAgentIdentity",
+        "ManagedAgentState",
+    ):
+        import adk.managed_identity as _mi
+        return getattr(_mi, name)
+    if name in ("render_connect", "SUPPORTED_FRAMEWORKS"):
+        import adk.connect as _c
+        return getattr(_c, name)
+    if name in ("CodeValidator", "ValidationIssue", "ValidationContext"):
+        import adk.core.validator as _v
+        return getattr(_v, name)
+    if name == "CodeActLoop":
+        from adk.core.codeact import CodeActLoop
+        return CodeActLoop
+    if name in ("ObjectRegistry", "get_registry", "render_observation"):
+        import adk.object_registry as _or
+        return getattr(_or, name)
+    if name in ("ToolCall", "DriverResult", "ProtocolDriver", "get_driver"):
+        import adk.pack_drivers as _pd
+        return getattr(_pd, name)
+    if name in ("PackRegistry", "PublishReceipt", "PackSummary", "validate_pack"):
+        import adk.pack_registry as _pr
+        return getattr(_pr, name)
+    if name in ("EventLog", "ContextBlocks"):
+        import adk.harness as _h
+        return getattr(_h, name)
+    if name in ("has_ellipsis_body", "strategy", "get_strategy_meta"):
+        import adk.ellipsis as _e
+        return getattr(_e, name)
     raise AttributeError(f"module 'adk' has no attribute {name!r}")

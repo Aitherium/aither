@@ -4,7 +4,14 @@ First-principles agent framework. Zero hard dependencies on AitherOS.
 See ``AitherOS/packages/aither_adk/SPEC.md`` for the full contract.
 """
 
-from adk.core.agent import Agent, AgentLoop, AgentResult, ReActLoop
+from adk.core.agent import (
+    Agent,
+    AgentLoop,
+    AgentResult,
+    PredictLoop,
+    ReActLoop,
+    Strategy,
+)
 from adk.core.capability import (
     Capability,
     CapabilityContext,
@@ -123,7 +130,9 @@ __all__ = [
     "NoOpTracer",
     "OTelNotInstalled",
     "OTelTracer",
+    "PredictLoop",
     "ReActLoop",
+    "Strategy",
     "Span",
     "set_tracer",
     "try_build_otel_tracer",

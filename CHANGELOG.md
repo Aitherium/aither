@@ -2,6 +2,46 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [2.37.0] - 2026-07-24
+
+### Added — Agent Onboarding Fabric: bring your own agent, or run a managed one
+
+Onboard an agent built on **any** framework, or let Aitherium run it for you.
+
+- **ACP (Agent Client Protocol), both directions** — `ACPClient` drives any ACP agent;
+  `ACPServer`/`serve_stdio` exposes an adk agent to any ACP host (Zed, VS Code,
+  JetBrains). Both proven live against Zed's reference `agent-client-protocol`.
+- **Universal Agent Pack** — `AgentPackManifest` + `Supervisor` describe and run an
+  external agent across 6 frameworks × 6 protocols, fail-closed on anything unknown.
+- **Protocol drivers** — `get_driver()` returns an `http`, `langgraph_rest`, `a2a`, or
+  `mcp` driver, so REST/graph-orchestrated agents can be *managed*, not just connected.
+- **Pack registry** — `PackRegistry.publish/browse/versions/get/yank/verify_digest`,
+  SHA256-digested, semver-ordered, validation fail-closed before anything is written.
+- **Managed identity** — `ManagedAgentIdentityProvider` with a real gateway minter and a
+  PROVISIONED→REGISTERED→ACTIVE→ROTATED→REVOKED lifecycle; default-deny `authorize()`.
+- **Zero-code connect templates** — `render_connect(framework, …)` emits config pinned to
+  each framework's real schema.
+
+### Added — NOOA-style agent capabilities
+
+- **`CodeActLoop`** — code as action: the model writes Python cells that run against a
+  persistent namespace over live objects, each cell AST-validated before execution, with
+  per-cell timeouts and bounded observations.
+- **`ObjectRegistry` / `render_observation`** — pass by reference: large values become
+  handles instead of flooding the context with serialized text.
+- **`EventLog` / `ContextBlocks`** — harness APIs the model itself can call to query its
+  own event history and manage named context blocks in KV-cache-stable order.
+- **`has_ellipsis_body` / `@strategy`** — NOOA's `async def f(...) -> X: ...` ergonomic.
+- **`CodeValidator`** — best-effort AST validation (ported from NVIDIA's OO-Agents,
+  Apache-2.0; NOTICE included). A defense-in-depth layer, not a sandbox boundary.
+- **`PredictLoop`** — single-shot strategy with structured output (`output_model=`) and
+  validation retry; `Strategy` is now a first-class alias of `AgentLoop`, and both loops
+  accept a per-call `model=` override.
+- **Typed I/O** — `AgentResult` validates its fields at construction and at the
+  `Agent.run` boundary.
+
+All new capabilities are exported lazily from the top-level `adk` namespace.
+
 ## [2.27.0] - 2026-07-18
 
 ### Added — Moonshot Kimi K3 provider (DeepSeek-equivalent cloud backend)

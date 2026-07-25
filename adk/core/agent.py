@@ -16,6 +16,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from pydantic import BaseModel, ValidationError
+
 from adk.core.capability import (
     Capability,
     CapabilityContext,
@@ -40,11 +42,43 @@ class AgentResult:
     steps: int = 0
     finish_reason: str = "stop"
 
+    def __post_init__(self) -> None:
+        # Runtime-validate the typed contract at the model-facing loop's return
+        # boundary (NOOA typed-I/O principle). Fail closed on type mismatch so a
+        # loop that returns a malformed result is caught here, not downstream.
+        if not isinstance(self.output, str):
+            raise TypeError(
+                f"AgentResult.output must be str, got {type(self.output).__name__}"
+            )
+        if not isinstance(self.messages, list):
+            raise TypeError(
+                f"AgentResult.messages must be list, got {type(self.messages).__name__}"
+            )
+        if not isinstance(self.tool_calls, list):
+            raise TypeError(
+                f"AgentResult.tool_calls must be list, got {type(self.tool_calls).__name__}"
+            )
+        if isinstance(self.steps, bool) or not isinstance(self.steps, int):
+            raise TypeError(
+                f"AgentResult.steps must be int, got {type(self.steps).__name__}"
+            )
+        if not isinstance(self.finish_reason, str):
+            raise TypeError(
+                f"AgentResult.finish_reason must be str, "
+                f"got {type(self.finish_reason).__name__}"
+            )
+
 
 class AgentLoop(Protocol):
     """A pluggable reasoning loop."""
 
     async def run(self, agent: Agent, prompt: str) -> AgentResult: ...
+
+
+# NOOA vocabulary: a "Strategy" is exactly an AgentLoop — the pluggable execution
+# mode for an agentic method (Predict = single-shot typed call; ReAct = iterative
+# CodeAct). Alias only; the contract is identical, so every loop is a strategy.
+Strategy = AgentLoop
 
 
 # ---------------------------------------------------------------------------
@@ -74,13 +108,30 @@ _FINAL_RE = re.compile(r"Final Answer:\s*(.*)", re.S)
 
 
 class ReActLoop:
-    """Textual ReAct loop. Works with any model backend."""
+    """Textual ReAct loop. Works with any model backend.
 
-    def __init__(self, *, max_steps: int = 8) -> None:
+    Args:
+        max_steps: Maximum reasoning steps before terminating.
+        model: Optional per-loop model override (None → use agent.model).
+        max_preview_chars: If set, bound tool result observations to this many chars
+            using pformat(). None (default) = unbounded str() behavior (backward compat).
+    """
+
+    def __init__(
+        self,
+        *,
+        max_steps: int = 8,
+        model: ModelBackend | None = None,
+        max_preview_chars: int | None = None,
+    ) -> None:
         self.max_steps = max_steps
+        # Per-method model override (NOOA): None → use agent.model at run time.
+        self.model = model
+        self.max_preview_chars = max_preview_chars
 
     async def run(self, agent: Agent, prompt: str) -> AgentResult:
         tracer = agent.tracer
+        model = self.model or agent.model
         tools_by_name = {t.name: t for t in agent.tools}
         tool_list = (
             "\n".join(f"- {t.name}: {t.description}" for t in agent.tools)
@@ -116,7 +167,7 @@ class ReActLoop:
         with tracer.span("agent.run", agent=agent.name, prompt_len=len(prompt)) as run_span:
             for step in range(1, self.max_steps + 1):
                 with tracer.span("agent.llm", step=step) as llm_span:
-                    resp = await agent.model.generate(messages)
+                    resp = await model.generate(messages)
                     llm_span.set_attr("model", resp.model)
                     llm_span.set_attr("finish_reason", resp.finish_reason or "")
                 messages.append(Message(role="assistant", content=resp.text))
@@ -161,9 +212,21 @@ class ReActLoop:
                 tool_calls.append(
                     {"step": step, "name": tool_name, "args": args, "result": result}
                 )
-                observation = (
-                    str(result.value) if result.ok else f"ERROR: {result.error}"
-                )
+                # Render observation: use bounded pformat if max_preview_chars is set.
+                # truncating_pformat applies a hard cap via max_chars, producing
+                # compact representations (e.g., "list(len=100, ...)") that keep
+                # large results readable in the message history without token bloat.
+                if result.ok:
+                    if self.max_preview_chars is not None:
+                        from adk.agentdoc import truncating_pformat
+                        observation = truncating_pformat(
+                            result.value,
+                            max_chars=self.max_preview_chars,
+                        )
+                    else:
+                        observation = str(result.value)
+                else:
+                    observation = f"ERROR: {result.error}"
                 messages.append(Message(role="user", content=observation))
             run_span.set_attr("steps", step)
             run_span.set_attr("finish_reason", finish)
@@ -186,6 +249,167 @@ class ReActLoop:
             tool_calls=tool_calls,
             steps=step,
             finish_reason=finish,
+        )
+
+
+_PREDICT_SYS_TEMPLATE = """\
+You are {name}.
+{instructions}
+
+Answer directly and concisely in a single response. Do not use tools."""
+
+
+class PredictLoop:
+    """Single-shot strategy (NOOA Predict): exactly one model call, no tool loop.
+
+    Use for classification / extraction / transformation where iteration is
+    unnecessary — cheaper and lower-latency than :class:`ReActLoop`. Honors the
+    same capability context, tracing, and optional memory recall/remember hooks as
+    ReActLoop, but never selects or executes tools. Pair with a ``model`` override
+    to serve a fast model for such single-shot methods while the agent's default
+    model serves open-ended work.
+
+    Args:
+        model: Optional per-loop model override (None → use agent.model).
+        output_model: Optional pydantic BaseModel subclass for structured output
+            validation. When set, the response is parsed as JSON and validated
+            against this schema. Invalid responses are retried up to max_retries
+            times. When None (default), behavior is unchanged (single call).
+        max_retries: Maximum number of retries on validation failure (default 2).
+            Total calls made = 1 + min(max_retries, actual failures).
+    """
+
+    def __init__(
+        self,
+        *,
+        model: ModelBackend | None = None,
+        output_model: type[BaseModel] | None = None,
+        max_retries: int = 2,
+    ) -> None:
+        # Per-method model override (NOOA): None → use agent.model at run time.
+        self.model = model
+        self.output_model = output_model
+        self.max_retries = max_retries
+
+    async def run(self, agent: Agent, prompt: str) -> AgentResult:
+        tracer = agent.tracer
+        model = self.model or agent.model
+        system = _PREDICT_SYS_TEMPLATE.format(
+            name=agent.name,
+            instructions=agent.instructions or "",
+        )
+        # Optional memory recall — mirror ReActLoop; best-effort, never fatal.
+        if getattr(agent, "recall_memory", False):
+            mem = agent.memory
+            if hasattr(mem, "context_block") and hasattr(mem, "constraints_block"):
+                try:
+                    constr = await mem.constraints_block()
+                    recalled = await mem.context_block(prompt)
+                    extra = "\n\n".join(b for b in (constr, recalled) if b)
+                    if extra:
+                        system = f"{system}\n\n{extra}"
+                except Exception as e:  # noqa: BLE001 — memory is best-effort
+                    _log.warning("agent.memory.recall_failed", extra={"err": str(e)})
+
+        messages: list[Message] = [
+            Message(role="system", content=system),
+            Message(role="user", content=prompt),
+        ]
+
+        # When no output_model is set, use the original single-call behavior.
+        if self.output_model is None:
+            with tracer.span(
+                "agent.run", agent=agent.name, prompt_len=len(prompt), strategy="predict"
+            ) as run_span:
+                with tracer.span("agent.llm", step=1) as llm_span:
+                    resp = await model.generate(messages)
+                    llm_span.set_attr("model", resp.model)
+                    llm_span.set_attr("finish_reason", resp.finish_reason or "")
+                output = resp.text.strip()
+                messages.append(Message(role="assistant", content=resp.text))
+                run_span.set_attr("steps", 1)
+                run_span.set_attr("finish_reason", resp.finish_reason or "stop")
+
+            if getattr(agent, "remember_interactions", False) and output:
+                mem = agent.memory
+                if hasattr(mem, "remember"):
+                    try:
+                        await mem.remember(f"Q: {prompt}\nA: {output}", role="interaction")
+                    except Exception as e:  # noqa: BLE001 — best-effort
+                        _log.warning("agent.memory.remember_failed", extra={"err": str(e)})
+
+            return AgentResult(
+                output=output,
+                messages=messages,
+                tool_calls=[],
+                steps=1,
+                finish_reason=resp.finish_reason or "stop",
+            )
+
+        # Structured output validation path: retry on validation failure.
+        last_raw_text = ""
+        finish_reason = "stop"
+        output = ""
+
+        with tracer.span(
+            "agent.run",
+            agent=agent.name,
+            prompt_len=len(prompt),
+            strategy="predict",
+            output_model=self.output_model.__name__,
+        ) as run_span:
+            for attempt in range(1, self.max_retries + 2):  # +2: 1 initial + max_retries
+                with tracer.span("agent.llm", step=attempt) as llm_span:
+                    resp = await model.generate(messages)
+                    llm_span.set_attr("model", resp.model)
+                    llm_span.set_attr("finish_reason", resp.finish_reason or "")
+                    llm_span.set_attr("attempt", attempt)
+
+                last_raw_text = resp.text.strip()
+                messages.append(Message(role="assistant", content=resp.text))
+
+                # Try to parse and validate JSON
+                try:
+                    parsed = json.loads(last_raw_text)
+                    validated = self.output_model.model_validate(parsed)
+                    output = validated.model_dump_json()
+                    finish_reason = "stop"
+                    run_span.set_attr("validation_success", True)
+                    run_span.set_attr("attempts", attempt)
+                    break
+                except (json.JSONDecodeError, ValidationError) as e:
+                    error_msg = (
+                        f"Validation error (attempt {attempt}/{self.max_retries + 1}): "
+                        f"{type(e).__name__}: {e}"
+                    )
+                    # Only retry if we haven't exhausted retries
+                    if attempt <= self.max_retries:
+                        messages.append(Message(role="user", content=error_msg))
+                        run_span.set_attr(f"validation_error_{attempt}", str(e))
+                    else:
+                        # All retries exhausted
+                        output = last_raw_text
+                        finish_reason = "validation_failed"
+                        run_span.set_attr("validation_success", False)
+                        run_span.set_attr("attempts", attempt)
+
+            run_span.set_attr("steps", attempt)
+            run_span.set_attr("finish_reason", finish_reason)
+
+        if getattr(agent, "remember_interactions", False) and output:
+            mem = agent.memory
+            if hasattr(mem, "remember"):
+                try:
+                    await mem.remember(f"Q: {prompt}\nA: {output}", role="interaction")
+                except Exception as e:  # noqa: BLE001 — best-effort
+                    _log.warning("agent.memory.remember_failed", extra={"err": str(e)})
+
+        return AgentResult(
+            output=output,
+            messages=messages,
+            tool_calls=[],
+            steps=attempt,
+            finish_reason=finish_reason,
         )
 
 
@@ -251,12 +475,24 @@ class Agent:
         return self
 
     async def run(self, prompt: str) -> AgentResult:
+        # Runtime-validate input at the model-facing method boundary (NOOA typed-I/O).
+        if not isinstance(prompt, str):
+            raise TypeError(
+                f"Agent.run(prompt) must be str, got {type(prompt).__name__}"
+            )
+        if not prompt.strip():
+            raise ValueError("Agent.run(prompt) must be a non-empty string")
         _log.info(
             "agent.run.start",
             extra={"agent": self.name, "prompt_len": len(prompt)},
         )
         with use_context(self._caps):
             result = await self.loop.run(self, prompt)
+        # Validate the pluggable loop honored its declared `-> AgentResult` contract.
+        if not isinstance(result, AgentResult):
+            raise TypeError(
+                f"AgentLoop.run must return AgentResult, got {type(result).__name__}"
+            )
         _log.info(
             "agent.run.end",
             extra={
