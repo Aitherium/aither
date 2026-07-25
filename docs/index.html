@@ -109,7 +109,8 @@ h1 .g{background:var(--creation);-webkit-background-clip:text;background-clip:te
   display:flex;align-items:center;gap:8px;padding:9px 14px;
   border-bottom:1px solid var(--border);
 }
-.code .bar span{width:9px;height:9px;border-radius:50%;background:var(--border)}
+.code .bar > span:not(.t){width:9px;height:9px;flex:none;border-radius:50%;background:var(--border)}
+.code .bar .t{line-height:1}
 .code .bar .t{
   margin-left:6px;font-family:var(--mono);font-size:.73rem;color:var(--tx-muted);
   letter-spacing:.04em;
