@@ -158,22 +158,28 @@ def test_credential_hooks_resolve_the_real_functions():
 # ── async path: sync_entitled_packs' installer ─────────────────────────────
 
 
-def test_async_install_path_is_wired(monkeypatch):
-    """The async installer must use the same credential hooks.
+def test_every_credential_lifecycle_site_is_wired(monkeypatch):
+    """All three credential sites must be present.
 
-    Asserted structurally (the async installer is a closure inside
-    `sync_entitled_packs`, not separately callable): both call sites must be
-    present, so removing either fails this test.
+    Asserted structurally because the async installer is a closure inside
+    `sync_entitled_packs` and is not separately callable. Removing any site
+    fails this test.
+
+    The three sites are:
+      1. PacksPlugin._download_verify_install  (sync install)
+      2. the installer inside sync_entitled_packs (async install)
+      3. PacksPlugin._uninstall                (revoke on removal)
     """
     src = Path(packs_mod.__file__).read_text(encoding="utf-8")
     # Count CALL sites only — `def _credential_hooks():` also contains the name.
-    call_sites = src.count("= _credential_hooks()")
-    assert call_sites == 2, (
-        "both install paths (sync plugin + async sync_entitled_packs) must "
-        f"resolve the credential hooks (found {call_sites})"
+    call_sites = src.count("_credential_hooks()") - src.count("def _credential_hooks()")
+    assert call_sites == 3, (
+        "both install paths plus _uninstall must resolve the credential hooks "
+        f"(found {call_sites})"
     )
+    # Mint only on install (×2); revoke on install-replace (×2) AND uninstall (×1).
     assert src.count("mint_install_credential(pack_id)") == 2
-    assert src.count("revoke_install_credential(pack_id)") == 2
+    assert src.count("revoke_install_credential(pack_id)") == 3
 
 
 def test_async_entrypoint_still_importable():

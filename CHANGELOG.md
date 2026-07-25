@@ -2,6 +2,67 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [2.39.0] - 2026-07-25
+
+### Fixed — containerized agents were unreachable
+
+- **`docker` runtime: added `-i` to `docker run`.** Without it Docker does not
+  attach the container's stdin, so *every* containerized stdio agent (acp, mcp)
+  silently never received a request. Measured against a real container: no `-i` →
+  the child read nothing; with `-i` → the request round-trips. A real customer
+  pack *is* a container, so this runtime was effectively unusable.
+- **`runtime.cmd` is now `shlex`-split** for the `docker` and `node` runtimes.
+  `cmd: "python -u server.py"` was passed as a single argv element, so docker
+  tried to exec a binary literally named `python -u server.py`.
+- `Supervisor._build_command()` extracted from `spawn()` so argv is testable
+  without launching a process — the missing `-i` survived precisely because it
+  wasn't.
+- Env is deliberately **not** forwarded as `-e KEY=value`: that puts credentials
+  in argv, readable by any local `ps` / `docker inspect`.
+
+### Fixed — CodeActLoop `cell_timeout` did not bound CPU-bound cells
+
+- `asyncio.wait_for` cannot preempt a coroutine that never yields, so
+  `while True: pass` was never interrupted and hung the agent indefinitely. Now
+  also bounded by a line-level trace deadline (`CellTimeout`), scoped to the
+  cell's own frames so a cell that awaits cannot fire the deadline inside
+  unrelated coroutines.
+- The `CodeActLoop` docstring now states plainly that **it is not a sandbox**, and
+  names what a cell can actually do (`import os`, `subprocess`, `open(..., "w")`).
+  Do not run cells from an untrusted source.
+
+### Fixed — MCP stdio hung silently on Windows
+
+- `adk/mcp_stdio.py` and `adk/shell/mcp_bridge.py` attached stdin with
+  `loop.connect_read_pipe`, which fails inside the Proactor loop's read handler
+  such that the read future never resolves — the server didn't crash, it just
+  never answered. Both now use the new shared `adk.stdio_compat`
+  (`ThreadStdinReader` / `ThreadStdoutWriter`), which `acp_server.py` also uses.
+
+### Added — per-install pack credentials are now actually used
+
+- `adk/pack_credentials.py` was orphaned: mint/revoke were never called, so pack
+  installs kept using the shared credential the module was written to replace.
+  Both install paths now mint, and a reinstall revokes the outgoing install's
+  credential before its metadata becomes unreachable.
+- **New `/packs uninstall <pack-id>`** (aliases `remove`, `rm`) — revokes the
+  per-install credential first, then removes the pack. Previously the only revoke
+  path was a reinstall, so deleting a pack any other way left a live,
+  unrevocable credential. The target is confined to the pack root.
+
+### Fixed — packaging
+
+- The brew formula's own `sha256` was left as `PLACEHOLDER_SHA256` on every
+  release, so `brew install` could never verify the download.
+  `sync_versions.py` now fills it from PyPI and `--check` **fails** when a
+  published version still carries a placeholder or a stale digest.
+- `sync_brew` rewrote *every* `url` in the formula, repointing the `httpx`,
+  `pyyaml`, `fastapi` and `uvicorn` `resource` blocks at the aither-adk tarball.
+  Fixed with `count=1`; the resource digests are now real.
+- `adk/__init__.py`'s source-checkout fallback `__version__` had been stale since
+  2.32.0 because the canonical release path never ran `sync_versions.py`. That
+  check now runs in `sync-adk.yml`.
+
 ## [2.38.1] - 2026-07-24
 
 Release plumbing only — 2.38.0 was tagged before the version manifests

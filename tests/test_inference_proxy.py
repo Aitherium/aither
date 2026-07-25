@@ -93,8 +93,26 @@ class TestModelRoutes:
 
     def test_model_backends(self):
         routes = get_model_routes()
-        assert routes["aither-small"].backend == "ollama"
+        # aither-small moved ollama -> vllm deliberately in 76e2540991
+        # ("route small/vision thru MicroScheduler"): MS speaks the OpenAI-compat
+        # /v1 dialect, so every route now goes through it. Asserting "ollama"
+        # here was pinning the pre-MicroScheduler world.
+        assert routes["aither-small"].backend == "vllm"
         assert routes["aither-orchestrator"].backend == "vllm"
+
+    def test_all_routes_go_through_an_openai_compatible_backend(self):
+        """Ground truth for the roster: everything is MicroScheduler-routed.
+
+        Guards the rule rather than a snapshot — a new route added on a
+        non-compatible backend (bypassing MS) fails here.
+        """
+        routes = get_model_routes()
+        assert routes, "roster must not be empty"
+        for name, route in routes.items():
+            assert route.backend in ("vllm", "openai_compat", "anthropic"), (
+                f"{name} uses backend {route.backend!r}; all LLM calls must route "
+                f"through MicroScheduler's OpenAI-compatible dialect"
+            )
 
 
 # ── Tier Access ───────────────────────────────────────────────────────────
@@ -133,22 +151,43 @@ class TestTierAccess:
 
 
 class TestModelListing:
+    # The roster grew 5 -> 6 when aither-bonsai landed (53ff6d8e22, "Bonsai
+    # provider + metered gateway route"). These counts were hard-coded to 5, so
+    # every roster addition broke them. Assert the ACCESS RULE — which is the
+    # security-relevant property — and derive the totals from the roster.
+
     def test_list_models_free_tier(self):
         models = list_available_models("free")
-        assert len(models) == 5  # All models listed
+        assert len(models) == len(get_model_routes()), "every model must be listed"
         accessible = [m for m in models if m["accessible"]]
-        assert len(accessible) == 1  # Only aither-small
-        assert accessible[0]["id"] == "aither-small"
+        assert [m["id"] for m in accessible] == ["aither-small"], (
+            "free tier must expose exactly aither-small — anything else is a "
+            "tier-gating regression"
+        )
 
     def test_list_models_pro_tier(self):
         models = list_available_models("pro")
         accessible = [m for m in models if m["accessible"]]
-        assert len(accessible) == 5  # small + orchestrator + Pro models
+        assert len(accessible) == len(get_model_routes()), "pro reaches every model"
 
     def test_list_models_enterprise_tier(self):
         models = list_available_models("enterprise")
         accessible = [m for m in models if m["accessible"]]
-        assert len(accessible) == 5  # All models
+        assert len(accessible) == len(get_model_routes()), "enterprise reaches all"
+
+    def test_free_tier_cannot_reach_paid_models(self):
+        """The inverse of the above, stated positively as a denial.
+
+        A count-only assertion passes if the WRONG single model is exposed.
+        """
+        free_ids = {m["id"] for m in list_available_models("free") if m["accessible"]}
+        paid = {
+            name
+            for name, route in get_model_routes().items()
+            if getattr(route, "tier", "free") != "free"
+        }
+        assert paid, "expected at least one non-free model in the roster"
+        assert not (free_ids & paid), f"free tier reached paid models: {free_ids & paid}"
 
     def test_model_format_openai_compatible(self):
         models = list_available_models("free")
@@ -216,8 +255,14 @@ class TestProxyChatCompletion:
         """Free tier defaults to aither-small when model is empty."""
         tenant = MockTenantContext(tier="free", token_balance=10000)
 
+        # Patch _proxy_vllm, NOT _proxy_ollama: aither-small routes through
+        # MicroScheduler's OpenAI-compat backend since 76e2540991. Patching the
+        # ollama path left the REAL vllm path live, so this test was making a
+        # network call and failing on the timeout — it was mis-diagnosed as an
+        # environmental 503 (D-809) when it is the same stale-routing bug as
+        # test_model_backends.
         with patch.object(
-            inference_mod, "_proxy_ollama",
+            inference_mod, "_proxy_vllm",
             new=AsyncMock(return_value=InferenceResult(success=True, response={"model": "aither-small"})),
         ):
             result = await proxy_chat_completion(

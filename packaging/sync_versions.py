@@ -7,8 +7,16 @@ Reads the canonical version from aither-adk/pyproject.toml and updates:
   - packaging/winget/Aitherium.ADK.yaml
 
 Usage:
-    python packaging/sync_versions.py          # Sync versions
-    python packaging/sync_versions.py --check  # Check without modifying
+    python packaging/sync_versions.py           # Sync versions
+    python packaging/sync_versions.py --check   # Check without modifying
+    python packaging/sync_versions.py --digests # Fill brew sha256 from PyPI
+
+Version bumps necessarily precede the PyPI publish, so the brew formula's own
+sha256 is written as a PLACEHOLDER at bump time and must be filled once the
+sdist exists. Nobody ever did that, so every release shipped a formula that
+`brew install` cannot verify. `--digests` fills it from PyPI, and `--check`
+FAILS when the version is published but the digest is still a placeholder — so
+the omission is now loud instead of silent.
 """
 
 from __future__ import annotations
@@ -16,7 +24,68 @@ from __future__ import annotations
 import json
 import re
 import sys
+import urllib.error
+import urllib.request
 from pathlib import Path
+
+PLACEHOLDER = "PLACEHOLDER_SHA256"
+
+
+def fetch_sdist_sha256(version: str, *, timeout: float = 15.0) -> str | None:
+    """Return the PyPI sdist sha256 for *version*, or None if not published.
+
+    Network failures return None rather than raising: a transient outage must
+    not fail a release, it just leaves the digest unfilled (which --check then
+    reports).
+    """
+    url = f"https://pypi.org/pypi/aither-adk/{version}/json"
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            data = json.load(resp)
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError):
+        return None
+    except json.JSONDecodeError:
+        return None
+    for entry in data.get("urls", []):
+        if entry.get("packagetype") == "sdist":
+            return entry.get("digests", {}).get("sha256")
+    return None
+
+
+def sync_brew_digest(version: str, check: bool, fetch=fetch_sdist_sha256) -> bool:
+    """Fill (or verify) the brew formula's own sha256 against PyPI.
+
+    Only the FIRST sha256 in the formula is the package's own; the rest belong
+    to `resource` blocks and must never be touched (see sync_brew).
+    """
+    path = Path(__file__).parent / "brew" / "aither-adk.rb"
+    text = path.read_text(encoding="utf-8")
+    match = re.search(r'sha256 "([^"]*)"', text)
+    if not match:
+        print("  brew digest: no sha256 line (skipped)")
+        return True
+
+    current = match.group(1)
+    published = fetch(version)
+
+    if published is None:
+        if current.startswith("PLACEHOLDER"):
+            print(f"  brew digest: {version} not on PyPI yet — placeholder retained")
+        else:
+            print("  brew digest: not on PyPI yet — leaving existing digest")
+        return True
+
+    if current == published:
+        print("  brew digest: already correct")
+        return True
+    if check:
+        print(f"  brew digest: {current[:16]}… -> {published[:16]}… (needs update)")
+        return False
+
+    text = text.replace(f'sha256 "{current}"', f'sha256 "{published}"', 1)
+    path.write_text(text, encoding="utf-8")
+    print(f"  brew digest: filled from PyPI ({published[:16]}…)")
+    return True
 
 
 def get_version() -> str:
@@ -152,14 +221,21 @@ def main():
     print(f"Canonical version: {version}")
     print()
 
+    digests_only = "--digests" in sys.argv
+
     all_ok = True
-    all_ok &= sync_init(version, check)
-    all_ok &= sync_npm(version, check)
-    all_ok &= sync_brew(version, check)
-    all_ok &= sync_winget(version, check)
+    if not digests_only:
+        all_ok &= sync_init(version, check)
+        all_ok &= sync_npm(version, check)
+        all_ok &= sync_brew(version, check)
+        all_ok &= sync_winget(version, check)
+
+    # Runs in --check too: a PUBLISHED version whose formula still carries a
+    # placeholder digest is a broken `brew install`, and used to pass silently.
+    all_ok &= sync_brew_digest(version, check)
 
     if check and not all_ok:
-        print("\nVersion mismatch detected. Run without --check to fix.")
+        print("\nManifest mismatch detected. Run without --check to fix.")
         sys.exit(1)
     elif not check:
         print("\nAll manifests synced.")

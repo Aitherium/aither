@@ -4,6 +4,7 @@ Browse, purchase, and manage agent/skill/tool packs from the Elysium marketplace
 """
 
 import json
+import logging
 import os
 import tarfile
 import webbrowser
@@ -17,6 +18,8 @@ import httpx
 from adk.shell.plugins import SlashCommand
 
 __all__ = ["sync_entitled_packs"]
+
+logger = logging.getLogger(__name__)
 
 
 def _safe_extract(tar: tarfile.TarFile, path: str) -> None:
@@ -90,6 +93,7 @@ class PacksPlugin(SlashCommand):
       /packs info <pack-id>    Show pack details
       /packs purchase <id>     Open Stripe checkout
       /packs install <id>      Download and extract pack
+      /packs uninstall <id>    Remove a pack + revoke its per-install credential
       /packs activate <id>     Hot-reload packs on agent server (no download)
       /packs sync              Install every entitled pack not already present
       /packs library           Show purchased packs
@@ -202,6 +206,10 @@ class PacksPlugin(SlashCommand):
             # activate takes no required args; optional pack_id is ignored
             # (server reloads all discovered packs regardless)
             return self._activate_packs(args[1:] if len(args) > 1 else [])
+        elif command in ("uninstall", "remove", "rm"):
+            if len(args) < 2:
+                return "ERROR: /packs uninstall requires <pack-id>"
+            return self._uninstall(args[1])
         elif command == "sync":
             return self._sync(args[1:])
         elif command == "library":
@@ -402,6 +410,44 @@ class PacksPlugin(SlashCommand):
         d.mkdir(parents=True, exist_ok=True)
         return d
 
+    def _uninstall(self, pack_id: str) -> str:
+        """Remove an installed pack, revoking its per-install credential FIRST.
+
+        Install mints a credential scoped to this pack + install_id
+        (:mod:`adk.pack_credentials`). Without this verb the only revoke path was
+        a reinstall, so removing a pack by hand left a LIVE credential whose
+        metadata was gone — unrevocable. Order matters: revoke while the metadata
+        is still readable, then delete the directory.
+        """
+        import shutil
+
+        packs_root = self._packs_dir()
+        # Resolve and confine: a pack_id like "../../.ssh" must never escape the
+        # pack root into an arbitrary rmtree.
+        dest = (packs_root / pack_id).resolve()
+        root = packs_root.resolve()
+        if dest == root or root not in dest.parents:
+            return f"ERROR: refusing to remove {pack_id!r} — outside the pack root"
+
+        if not dest.exists():
+            return f"Pack '{pack_id}' is not installed (nothing to remove)."
+
+        _, revoke_install_credential = _credential_hooks()
+        revoked = "not applicable"
+        if revoke_install_credential is not None:
+            try:
+                revoked = "revoked" if revoke_install_credential(pack_id) else "revoke failed"
+            except Exception as e:  # noqa: BLE001 — documented best-effort
+                logger.warning("pack %s: credential revoke raised: %s", pack_id, e)
+                revoked = f"revoke error ({type(e).__name__})"
+
+        try:
+            shutil.rmtree(dest)
+        except OSError as e:
+            return f"ERROR: credential {revoked}, but failed to remove {dest}: {e}"
+
+        return f"Removed pack '{pack_id}' from {packs_root} (credential: {revoked})"
+
     def _sync(self, args: List[str]) -> str:
         """Install every entitled pack that isn't already present locally.
 
@@ -585,6 +631,13 @@ COMMANDS:
     fallback if agent is offline).
     Usage: /packs install <pack-id> [--extract]
     Example: /packs install my-skill-pack --extract
+
+  uninstall <pack-id>            (aliases: remove, rm)
+    Remove an installed pack from ~/.aitheros/packs/ and REVOKE its per-install
+    credential first, while the credential metadata is still readable. Deleting
+    the directory by hand instead leaves a live, unrevocable credential.
+    Usage: /packs uninstall <pack-id>
+    Example: /packs uninstall my-skill-pack
 
   activate [pack-id]
     Hot-reload packs on the running agent server (does not download).

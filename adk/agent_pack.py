@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shlex
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -271,20 +272,13 @@ class Supervisor:
     def __init__(self):
         self._handles: dict[str, AgentHandle] = {}
 
-    async def spawn(self, manifest: AgentPackManifest) -> AgentHandle:
-        """Launch an agent pack as a subprocess and return its handle.
+    def _build_command(self, manifest: AgentPackManifest) -> list[str]:
+        """Build the argv for *manifest*'s runtime.
 
-        Args:
-            manifest: The parsed AgentPackManifest.
-
-        Returns:
-            An AgentHandle exposing is_running(), protocol, and process.
-
-        Raises:
-            ValueError: If runtime type is unsupported or required fields missing.
-            RuntimeError: If the subprocess fails to start.
+        Extracted from spawn() so argv construction is testable without
+        launching anything — the docker path silently omitted `-i` for its whole
+        life precisely because nothing could assert on it cheaply.
         """
-        # Build the command line based on runtime type
         if manifest.runtime.type == "python":
             if not manifest.runtime.cmd:
                 raise ValueError("runtime.cmd required for python runtime")
@@ -305,21 +299,48 @@ class Supervisor:
         elif manifest.runtime.type == "node":
             if not manifest.runtime.cmd:
                 raise ValueError("runtime.cmd required for node runtime")
-            cmd = ["node", manifest.runtime.cmd]
+            cmd = ["node", *shlex.split(manifest.runtime.cmd)]
             cmd.extend(manifest.runtime.args or [])
 
         elif manifest.runtime.type == "docker":
             if not manifest.runtime.image:
                 raise ValueError("runtime.image required for docker runtime")
-            # For docker, we'd typically use docker run, but for now
-            # record the image + cmd for caller to handle
-            cmd = ["docker", "run", "--rm", manifest.runtime.image]
+            # `-i` is REQUIRED, not optional polish: without it `docker run` does
+            # not attach the container's stdin, so a stdio-protocol agent (acp,
+            # mcp) inside a container is structurally UNREACHABLE — the driver
+            # writes a request that is silently discarded. Verified against a real
+            # container: no `-i` → the child never sees a byte; with `-i` → the
+            # request round-trips. Same defect class as forgetting stdin=PIPE.
+            # Deliberately NOT forwarding env as `-e KEY=value`: that puts values
+            # in the container's argv, where any local `ps`/`docker inspect` reads
+            # them. Credentials belong in AitherSecrets, fetched by the agent.
+            cmd = ["docker", "run", "--rm", "-i", manifest.runtime.image]
             if manifest.runtime.cmd:
-                cmd.append(manifest.runtime.cmd)
+                # shlex, not append: a cmd like "python -u server.py" appended
+                # whole becomes ONE argv element, which docker tries to exec as a
+                # binary literally named "python -u server.py".
+                cmd.extend(shlex.split(manifest.runtime.cmd))
             cmd.extend(manifest.runtime.args or [])
 
         else:
             raise ValueError(f"Unsupported runtime type: {manifest.runtime.type}")
+
+        return cmd
+
+    async def spawn(self, manifest: AgentPackManifest) -> AgentHandle:
+        """Launch an agent pack as a subprocess and return its handle.
+
+        Args:
+            manifest: The parsed AgentPackManifest.
+
+        Returns:
+            An AgentHandle exposing is_running(), protocol, and process.
+
+        Raises:
+            ValueError: If runtime type is unsupported or required fields missing.
+            RuntimeError: If the subprocess fails to start.
+        """
+        cmd = self._build_command(manifest)
 
         # Launch the process
         try:
