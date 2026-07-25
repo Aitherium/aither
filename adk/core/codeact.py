@@ -24,6 +24,8 @@ from __future__ import annotations
 import asyncio
 import io
 import re
+import sys
+import time
 import traceback
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass, field
@@ -34,6 +36,68 @@ from adk.core.logging import get_logger
 from adk.core.model import Message, ModelBackend
 from adk.core.tool import Tool, ToolResult
 from adk.core.validator import CodeValidator
+
+
+class CellTimeout(Exception):
+    """A cell exceeded its wall-clock budget and was interrupted."""
+
+
+class _DeadlineTrace:
+    """Wall-clock bound for a synchronous cell, enforced via ``sys.settrace``.
+
+    ``asyncio.wait_for`` CANNOT interrupt a cell that never awaits: the wrapper
+    coroutine runs ``while True: pass`` without yielding, so the event loop never
+    regains control and the timeout never fires — the agent hangs forever. That
+    was a real defect (the documented per-cell timeout silently did not hold for
+    CPU-bound code).
+
+    A line-level trace hook does regain control, because CPython calls it between
+    bytecode lines of *Python* frames, so raising from it interrupts the loop.
+
+    Enforcement is SCOPED to frames whose code was compiled under *filename*
+    (the cell). ``sys.settrace`` is thread-global and an ``await`` inside a cell
+    hands control back to the event loop, so an unscoped hook would raise this
+    deadline inside unrelated coroutines running on the same thread — a bug found
+    while testing this class. Non-cell frames are not traced at all, which also
+    keeps the overhead off everything else.
+
+    LIMITS, deliberately explicit — this is a liveness guard, NOT a security
+    boundary:
+      * it cannot interrupt time spent inside a single C-level call
+        (``time.sleep(1e9)``, catastrophic regex backtracking, a huge ``**``);
+      * ``sys.settrace`` only instruments frames entered AFTER it is armed, so
+        the cell body must be called inside the ``with`` block (it is);
+      * a cell can simply clear it with ``sys.settrace(None)``.
+    Only real process isolation bounds hostile code — see ``CodeActLoop``.
+    """
+
+    def __init__(self, seconds: float, filename: str = "<cell>") -> None:
+        self.seconds = seconds
+        self.filename = filename
+        self._deadline = 0.0
+        self._prev: Any = None
+
+    def __enter__(self) -> _DeadlineTrace:
+        self._deadline = time.monotonic() + self.seconds
+        self._prev = sys.gettrace()
+        sys.settrace(self._global_trace)
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        sys.settrace(self._prev)
+
+    def _global_trace(self, frame: Any, event: str, arg: Any) -> Any:
+        """Called on frame entry: opt IN to line tracing for cell frames only."""
+        if frame.f_code.co_filename == self.filename:
+            return self._line_trace
+        return None
+
+    def _line_trace(self, frame: Any, event: str, arg: Any) -> Any:
+        if time.monotonic() > self._deadline:
+            raise CellTimeout(
+                f"Cell execution exceeded {self.seconds}s and was interrupted"
+            )
+        return self._line_trace
 
 _log = get_logger("codeact")
 
@@ -121,12 +185,40 @@ class _ExecutionResult:
 class CodeActLoop:
     """Iterative code execution loop (CodeAct strategy).
 
+    The model writes Python cells that execute IN THIS PROCESS against a
+    namespace that persists across cells, so it can operate on live objects.
+
+    .. warning::
+       **This is not a sandbox. Do not run cells from an untrusted source.**
+
+       Cells execute with the full privileges of the host process. Verified by
+       live probe, a cell CAN: ``import os``, ``import subprocess`` and spawn
+       processes, and ``open(path, "w")`` and write real files. The
+       :class:`~adk.core.validator.CodeValidator` rejects a specific set of
+       escape idioms (``eval``/``exec``/``compile``/``__import__``,
+       ``__builtins__``/``globals``/``__subclasses__`` access) — that is
+       defense-in-depth against a *confused* model, not containment of a
+       *hostile* one, because code-as-action deliberately permits imports.
+
+       ``cell_timeout`` is a LIVENESS guard, not containment: it interrupts
+       pure-Python execution (including ``while True: pass``, via a line-level
+       trace hook) but cannot interrupt a single long C-level call such as
+       ``time.sleep(1e9)`` or catastrophic regex backtracking, and a cell may
+       disable it with ``sys.settrace(None)``.
+
+       Untrusted input requires real process/container isolation — e.g. drive
+       the cell through :meth:`adk.sandbox.AitherSandbox.execute_subprocess`,
+       which gives a separate process, a scrubbed environment, and a killable
+       timeout, at the cost of the live-object namespace.
+
     Args:
         max_steps: Maximum reasoning steps before terminating (default 8).
         model: Optional per-loop model override (None → use agent.model).
         max_preview_chars: If set, bound observations to this many chars using
             pformat(). None (default) = unbounded str() behavior.
-        cell_timeout: Wall-clock timeout per cell in seconds (default 5.0).
+        cell_timeout: Per-cell wall-clock budget in seconds (default 5.0).
+            Enforced by BOTH ``asyncio.wait_for`` (for cells that await) and a
+            trace-based deadline (for cells that never yield).
         max_output_bytes: Maximum observation output size in bytes (default 10000).
     """
 
@@ -376,11 +468,16 @@ Do NOT:
                     # Define the async function in the namespace
                     exec(compiled, namespace)
 
-                    # Call the async wrapper
-                    await asyncio.wait_for(
-                        namespace["__user_code__"](),
-                        timeout=self.cell_timeout,
-                    )
+                    # Call the async wrapper. TWO bounds are needed, not one:
+                    #  * wait_for   — bounds cells that AWAIT (I/O, tool calls)
+                    #  * _DeadlineTrace — bounds cells that never yield, which
+                    #    wait_for provably cannot interrupt (`while True: pass`
+                    #    used to hang the agent forever).
+                    with _DeadlineTrace(self.cell_timeout):
+                        await asyncio.wait_for(
+                            namespace["__user_code__"](),
+                            timeout=self.cell_timeout,
+                        )
 
                     # Capture locals from the function into persistent namespace
                     # This makes variables defined in the cell persist across cells
@@ -396,7 +493,7 @@ Do NOT:
                         stderr=stderr_buf.getvalue(),
                         return_signal=sig,
                     )
-                except asyncio.TimeoutError:
+                except (asyncio.TimeoutError, CellTimeout):
                     return _ExecutionResult(
                         stderr=f"Execution timeout (>{self.cell_timeout}s)",
                         exception=TimeoutError("Cell execution exceeded timeout"),

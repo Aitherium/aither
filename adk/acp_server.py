@@ -29,6 +29,8 @@ import sys
 import uuid
 from typing import Any, Awaitable, Callable, Optional
 
+from adk.stdio_compat import ThreadStdinReader, ThreadStdoutWriter
+
 logger = logging.getLogger(__name__)
 
 __all__ = [
@@ -317,34 +319,11 @@ def _stringify(value: Any) -> str:
         return str(value)
 
 
-class _ThreadStdinReader:
-    """Cross-platform async line reader over a blocking binary stream.
-
-    ``loop.connect_read_pipe`` cannot attach to stdin under Windows' Proactor
-    event loop (it raises in ``_loop_reading``), so reads are delegated to the
-    default executor instead. Works identically on POSIX and Windows.
-    """
-
-    def __init__(self, stream: Any = None) -> None:
-        self._stream = stream if stream is not None else sys.stdin.buffer
-
-    async def readline(self) -> bytes:
-        return await asyncio.get_running_loop().run_in_executor(
-            None, self._stream.readline
-        )
-
-
-class _ThreadStdoutWriter:
-    """Blocking binary writer with the ``write``/``drain`` shape ACPServer expects."""
-
-    def __init__(self, stream: Any = None) -> None:
-        self._stream = stream if stream is not None else sys.stdout.buffer
-
-    def write(self, data: bytes) -> None:
-        self._stream.write(data)
-
-    async def drain(self) -> None:
-        self._stream.flush()
+# The Windows-safe stdio adapters now live in `adk.stdio_compat` so the ACP and
+# MCP stdio servers share ONE proven implementation (see that module for why
+# `loop.connect_read_pipe` cannot be used on stdin under Windows' Proactor loop).
+_ThreadStdinReader = ThreadStdinReader
+_ThreadStdoutWriter = ThreadStdoutWriter
 
 
 async def serve_stdio(agent: Any, *, name: Optional[str] = None, version: str = "1.0.0") -> None:

@@ -21,7 +21,6 @@ Claude Code config:
     }
 """
 
-import asyncio
 import json
 import logging
 import os
@@ -56,9 +55,12 @@ class MCPStdioBridge:
 
         logger.info(f"MCP bridge started: backend={self._base_url}, tools={len(self._tools)}")
 
-        reader = asyncio.StreamReader()
-        protocol = asyncio.StreamReaderProtocol(reader)
-        await asyncio.get_event_loop().connect_read_pipe(lambda: protocol, sys.stdin.buffer)
+        # `connect_read_pipe` on stdin raises under Windows' Proactor event loop,
+        # which crashed this bridge on Windows. Use the shared thread-backed
+        # reader (same one the live-proven ACP server uses) — identical on POSIX.
+        from adk.stdio_compat import ThreadStdinReader
+
+        reader = ThreadStdinReader(sys.stdin.buffer)
 
         while True:
             try:

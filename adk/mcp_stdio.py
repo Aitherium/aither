@@ -70,11 +70,12 @@ async def run_stdio(agent=None, project_dir: str = "."):
         agent.name,
     )
 
-    loop = asyncio.get_event_loop()
-    reader = asyncio.StreamReader()
-    await loop.connect_read_pipe(
-        lambda: asyncio.StreamReaderProtocol(reader), sys.stdin.buffer
-    )
+    # `loop.connect_read_pipe` on stdin raises under Windows' Proactor event loop,
+    # which crashed this server outright on Windows. Use the shared thread-backed
+    # reader (same one the live-proven ACP server uses) — identical on POSIX.
+    from adk.stdio_compat import ThreadStdinReader
+
+    reader = ThreadStdinReader(sys.stdin.buffer)
 
     while True:
         line = await reader.readline()

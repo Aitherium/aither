@@ -208,9 +208,21 @@ async def join_mesh(
     """
     from adk._tls import tls_verify
 
-    # Resolve service URLs
+    # Resolve service URLs.
+    #
+    # These defaults MUST be the public edge. `adk join` is the one command a
+    # stranger runs on their own GPU box, and identity defaulted to
+    # https://localhost:8115 — a fleet-INTERNAL address. On any machine that is not
+    # running AitherOS locally, step 1 (the GitHub device flow) hit a refused
+    # connection, and so did node registration and the mesh-key issue. The command
+    # could only ever have worked for us. The conductor default was already public,
+    # which is exactly why this went unnoticed.
+    #
+    # https://idp.aitherium.com is the public IdP and serves the device-flow routes
+    # (POST /auth/github/device/start|poll and /auth/device/code|token) — verified
+    # live 2026-07-24. Both remain overridable for on-fleet or self-hosted use.
     identity_url = os.getenv(
-        "AITHER_IDENTITY_URL", "https://localhost:8115"
+        "AITHER_IDENTITY_URL", "https://idp.aitherium.com"
     )
     conductor_url = os.getenv(
         "AITHER_CONDUCTOR_URL", "https://gateway.aitherium.com"

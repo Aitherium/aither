@@ -7,8 +7,8 @@ class AitherAdk < Formula
 
   desc "Agent Development Kit for AitherOS — build AI agent fleets with any LLM"
   homepage "https://aitherium.com"
-  url "https://files.pythonhosted.org/packages/source/a/aither-adk/aither_adk-2.37.0.tar.gz"
-  sha256 "faebfd6ffc893589037a66cd67a8223ccdf7cd2457b18b7e947a7531d7873eeb"
+  url "https://files.pythonhosted.org/packages/source/a/aither-adk/aither_adk-2.38.1.tar.gz"
+  sha256 "PLACEHOLDER_SHA256"
   license "Proprietary"
 
   depends_on "python@3.12"

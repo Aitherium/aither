@@ -2,6 +2,34 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [2.38.1] - 2026-07-24
+
+Release plumbing only — 2.38.0 was tagged before the version manifests
+(npm/brew/winget) were synced, so its publish gate failed and it never reached
+PyPI. 2.38.1 is the same code with the manifests in sync. See 2.38.0 below for
+what actually changed.
+
+## [2.38.0] - 2026-07-24 (never published — superseded by 2.38.1)
+
+### Fixed — `adk join` could only ever have worked for us
+
+- **`adk join` defaulted identity to `https://localhost:8115`** — a fleet-INTERNAL
+  address. `adk join` is the one command a stranger runs on their own GPU box, so on
+  any machine not already running AitherOS locally, step 1 (the GitHub device flow)
+  hit a refused connection, and so did node registration and the mesh-key issue. The
+  conductor default was already public, which is exactly why this went unnoticed.
+  Identity now defaults to `https://idp.aitherium.com`.
+
+  This fix landed *after* the 2.37.0 tag, so **2.37.0 and every earlier release on
+  PyPI still ship the broken default** — 2.38.0 is the first release a new
+  contributor can actually run. Verified live from a non-fleet machine (DGX):
+  `POST /auth/github/device/start` → HTTP 200 with a real `user_code` and
+  `verification_uri`.
+
+- **Upgrade check compared versions as strings** — `latest != current` reported a
+  downgrade as an available upgrade. Now uses `packaging.version` with a numeric-tuple
+  fallback.
+
 ## [2.37.0] - 2026-07-24
 
 ### Added — Agent Onboarding Fabric: bring your own agent, or run a managed one
