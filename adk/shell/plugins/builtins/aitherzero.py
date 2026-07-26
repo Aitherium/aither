@@ -47,12 +47,15 @@ def _find_aitherzero_root() -> Optional[Path]:
         cwd / ".." / "AitherZero" / "library" / "automation-scripts",
     ])
 
-    # Check well-known Windows paths
+    # Home- and drive-root checkouts, DISCOVERED rather than hardcoded. This used to
+    # name D:/AitherOS-Fresh explicitly — one developer's drive layout, shipped in a
+    # public package.
+    from adk.shell._repo_roots import candidate_repo_roots
+
     home = Path.home()
-    candidates.extend([
-        home / "AitherZero" / "library" / "automation-scripts",
-        Path("D:/AitherOS-Fresh/AitherZero/library/automation-scripts"),
-    ])
+    candidates.append(home / "AitherZero" / "library" / "automation-scripts")
+    for root in candidate_repo_roots(include_cwd=False):
+        candidates.append(root / "AitherZero" / "library" / "automation-scripts")
 
     for c in candidates:
         resolved = c.resolve()

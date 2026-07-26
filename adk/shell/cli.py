@@ -1315,13 +1315,12 @@ def _find_repo_root() -> str:
     def _is_root(path: str) -> bool:
         return any(os.path.isfile(os.path.join(path, m)) for m in markers)
 
-    # Check common locations
-    candidates = [
-        os.getcwd(),
-        os.path.expanduser("~/AitherOS"),
-        os.path.expanduser("~/AitherOS-Fresh"),
-        "D:/AitherOS-Fresh",
-    ]
+    # Check common locations. Drive roots are DISCOVERED rather than hardcoded —
+    # this list used to end with a literal "D:/AitherOS-Fresh", one developer's
+    # drive layout shipped to every pip install.
+    from adk.shell._repo_roots import candidate_repo_roots
+
+    candidates = [str(p) for p in candidate_repo_roots()]
     for c in candidates:
         if _is_root(c):
             return c

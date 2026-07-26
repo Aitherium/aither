@@ -44,12 +44,12 @@ def _find_repo_root() -> Optional[Path]:
     cwd = Path.cwd()
     candidates.extend([cwd, cwd.parent, cwd.parent.parent])
 
-    home = Path.home()
-    candidates.extend([
-        home / "AitherOS-Fresh",
-        Path("D:/AitherOS-Fresh"),
-        Path("C:/AitherOS-Fresh"),
-    ])
+    # Home- and drive-root candidates, DISCOVERED rather than hardcoded. This block
+    # used to name D:/ and C:/ explicitly — one developer's drive layout, shipped in
+    # a public package and meaningless on anyone else's machine.
+    from adk.shell._repo_roots import candidate_repo_roots
+
+    candidates.extend(candidate_repo_roots(include_cwd=False))
 
     for c in candidates:
         resolved = c.resolve()

@@ -39,8 +39,14 @@ def _find_gaming_script() -> Optional[str]:
     candidates.extend([
         cwd / "scripts" / "Switch-GamingMode.ps1",
         cwd / ".." / "scripts" / "Switch-GamingMode.ps1",
-        Path("D:/AitherOS-Fresh/scripts/Switch-GamingMode.ps1"),
     ])
+
+    # Drive-root checkouts, DISCOVERED rather than hardcoded. This used to name
+    # D:/AitherOS-Fresh explicitly — one developer's drive layout, in a public package.
+    from adk.shell._repo_roots import candidate_repo_roots
+
+    for root in candidate_repo_roots(include_cwd=False):
+        candidates.append(root / "scripts" / "Switch-GamingMode.ps1")
 
     for c in candidates:
         resolved = c.resolve()
