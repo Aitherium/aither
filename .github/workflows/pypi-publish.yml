@@ -3,6 +3,12 @@ name: Publish to PyPI
 on:
   release:
     types: [published]
+  # Manual re-run. Two uses: re-driving a publish after a transient PyPI/network
+  # failure without cutting a new release, and EXERCISING this workflow's own
+  # test gate — `skip-existing: true` below makes a re-run of an already
+  # published version a no-op upload, so the gate can be proven without
+  # polluting the index with a throwaway version.
+  workflow_dispatch:
 
 permissions:
   id-token: write
