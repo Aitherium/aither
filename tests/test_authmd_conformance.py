@@ -3,7 +3,7 @@
 This test suite SKIPS CLEANLY if the reference service is not running.
 To run it, start the reference service first:
 
-    cd C:/Users/wzns/AppData/Local/Temp/claude/D--AitherOS-Fresh/dfcd4826-8079-44e1-9ccb-d5b8316780ed/scratchpad/authmd-ref
+    cd <your authmd reference checkout>
     pnpm install
     pnpm dev:service    # Listens on http://localhost:8000
 
@@ -338,7 +338,7 @@ async def run_all_tests():
     if not is_service_running():
         print(f"ERROR: Reference service not running at {SERVICE_URL}")
         print("Start it with:")
-        print("  cd C:/Users/wzns/AppData/Local/Temp/claude/D--AitherOS-Fresh/dfcd4826-8079-44e1-9ccb-d5b8316780ed/scratchpad/authmd-ref")
+        print("  cd <your authmd reference checkout>")
         print("  pnpm dev:service")
         return False
 

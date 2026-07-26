@@ -17,13 +17,11 @@ from pathlib import Path
 
 import pytest
 
-_SCRATCH = Path(
-    os.environ.get(
-        "ADK_ACP_REF_DIR",
-        r"C:\Users\wzns\AppData\Local\Temp\claude\D--AitherOS-Fresh"
-        r"\72e1d52a-2e1f-415d-894b-31b01bb4e094\scratchpad",
-    )
-)
+# No default: the previous fallback was one developer's personal scratchpad path,
+# shipped in the public package — it leaked a username and pointed somewhere no
+# other machine can have. Set ADK_ACP_REF_DIR to a local reference checkout to run
+# these; unset, they skip exactly as they did before.
+_SCRATCH = Path(os.environ.get("ADK_ACP_REF_DIR", ""))
 _VENV_PY = _SCRATCH / "acpvenv" / "Scripts" / "python.exe"
 _DRIVER = _SCRATCH / "ref_client_drive_adk.py"
 _RUNNER = _SCRATCH / "adk_acp_server_runner.py"
