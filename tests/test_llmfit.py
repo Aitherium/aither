@@ -6,6 +6,35 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from adk.llmfit import LLMFitClient, ModelFit, get_llmfit
 
 
+def _agent_viable_pool_size(hw: dict) -> int:
+    """How many agent-viable models actually fit THIS machine.
+
+    Every distinctness assertion below depends on it. A GitHub runner (~3GB
+    envelope) has a pool of 2 — both Fast-specialty — so all roles legitimately
+    converge there, while a workstation has ~19 and convergence would be the
+    D-916 regression. A constant bound cannot tell those apart, and these tests'
+    envelope is whatever machine they run on.
+    """
+    from adk.llmfit import _to_ods_backend
+    from adk.ods.hardware import classify_host
+    from adk.ods.resolver import OdsResolver, is_agent_viable
+
+    ram_gb = int(hw.get("total_ram_gb", 0) or 0)
+    host = classify_host(
+        gpu_name=hw.get("gpu_name", ""),
+        cpu_name=hw.get("cpu_name", ""),
+        vendor=_to_ods_backend(hw.get("backend")),
+        memory_type="unified" if hw.get("unified_memory") else "discrete",
+        vram_mb=int((hw.get("gpu_vram_gb", 0) or 0) * 1024),
+        ram_gb=ram_gb,
+    )
+    env = OdsResolver()._envelope(  # noqa: SLF001 - test needs the candidate pool
+        host.backend, host.memory_type, host.vram_mb, ram_gb, "qwen",
+        host.tier, "x86_64", None, False,
+    )
+    return len([m for m in env.ranked if is_agent_viable(m)])
+
+
 # ── ModelFit dataclass ────────────────────────────────────────────────────
 
 
@@ -357,16 +386,19 @@ class TestLLMFitClientRecommendConfig:
         # to ONE model — calling resolve() once per tier used to return the same
         # pick every time.
         #
-        # The bound is >= 2, not >= 3, because this test's envelope is WHATEVER
-        # MACHINE IT RUNS ON. A GitHub runner (2 cores, 7GB RAM, no GPU) has a
-        # ~3GB envelope in which only two catalog models genuinely fit, so roles
-        # converging there is CORRECT behaviour, not the regression. A >= 3 bound
-        # passed on this 32GB workstation and failed on the runner — an
-        # environment assumption, not a contract. The strong per-envelope
+        # The bound is HOST-DERIVED, because this test's envelope is whatever
+        # machine it runs on. A GitHub runner (2 cores, 7GB RAM, no GPU) has a
+        # ~3GB envelope where only two agent-viable models fit and both are
+        # Fast-specialty, so roles converging there is CORRECT, not the
+        # regression. Two constants were tried and both encoded this
+        # workstation's hardware as a contract. The strong per-envelope
         # assertions live in adk/ods/tests/test_hardware_and_roles.py, where the
         # hardware is a fixture rather than an accident.
         distinct = {config[t]["model"] for t in generation_tiers}
-        assert len(distinct) >= 2, config
+        # Bound comes from the host, not a constant — see
+        # _agent_viable_pool_size.
+        if _agent_viable_pool_size(await client.system_info() or {}) >= 3:
+            assert len(distinct) >= 2, config
         # CONTRACT CHANGE: the ODS catalog holds no embedding models, so this
         # tier is answered by the SDK's canonical embedder, not by a chat model
         # wearing an "embedding" label.
@@ -669,6 +701,11 @@ class TestOdsBackendMapping:
         # ...and the dict must report the backend actually USED for sizing,
         # not the classification it diverged from.
         assert config["hardware"]["ods_backend"] == "intel", config["hardware"]
+        # ...and must NOT publish the cpu_x86 default (70GB/s) as this card's
+        # bandwidth. Upstream enumerates no `intel` vendor, so the classifier
+        # falls back to that default; reporting it as fact is ~6x wrong for an
+        # Arc B580. None is the honest answer (D-953).
+        assert config["hardware"]["bandwidth_gbps"] is None, config["hardware"]
 
 
 class TestLlmRouterTierResolution:
@@ -700,8 +737,16 @@ class TestLlmRouterTierResolution:
             assert "/" not in model, f"{tier} returned an HF-style name: {model}"
 
         # D-916: small/medium/large map to fast/balanced/reasoning, which used
-        # to be the same model three times.
-        assert len(set(resolved.values())) >= 2, resolved
+        # to be the same model three times. Bound is host-derived for the same
+        # reason as in TestLLMFitClientRecommendConfig — on a machine where only
+        # two agent-viable models fit, converging is the correct answer, not the
+        # regression. The POSITIVE assertions above still run unconditionally.
+        import asyncio
+
+        from adk.llmfit import get_llmfit
+
+        if _agent_viable_pool_size(asyncio.run(get_llmfit().system_info()) or {}) >= 3:
+            assert len(set(resolved.values())) >= 2, resolved
 
 
 class TestHardwareScoredProviderScope:

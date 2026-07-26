@@ -570,7 +570,17 @@ class LLMFitClient:
                             "memory_type": memory_type,
                             "classified_backend": host.backend,
                             "classified_by": host.source,
-                            "bandwidth_gbps": host.bandwidth_gbps,
+                            # Only when the host was actually placed. On an
+                            # unclassified host (upstream enumerates no `intel`
+                            # vendor, so every Arc/SYCL box lands here) the
+                            # classifier returns the cpu_x86 DEFAULT of 70GB/s —
+                            # ~6x wrong for an Arc B580. classify_host stays
+                            # faithful to upstream; publishing that default as a
+                            # measured fact is what would be dishonest. None
+                            # says "unknown", which is true.
+                            "bandwidth_gbps": (
+                                host.bandwidth_gbps if host.source != "unknown" else None
+                            ),
                             # NO compose_overlays here. classify_host() returns
                             # them (upstream's classifier does), but publishing
                             # them in THIS dict would promise a deployment input

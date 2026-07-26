@@ -237,3 +237,98 @@ def test_apple_gets_the_macos_overlay_only_on_macos() -> None:
 
 def test_current_platform_id_is_a_known_token() -> None:
     assert current_platform_id() in {"linux", "wsl", "macos", "windows", "unknown"}
+
+
+# ── D-939: role picks must respect upstream's own agent-viability evidence ────
+
+
+def _raw_catalog() -> dict:
+    import json
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parent.parent / "model-library.json"
+    return {m["id"]: m for m in json.loads(path.read_text(encoding="utf-8"))["models"]}
+
+
+ALL_ENVELOPES = [
+    ("rtx5090", RTX_5090),
+    ("gpu8gb", GPU_8GB),
+    ("cpu16gb", CPU_ONLY),
+    ("strix", STRIX),
+    ("gpu24gb", dict(backend="nvidia", memory_type="discrete", vram_mb=24576, ram_gb=64)),
+    ("gpu12gb", dict(backend="nvidia", memory_type="discrete", vram_mb=12288, ram_gb=32)),
+]
+
+
+@pytest.mark.parametrize("label,envelope", ALL_ENVELOPES)
+def test_no_role_recommends_a_model_upstream_proved_not_agent_viable(
+    resolver: OdsResolver, label: str, envelope: dict
+) -> None:
+    """ADK is an AGENT SDK; a model upstream's release probes recorded as
+    `not_agent_viable` is the wrong answer even when it fits and matches.
+
+    Measured before the filter existed: 14 picks across these six envelopes
+    landed on such a model (qwen2.5-1.5b, phi3-mini-128k, phi4-mini-reasoning).
+    """
+    raw = _raw_catalog()
+    offenders = []
+    for role in ROLE_PREFERENCES:
+        rec = resolver.resolve_role(role, profile="qwen", **envelope)
+        entry = (raw.get(rec.selected.id, {}).get("app_compatibility") or {}).get(
+            "agent_viability"
+        )
+        status = entry.get("status") if isinstance(entry, dict) else None
+        if status and status != "verified":
+            offenders.append((role, rec.selected.id, status))
+    assert not offenders, f"{label}: {offenders}"
+
+
+def test_agent_viability_filter_does_not_collapse_the_roles(
+    resolver: OdsResolver,
+) -> None:
+    """The filter must not trade D-916's degeneracy for a new one.
+
+    Requiring a *verified* status (only 3 of 52 records have one) would do
+    exactly that, which is why `is_agent_viable` treats untested as allowed.
+    """
+    picks = {
+        role: resolver.resolve_role(role, profile="qwen", **RTX_5090).selected.id
+        for role in ROLE_PREFERENCES
+    }
+    assert len(set(picks.values())) >= 4, picks
+
+
+def test_untested_models_are_allowed_only_explicit_failures_are_not() -> None:
+    from adk.ods.resolver import agent_viability, is_agent_viable
+
+    assert is_agent_viable({}) is True                      # never tested
+    assert is_agent_viable({"_app_compatibility": {}}) is True
+    assert is_agent_viable(
+        {"_app_compatibility": {"agent_viability": {"status": "verified"}}}
+    ) is True
+    assert is_agent_viable(
+        {"_app_compatibility": {"agent_viability": {"status": "not_agent_viable"}}}
+    ) is False
+    assert agent_viability({"_app_compatibility": {"agent_viability": {"status": "x"}}}) == "x"
+    assert agent_viability({"_app_compatibility": {"agent_viability": "junk"}}) is None
+
+
+def test_app_compatibility_reaches_the_typed_record(resolver: OdsResolver) -> None:
+    """It was ALWAYS empty: upstream's normalize_model() drops the key, and
+    _to_record read the plain name. A silent no-op on a field the filter needs.
+    """
+    seen = 0
+    for role in ROLE_PREFERENCES:
+        rec = resolver.resolve_role(role, profile="qwen", **RTX_5090)
+        if rec.selected.app_compatibility:
+            seen += 1
+    assert seen > 0, "app_compatibility is empty on every record — re-join broken"
+
+
+def test_opting_out_restores_the_unfiltered_pick(resolver: OdsResolver) -> None:
+    """The filter is a default, not a cage — and the opt-out must really differ."""
+    on = resolver.resolve_role("fast", profile="qwen", **RTX_5090).selected.id
+    off = resolver.resolve_role(
+        "fast", profile="qwen", require_agent_viable=False, **RTX_5090
+    ).selected.id
+    assert on != off, (on, off)

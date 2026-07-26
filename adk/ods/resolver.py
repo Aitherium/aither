@@ -75,6 +75,38 @@ ROLE_PREFERENCES: dict[str, RolePreference] = {
     "chat": RolePreference(("Chat", "Balanced", "General")),
 }
 
+
+def agent_viability(model: dict[str, Any]) -> str | None:
+    """Upstream's recorded `agent_viability` status for a model, or None.
+
+    The catalog's `app_compatibility` block is a real evidence trail: each entry
+    carries a status, a reason, and a `fleet-test/runs/...` path from an actual
+    release probe. 22 of the 52 vendored models are marked `not_agent_viable`
+    (e.g. Phi-4 Mini: "ODS Talk release probe failed exact verification after a
+    successful load"). None means upstream never tested it — unknown, not bad.
+    """
+    compat = model.get("_app_compatibility") or model.get("app_compatibility") or {}
+    if not isinstance(compat, dict):
+        return None
+    entry = compat.get("agent_viability")
+    if not isinstance(entry, dict):
+        return None
+    status = entry.get("status")
+    return str(status) if status else None
+
+
+def is_agent_viable(model: dict[str, Any]) -> bool:
+    """False ONLY when upstream explicitly recorded a non-verified status.
+
+    Untested models pass. This is deliberately not "verified-only": just 3 of 52
+    records carry a verified agent_viability, so requiring it would collapse
+    every role on every machine onto the same handful of models — trading one
+    degenerate answer (D-916) for another.
+    """
+    status = agent_viability(model)
+    return status is None or status == "verified"
+
+
 EMBEDDING_ROLE_UNSUPPORTED = (
     "The ODS catalog is a generation-model library — it contains no embedding "
     "models (no record carries an embedding specialty). Resolve embeddings "
@@ -123,7 +155,11 @@ def _to_record(model: dict[str, Any]) -> ModelRecord:
         llm_model_name=model["llm_model_name"],
         install_recommendation=model["install_recommendation"],
         runtime_profiles=model.get("runtime_profiles") or [],
-        app_compatibility=model.get("app_compatibility") or [],
+        # Re-joined by OdsResolver.models — upstream's normalize_model() drops
+        # it, so reading the plain key here yielded {} for every record.
+        app_compatibility=model.get("_app_compatibility")
+        or model.get("app_compatibility")
+        or {},
         # Annotated onto the normalised dict by OdsResolver.models — upstream's
         # normalize_model() drops it, but role selection needs it.
         tokens_per_sec_estimate=float(model.get("_tokens_per_sec_estimate") or 0.0),
@@ -164,15 +200,21 @@ class OdsResolver:
             # Re-join the fields upstream's normalize_model() drops but role
             # selection needs. Annotated with a leading underscore so they can
             # never be confused with an upstream-guaranteed key.
-            tps_by_id = {
-                str(raw.get("id")): raw.get("tokens_per_sec_estimate")
+            by_id = {
+                str(raw.get("id")): raw
                 for raw in self.catalog.get("models", [])
                 if raw.get("id")
             }
             for model in self._models:
+                raw = by_id.get(model["id"]) or {}
                 model["_tokens_per_sec_estimate"] = float(
-                    tps_by_id.get(model["id"]) or 0.0
+                    raw.get("tokens_per_sec_estimate") or 0.0
                 )
+                # app_compatibility carries upstream's REAL fleet-test evidence
+                # per model per app. `_to_record` read it straight off the
+                # normalised dict, where it never exists, so ModelRecord's
+                # app_compatibility was silently always empty.
+                model["_app_compatibility"] = raw.get("app_compatibility") or {}
         return self._models
 
     def _envelope(
@@ -279,6 +321,7 @@ class OdsResolver:
         host_arch: str = "x86_64",
         max_size_mb: float | None = None,
         installable_only: bool = False,
+        require_agent_viable: bool = True,
     ) -> OdsRecommendation:
         """Resolve the best model for a ROLE on the given hardware envelope.
 
@@ -312,29 +355,57 @@ class OdsResolver:
             backend, memory_type, vram_mb, ram_gb, profile, tier,
             host_arch, max_size_mb, installable_only,
         )
-        selected, matched_specialty = self._pick_for_role(env, preference)
+        selected, matched_specialty, viability_note = self._pick_for_role(
+            env, preference, require_agent_viable
+        )
         return self._finalize(
-            env, selected, backend, role=role_key, matched_specialty=matched_specialty
+            env, selected, backend, role=role_key,
+            matched_specialty=matched_specialty, viability_note=viability_note,
         )
 
     @staticmethod
     def _pick_for_role(
-        env: _Envelope, preference: RolePreference
-    ) -> tuple[dict[str, Any], str | None]:
-        """Best feasible model for a role preference, or upstream's top pick."""
+        env: _Envelope, preference: RolePreference, require_agent_viable: bool = True
+    ) -> tuple[dict[str, Any], str | None, str | None]:
+        """Best feasible model for a role, preferring agent-viable candidates.
+
+        ADK is an AGENT SDK, so a model upstream's own release probes recorded as
+        `not_agent_viable` is the wrong answer even when it fits and matches the
+        specialty. Measured before this filter existed: 14 role picks across six
+        realistic envelopes landed on such a model.
+
+        The filter narrows within `env.ranked` — it never widens it — and if it
+        would empty the candidate set the unfiltered pick is returned WITH a note,
+        so a degraded answer is labelled rather than silent.
+        """
+        pool = env.ranked
+        note = None
+        if require_agent_viable:
+            viable = [m for m in pool if is_agent_viable(m)]
+            if viable:
+                pool = viable
+            else:
+                note = (
+                    "no agent-viable model fits this envelope; kept upstream's "
+                    "pick despite a recorded non-viable status"
+                )
+
+        def _from(candidates: list[dict[str, Any]], specialty: str) -> dict[str, Any]:
+            if preference.objective == "context":
+                # Already in upstream rank order and max() is stable, so equal
+                # context lengths keep upstream's preference.
+                return max(candidates, key=lambda m: int(m.get("context_length") or 0))
+            return candidates[0]
+
         for specialty in preference.specialties:
             group = [
-                m for m in env.ranked
+                m for m in pool
                 if str(m.get("specialty") or "").lower() == specialty.lower()
             ]
             if not group:
                 continue
-            if preference.objective == "context":
-                # `group` is already in upstream rank order and max() is stable,
-                # so equal context lengths keep upstream's preference.
-                return max(group, key=lambda m: int(m.get("context_length") or 0)), specialty
-            return group[0], specialty
-        return env.ranked[0], None
+            return _from(group, specialty), specialty, note
+        return pool[0], None, note
 
     def _finalize(
         self,
@@ -343,6 +414,7 @@ class OdsResolver:
         backend: str,
         role: str | None,
         matched_specialty: str | None = None,
+        viability_note: str | None = None,
     ) -> OdsRecommendation:
         """Apply upstream's arch policy to `selected` and build the result.
 
@@ -393,6 +465,17 @@ class OdsResolver:
                     f"model fits {env.capacity_gb:.1f}GB — fell back to the overall "
                     "best-fit pick."
                 )
+            if viability_note:
+                reason = f"{reason} WARNING: {viability_note}."
+            else:
+                status = agent_viability(selected)
+                if status and status != "verified":
+                    # Reachable only via the arch-policy substitution, which
+                    # overrides the role pick for hardware-safety reasons.
+                    reason = (
+                        f"{reason} NOTE: upstream records agent_viability="
+                        f"'{status}' for this model."
+                    )
 
         logger.debug(
             "ODS resolve%s: backend=%s capacity=%.1fGB profile=%s tier=%s -> %s (policy=%s)",
