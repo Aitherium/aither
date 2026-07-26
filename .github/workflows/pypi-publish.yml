@@ -17,8 +17,23 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install build tools
-        run: pip install build
+      - name: Install package + test tools
+        run: |
+          pip install build
+          pip install -e ".[dev]" || pip install -e .
+          pip install pytest pytest-asyncio pytest-timeout respx
+      - name: Run the test suite before publishing
+        # A RED CI has never blocked a publish here: CI runs on push to main,
+        # this workflow runs on `release: published`, and nothing connects them.
+        # 2.41.0 and 2.42.0 both shipped to PyPI while
+        # tests/test_tls_verify.py::test_no_bare_verify_false_in_adk_package was
+        # failing on main — a call with TLS verification disabled went out twice.
+        # The moat guard below inspects the artifact; it does not run a test.
+        # adk/ods/tests/ is included explicitly: the vendored ODS resolver and
+        # hardware classifier ship in this package and their differential tests
+        # against the vendored upstream scripts are the only thing that catches
+        # drift from upstream selection semantics.
+        run: python -m pytest tests/ adk/ods/tests/ -q --timeout=180
       - name: Build package
         run: python -m build
       - name: Moat guard (inspect built wheel + sdist)
