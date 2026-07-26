@@ -271,14 +271,15 @@ ruff check adk/test_landmark_map.py
 
 ## Future: Moving to Core
 
-When Phase 2/3 integrate into Genesis:
+When Phase 2/3 integrate into Genesis. This describes a change inside the
+AitherOS server-side core, not anything you run from this package — the import
+below is server-side and will not resolve in an `aither-adk` install.
 
 ```python
-# Before (Phase 1 — aither-adk)
+# Before (Phase 1 — aither-adk, what this package ships)
 from adk.landmark_map import hints_for
 
-# After (Phase 2+ — core library)
-# File: AitherOS/lib/cognitive/landmark_map.py (same code)
+# After (Phase 2+ — AitherOS core library, server-side; same code)
 from lib.cognitive.landmark_map import hints_for
 ```
 

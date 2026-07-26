@@ -259,9 +259,15 @@ globals → it treats `request` as a required **query param** → every call 422
 
 ## 8. Worked example
 
-`.PRODUCTS/deep-research-agent/` is a complete, verified reference: a sign-in-free deep-research
-analyst pack (BYO Anthropic/OpenAI/DeepSeek/Ollama key) that searches → reads → cites → writes
-PDF/DOCX/MD reports, with a live token used/saved meter. It demonstrates every section here:
-the pack layout (§2), RAG-grounded never-forget memory (§3, proven across a restart), default-deny
-tools with arg coercion (§4), the `LedgerRouter` (§5), and the `chat()` + traced-execute server (§6).
-Read `serve.py` and `pack/deep-research/brain_pack.yaml` as the canonical template.
+`adk/templates/deep-research/` — shipped inside the package, so it is already on your disk
+after `pip install aither-adk` — is a complete, verified reference: a sign-in-free
+deep-research analyst pack (BYO Anthropic/OpenAI/DeepSeek/Ollama key) that searches → reads
+→ cites → writes PDF/DOCX/MD reports, with a live token used/saved meter. It demonstrates
+every section here: the pack layout (§2), RAG-grounded never-forget memory (§3, proven
+across a restart), default-deny tools with arg coercion (§4), the `LedgerRouter` (§5), and
+the `chat()` + traced-execute server (§6).
+
+Read these two as the canonical template:
+
+- `adk/templates/deep-research/serve.py`
+- `adk/templates/deep-research/pack/deep-research/brain_pack.yaml`
