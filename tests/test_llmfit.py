@@ -354,9 +354,19 @@ class TestLLMFitClientRecommendConfig:
         for tier in generation_tiers:
             assert config[tier]["provider"] == "ods"
         # CONTRACT CHANGE (D-916): the four generation tiers must not collapse
-        # to one model — calling resolve() once per tier used to return the
-        # SAME pick five times.
-        assert len({config[t]["model"] for t in generation_tiers}) >= 3, config
+        # to ONE model — calling resolve() once per tier used to return the same
+        # pick every time.
+        #
+        # The bound is >= 2, not >= 3, because this test's envelope is WHATEVER
+        # MACHINE IT RUNS ON. A GitHub runner (2 cores, 7GB RAM, no GPU) has a
+        # ~3GB envelope in which only two catalog models genuinely fit, so roles
+        # converging there is CORRECT behaviour, not the regression. A >= 3 bound
+        # passed on this 32GB workstation and failed on the runner — an
+        # environment assumption, not a contract. The strong per-envelope
+        # assertions live in adk/ods/tests/test_hardware_and_roles.py, where the
+        # hardware is a fixture rather than an accident.
+        distinct = {config[t]["model"] for t in generation_tiers}
+        assert len(distinct) >= 2, config
         # CONTRACT CHANGE: the ODS catalog holds no embedding models, so this
         # tier is answered by the SDK's canonical embedder, not by a chat model
         # wearing an "embedding" label.
@@ -692,3 +702,49 @@ class TestLlmRouterTierResolution:
         # D-916: small/medium/large map to fast/balanced/reasoning, which used
         # to be the same model three times.
         assert len(set(resolved.values())) >= 2, resolved
+
+
+class TestHardwareScoredProviderScope:
+    """A local GGUF id must never be handed to a cloud provider.
+
+    `LLMRouter.model_for_effort()` applied the ODS/llmfit pick to EVERY
+    provider. That was invisible while a dead `is_available()` gate made the
+    path unreachable; removing the gate made an `openai` router start answering
+    `qwen2.5-1.5b-instruct`, which is a guaranteed 404 against the OpenAI API.
+    Caught by the public repo's CI, not by the blast radius I had grepped.
+    """
+
+    def _fresh_router(self, **kwargs):
+        import adk.llm as llm_mod
+
+        llm_mod._llmfit_models = None
+        llm_mod._llmfit_checked = False
+        return llm_mod, llm_mod.LLMRouter(**kwargs)
+
+    def test_cloud_providers_keep_their_own_catalog(self):
+        _, router = self._fresh_router(provider="openai", api_key="sk-test")
+        assert router.model_for_effort(1) == "gpt-4o-mini"
+        assert router.model_for_effort(9) == "o1"
+
+        _, router = self._fresh_router(provider="anthropic", api_key="sk-test")
+        assert router.model_for_effort(1).startswith("claude-")
+
+    def test_local_providers_do_get_the_hardware_scored_pick(self):
+        """POSITIVE half — the feature must not be scoped into inertness."""
+        llm_mod, router = self._fresh_router(provider="ollama")
+        picked = router.model_for_effort(1)
+        static_default = llm_mod._EFFORT_MODELS["ollama"]["small"]
+        assert picked, "ollama resolved nothing"
+        # It must be a REAL resolver answer, not the static table.
+        assert picked != static_default, (
+            "ollama fell back to the static default — the resolver is inert again"
+        )
+
+    def test_scope_set_contains_only_local_providers(self):
+        import adk.llm as llm_mod
+
+        assert "openai" not in llm_mod._HARDWARE_SCORED_PROVIDERS
+        assert "anthropic" not in llm_mod._HARDWARE_SCORED_PROVIDERS
+        # "dual" is deliberately excluded: only its small tier is local.
+        assert "dual" not in llm_mod._HARDWARE_SCORED_PROVIDERS
+        assert "ollama" in llm_mod._HARDWARE_SCORED_PROVIDERS

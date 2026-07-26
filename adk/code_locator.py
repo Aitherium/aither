@@ -47,10 +47,27 @@ def _terms(query: str) -> list[str]:
 
 
 def _get_json(url: str, timeout: float = 6.0) -> Optional[Any]:
-    """GET json; None on ANY failure (down, TLS, 404, junk). Never raises."""
+    """GET json; None on ANY failure (down, TLS, 404, junk). Never raises.
+
+    Verification goes through `tls_verify()`, which trusts the AitherNet CA
+    bundle when present rather than disabling verification. A bare
+    `verify=False` here was silently MITM-exposing every codegraph/repowise
+    query — and it is what the repo's own TLS gate
+    (`tests/test_tls_verify.py::test_no_bare_verify_false_in_adk_package`)
+    blocks, which is why public CI has been red since 2.41.0.
+
+    The import is local and guarded so this module keeps its "no AitherOS
+    imports, never raises" contract: if `_tls` is somehow unavailable, fall back
+    to plain verification (True) — the SECURE default, never False.
+    """
     try:
         import httpx
-        r = httpx.get(url, timeout=timeout, verify=False)
+        try:
+            from ._tls import tls_verify
+            verify = tls_verify()
+        except Exception:  # noqa: BLE001
+            verify = True
+        r = httpx.get(url, timeout=timeout, verify=verify)
         if r.status_code != 200:
             return None
         return r.json()

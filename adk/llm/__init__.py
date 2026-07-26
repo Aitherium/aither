@@ -98,6 +98,14 @@ _EFFORT_MODELS = {
     },
 }
 
+# Providers that serve models from the LOCAL machine, where an ODS
+# hardware-scored pick is meaningful. Cloud providers keep their static table:
+# their catalogs are fixed and unrelated to this box's VRAM, and a local GGUF id
+# sent to a cloud endpoint is a guaranteed 404. "dual" is excluded on purpose —
+# only its `small` tier is local, so a single tier-wide substitution would break
+# its remote tiers.
+_HARDWARE_SCORED_PROVIDERS = frozenset({"ollama", "llamacpp", "vllm", "local"})
+
 # Default inference URL — mcp.aitherium.com hosts the OpenAI-compatible
 # /v1/chat/completions endpoint with ACTA auth and tenant scoping.
 _GATEWAY_INFERENCE_URL = "https://mcp.aitherium.com/v1"
@@ -976,10 +984,16 @@ class LLMRouter:
             if profile_map.get(tier):
                 return profile_map[tier]
 
-        # Try llmfit hardware-scored recommendations (cached after first call)
-        llmfit_model = self._llmfit_model_for_tier(tier)
-        if llmfit_model:
-            return llmfit_model
+        # Hardware-scored recommendation — LOCAL providers only. The ODS catalog
+        # is a library of local GGUF/Ollama models, so handing `qwen2.5-1.5b`
+        # to the OpenAI or Anthropic API is a guaranteed 404. This path used to
+        # be unreachable (a dead is_available() gate meant it always returned
+        # None), which hid the fact that it applied to EVERY provider; removing
+        # that gate made a cloud router start answering with local model ids.
+        if self._provider_name in _HARDWARE_SCORED_PROVIDERS:
+            llmfit_model = self._llmfit_model_for_tier(tier)
+            if llmfit_model:
+                return llmfit_model
 
         # Fall back to static provider defaults
         models = _EFFORT_MODELS.get(self._provider_name, {})
