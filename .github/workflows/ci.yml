@@ -26,4 +26,10 @@ jobs:
         run: python scripts/check_exports.py
 
       - name: Run tests
-        run: python -m pytest tests/ -v --timeout=30
+        # adk/ods/tests/ is included because the vendored ODS model catalog,
+        # selection algorithm and hardware classifier SHIP in this package, and
+        # their differential tests execute the vendored upstream scripts as the
+        # reference. Without them a re-vendor can silently change which model a
+        # user's hardware resolves to. The per-test timeout is raised from 30s
+        # because those differentials spawn a subprocess per case.
+        run: python -m pytest tests/ adk/ods/tests/ -v --timeout=180
