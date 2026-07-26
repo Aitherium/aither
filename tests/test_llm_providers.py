@@ -197,6 +197,101 @@ class TestOpenAIProvider:
         assert len(resp.tool_calls) == 1
         assert resp.tool_calls[0].arguments == {"expr": "2+2"}
 
+    # ── thinking-model empty-content rescue ──
+    # Live signature (qwen3.6-27B-NVFP4 on a DGX Spark, 2026-07-26): the whole
+    # max_tokens budget is spent in the reasoning channel and `content` comes
+    # back null. Without the rescue these are successful 200s with empty answers.
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_chat_rescues_reasoning_when_content_null(self):
+        respx.post("https://api.openai.com/v1/chat/completions").mock(
+            return_value=httpx.Response(200, json={
+                "choices": [{
+                    "message": {"role": "assistant", "content": None,
+                                "reasoning": "the answer is 4"},
+                    "finish_reason": "length",
+                }],
+                "model": "qwen36-27b-dgx",
+                "usage": {"prompt_tokens": 8, "completion_tokens": 200, "total_tokens": 208},
+            })
+        )
+        provider = OpenAIProvider(api_key="sk-test")
+        resp = await provider.chat([Message(role="user", content="2+2?")])
+        assert resp.content == "the answer is 4"
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_chat_rescues_legacy_reasoning_content_field(self):
+        """vLLM < 0.8 and the DeepSeek API name the field `reasoning_content`."""
+        respx.post("https://api.openai.com/v1/chat/completions").mock(
+            return_value=httpx.Response(200, json={
+                "choices": [{
+                    "message": {"role": "assistant", "content": "",
+                                "reasoning_content": "legacy channel"},
+                    "finish_reason": "length",
+                }],
+                "model": "deepseek-reasoner",
+                "usage": {"prompt_tokens": 3, "completion_tokens": 50, "total_tokens": 53},
+            })
+        )
+        provider = OpenAIProvider(api_key="sk-test")
+        resp = await provider.chat([Message(role="user", content="hi")])
+        assert resp.content == "legacy channel"
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_chat_real_content_wins_over_reasoning(self):
+        """Guards the Kimi trap: never let reasoning displace a real answer."""
+        respx.post("https://api.openai.com/v1/chat/completions").mock(
+            return_value=httpx.Response(200, json={
+                "choices": [{
+                    "message": {"role": "assistant", "content": "4",
+                                "reasoning": "let me think... 2+2..."},
+                    "finish_reason": "stop",
+                }],
+                "model": "qwen36-27b-dgx",
+                "usage": {"prompt_tokens": 8, "completion_tokens": 30, "total_tokens": 38},
+            })
+        )
+        provider = OpenAIProvider(api_key="sk-test")
+        resp = await provider.chat([Message(role="user", content="2+2?")])
+        assert resp.content == "4"
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_chat_stream_flushes_reasoning_when_no_content(self):
+        sse = (
+            'data: {"choices":[{"delta":{"reasoning":"thinking "},"finish_reason":null}],"model":"q"}\n\n'
+            'data: {"choices":[{"delta":{"reasoning":"hard"},"finish_reason":null}],"model":"q"}\n\n'
+            'data: {"choices":[{"delta":{},"finish_reason":"length"}],"model":"q"}\n\n'
+            'data: [DONE]\n\n'
+        )
+        respx.post("https://api.openai.com/v1/chat/completions").mock(
+            return_value=httpx.Response(200, text=sse)
+        )
+        provider = OpenAIProvider(api_key="sk-test")
+        chunks = [c async for c in provider.chat_stream([Message(role="user", content="hi")])]
+        assert "".join(c.content for c in chunks) == "thinking hard"
+        assert any(c.done for c in chunks)
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_chat_stream_does_not_duplicate_when_content_present(self):
+        """Reasoning must be dropped, not appended, once real content streamed."""
+        sse = (
+            'data: {"choices":[{"delta":{"reasoning":"thinking"},"finish_reason":null}],"model":"q"}\n\n'
+            'data: {"choices":[{"delta":{"content":"4"},"finish_reason":null}],"model":"q"}\n\n'
+            'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"model":"q"}\n\n'
+            'data: [DONE]\n\n'
+        )
+        respx.post("https://api.openai.com/v1/chat/completions").mock(
+            return_value=httpx.Response(200, text=sse)
+        )
+        provider = OpenAIProvider(api_key="sk-test")
+        chunks = [c async for c in provider.chat_stream([Message(role="user", content="hi")])]
+        assert "".join(c.content for c in chunks) == "4"
+
     @respx.mock
     @pytest.mark.asyncio
     async def test_list_models(self):
@@ -522,3 +617,59 @@ class TestTransientRetry:
             with pytest.raises(httpx.HTTPStatusError) as ei:
                 await p.chat([Message(role="user", content="hi")])
         assert "overloaded" in str(ei.value)
+
+
+# ─── thinking-mode wiring (D-1317) ───
+
+class TestChatTemplateKwargsWiring:
+    """Every OpenAIProvider construction must carry the per-model
+    chat_template_kwargs default.
+
+    qwen3.6 with thinking ENABLED burns its whole budget in the reasoning
+    channel and returns content=None. Measured live 2026-07-26 against
+    qwen3.6-27B-NVFP4 on a DGX Spark: without the kwarg, max_tokens=220 gave
+    finish_reason="length", 220 tokens, content None; WITH it, the same prompt
+    returned finish_reason="stop" in 42 tokens with a clean 253-char answer.
+
+    Only 2 of the 7 construction sites passed it — notably NOT the DGX
+    auto-detect path — so adk talking straight to the DGX got empty answers.
+    An AST check (not a grep) so a new construction cannot silently omit it.
+    """
+
+    def test_every_openai_provider_construction_passes_ctk_by_model(self):
+        import ast
+        import pathlib
+
+        src_path = pathlib.Path(__file__).resolve().parents[1] / "adk" / "llm" / "__init__.py"
+        tree = ast.parse(src_path.read_text(encoding="utf-8"))
+
+        missing = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            fn = node.func
+            name = getattr(fn, "id", None) or getattr(fn, "attr", None)
+            if name != "OpenAIProvider":
+                continue
+            if not any(kw.arg == "ctk_by_model" for kw in node.keywords):
+                missing.append(node.lineno)
+
+        assert not missing, (
+            f"OpenAIProvider constructed without ctk_by_model at line(s) {missing} "
+            f"in {src_path.name} — a qwen model reached through that path will run "
+            f"with thinking ON and return empty content."
+        )
+
+    def test_default_ctk_disables_thinking_for_qwen(self):
+        from adk.llm import _DEFAULT_CTK_BY_MODEL
+
+        assert _DEFAULT_CTK_BY_MODEL.get("qwen", {}).get("enable_thinking") is False
+
+    def test_resolve_ctk_matches_the_live_dgx_model_id(self):
+        """The served id is 'qwen36-27b-dgx'; matching is substring + case-insensitive."""
+        from adk.llm import _DEFAULT_CTK_BY_MODEL
+        from adk.llm.openai_compat import OpenAIProvider
+
+        p = OpenAIProvider(api_key="x", ctk_by_model=_DEFAULT_CTK_BY_MODEL)
+        assert p._resolve_ctk("qwen36-27b-dgx") == {"enable_thinking": False}
+        assert p._resolve_ctk("Qwen3.6-27B-NVFP4") == {"enable_thinking": False}

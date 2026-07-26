@@ -303,7 +303,8 @@ class LLMRouter:
                 url = vllm_env.rstrip("/")
                 if not url.endswith("/v1"):
                     url = f"{url}/v1"
-                p = OpenAIProvider(base_url=url, api_key="not-needed", default_model=self._model or "")
+                p = OpenAIProvider(base_url=url, api_key="not-needed", default_model=self._model or "",
+                                   ctk_by_model=_DEFAULT_CTK_BY_MODEL)
                 if await p.health_check():
                     try:
                         models = await p.list_models()
@@ -333,6 +334,7 @@ class LLMRouter:
                     base_url=url,
                     api_key="not-needed",
                     default_model=self._model or "",
+                    ctk_by_model=_DEFAULT_CTK_BY_MODEL,
                 )
                 if await p.health_check():
                     # Discover what model is loaded
@@ -355,7 +357,8 @@ class LLMRouter:
                 dgx_base = dgx_url.rstrip("/")
                 if not dgx_base.endswith("/v1"):
                     dgx_base = f"{dgx_base}/v1"
-                p = OpenAIProvider(base_url=dgx_base, api_key="not-needed", default_model=self._model or "")
+                p = OpenAIProvider(base_url=dgx_base, api_key="not-needed", default_model=self._model or "",
+                                   ctk_by_model=_DEFAULT_CTK_BY_MODEL)
                 if await p.health_check():
                     try:
                         models = await p.list_models()
@@ -410,6 +413,7 @@ class LLMRouter:
                 base_url=desktop_url,
                 api_key=token or "not-needed",
                 default_model=self._model or "",
+                ctk_by_model=_DEFAULT_CTK_BY_MODEL,
             )
             if await p.health_check():
                 try:
@@ -731,6 +735,7 @@ class LLMRouter:
                     base_url=gateway_url,
                     api_key=gateway_key,
                     default_model=self._model or "aither-orchestrator",
+                    ctk_by_model=_DEFAULT_CTK_BY_MODEL,
                 )
                 if await p.health_check():
                     self._provider_name = "gateway"

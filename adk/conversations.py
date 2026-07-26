@@ -25,6 +25,13 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("adk.conversations")
 
+# Optional selfgraph integration (no-op if unavailable or disabled)
+try:
+    from adk.selfgraph import current_run, ProvNodeType, make_node_id
+    _SELFGRAPH_AVAILABLE = True
+except ImportError:
+    _SELFGRAPH_AVAILABLE = False
+
 _LRU_MAX = 50  # Max conversations in LRU cache
 
 
@@ -116,6 +123,31 @@ class ConversationStore:
         """
         self._sync_hook = hook
 
+    def _record_conversation_selfgraph(self, conv: Conversation) -> None:
+        """Record conversation as a SOURCE node to an active run's graph (best-effort).
+
+        Creates a SOURCE node with uri=conversation://<session_id> so claims can
+        later cite the conversation they came from. Does NOT record message
+        content (graph is durable and replicated; conversations may not be).
+        """
+        if not _SELFGRAPH_AVAILABLE:
+            return
+
+        try:
+            recorder = current_run()
+            if not recorder:
+                return  # No active run to record to
+
+            # Create SOURCE node for the conversation (uri, not content)
+            uri = f"conversation://{conv.session_id}"
+            source_node = recorder.source(
+                uri,
+                title=f"Agent: {conv.agent_name}" if conv.agent_name else "",
+            )
+            logger.debug("recorded conversation source %s to graph", uri)
+        except Exception:  # noqa: BLE001 — selfgraph recording is best-effort
+            pass
+
     def _save(self, conv: Conversation) -> None:
         """Save a conversation to disk and trigger optional sync hook."""
         path = self._path(conv.session_id)
@@ -131,6 +163,9 @@ class ConversationStore:
             path.write_text(json.dumps(data, indent=2), encoding="utf-8")
         except Exception as e:
             logger.error("Failed to save conversation %s: %s", conv.session_id, e)
+
+        # Record to selfgraph if a run is active (best-effort)
+        self._record_conversation_selfgraph(conv)
 
         # Fire-and-forget async sync hook (if registered)
         if self._sync_hook:
@@ -570,3 +605,39 @@ def get_conversation_store() -> ConversationStore:
     if _store is None:
         _store = ConversationStore()
     return _store
+
+
+def start_selfgraph_drainer() -> Optional[Any]:
+    """Start the background drainer for spooled graph updates.
+
+    Call this in long-lived processes (servers, daemons) to periodically
+    publish graph updates from the spool to the platform. Short-lived CLI
+    invocations should NOT call this.
+
+    Returns:
+        BackgroundDrainer instance (started), or None if selfgraph unavailable.
+        Caller can call .stop() to gracefully shut down, though it runs daemonized.
+
+    Example::
+
+        # In a server's startup code:
+        drainer = start_selfgraph_drainer()
+        # ... server runs ...
+        # On shutdown (optional, daemon will exit with process):
+        if drainer:
+            drainer.stop()
+    """
+    if not _SELFGRAPH_AVAILABLE:
+        return None
+
+    try:
+        from adk.selfgraph import BackgroundDrainer, Spool
+
+        spool = Spool()
+        drainer = BackgroundDrainer(spool, poll_interval=30.0)
+        drainer.start()
+        logger.info("started background graph drainer")
+        return drainer
+    except Exception as e:  # noqa: BLE001 — drainer startup is best-effort
+        logger.warning("failed to start background drainer: %s", e)
+        return None

@@ -11260,6 +11260,11 @@ def _register_commands(sub):
     cl_spawn_p.add_argument("--timeout", type=int, default=0, help="Run timeout seconds (default 600)")
     cl_spawn_p.add_argument("--budget-usd", type=float, default=0, help="Max spend for this run")
     cl_spawn_p.add_argument("--account", default="", help="Saved claude-account profile for this run")
+    cl_spawn_p.add_argument(
+        "--resume",
+        default="",
+        help="Continue an existing session by id (requires --cwd, excludes --account)",
+    )
     cl_spawn_p.add_argument("--goal", default="", help="Goal id to attribute this run to")
     cl_spawn_p.add_argument("--url", default="", help="Runner URL (default http://127.0.0.1:8360)")
     cl_spawn_p.add_argument("--token", default="", help="Bearer token")
@@ -12593,6 +12598,54 @@ def _register_commands(sub):
     wm_reset_p.add_argument("agent", help="Agent ID (e.g., agent.aither)")
     wm_reset_p.add_argument("--yes", action="store_true", help="Skip confirmation prompt")
 
+    # adk graph — provenance graph CLI: status, drain, claim, ground, context, leaves, runs, show, purge
+    graph_p = sub.add_parser("graph", help="Provenance graph management (status, drain, claim, ground, context, leaves, lineage, runs, show, purge)")
+    graph_sub = graph_p.add_subparsers(dest="graph_command")
+
+    gs_status_p = graph_sub.add_parser("status", help="Show spool stats + platform health")
+    gs_status_p.add_argument("--json", action="store_true", help="JSON output for scripting")
+
+    gs_drain_p = graph_sub.add_parser("drain", help="Force drain pending spool entries")
+    gs_drain_p.add_argument("--limit", type=int, default=100, help="Max entries to drain (default: 100)")
+    gs_drain_p.add_argument("--json", action="store_true", help="JSON output")
+
+    gs_claim_p = graph_sub.add_parser("claim", help="Record a claim from the shell")
+    gs_claim_p.add_argument("statement", help="Claim statement text")
+    gs_claim_p.add_argument("--source", action="append", dest="source", help="Source URI (repeatable)")
+    gs_claim_p.add_argument("--inference", action="store_true", help="Mark as inferred (requires --derived-from)")
+    gs_claim_p.add_argument("--derived-from", action="append", dest="derived_from", help="Source node id (repeatable, required if --inference)")
+    gs_claim_p.add_argument("--json", action="store_true", help="JSON output")
+
+    gs_ground_p = graph_sub.add_parser("ground", help="Check platform grounding of a statement")
+    gs_ground_p.add_argument("statement", help="Statement to ground")
+    gs_ground_p.add_argument("--json", action="store_true", help="JSON output")
+
+    gs_context_p = graph_sub.add_parser("context", help="Fetch bounded context subgraph for a task")
+    gs_context_p.add_argument("task", help="Task description")
+    gs_context_p.add_argument("--hops", type=int, default=2, help="Graph traversal depth (default: 2)")
+    gs_context_p.add_argument("--budget", type=int, default=4000, help="Max tokens in response (default: 4000)")
+    gs_context_p.add_argument("--json", action="store_true", help="JSON output")
+
+    gs_leaves_p = graph_sub.add_parser("leaves", help="Fetch leaf/frontier nodes (unexplored)")
+    gs_leaves_p.add_argument("--limit", type=int, default=50, help="Max leaves (default: 50)")
+    gs_leaves_p.add_argument("--json", action="store_true", help="JSON output")
+
+    gs_lineage_p = graph_sub.add_parser("lineage", help="Show ancestry path for a node")
+    gs_lineage_p.add_argument("node_id", help="Node ID")
+    gs_lineage_p.add_argument("--json", action="store_true", help="JSON output")
+
+    gs_runs_p = graph_sub.add_parser("runs", help="List recent runs from local spool")
+    gs_runs_p.add_argument("--limit", type=int, default=50, help="Max runs (default: 50)")
+    gs_runs_p.add_argument("--json", action="store_true", help="JSON output")
+
+    gs_show_p = graph_sub.add_parser("show", help="Show one node with its edges")
+    gs_show_p.add_argument("node_id", help="Node ID")
+    gs_show_p.add_argument("--json", action="store_true", help="JSON output")
+
+    gs_purge_p = graph_sub.add_parser("purge", help="Purge old sent entries from spool")
+    gs_purge_p.add_argument("--older-than", type=int, default=7, help="Days old (default: 7)")
+    gs_purge_p.add_argument("--json", action="store_true", help="JSON output")
+
 
 # ── Forge subcommand handler ─────────────────────────────────────────────
 
@@ -13150,6 +13203,9 @@ def main():
             sys.exit(1)
     elif args.command == "train":
         sys.exit(_cmd_train(args))
+    elif args.command == "graph":
+        from adk.selfgraph.cli import cmd_graph
+        sys.exit(cmd_graph(args))
     elif args.command is None:
         # No command — default to start
         args.path = "."

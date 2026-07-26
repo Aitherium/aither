@@ -93,6 +93,31 @@ from .base import (
 )
 
 
+def _content_or_reasoning(msg: dict) -> str:
+    """Message text, falling back to the reasoning channel when ``content`` is empty.
+
+    A thinking-tuned model can spend its entire ``max_tokens`` budget inside the
+    reasoning channel and return ``content: null`` with the text in ``reasoning``
+    (renamed from ``reasoning_content`` in vLLM >= 0.8 — both are checked).
+    Measured live 2026-07-26 against qwen3.6-27B-NVFP4 on a DGX Spark: a
+    ``max_tokens=200`` request came back with ``completion_tokens=200``,
+    ``finish_reason="length"`` and ``content=None``.
+
+    Returning "" in that case is a SILENT NO-OP — the caller sees a successful
+    200 with an empty answer and nothing to trace. Preferring the reasoning text
+    over nothing keeps the failure visible and the answer usable. Callers that
+    need the two separated should read ``msg`` directly.
+
+    The durable server-side fix is ``chat_template_kwargs={"enable_thinking":
+    false}`` (see ``_chat_template_kwargs`` / ``ctk_by_model``); this is the
+    fail-safe for every backend that is not configured that way.
+    """
+    content = (msg.get("content") or "").strip()
+    if content:
+        return msg.get("content") or ""
+    return (msg.get("reasoning_content") or msg.get("reasoning") or "") or ""
+
+
 def _read_cached_tokens(usage: dict) -> int:
     """Pull the cached-prompt-token count out of an OpenAI-compatible usage block.
 
@@ -233,7 +258,7 @@ class OpenAIProvider(LLMProvider):
                 arguments=args,
             ))
 
-        content = msg.get("content", "") or ""
+        content = _content_or_reasoning(msg)
 
         # Hermes XML fallback: if model emitted <tool_call> tags in content
         # but no structured tool_calls, parse them from text
@@ -296,20 +321,47 @@ class OpenAIProvider(LLMProvider):
                 if resp.status_code >= 400:
                     await resp.aread()  # body isn't loaded in stream mode until read
                     _ensure_ok(resp)
+                # Streaming counterpart of _content_or_reasoning: a thinking model
+                # can emit only reasoning deltas and never a single content token,
+                # which streams as a perfectly successful EMPTY answer. Buffer the
+                # reasoning and flush it as content iff the stream ends having
+                # produced no content at all.
+                saw_content = False
+                reasoning_buf: list[str] = []
                 async for line in resp.aiter_lines():
                     line = line.strip()
                     if not line or not line.startswith("data: "):
                         continue
                     data_str = line[6:]
                     if data_str == "[DONE]":
+                        if not saw_content and reasoning_buf:
+                            yield StreamChunk(
+                                content="".join(reasoning_buf), model=model
+                            )
                         yield StreamChunk(done=True, model=model)
                         return
                     data = json.loads(data_str)
                     choice = data.get("choices", [{}])[0]
                     delta = choice.get("delta", {})
+                    chunk_content = delta.get("content", "") or ""
+                    if chunk_content:
+                        saw_content = True
+                    else:
+                        _r = delta.get("reasoning_content") or delta.get("reasoning") or ""
+                        if _r:
+                            reasoning_buf.append(_r)
+                    _finished = choice.get("finish_reason") is not None
+                    # Flush the rescue BEFORE the terminal chunk so consumers that
+                    # stop reading at done=True still receive the text.
+                    if _finished and not saw_content and reasoning_buf:
+                        yield StreamChunk(
+                            content="".join(reasoning_buf),
+                            model=data.get("model", model),
+                        )
+                        reasoning_buf.clear()
                     yield StreamChunk(
-                        content=delta.get("content", "") or "",
-                        done=choice.get("finish_reason") is not None,
+                        content=chunk_content,
+                        done=_finished,
                         model=data.get("model", model),
                     )
 
@@ -486,7 +538,7 @@ class OpenAIProvider(LLMProvider):
                     arguments=args,
                 ))
 
-            content = msg.get("content", "") or ""
+            content = _content_or_reasoning(msg)
             cache_read = _read_cached_tokens(usage)
             resp_obj = LLMResponse(
                 content=content,

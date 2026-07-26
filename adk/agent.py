@@ -34,7 +34,43 @@ from adk.trace import get_trace_id
 
 logger = logging.getLogger("adk.agent")
 
+# Baseline tool-loop ceiling. Kept as a module constant because LoopGuard and the
+# tests reference it, but the LIVE ceiling is effort-scaled - see _max_tool_loops().
 _MAX_TOOL_LOOPS = 10
+
+# Effort -> tool-loop ceiling. A flat ceiling of 10 was the single biggest cause of
+# "the agent stopped half-way and confidently summarized what it had": any task
+# needing read -> edit -> test -> fix -> re-test burns 10 iterations before it has
+# finished, and the loop then silently exits into a synthesis call whose output is
+# indistinguishable from a completed turn. Triage turns do not need 10; a genuine
+# effort-9 build task needs far more than 10.
+_EFFORT_LOOP_CEILINGS: tuple[tuple[int, int], ...] = (
+    (2, 4),    # effort 1-2  - triage/status: answer fast or say you cannot
+    (6, 16),   # effort 3-6  - procedural work
+    (10, 40),  # effort 7-10 - architecture / root-cause / multi-file builds
+)
+
+
+def _max_tool_loops(effort: int | None) -> int:
+    """Tool-loop ceiling for an effort tier.
+
+    ``ADK_MAX_TOOL_LOOPS`` overrides absolutely (operators running against a
+    metered backend want a hard cap they control).
+    """
+    override = os.environ.get("ADK_MAX_TOOL_LOOPS", "").strip()
+    if override:
+        try:
+            value = int(override)
+            if value > 0:
+                return value
+        except ValueError:
+            logger.debug("Ignoring non-integer ADK_MAX_TOOL_LOOPS=%r", override)
+
+    tier = effort if isinstance(effort, int) else 5
+    for upper, ceiling in _EFFORT_LOOP_CEILINGS:
+        if tier <= upper:
+            return ceiling
+    return _EFFORT_LOOP_CEILINGS[-1][1]
 
 # Essential tools that must always be available when agent has tools
 _ESSENTIAL_TOOL_NAMES = frozenset({
@@ -1343,17 +1379,55 @@ class AitherAgent:
         except Exception:
             pass
 
+        # Effort-scaled ceiling: a triage turn gets 4 iterations, a deep build
+        # gets 40. The LoopGuard circuit-breaker budget scales with it so a long
+        # legitimate turn is not broken for making many (distinct) tool calls.
+        _loop_ceiling = _max_tool_loops(_effort_int)
         loop_guard = LoopGuard(
             warn_threshold=2,
             block_threshold=4,
-            circuit_break_total=_MAX_TOOL_LOOPS + 5,
+            circuit_break_total=_loop_ceiling + 5,
             effort_level=_effort_int,
         )
         _steered_once = False  # Track turn-1 tool-call steering
         _token_counts_per_iter: list[int] = []  # Gap H: diminishing returns tracking
         _max_output_escalated = False  # Gap 3: track if we already escalated
+        _exhausted_loops = False  # True when we fall out still wanting tools
 
-        for _loop_idx in range(_MAX_TOOL_LOOPS):
+        # Turn token budget (opt-in). When the caller supplies `token_budget`, a
+        # model that stops early with budget to spare gets nudged to keep working
+        # rather than being taken at its word - see adk.context_budget.TurnBudget.
+        # An explicit `token_budget=` always wins; otherwise it is derived from
+        # effort, which grants one only at tiers 7-10 (deep work that is meant to
+        # run to completion). Tiers 1-6 get None and behave exactly as before.
+        from adk.context_budget import TurnBudget, default_token_budget
+        _explicit_budget = kwargs.pop("token_budget", "__unset__")
+        _turn_budget = TurnBudget(
+            _explicit_budget if _explicit_budget != "__unset__"
+            else default_token_budget(_effort_int)
+        )
+        if _turn_budget.enabled:
+            logger.debug(
+                "[REACT] Turn budget %d tokens (effort %s)",
+                _turn_budget.budget, _effort_int,
+            )
+        _tokens_this_turn = 0
+
+        for _loop_idx in range(_loop_ceiling):
+            # Final-iteration warning: tell the model this is its last tool turn so
+            # it spends it on a conclusion rather than starting a new investigation
+            # it will never finish. Without this the loop just stops mid-thought.
+            if _loop_idx == _loop_ceiling - 1 and _loop_idx > 0:
+                messages.append(Message(
+                    role="system",
+                    content=(
+                        "[FINAL TOOL ITERATION] This is your last opportunity to call "
+                        "tools. Make only calls you need to conclude, then give your "
+                        "final answer. If the task is genuinely incomplete, say so "
+                        "explicitly and state what remains - do not present partial "
+                        "work as finished."
+                    ),
+                ))
             # Check if circuit breaker tripped from previous iteration
             if loop_guard.tripped and _effort_int < 4:
                 logger.info("Loop guard circuit breaker tripped — forcing synthesis")
@@ -1376,19 +1450,32 @@ class AitherAgent:
                     _normalized.append(_msg)
             messages = _normalized
 
-            # ── Gap 6: Micro-compaction of old tool results ──
-            # If there are more than 5 tool result messages, clear old ones
-            _tool_msg_indices = [
-                i for i, m in enumerate(messages) if m.role == "tool"
-            ]
-            if len(_tool_msg_indices) > 5:
-                _stale = _tool_msg_indices[:-5]
-                for _idx in _stale:
-                    messages[_idx] = Message(
-                        role="tool",
-                        content="[Prior result cleared]",
-                        tool_call_id=messages[_idx].tool_call_id,
-                    )
+            # ── Context budgeting (was: "Gap 6 micro-compaction") ──
+            # This used to overwrite every tool result older than the last 5 with
+            # "[Prior result cleared]" - count-based amnesia that (a) destroyed
+            # findings instead of compressing them, so the agent re-read files it
+            # had already read and tripped its own LoopGuard duplicate detector,
+            # and (b) ignored the actual context window entirely. Now: token-budgeted
+            # two-layer compaction (snip -> summarize) that preserves the
+            # assistant-tool_calls -> tool-results pairing invariant. See
+            # adk/context_budget.py.
+            from adk.context_budget import maybe_compact
+
+            async def _summarize_history(prompt: str) -> str:
+                _summary_resp = await self.llm.chat(
+                    [Message(role="user", content=prompt)],
+                    effort=2,  # cheap: summarization is not a reasoning task
+                )
+                return _summary_resp.content or ""
+
+            messages, _did_compact = await maybe_compact(
+                messages,
+                model=getattr(self.llm, "model", None),
+                summarize=_summarize_history,
+                make_message=lambda role, content: Message(role=role, content=content),
+            )
+            if _did_compact:
+                logger.info("[REACT] History compacted at iteration %d", _loop_idx)
 
             # ── Gap 4: Tool result pairing guarantee ──
             # Scan for assistant messages with tool_calls that lack matching tool results
@@ -1466,6 +1553,8 @@ class AitherAgent:
             # ── Gap H: Diminishing returns detection ──
             _iter_tokens = resp.completion_tokens or len((resp.content or "").split())
             _token_counts_per_iter.append(_iter_tokens)
+            # Running turn spend, for the TurnBudget continue/stop decision.
+            _tokens_this_turn += resp.tokens_used or _iter_tokens
             if len(_token_counts_per_iter) >= 3:
                 _recent = _token_counts_per_iter[-3:]
                 if all(t < 500 for t in _recent):
@@ -1544,6 +1633,42 @@ class AitherAgent:
                     messages.append(Message(role="system", content=_TOOL_STEERING_MSG))
                     _tool_choice = "required"
                     continue
+
+                # ── Continue-when-there-is-room ──
+                # "No tool calls" used to mean "done", unconditionally. On a long
+                # task that hands the model an easy exit: it loses momentum, writes
+                # a summary of its progress, and the loop accepts that as the
+                # finished turn. When the caller allotted a token budget and most of
+                # it is unspent, push for another iteration instead. Stopping then
+                # requires an honest signal - budget nearly spent, or output that
+                # has stopped progressing. No budget configured -> unchanged.
+                # Gated on the turn having actually USED tools. A turn that never
+                # called one is a conversational answer, not an unfinished task,
+                # and pushing it produces padding — observed live: "name three
+                # risks, be brief" at effort 9 got nudged repeatedly with nothing
+                # left to do. Real work in this loop goes through tools; if none
+                # were called, there is nothing for another iteration to finish.
+                if (_turn_budget.enabled and _loop_idx < _loop_ceiling - 1
+                        and tool_calls_made):
+                    _continue, _nudge = _turn_budget.should_continue(
+                        _tokens_this_turn,
+                        output_tokens_this_turn=sum(_token_counts_per_iter),
+                    )
+                    if _continue:
+                        logger.info(
+                            "[REACT] Model stopped at %d/%s tokens - nudging to "
+                            "continue (continuation %d)",
+                            _tokens_this_turn, _turn_budget.budget,
+                            _turn_budget.continuations,
+                        )
+                        messages.append(
+                            Message(role="assistant", content=resp.content or "")
+                        )
+                        messages.append(Message(role="user", content=_nudge))
+                        continue
+                    logger.debug(
+                        "[REACT] Turn budget says stop: %s", _turn_budget.stopped_for,
+                    )
 
                 # No tool calls — we have the final answer
                 content = strip_internal_tags(resp.content)
@@ -1850,7 +1975,28 @@ class AitherAgent:
                     pending=list(_pending_approvals),
                 )
 
-        # Exhausted tool loops — return last response
+        # ── Exhausted the tool-loop ceiling ──
+        # Reaching here means the model still wanted tools when the budget ran out.
+        # That is a TRUNCATED turn, and it used to be reported as a normal one: the
+        # synthesis call below returns finish_reason="stop", so a caller (and the
+        # user) could not tell a completed turn from an abandoned one. Now we both
+        # tell the model it was cut off and stamp the response so callers detect it.
+        _exhausted_loops = True
+        logger.warning(
+            "[REACT] Tool-loop ceiling (%d) exhausted for agent %r at effort %s "
+            "- forcing synthesis. Task may be incomplete.",
+            _loop_ceiling, self.name, _effort_int,
+        )
+        messages.append(Message(
+            role="system",
+            content=(
+                f"[TOOL BUDGET EXHAUSTED] You used all {_loop_ceiling} tool "
+                "iterations available for this turn. Give your final answer now "
+                "using only what you have already established. State plainly what "
+                "you completed and what is still outstanding - do NOT present "
+                "incomplete work as finished."
+            ),
+        ))
         final = await self.llm.chat(
             messages, effort=_effort, top_p=_top_p,
             repetition_penalty=_repetition_penalty, **kwargs,
@@ -1928,7 +2074,12 @@ class AitherAgent:
             tool_calls_made=tool_calls_made,
             artifacts=[a.to_dict() for a in _get_session_artifacts(sid)],
             session_id=sid,
-            finish_reason=final.finish_reason,
+            # Truncation must be visible to callers. Reporting the synthesis
+            # call's own finish_reason here would claim the model chose to end
+            # the turn; it did not — we cut it off when the ceiling ran out.
+            finish_reason=(
+                "max_tool_loops" if _exhausted_loops else final.finish_reason
+            ),
             effort_level=final.effort_level,
             cache_status=final.cache_status,
         )

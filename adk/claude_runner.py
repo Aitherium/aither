@@ -37,6 +37,14 @@ Environment (all optional):
 - AITHER_CLAUDE_RUNNER_GATEWAY_HOSTS: comma list of allowed MCP hosts
   (default mcp.aitherium.com,localhost,127.0.0.1,host.docker.internal)
 - AITHER_CLAUDE_RUNNER_BIN: claude executable (default "claude")
+- AITHER_CLAUDE_RUNNER_NTFY_URL: ntfy topic URL pushed on terminal state
+  (unset => no push). The topic URL is itself the credential — keep it in env.
+- AITHER_CLAUDE_RUNNER_NTFY_TOKEN: optional Bearer for a protected ntfy topic
+
+Continuing a conversation: pass ``scope.resume_session_id`` (``adk claude spawn
+--resume <id> --cwd <repo>``) to run ``claude --resume`` instead of starting a
+fresh session. This is what lets a phone drive a long-running thread on this
+host rather than firing disconnected one-shots.
 """
 
 from __future__ import annotations
@@ -63,6 +71,18 @@ from adk.core.logging import get_logger
 
 _log = get_logger("aither_adk.claude_runner")
 
+# Optional selfgraph integration (no-op if unavailable or disabled)
+try:
+    from adk.selfgraph import (
+        current_run,
+        ProvNodeType,
+        ProvEdgeType,
+        make_node_id,
+    )
+    _SELFGRAPH_AVAILABLE = True
+except ImportError:
+    _SELFGRAPH_AVAILABLE = False
+
 DEFAULT_PORT = 8360
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_MAX_CONCURRENCY = 2
@@ -70,6 +90,10 @@ DEFAULT_QUEUE_MAX = 8
 DEFAULT_TIMEOUT_SEC = 600
 MAX_TIMEOUT_SEC = 3600
 DEFAULT_GATEWAY_HOSTS = "mcp.aitherium.com,localhost,127.0.0.1,host.docker.internal"
+# Push notification on terminal state. Unset => no push (previous behaviour).
+# The topic URL IS the credential for ntfy, so it lives in env, never in git.
+NTFY_TIMEOUT_SEC = 10
+NTFY_BODY_CHARS = 700
 # Exclude ALL settings files by default (fail-closed): no user, project, or
 # local settings apply to a scoped run — only the generated --settings file.
 # Callers must explicitly opt in (e.g. setting_sources="user") if they want the
@@ -184,6 +208,7 @@ class RunScope:
     budget_usd: float = 0.0
     account_profile: str = ""
     setting_sources: str = DEFAULT_SETTING_SOURCES
+    resume_session_id: str = ""
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "RunScope":
@@ -201,6 +226,7 @@ class RunScope:
             budget_usd=float(data.get("budget_usd") or 0.0),
             account_profile=str(data.get("account_profile") or ""),
             setting_sources=str(data.get("setting_sources") or DEFAULT_SETTING_SOURCES),
+            resume_session_id=str(data.get("resume_session_id") or ""),
         )
         scope.validate()
         return scope
@@ -230,7 +256,40 @@ class RunScope:
                 raise ScopeError(f"scope.add_dirs entries must exist and be absolute: {d}")
         if self.account_profile and not self.account_profile.isidentifier():
             raise ScopeError(f"scope.account_profile must be an identifier: {self.account_profile}")
+        self._validate_resume()
         self._validate_mcp()
+
+    def _validate_resume(self) -> None:
+        """Fail-closed rules for continuing an existing conversation.
+
+        `claude --resume <id>` resolves the transcript inside the project derived
+        from the process CWD (~/.claude/projects/<slug-of-cwd>/<id>.jsonl) and
+        inside whatever CLAUDE_CONFIG_DIR points at. Both of those are things this
+        runner sets, so a resume that gets either wrong does NOT fail loudly — it
+        starts a brand-new conversation that merely looks resumed. Refuse instead.
+        """
+        if not self.resume_session_id:
+            return
+        try:
+            uuid.UUID(self.resume_session_id)
+        except (ValueError, AttributeError, TypeError):
+            raise ScopeError(
+                f"scope.resume_session_id must be a UUID: {self.resume_session_id!r}"
+            ) from None
+        if not self.cwd:
+            # Without cwd the run executes in the throwaway per-run workdir, whose
+            # project slug holds no sessions — the resume would silently start fresh.
+            raise ScopeError(
+                "scope.cwd is required when resuming: the session is resolved "
+                "relative to the working directory it was created in"
+            )
+        if self.account_profile:
+            # A profile redirects CLAUDE_CONFIG_DIR to an isolated per-run home
+            # that contains no prior sessions, so the id would never be found.
+            raise ScopeError(
+                "scope.account_profile cannot be combined with resume_session_id: "
+                "an isolated account home holds none of the session history"
+            )
 
     def _validate_mcp(self) -> None:
         if self.mcp_config is None:
@@ -274,6 +333,7 @@ class RunScope:
             "budget_usd": self.budget_usd,
             "account_profile": self.account_profile,
             "setting_sources": self.setting_sources,
+            "resume_session_id": self.resume_session_id,
         }
 
 
@@ -484,7 +544,10 @@ class ClaudeRunner:
                 goal_id=goal_id,
                 task_redacted=(redact(task) or "")[:4000],
                 scope=scope.to_dict(),
-                session_id=str(uuid.uuid4()),
+                # Resuming threads the SAME conversation, so the record must carry
+                # the existing id — a fresh uuid here would make every follow-up
+                # look like a separate run of an unrelated session.
+                session_id=scope.resume_session_id or str(uuid.uuid4()),
             )
             self.store.save(rec)
             self._queued_ids.add(rec.run_id)
@@ -512,6 +575,11 @@ class ClaudeRunner:
         selection (a spawn shouldn't die because usage bookkeeping hiccupped).
         """
         if scope.account_profile:
+            return
+        if scope.resume_session_id:
+            # Auto-selecting here would redirect CLAUDE_CONFIG_DIR to an isolated
+            # home with no session history, turning the resume into a silent
+            # fresh start. The default login owns the transcript — keep it.
             return
         try:
             from adk.claude_account_usage import UsageMonitor, UsageMonitorError
@@ -610,8 +678,13 @@ class ClaudeRunner:
             "--allowedTools", ",".join(scope.allowed_tools),
             "--mcp-config", str(run_dir / "mcp.json"),
             "--strict-mcp-config",
-            "--session-id", rec.session_id,
         ]
+        # --session-id CREATES a conversation with that id and rejects an id that
+        # already exists; --resume CONTINUES one. They are mutually exclusive.
+        if scope.resume_session_id:
+            argv += ["--resume", rec.session_id]
+        else:
+            argv += ["--session-id", rec.session_id]
         if scope.disallowed_tools:
             argv += ["--disallowedTools", ",".join(scope.disallowed_tools)]
         if scope.system_prompt:
@@ -729,8 +802,71 @@ class ClaudeRunner:
                 )
             self.store.save(rec)
 
+            # Record to selfgraph if a parent run is active (best-effort)
+            self._record_selfgraph(rec)
+
             # Record usage and handle rate-limit cooldown.
             self._record_usage(rec, rate_limited)
+
+        # Outside the lock: a slow or unreachable push must never hold up a
+        # watcher thread that other runs are queued behind.
+        self._notify_terminal(rec)
+
+    def _notify_terminal(self, rec: RunRecord) -> None:
+        """Push a run's terminal state to an ntfy topic. Best-effort, never raises.
+
+        This is what makes the phone loop work: you fire a run and walk away
+        instead of watching a terminal. The message carries `session_id` because
+        that is what the next prompt must pass as `resume_session_id` to continue
+        the same conversation.
+        """
+        url = os.environ.get("AITHER_CLAUDE_RUNNER_NTFY_URL", "").strip()
+        if not url:
+            return
+        threading.Thread(target=self._post_ntfy, args=(url, rec), daemon=True).start()
+
+    def _post_ntfy(self, url: str, rec: RunRecord) -> None:
+        import urllib.error
+        import urllib.request
+
+        ok = rec.status == "completed"
+        # result_text/error are redacted upstream; re-redact defensively because
+        # this leaves the host.
+        body = (redact(rec.result_text or rec.error or "(no output)") or "")[:NTFY_BODY_CHARS]
+        cwd = str(rec.scope.get("cwd") or "") or "(isolated workdir)"
+        text = (
+            f"{body}\n\n"
+            f"— {Path(cwd).name or cwd} · {rec.num_turns} turns · ${rec.total_cost_usd:.3f}\n"
+            f"resume: {rec.session_id}\n"
+            f"run: {rec.run_id}"
+        )
+        req = urllib.request.Request(
+            url,
+            data=text.encode("utf-8"),
+            method="POST",
+            headers={
+                "Content-Type": "text/plain; charset=utf-8",
+                "Title": f"Claude run {rec.status}: {Path(cwd).name or 'run'}",
+                "Priority": "default" if ok else "high",
+                "Tags": "white_check_mark" if ok else "rotating_light",
+            },
+        )
+        token = os.environ.get("AITHER_CLAUDE_RUNNER_NTFY_TOKEN", "").strip()
+        if token:
+            req.add_header("Authorization", f"Bearer {token}")
+        try:
+            with urllib.request.urlopen(req, timeout=NTFY_TIMEOUT_SEC) as resp:
+                if resp.status >= 400:
+                    _log.error(
+                        "ntfy push failed — owner NOT notified",
+                        extra={"run_id": rec.run_id, "status": resp.status},
+                    )
+        except (urllib.error.URLError, OSError, ValueError) as e:
+            # Never re-raise and never log the URL: the topic is the credential.
+            _log.error(
+                "ntfy push errored — owner NOT notified",
+                extra={"run_id": rec.run_id, "err": type(e).__name__},
+            )
 
     def _parse_result(self, run_id: str) -> Optional[dict[str, Any]]:
         path = self.store.stream_path(run_id)
@@ -778,6 +914,105 @@ class ClaudeRunner:
         except OSError:
             pass
         return False
+
+    def _record_selfgraph(self, rec: RunRecord) -> None:
+        """Record subagent run to selfgraph (best-effort, never blocks or raises).
+
+        Records:
+        - RUN node with scope summary (redacted)
+        - ARTIFACT for the result
+        - EVALUATION with RUBRIC if the run failed
+        - Parent-of link if a parent recorder is active
+        """
+        if not _SELFGRAPH_AVAILABLE:
+            return
+
+        parent_recorder = None
+        try:
+            parent_recorder = current_run()
+        except Exception:  # noqa: BLE001 — best-effort
+            pass
+
+        if not parent_recorder:
+            return  # No active parent run; nothing to record to
+
+        try:
+            # Scope summary: tool allowlist + model + cwd (secrets redacted)
+            scope_props = {
+                "allowed_tools": rec.scope.get("allowed_tools", []),
+                "disallowed_tools": rec.scope.get("disallowed_tools", []),
+                "model": rec.scope.get("model", ""),
+                "timeout_sec": rec.scope.get("timeout_sec", 0),
+            }
+            # Redact any secrets in cwd path or system_prompt
+            if rec.scope.get("cwd"):
+                scope_props["cwd"] = redact(rec.scope.get("cwd", "")) or ""
+            if rec.scope.get("system_prompt"):
+                scope_props["system_prompt"] = redact(rec.scope.get("system_prompt", "")) or ""
+
+            # Create RUN node for subagent
+            run_id = f"subagent-{rec.run_id[:16]}"
+            run_node = ProvNodeType.RUN
+            run_props = {
+                "subagent_run_id": rec.run_id,
+                "session_id": rec.session_id,
+                "scope": scope_props,
+                "status": rec.status,
+                "exit_code": rec.exit_code,
+                "num_turns": rec.num_turns,
+                "total_cost_usd": rec.total_cost_usd,
+            }
+            parent_recorder.artifact(
+                run_id,
+                version=1,
+                properties=run_props,
+            )
+
+            # If there's a result, record it as an artifact
+            if rec.result_text:
+                import hashlib
+                content_hash = hashlib.sha256(rec.result_text.encode()).hexdigest()
+                parent_recorder.artifact(
+                    f"subagent-result-{rec.run_id[:12]}",
+                    version=1,
+                    content_hash=content_hash,
+                    properties={
+                        "subagent_run_id": rec.run_id,
+                        "result_subtype": rec.result_subtype,
+                    },
+                )
+
+            # If failed, record an evaluation
+            if rec.status == "failed":
+                # Create a RUBRIC node if it doesn't exist
+                rubric_id = make_node_id(
+                    ProvNodeType.RUBRIC,
+                    "subagent-run",
+                    tenant_id="",
+                )
+                parent_recorder.rubric(
+                    "subagent-run",
+                    criteria={
+                        "exit_code": "Process exit code (0 = success)",
+                        "error_message": "Error description from runner",
+                        "rate_limited": "429 rate limit error flag",
+                    },
+                )
+                parent_recorder.evaluation(
+                    rec.error or "failed",
+                    rubric_id=rubric_id,
+                    target_id=make_node_id(
+                        ProvNodeType.ARTIFACT,
+                        run_id,
+                        tenant_id="",
+                    ),
+                    reason=(redact(rec.error) or "unknown error")[:200],
+                    score=0.0,
+                )
+
+            parent_recorder.flush()
+        except Exception:  # noqa: BLE001 — selfgraph recording is best-effort
+            pass
 
     def _record_usage(self, rec: RunRecord, rate_limited: bool) -> None:
         """Record usage to the multi-account monitor and handle rate-limit cooldown.
@@ -987,6 +1222,57 @@ def create_app(runner: ClaudeRunner, token: str):
         except RunnerError as e:
             raise HTTPException(status_code=404, detail=str(e)) from e
 
+    # -- session index (read-only) ----------------------------------------
+    # What a remote client needs BEFORE it can resume anything: which
+    # conversations exist, in which repo, and what was last said. The engine is
+    # adk.shell.claude_sessions (already used by `adk shell sessions`); these
+    # endpoints only expose it, they parse nothing themselves.
+
+    @app.get("/sessions", dependencies=[Depends(_auth)])
+    async def list_sessions(
+        scan: int = 120, top: int = 50, q: str = "", cwd: str = ""
+    ) -> dict[str, Any]:
+        from adk.shell import claude_sessions as cs
+
+        found = cs.scan_sessions(scan=scan, top=top, text_filter=q)
+        if cwd:
+            want = cs._norm_path(cwd)
+            found = [s for s in found if cs._norm_path(s.cwd) == want]
+        out = []
+        for s in found:
+            view = s.to_dict()
+            # `file` is an absolute host path — useless to a remote client and
+            # it leaks the local layout. `id` is what /runs needs.
+            view.pop("file", None)
+            view["age"] = s.age
+            view["lastPrompt"] = redact(view.get("lastPrompt") or "")
+            view["title"] = redact(view.get("title") or "")
+            out.append(view)
+        return {"sessions": out, "count": len(out)}
+
+    @app.get("/sessions/{session_id}", dependencies=[Depends(_auth)])
+    async def get_session(session_id: str, turns: int = 30) -> dict[str, Any]:
+        from adk.shell import claude_sessions as cs
+
+        try:
+            uuid.UUID(session_id)
+        except (ValueError, AttributeError, TypeError):
+            raise HTTPException(status_code=400, detail="session_id must be a UUID") from None
+        # Resolve through the scanner rather than globbing a caller-supplied id
+        # into a path — the id reaches the filesystem otherwise.
+        match = next((s for s in cs.scan_sessions(scan=400, top=400) if s.id == session_id), None)
+        if match is None:
+            raise HTTPException(status_code=404, detail="session not found")
+        transcript = [
+            {"role": role, "text": redact(text)}
+            for role, text in cs.session_transcript(match.file, max_turns=turns)
+        ]
+        view = match.to_dict()
+        view.pop("file", None)
+        view["age"] = match.age
+        view["transcript"] = transcript
+        return view
+
     return app
 
 
@@ -1025,7 +1311,17 @@ if (-not (Test-Path $EnvFile)) {{
     Exit 1
 }}
 
-# Simple .env parser: KEY=VALUE lines only (no quotes, no comments)
+# Simple .env parser: KEY=VALUE lines only (no quotes, no comments).
+# AITHER_INTERNAL_SECRET is REQUIRED (fail-closed below). The NTFY_* pair is
+# OPTIONAL — absent simply means no push. They must be sourced here rather than
+# baked into this file: the ntfy topic URL is itself the credential, and this
+# wrapper is world-readable on disk. Do NOT `break` out of this loop after the
+# secret; that is what previously made every other key unreachable.
+$Wanted = @(
+    "AITHER_INTERNAL_SECRET",
+    "AITHER_CLAUDE_RUNNER_NTFY_URL",
+    "AITHER_CLAUDE_RUNNER_NTFY_TOKEN"
+)
 $Lines = @(Get-Content $EnvFile -ErrorAction SilentlyContinue |
     Where-Object {{ $_.Trim() -and -not $_.TrimStart().StartsWith("#") }})
 foreach ($Line in $Lines) {{
@@ -1033,13 +1329,8 @@ foreach ($Line in $Lines) {{
     if ($Parts.Count -eq 2) {{
         $Key = $Parts[0].Trim()
         $Value = $Parts[1].Trim()
-        if ($Key -eq "AITHER_INTERNAL_SECRET") {{
-            if (-not $Value) {{
-                [Console]::Error.WriteLine("ERROR: AITHER_INTERNAL_SECRET is empty in .env")
-                Exit 1
-            }}
-            Set-Item -Path "Env:AITHER_INTERNAL_SECRET" -Value $Value
-            break
+        if ($Wanted -contains $Key -and $Value) {{
+            Set-Item -Path "Env:$Key" -Value $Value
         }}
     }}
 }}
@@ -1630,6 +1921,7 @@ def _cmd_spawn(args: Any) -> int:
         "timeout_sec": int(getattr(args, "timeout", 0) or DEFAULT_TIMEOUT_SEC),
         "budget_usd": float(getattr(args, "budget_usd", 0) or 0),
         "account_profile": getattr(args, "account", "") or "",
+        "resume_session_id": getattr(args, "resume", "") or "",
     }
     mcp_file = getattr(args, "mcp_config", "") or ""
     if mcp_file:
