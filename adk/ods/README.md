@@ -41,17 +41,90 @@ print(recommendation.confidence)
 # → OdsRecommendation with policy, source='ods', selected model, reason, confidence, alternatives
 ```
 
+### resolve_role() — one pick per ADK role
+
+Upstream ODS answers exactly one question: *which single model should this box
+install*. Calling `resolve()` once per ADK tier therefore returns the same model
+five times (that was D-916). `resolve_role()` narrows upstream's **feasible**
+set — it never adds a candidate upstream rejected, and the arch-policy
+substitution still applies to the role's own pick.
+
+```python
+rec = resolver.resolve_role(
+    'coding',                   # fast | balanced | reasoning | coding | long_context | chat
+    backend='nvidia', memory_type='discrete', vram_mb=24576, ram_gb=64,
+    profile='qwen', tier='T3',
+)
+rec.policy   # '...+role-coding'
+rec.reason   # '... Role 'coding' matched specialty 'Code'.'
+```
+
+| Role | Preferred specialties | Within-group objective |
+|---|---|---|
+| `fast` | Fast | most capable (every Fast record is already ≥110 tok/s) |
+| `balanced` | *(none — upstream's own pick)* | — |
+| `reasoning` | Reasoning → Quality | most capable |
+| `coding` | Code → Tool Use | most capable |
+| `long_context` | Long Context | longest context |
+| `chat` | Chat → Balanced → General | most capable |
+
+`embedding` is **not** a role: the catalog is a generation-model library with
+zero embedding records, so `resolve_role('embedding')` raises `OdsError`.
+`recommend_config()` fills that tier from `adk.embeddings.CANONICAL_MODEL`.
+
+When no model of a preferred specialty fits, the pick falls back to upstream's
+overall best and `reason` says so — a labelled degradation, not a silent one.
+
+### classify_host() — tier + backend + compose overlays
+
+A port of ODS `scripts/classify-hardware.sh`, which is vendored verbatim as
+`_upstream_classify.sh` and executed as the reference in
+`tests/test_classify_differential.py`.
+
+```python
+from adk.ods.hardware import classify_host
+
+# The identifying string for a Strix Halo box is its CPU name, not its GPU name.
+host = classify_host(gpu_name='AMD Radeon Graphics',
+                     cpu_name='AMD Ryzen AI MAX+ 395',
+                     vendor='amd', memory_type='discrete', vram_mb=512, ram_gb=128)
+host.tier              # 'SH_LARGE'
+host.memory_type       # 'unified'  <- known_gpus CORRECTED the probe
+host.vram_mb           # 98304      <- ...and its memory figure
+host.compose_overlays  # ('docker-compose.base.yml', 'docker-compose.amd.yml')
+host.bandwidth_gbps    # 256
+host.source            # 'known_gpu' | 'heuristic_class' | 'unknown'
+```
+
+Two passes, both upstream's: `known_gpus` (matched on `device_id`, then on GPU
+**and CPU** name, longest pattern winning so `RX 7900 XT` cannot claim an
+`RX 7900 XTX` host), then the `heuristic_classes` vendor+capacity ladder.
+An unrecognised host degrades to `cpu`/`T1` rather than raising.
+
+Compose overlays key on the resolved **backend** (`OVERLAY_MAP`), with one macOS
+override — not on the platform. `hardware-classes.json` is the declarative
+mirror of that map; upstream ships a contract test asserting they agree and it
+is ported here, which is that file's real job in this package.
+
+`memory_type` must be a real token when you call this. It is compared exactly
+against the ladder, so `""` matches no NVIDIA class and silently drops a 24GB
+host to `cpu`/`T1` — sized from RAM instead of VRAM.
+
+This matters beyond bookkeeping: `recommend_config()` used to pass `tier=None`,
+which pins the tier to `"1"` and makes upstream's Spark/GB10 arch-policy guard
+structurally unreachable (D-918).
+
 ### Return Shape
 
 ```python
 @dataclass
 class OdsRecommendation:
-    policy: str              # e.g. 'unified-memory-coder-next-a3b-v1', 'default-tier3-qwen'
+    policy: str              # e.g. 'unified-memory-coder-next-a3b-v1', '...+role-coding'
     source: str              # always 'ods'
     confidence: float        # 0.0-1.0 (0.95+ high confidence)
     profile: str             # resolved profile (qwen or gemma4)
     host_arch: str           # echoed from input
-    memory_capacity_gb: float # usable capacity (35% CPU, 55% unified, 95% discrete)
+    memory_capacity_gb: float # usable capacity (35% CPU, 55% unified, 100% discrete)
     memory_label: str        # human-readable (e.g. 'NVIDIA A100 discrete (24GB)')
     selected: ModelRecord    # the recommended model
     reason: str              # human-readable reason
@@ -67,23 +140,21 @@ from adk.llmfit import LLMFitClient
 
 client = LLMFitClient()
 
-# ODS is tried first (deterministic, offline, source='ods')
-result = client.recommend_config(
-    backend='nvidia',
-    vram_mb=24576,
-    ram_gb=32,
-    profile='qwen',
-    tier='3',
-    use_llmfit=False  # (default) try ODS first
-)
+# Hardware comes from system_info(); ODS is tried first (deterministic, offline).
+result = await client.recommend_config(use_llmfit=False)   # default
 
+# Real output on an RTX 5090 / 128GB host, 2026-07-25:
 # result = {
-#     'hardware': { ... },
-#     'fast': { 'model': 'qwen3.5-7b-q4', 'provider': 'ods', 'score': 0.92, 'tps': 22, ... },
-#     'balanced': { ... },
-#     'reasoning': { ... },
-#     'coding': { ... },
-#     'embedding': { ... },
+#   'hardware': {'gpu': 'NVIDIA GeForce RTX 5090', 'vram_gb': 31.84, 'ram_gb': 125,
+#                'backend': 'cuda', 'ods_class': 'nvidia_pro', 'ods_tier': 'T3',
+#                'ods_backend': 'nvidia', 'memory_type': 'discrete',
+#                'classified_backend': 'nvidia', 'classified_by': 'heuristic_class',
+#                'bandwidth_gbps': 1792},
+#   'fast':      {'model': 'qwen2.5-1.5b-instruct',        'provider': 'ods', 'specialty': 'Fast'},
+#   'balanced':  {'model': 'qwen3.5-27b',                  'provider': 'ods', 'specialty': 'Quality'},
+#   'reasoning': {'model': 'deepseek-r1-distill-qwen-32b', 'provider': 'ods', 'specialty': 'Reasoning'},
+#   'coding':    {'model': 'qwen2.5-coder-3b-instruct',    'provider': 'ods', 'specialty': 'Code'},
+#   'embedding': {'model': 'nomic-embed-text',             'provider': 'aither-embeddings'},
 # }
 ```
 
@@ -95,9 +166,15 @@ recommend_config(use_llmfit=False) called
   │   ├─ Catch OdsError on import → log, fall to Path 2
   │   ├─ Call system_info() → get hw dict
   │   ├─ If hw is None → log, fall to Path 2
-  │   ├─ Call OdsResolver.resolve() 5 times (one per tier)
+  │   ├─ classify_host() → real tier/backend/memory_type/overlays
+  │   ├─ Call OdsResolver.resolve_role() once per GENERATION tier
+  │   │    (fast, balanced, reasoning, coding — NOT embedding)
+  │   ├─ Fill 'embedding' from adk.embeddings.CANONICAL_MODEL
   │   ├─ Assemble config with provider='ods' tag
-  │   └─ Return config (success path)
+  │   └─ Return config if ANY generation tier resolved
+  │      (the static embedding tier is excluded from that test on
+  │       purpose — counting it would make the check vacuously true
+  │       and this fallback unreachable)
   │
   ├─ Path 2: llmfit (FALLBACK) ─────────────────────────
   │   ├─ Call system_info() if not cached
@@ -110,7 +187,8 @@ recommend_config(use_llmfit=False) called
 
 Return shape is **unchanged** from llmfit era (backward compatible):
 - Each tier (fast, balanced, reasoning, coding, embedding) is `{...}` or `None`
-- New `provider` field indicates source: `'ods'` or `'llmfit'`
+- New `provider` field indicates source: `'ods'`, `'llmfit'`, or
+  `'aither-embeddings'` (embedding tier only)
 - Scoring range (0.0-1.0) is normalized across both paths for caller compatibility
 
 If ODS is unavailable or `use_llmfit=True` is passed, the call falls back to llmfit.
@@ -160,17 +238,32 @@ This allows downstream tools to validate which upstream ODS version generated re
 
 ### Tier Detection
 
-| Backend | VRAM / RAM Range         | Tier          |
-|---------|--------------------------|---------------|
-| nvidia  | 0-2 GB                   | 0 (CPU-like)  |
-| nvidia  | 2-8 GB                   | 2 (entry)     |
-| nvidia  | 8-20 GB                  | 3 (mid)       |
-| nvidia  | 20+ GB                   | 4 (high)      |
-| apple   | unified 8-16 GB          | SH_COMPACT    |
-| apple   | unified 16+ GB           | SH_LARGE      |
-| cpu     | 4-8 GB RAM               | 0             |
-| cpu     | 8-32 GB RAM              | 1             |
-| cpu     | 32+ GB RAM               | 2             |
+Transcribed from `gpu-database.json` → `heuristic_classes`, in file order (first
+match wins). `classify_host()` walks exactly this ladder after trying
+`known_gpus` name patterns.
+
+> An earlier revision of this section listed a tier table that appears nowhere
+> in the vendored data (nvidia 2–8GB → "tier 2", apple → `SH_*`, a cpu 32GB+
+> tier). It was invented alongside the fabricated catalog. Do not reintroduce a
+> hand-written table here — transcribe the file.
+
+| Vendor | Memory | Threshold | Tier |
+|---|---|---|---|
+| nvidia | discrete | ≥ 92160 MB | `NV_ULTRA` |
+| nvidia | discrete | ≥ 40960 MB | `T4` |
+| nvidia | discrete | ≥ 20480 MB | `T3` |
+| nvidia | discrete | ≥ 12288 MB | `T2` |
+| nvidia | discrete | ≤ 4095 MB | `T0` (backend drops to `cpu`) |
+| nvidia | discrete | ≥ 4096 MB | `T1` |
+| nvidia | unified | RAM ≥ 92160 / 49152 / 20480 / 12288 / 0 MB | `NV_ULTRA` / `T4` / `T3` / `T2` / `T1` |
+| amd | unified | RAM ≥ 92160 MB / else | `SH_LARGE` / `SH_COMPACT` |
+| amd | discrete | ≥ 20480 / 12288 / 0 MB | `T3` / `T2` / `T1` |
+| apple | unified | RAM ≥ 131072 / 65536 / 32768 / 0 MB | `T4` / `T3` / `T2` / `T1` |
+| none | none | any | `T1` (backend `cpu`) |
+
+`known_gpus` overrides all of the above for 14 recognised devices, and can
+correct a wrong probe — a Strix Halo APU reporting `discrete`/512MB is
+reclassified `unified`/98304MB/`SH_LARGE`.
 
 ### Edge Rules
 
@@ -204,17 +297,22 @@ Then:
 - **Policy**: `'spark-aarch64-nv-ultra-a3b-v1'`
 - **Reason**: "ARM64 hardware with high-end GPU; Spark variant optimal"
 
-#### 4. Bootstrap Model Fallback
+#### 4. Smallest-Model Fallback (there is no "bootstrap" policy)
 
-When:
-- `installable_only=True` AND `max_size_mb` too small for profile/family
-- OR no candidates after profile/family filtering
+> An earlier revision of this section described a `'bootstrap-fallback'` policy
+> pinned to `qwen3.5-2b-q4`. No such policy exists in the vendored code, and no
+> record in the vendored library carries a `Bootstrap` specialty (upstream's
+> score table weights one, but nothing uses it). This is what actually happens:
 
-Then:
-- **Fall back** to `qwen3.5-2b-q4` (bootstrap model, ~1.5 GB)
-- **Policy**: `'bootstrap-fallback'`
-- **Confidence**: < 0.75
-- **Reason**: "No suitable candidates; bootstrap model ensures installation works"
+When nothing fits the capacity envelope, `rank_models()` relaxes the pool in
+three steps — drop the fit check, then the size ceiling, then the profile/family
+filter — and returns the **single lowest-`vram_required_gb` model** of the first
+non-empty pool. The policy string is unchanged (`POLICY`, plus any arch-policy
+tag); there is no distinct fallback policy name and no confidence penalty.
+
+`OdsResolver` only raises `OdsError` when the catalog itself yields nothing —
+that path is unreachable with a non-empty catalog, which is the point: the
+resolver never returns an empty pick.
 
 ## Scoring & Ranking
 
@@ -306,11 +404,20 @@ TARGET_COMMIT=$(git rev-parse --short HEAD)
 
 ### 2. Copy files
 
+All FIVE vendored files, verbatim — the two scripts are vendored as code, not
+just as data, and are what the differential tests run as their reference:
+
 ```bash
-cp config/model-library.json /path/to/aither-adk/adk/ods/
-cp config/gpu-database.json /path/to/aither-adk/adk/ods/
-cp config/hardware-classes.json /path/to/aither-adk/adk/ods/
+cp ods/config/model-library.json     /path/to/aither-adk/adk/ods/
+cp ods/config/gpu-database.json      /path/to/aither-adk/adk/ods/
+cp ods/config/hardware-classes.json  /path/to/aither-adk/adk/ods/
+cp ods/scripts/select-model.py       /path/to/aither-adk/adk/ods/_upstream_select.py
+cp ods/scripts/classify-hardware.sh  /path/to/aither-adk/adk/ods/_upstream_classify.sh
 ```
+
+Do not hand-edit any of them: `ODS_VENDORED_SHA256` pins each one and
+`validate_catalog.py --verify-vendored` will fail. `.gitattributes` pins them to
+LF so `core.autocrlf` cannot break the hashes on checkout.
 
 ### 3. Update metadata
 
@@ -354,13 +461,16 @@ ODS_VENDORED_RELEASE = "2.5.3"      # ods/manifest.json at time of vendoring
 ODS_VENDORED_URL = "https://github.com/Osmantic/ODS"
 ODS_VENDORED_SHA256 = {...}         # per-file integrity anchor; see validate_catalog.py
 
-# In adk/ods/data.py
-VRAM_FIT_TOLERANCE_GB = 0.25        # Models within 0.25 GB are considered "fit"
-TIGHT_FIT_THRESHOLD = 0.98          # fit_ratio > 0.98 triggers penalty
-TIGHT_FIT_PENALTY = -0.35           # Score penalty for tight fits
-MEMORY_USAGE_CPU_PERCENT = 0.35     # CPU: use 35% of RAM for models
-MEMORY_USAGE_UNIFIED_PERCENT = 0.55 # Unified: use 55% for models
-MEMORY_USAGE_DISCRETE_PERCENT = 0.95 # Discrete: use 95% of VRAM for models
+# In adk/ods/_upstream_select.py — the ONLY home for selection tunables.
+# adk/ods/data.py used to re-declare these; the copies were dead AND the
+# discrete share was wrong (0.95 vs upstream's 1.00), so they were removed.
+VRAM_FIT_TOLERANCE_GB = 0.25        # fits(): required <= capacity + tolerance
+# usable_memory_gb(), verbatim:
+#   unified / apple  -> max(ram_gb * 0.55, 2.0)
+#   cpu / no VRAM    -> min(max(ram_gb * 0.35, 3.0), 8.0)
+#   discrete GPU     -> vram_mb / 1024.0     (FULL VRAM — 100%, not 95%)
+# score_model() weights specialty (Code 4.4 ... Fast 2.0), family, context and
+# size, and applies a 0.35/0.15 headroom penalty above a 0.98/0.92 fit ratio.
 ```
 
 ## Error Handling

@@ -73,6 +73,11 @@ ODS_VENDORED_SHA256 = {
     # ODS scripts/select-model.py — the reference selection algorithm itself,
     # carried as code rather than reimplemented. resolver.py wraps it.
     "_upstream_select.py": "6a0e7fa2dfc0c0188b6fc127af884f9087f0af2cd0e84edab4032dbb5f3b1020",
+    # ODS scripts/classify-hardware.sh — the reference HARDWARE classifier.
+    # hardware.py is a port of it (it is bash-wrapped Python, so it cannot be
+    # imported the way select-model.py can), and tests/test_classify_differential.py
+    # runs the vendored original as the reference for every ported decision.
+    "_upstream_classify.sh": "7c807f9741c95f40005205f42fca15d2f060e3b92d430ae1824b2f9405f56769",
 }
 
 __version__ = "0.1.0"

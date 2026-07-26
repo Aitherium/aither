@@ -9,13 +9,14 @@ from typing import Any
 
 from .model_types import OdsError
 
-# Configuration constants
-VRAM_FIT_TOLERANCE_GB = 0.25
-TIGHT_FIT_THRESHOLD = 0.98
-TIGHT_FIT_PENALTY = -0.35
-MEMORY_USAGE_CPU_PERCENT = 0.35
-MEMORY_USAGE_UNIFIED_PERCENT = 0.55
-MEMORY_USAGE_DISCRETE_PERCENT = 0.95
+# NO selection tunables live here. They are all upstream's, in
+# `_upstream_select.py` (VRAM_FIT_TOLERANCE_GB, the score weights, and
+# `usable_memory_gb`'s memory shares). This module previously re-declared them
+# — leftovers from the discarded reimplementation — including a
+# MEMORY_USAGE_DISCRETE_PERCENT = 0.95 that CONTRADICTED upstream's 100% and
+# was read by nothing. A stale duplicate of a number that decides model fit is
+# worse than no constant: the next reader treats it as the source of truth.
+# If you need a tunable, read it from `_upstream_select`.
 
 
 def _validate_model_schema(model: dict[str, Any]) -> None:
@@ -179,14 +180,20 @@ def load_gpu_database(db_path: str | None = None) -> dict[str, Any]:
 
 
 def load_hardware_classes(hw_path: str | None = None) -> dict[str, Any]:
-    """Load legacy hardware classification (deprecated).
+    """Load the compose-overlay class table (hardware-classes.json).
+
+    Consumed by `adk.ods.hardware.classify_host()`, which is the only caller.
+    This file's unique payload is `recommended.compose_overlays` — the per-class
+    tier is better sourced from gpu-database.json, which carries exact device
+    knowledge. (It was described as "legacy/deprecated" while nothing read it
+    at all; see D-918.)
 
     Args:
         hw_path: Explicit path to hardware-classes.json (for testing).
                  If None, loads from package data (adk/ods:hardware-classes.json).
 
     Returns:
-        Hardware classes dict with legacy tier definitions.
+        Hardware classes dict: {"version": ..., "classes": [...]}.
 
     Raises:
         OdsError: If file is missing, corrupt, or invalid.

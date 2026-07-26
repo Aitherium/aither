@@ -23,7 +23,12 @@ inference_config:
       source: gguf://prism-ml/bonsai-27b-q1_0.gguf
       size_gb: 3.8
       quantization: Q1_0
-      context_window: 32768
+      # 4096, not 32768: this must match what the delegate's systemd unit actually
+      # serves (`-c 4096`), because this value is what the fleet catalog entry
+      # below advertises. Advertising 32768 against a server bound to 4096 makes
+      # every long-prompt request fail at the node instead of being routed
+      # elsewhere. Raise BOTH together (script env CTX=...) if a node has the RAM.
+      context_window: 4096
       served_name: bonsai-27b-optiplex
   serve_args:
     - --host 0.0.0.0
@@ -31,7 +36,7 @@ inference_config:
     - --n-gpu-layers 0
     - --n-threads 12
     - --n-threads-batch 12
-    - --ctx-size 32768
+    - --ctx-size 4096
     # Bonsai ships the Qwen3 chat template, which force-OPENS `<think>` on every
     # chat turn unless the caller sends chat_template_kwargs.enable_thinking=false.
     # llama-server's default budget is -1 (UNRESTRICTED): the block never closes,
@@ -45,9 +50,26 @@ inference_config:
     - no-gpu-layers
 
 deployment:
+  # ⚠ D-931: `serve_args` above are ADVISORY for this recipe, not deployment
+  # config. target=delegate-playbook takes the `elif delegate:` path in
+  # node_plan_deployment(), which only REPORTS the script name — _render_compose()
+  # is never called, so nothing here reaches a real node.
+  #
+  # The delegate DOES exist — it lives fleet-side (not in this public pack) at
+  # .DEPLOYMENT/scripts/optiplex-node/deploy-bonsai-node.sh, and it is what
+  # actually provisions the node: it builds the PrismML fork on the node, fetches
+  # the GGUF, and installs the `aither-bonsai-llama` systemd unit. That unit's
+  # ExecStart — NOT these serve_args — is the live configuration. Keep the two in
+  # sync by hand until a recipe->unit renderer exists; the script's CTX and
+  # THINK_BUDGET env vars are the knobs that correspond to --ctx-size and
+  # --reasoning-budget here.
+  #
+  # _render_compose DOES honour serve_args correctly for engine=llamacpp now
+  # (fixed 2026-07-25 — it used to silently drop all of them), so a future move to
+  # target=docker-compose with a real `image:` would make this block live.
   target: delegate-playbook
   compose_template: ""
-  delegate: deploy-bonsai-node.sh
+  delegate: deploy-bonsai-node.sh   # fleet-side: .DEPLOYMENT/scripts/optiplex-node/
   port: 8090
 
 backend_config:
@@ -67,7 +89,9 @@ fleet_wiring:
   catalog_entry:
     backend: llamacpp_remote
     category: reasoning
-    context_window: 32768
+    # must equal inference_config.models[0].context_window — this is the value the
+    # fleet router trusts when deciding whether a prompt fits this node.
+    context_window: 4096
     vram_gb: 0
     speed: 4
     quality: 7

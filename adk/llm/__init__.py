@@ -1013,9 +1013,13 @@ class LLMRouter:
 
             async def _fetch():
                 fit = get_llmfit()
-                if not await fit.is_available():
-                    return None
-
+                # NO is_available() gate. That probes the external llmfit
+                # binary/REST, but recommend_config() resolves from the vendored
+                # ODS catalog offline with llmfit as optional refinement. Gating
+                # on the probe meant that on any box WITHOUT llmfit — the normal
+                # case — this returned None and the caller silently fell back to
+                # the static per-provider table, so the resolver was never
+                # reached. Same dead gate as the one removed from adk/setup.py.
                 config = await fit.recommend_config()
                 if "error" in config:
                     return None

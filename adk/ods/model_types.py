@@ -55,7 +55,10 @@ class ModelRecord:
     """Quantization format: q4, q5, q6, q8, fp8, etc."""
 
     specialty: str
-    """Model specialty: Bootstrap, Fast, Balanced, Code, Reasoning, Quality, General."""
+    """Model specialty as it appears in the vendored catalog: Fast, Chat, Quality,
+    Reasoning, General, Balanced, Long Context, Tool Use, Code, Enterprise.
+    (Upstream's score table also weights a 'Bootstrap' specialty, but no record
+    in the vendored library uses it.)"""
 
     llm_model_name: str
     """LLM model identifier (e.g., 'qwen3.5-2b-instruct')."""
@@ -68,6 +71,11 @@ class ModelRecord:
 
     app_compatibility: list[str]
     """Application compatibility: General, Code, Chat, Reasoning, Embedding, etc."""
+
+    tokens_per_sec_estimate: float = 0.0
+    """Catalog's estimated decode throughput. 0.0 when unknown — upstream's
+    normalize_model() drops this field, so it is only populated on records that
+    came through OdsResolver (which re-joins it from the raw catalog)."""
 
 
 @dataclass(frozen=True)
@@ -90,7 +98,12 @@ class OdsRecommendation:
     """Host architecture: x86_64, arm64, unknown (echoed from input)."""
 
     memory_capacity_gb: float
-    """Usable memory capacity (GB): 35% of RAM for CPU, 55% for unified, 95% for discrete."""
+    """Usable memory capacity (GB), exactly as upstream computes it in
+    `usable_memory_gb()`: 55% of RAM on unified/Apple, min(max(RAM*0.35, 3), 8)
+    on CPU or when VRAM is unknown, and the FULL VRAM (100%, not 95%) on a
+    discrete GPU. Do not 'correct' the discrete case to a derate — a prior
+    review asserted 95% and applying it introduced a real divergence from
+    upstream; the fit tolerance lives in `fits()`, not here."""
 
     memory_label: str
     """Human-readable memory label (e.g., 'NVIDIA A100 discrete (24GB)')."""

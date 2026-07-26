@@ -211,6 +211,28 @@ def _render_compose(recipe_id: str, recipe: dict) -> str:
             "              capabilities: [gpu]\n"
         )
         volumes = "    volumes:\n      - node-bootstrap-hf-cache:/root/.cache/huggingface\n"
+    elif engine == "llamacpp":
+        # llama-server takes plain CLI flags and the weights are baked into the
+        # image (or bind-mounted), so there is no --model injection like vllm.
+        #
+        # Without this branch, llamacpp fell into the env-driven `else` below and
+        # rendered SILENT NONSENSE: the env filter requires "=" and no spaces, so
+        # every flag ("--ctx-size 32768", "--reasoning-budget 256", …) was dropped,
+        # `command` was omitted entirely, and the service inherited the vllm image
+        # default plus an /root/.ollama volume. Verified 2026-07-25 by rendering
+        # cpu-1bit-llamacpp: 0 of 7 serve_args survived.
+        if not inference.get("image"):
+            # Fail LOUD rather than emit a compose that names the wrong runtime.
+            # Q1_0 needs the PrismML llama.cpp fork — there is no safe public
+            # default to fall back on.
+            raise ValueError(
+                f"recipe {recipe_id}: engine 'llamacpp' requires an explicit "
+                "inference_config.image (no safe default — Q1_0 needs the "
+                "PrismML fork), got empty"
+            )
+        command_line = "    command: " + json.dumps(list(serve_args))
+        env_lines = []
+        volumes = "    volumes:\n      - node-bootstrap-llamacpp:/models\n"
     else:  # ollama and other env-driven engines
         command_line = ""
         env_lines = [f"      {a}" for a in inference.get("serve_args", []) or []
@@ -234,6 +256,7 @@ def _render_compose(recipe_id: str, recipe: dict) -> str:
         parts.append(gpu_block.rstrip("\n"))
     parts.append(
         "volumes:\n  node-bootstrap-hf-cache:\n  node-bootstrap-ollama:"
+        "\n  node-bootstrap-llamacpp:"
     )
     return "\n".join(parts) + "\n"
 

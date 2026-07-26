@@ -9,6 +9,7 @@ All tests are mocked (no network, no subprocess execution). Every tool must:
 
 from __future__ import annotations
 
+import json
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -464,3 +465,113 @@ class TestMaskToken:
         """Short tokens show (redacted)."""
         masked = tools._mask_token("ab")
         assert masked == "(redacted)"
+
+
+class TestRenderComposeServeArgs:
+    """_render_compose must never SILENTLY drop a recipe's serve_args.
+
+    Regression for D-931: engine 'llamacpp' had no branch, so it fell into the
+    env-driven `else` whose filter requires ("=" in a and " " not in a). Every
+    flag-style arg ("--ctx-size 32768", "--reasoning-budget 256", ...) matched
+    nothing, `command` was omitted entirely, and the service silently inherited
+    the vllm image default plus an /root/.ollama volume. Rendering the real
+    cpu-1bit-llamacpp recipe produced 0 of 7 serve_args and named the WRONG
+    runtime — a plausible-looking compose file that could never work.
+    """
+
+    @staticmethod
+    def _llamacpp_recipe(image="prism-ml/llamacpp-fork:latest"):
+        return {
+            "inference_config": {
+                "engine": "llamacpp",
+                "image": image,
+                "models": [{"source": "gguf://prism-ml/bonsai-27b-q1_0.gguf"}],
+                "serve_args": [
+                    "--host 0.0.0.0",
+                    "--port 8090",
+                    "--ctx-size 32768",
+                    "--reasoning-budget 256",
+                ],
+            },
+            "deployment": {"port": 8090},
+        }
+
+    def test_llamacpp_serve_args_reach_the_command(self):
+        """Every flag AND its value survives into argv (the D-931 regression)."""
+        out = tools._render_compose("cpu-1bit-llamacpp", self._llamacpp_recipe())
+        assert "command:" in out, "llamacpp emitted no command at all"
+        argv = json.loads(out.split("command: ")[1].split("\n")[0])
+        # 4 entries -> 8 argv tokens (each "--flag value" splits in two)
+        assert argv == [
+            "--host", "0.0.0.0",
+            "--port", "8090",
+            "--ctx-size", "32768",
+            "--reasoning-budget", "256",
+        ], argv
+
+    def test_llamacpp_does_not_inherit_vllm_image_or_ollama_volume(self):
+        """The silent-wrong-runtime half of the bug."""
+        out = tools._render_compose("cpu-1bit-llamacpp", self._llamacpp_recipe())
+        assert "prism-ml/llamacpp-fork:latest" in out
+        assert "vllm/vllm-openai" not in out
+        assert "/root/.ollama" not in out
+
+    def test_llamacpp_without_image_fails_loud(self):
+        """No safe public default exists (Q1_0 needs the PrismML fork) — raise
+        rather than emit a compose naming the wrong runtime."""
+        recipe = self._llamacpp_recipe(image="")
+        with pytest.raises(ValueError, match="requires an explicit"):
+            tools._render_compose("cpu-1bit-llamacpp", recipe)
+
+    def test_vllm_still_injects_model_and_args(self):
+        """The pre-existing vllm path must be untouched."""
+        recipe = {
+            "inference_config": {
+                "engine": "vllm",
+                "image": "vllm/vllm-openai:latest",
+                "models": [{"source": "hf://org/model"}],
+                "serve_args": ["--max-model-len 4096"],
+            },
+            "deployment": {"port": 8000},
+        }
+        out = tools._render_compose("v", recipe)
+        argv = json.loads(out.split("command: ")[1].split("\n")[0])
+        assert argv == ["--model", "org/model", "--max-model-len", "4096"], argv
+
+    def test_ollama_stays_env_driven_with_no_command(self):
+        """KEY=VALUE serve_args become env vars, not a command line."""
+        recipe = {
+            "inference_config": {
+                "engine": "ollama",
+                "image": "ollama/ollama:latest",
+                "models": [],
+                "serve_args": ["OLLAMA_HOST=0.0.0.0"],
+            },
+            "deployment": {"port": 11434},
+        }
+        out = tools._render_compose("o", recipe)
+        assert "command:" not in out
+        assert "OLLAMA_HOST: 0.0.0.0" in out
+
+    def test_every_shipped_recipe_renders_or_fails_loud(self):
+        """No shipped recipe may render a compose that drops its own flags."""
+        import yaml
+        from pathlib import Path
+
+        rdir = Path(tools.__file__).parent / "recipes"
+        for path in sorted(rdir.glob("*.yaml")):
+            recipe = yaml.safe_load(path.read_text(encoding="utf-8"))
+            ic = recipe.get("inference_config", {}) or {}
+            if (recipe.get("deployment", {}) or {}).get("target") != "docker-compose":
+                continue
+            try:
+                out = tools._render_compose(path.stem, recipe)
+            except ValueError:
+                continue  # fail-loud is an acceptable outcome
+            for arg in ic.get("serve_args", []) or []:
+                if "=" in arg and " " not in arg:
+                    continue  # env-style, handled separately
+                for token in arg.split():
+                    assert token in out, (
+                        f"{path.name}: serve_arg token {token!r} silently dropped"
+                    )

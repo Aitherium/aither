@@ -97,6 +97,35 @@ _ODS_BACKEND_PREFIXES = (
 )
 
 
+def _canonical_embedding_tier() -> dict[str, Any]:
+    """The embedding tier, which ODS structurally cannot answer.
+
+    `adk.embeddings` is the SDK's single embedding provider (768-d
+    nomic-embed-text) — every scope resolves through it so vectors stay
+    portable. Reporting that here keeps `recommend_config()`'s five-tier shape
+    honest instead of handing back a chat model with an "embedding" label.
+    """
+    try:
+        from adk.embeddings import CANONICAL_DIM, CANONICAL_MODEL
+    except ImportError:  # pragma: no cover - embeddings module is always present
+        CANONICAL_MODEL, CANONICAL_DIM = "nomic-embed-text", 768
+    return {
+        "model": CANONICAL_MODEL,
+        "provider": "aither-embeddings",
+        "source": "canonical_constant",
+        "score": 1.0,
+        "estimated_tps": 0.0,
+        "fit_level": "good",
+        "best_quant": "",
+        "params_b": 0.0,
+        "dimension": CANONICAL_DIM,
+        "reason": (
+            "The ODS catalog contains no embedding models; embeddings resolve "
+            "through adk.embeddings, the SDK's canonical 768-d provider."
+        ),
+    }
+
+
 def _to_ods_backend(raw: str | None) -> str:
     """Map a probe-reported backend to an ODS backend vendor (prefix match)."""
     key = str(raw or "").strip().lower()
@@ -467,25 +496,64 @@ class LLMFitClient:
         # Primary path: OdsResolver (deterministic, offline)
         if not use_llmfit:
             try:
+                from adk.ods.hardware import classify_host  # noqa: E402
                 from adk.ods.model_types import OdsError  # noqa: E402
                 from adk.ods.resolver import OdsResolver
 
                 resolver = OdsResolver()
                 hw = await self.system_info()
                 if hw:
-                    ods_backend = _to_ods_backend(hw.get("backend"))
-                    memory_type = "unified" if hw.get("unified_memory") else "discrete"
+                    probed_backend = _to_ods_backend(hw.get("backend"))
                     vram_mb = int((hw.get("gpu_vram_gb", 0) or 0) * 1024)
                     ram_gb = int(hw.get("total_ram_gb", 0) or 0)
 
-                    # Get ODS recommendations for all tiers
-                    tiers = [
-                        ("fast", "qwen"),
-                        ("balanced", "qwen"),
-                        ("reasoning", "qwen"),
-                        ("coding", "qwen"),
-                        ("embedding", "qwen"),
-                    ]
+                    # Classify the host against the vendored ODS hardware data.
+                    # This is what makes `tier` real: passing tier=None pins it
+                    # to "1", which makes upstream's Spark/GB10 arch-policy guard
+                    # unreachable. known_gpus can also CORRECT the probe (a
+                    # Strix Halo APU reports as discrete AMD but is unified).
+                    # memory_type must be a REAL token, never "". The vendored
+                    # classifier compares it exactly against the heuristic
+                    # ladder, so an empty/unknown value matches no NVIDIA class
+                    # and silently drops a 24GB GPU host to the cpu/T1 default —
+                    # sized from RAM instead of VRAM. known_gpus still overrides
+                    # this when it recognises the device.
+                    host = classify_host(
+                        gpu_name=hw.get("gpu_name", ""),
+                        cpu_name=hw.get("cpu_name", ""),
+                        vendor=probed_backend,
+                        memory_type="unified" if hw.get("unified_memory") else "discrete",
+                        vram_mb=vram_mb,
+                        ram_gb=ram_gb,
+                    )
+                    ods_backend = host.backend
+                    memory_type = host.memory_type
+                    if host.vram_mb:
+                        vram_mb = host.vram_mb
+
+                    # An UNCLASSIFIED host must not lose its GPU. Upstream's
+                    # heuristic ladder enumerates nvidia/amd/apple/none only —
+                    # there is no `intel` vendor — so an Intel Arc box classifies
+                    # as cpu/T1, and taking that backend would discard its VRAM
+                    # and size from RAM: a 16GB Arc dropped from a 12B model to a
+                    # 3B one. Upstream's own usable_memory_gb() sizes ANY backend
+                    # key it doesn't recognise from VRAM, so keep the probed
+                    # backend here and keep only the classifier's tier default.
+                    # Only applies when the classifier matched NOTHING — a real
+                    # match (including its cpu rungs) is authoritative.
+                    if (
+                        host.source == "unknown"
+                        and probed_backend not in {"cpu", "unknown", "none"}
+                        and vram_mb > 0
+                    ):
+                        logger.debug(
+                            "ODS does not enumerate vendor %r; keeping the probed "
+                            "backend so its %dMB of VRAM is not discarded.",
+                            probed_backend, vram_mb,
+                        )
+                        ods_backend = probed_backend
+                        memory_type = "unified" if hw.get("unified_memory") else "discrete"
+
                     config: dict[str, Any] = {
                         "hardware": {
                             "gpu": hw.get("gpu_name", ""),
@@ -493,20 +561,43 @@ class LLMFitClient:
                             "ram_gb": int(hw.get("total_ram_gb", 0) or 0),
                             "cpu_cores": hw.get("cpu_cores", 0),
                             "backend": hw.get("backend", ""),
+                            "ods_class": host.id,
+                            "ods_tier": host.tier,
+                            # The backend/memory_type actually USED for sizing,
+                            # which differs from host.backend when the probe is
+                            # kept for a vendor upstream does not enumerate.
+                            "ods_backend": ods_backend,
+                            "memory_type": memory_type,
+                            "classified_backend": host.backend,
+                            "classified_by": host.source,
+                            "bandwidth_gbps": host.bandwidth_gbps,
+                            # NO compose_overlays here. classify_host() returns
+                            # them (upstream's classifier does), but publishing
+                            # them in THIS dict would promise a deployment input
+                            # that nothing consumes: adk's own node_bootstrap
+                            # deliberately renders self-contained compose from
+                            # the recipe, because fleet-repo overlay templates do
+                            # not ship in the public wheel. Callers deploying
+                            # from ODS's own compose tree can read them off
+                            # HostClass directly. See D-940.
                         },
                     }
 
-                    # Ensure all tiers are populated (or None if failed)
+                    # One resolve PER ROLE. Calling resolve() five times with the
+                    # same envelope returns the same model five times (D-916) —
+                    # upstream answers "one model for this box", not "one per
+                    # role", so the role narrowing lives in resolve_role().
                     tier_failures = []
-                    for tier_name, profile in tiers:
+                    for tier_name in ("fast", "balanced", "reasoning", "coding"):
                         try:
-                            ods_rec = resolver.resolve(
+                            ods_rec = resolver.resolve_role(
+                                tier_name,
                                 backend=ods_backend,
                                 memory_type=memory_type,
                                 vram_mb=vram_mb,
                                 ram_gb=ram_gb,
-                                profile=profile,
-                                tier=None,
+                                profile="qwen",
+                                tier=host.tier,
                             )
                             # Build complete tier dict with confidence/source tagging
                             config[tier_name] = {
@@ -514,10 +605,11 @@ class LLMFitClient:
                                 "provider": "ods",
                                 "source": "local_resolver",  # Confidence source tag
                                 "score": ods_rec.confidence,
-                                "estimated_tps": 0.0,  # ODS doesn't provide TPS
+                                "estimated_tps": ods_rec.selected.tokens_per_sec_estimate,
                                 "fit_level": "good",  # ODS always scores "good"
                                 "best_quant": ods_rec.selected.quantization,
                                 "params_b": ods_rec.selected.size_mb / 1000.0,
+                                "specialty": ods_rec.selected.specialty,
                                 "reason": ods_rec.reason,  # Human-readable explanation
                             }
                             logger.debug(
@@ -531,9 +623,18 @@ class LLMFitClient:
                             tier_failures.append(f"{tier_name}:{str(e)[:50]}")
                             logger.debug("ODS %s failed: %s", tier_name, e)
 
-                    # Check if any tiers succeeded
+                    # The ODS catalog is a GENERATION-model library with zero
+                    # embedding records — resolve_role("embedding") raises by
+                    # design. Answer from the SDK's canonical embedder instead
+                    # of letting a chat model masquerade as an embedding tier.
+                    config["embedding"] = _canonical_embedding_tier()
+
+                    # Did any tier ODS is actually responsible for succeed?
+                    # Deliberately EXCLUDES "embedding": it is a static constant
+                    # that never fails, so counting it would make this check
+                    # vacuously true and the llmfit fallback unreachable.
                     successful_tiers = [
-                        t for t in ["fast", "balanced", "reasoning", "coding", "embedding"]
+                        t for t in ["fast", "balanced", "reasoning", "coding"]
                         if config.get(t) is not None
                     ]
                     if successful_tiers:

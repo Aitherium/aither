@@ -11,3 +11,4 @@ model-library.json      text eol=lf
 gpu-database.json       text eol=lf
 hardware-classes.json   text eol=lf
 _upstream_select.py     text eol=lf
+_upstream_classify.sh   text eol=lf

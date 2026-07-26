@@ -10,9 +10,20 @@ Copyright:   (c) Osmantic contributors
 COMPONENTS VENDORED FROM ODS:
 - Model catalog (model-library.json) — list of LLM models with GGUF files, performance profiles, and compatibility metadata
 - GPU hardware database (gpu-database.json) — hardware tier mapping, bandwidth LUT, and heuristic classes
-- Legacy hardware classification (hardware-classes.json) — deprecated tier definitions (included for backward compatibility)
+- Compose-overlay class table (hardware-classes.json) — per-class backend/tier/
+  compose_overlays. Upstream's classifier does NOT read this file at runtime (it
+  keys overlays off the backend via OVERLAY_MAP); upstream ships a contract test
+  asserting the two agree, and that test is ported here as
+  test_overlay_map_mirrors_hardware_classes_json. It is a declarative mirror, not
+  a lookup table — and it is NOT "deprecated/backward compatibility", which is
+  what this line used to claim while nothing read the file at all.
 - Selection algorithm (_upstream_select.py) — ODS scripts/select-model.py carried
   VERBATIM, byte-for-byte. This is upstream Apache-2.0 source code, not a port.
+- Hardware classifier (_upstream_classify.sh) — ODS scripts/classify-hardware.sh
+  carried VERBATIM, byte-for-byte. Unlike select-model.py this one is bash
+  wrapping a Python heredoc, so it cannot be imported; adk/ods/hardware.py is a
+  PORT of its embedded Python, and adk/ods/tests/test_classify_differential.py
+  executes the vendored original as the reference for every ported decision.
 
 MATERIAL CHANGES FROM UPSTREAM:
 1. NO port of the selection algorithm. adk/ods/_upstream_select.py is ODS's
@@ -26,6 +37,17 @@ MATERIAL CHANGES FROM UPSTREAM:
    NVIDIA envelopes) while its own unit tests were green — because those tests asserted
    against hand-written expectations derived from placeholder data. The reimplementation
    was discarded. adk/ods/tests/test_differential.py now enforces agreement permanently.
+1b. SAME LESSON, SECOND TIME: adk/ods/hardware.py was first written from the JSON
+   data files WITHOUT checking that upstream already shipped a classifier
+   (scripts/classify-hardware.sh). It does, and the fresh implementation
+   disagreed with it in four ways — first-pattern-wins instead of
+   longest-pattern-wins, no device_id matching, GPU name only (so a real Strix
+   Halo host, identified by its CPU string "RYZEN AI MAX+ 395", missed its
+   known_gpus entry entirely), and compose overlays keyed on platform+vendor
+   instead of on the backend. hardware.py is now a port of the vendored script
+   and test_classify_differential.py runs the original as the reference.
+   RULE: before porting or deriving ANYTHING from this upstream's data files,
+   grep the upstream tree for a script that already computes it.
 2. Namespace adaptation: Schema keys adapted to Python dataclass fields (no functional changes)
 3. Import packaging: JSON files packaged via importlib.resources for wheel distribution (importlib.abc compatibility)
 4. Integration: Module exports OdsResolver, OdsRecommendation, ModelRecord classes for adk use
@@ -43,7 +65,7 @@ RE-VENDOR TRACEABILITY:
   which carries no commit SHA. Integrity is anchored on the per-file sha256 map
   instead. Do not substitute a guessed SHA — a plausible-looking invented commit id
   reads as verified provenance and is worse than an honest "unknown".
-- Every vendored file is byte-identical to upstream and is verified by:
+- All FIVE vendored files are byte-identical to upstream and verified by:
       python adk/ods/tools/validate_catalog.py --verify-vendored
 
 RE-VENDOR VALIDATION:
@@ -51,8 +73,10 @@ When re-vendoring from upstream, schema validation is mandatory:
   * python adk/ods/tools/validate_catalog.py --verify-vendored   (byte-identity)
   * python adk/ods/tools/validate_catalog.py adk/ods/model-library.json  (schema)
   * python adk/ods/tools/validate_catalog.py adk/ods/gpu-database.json   (schema)
-  * python -m pytest adk/ods/tests/ — test_differential.py MUST stay green; it is the
-    only check that catches wrapper drift from upstream selection semantics.
+  * python -m pytest adk/ods/tests/ — test_differential.py (selection) and
+    test_classify_differential.py (hardware classification) MUST stay green; they
+    are the only checks that catch drift from upstream semantics. The second one
+    executes the vendored classify-hardware.sh payload as its reference.
   * python adk/ods/tools/sweep_differential.py 250 — DEEP differential sweep over
     tier-threshold VRAM values, installable_only and size ceilings. Not in the default
     pytest run (subprocess per case, several minutes). Run it after every re-vendor and
@@ -79,7 +103,8 @@ Quick reference:
      ods/config/gpu-database.json       -> adk/ods/gpu-database.json
      ods/config/hardware-classes.json   -> adk/ods/hardware-classes.json
      ods/scripts/select-model.py        -> adk/ods/_upstream_select.py
-3. Recompute sha256 for all four and update ODS_VENDORED_SHA256, plus
+     ods/scripts/classify-hardware.sh   -> adk/ods/_upstream_classify.sh
+3. Recompute sha256 for all FIVE and update ODS_VENDORED_SHA256, plus
    ODS_VENDORED_COMMIT / ODS_VENDORED_REF / ODS_VENDORED_RELEASE /
    ODS_LAST_VENDORED_DATE in adk/ods/__init__.py.
 4. Verify byte-identity: python adk/ods/tools/validate_catalog.py --verify-vendored
@@ -88,6 +113,10 @@ Quick reference:
 6. Run tests: python -m pytest adk/ods/tests/ -v
    If test_differential.py fails, upstream changed its selection semantics —
    fix the wrapper in resolver.py, never the vendored file.
+   If test_classify_differential.py fails, upstream changed its CLASSIFICATION
+   semantics — fix the port in hardware.py, never the vendored file. If
+   test_overlay_map_mirrors_hardware_classes_json fails, upstream changed
+   OVERLAY_MAP or hardware-classes.json without the other; mirror the script.
 7. If upstream changed the catalog schema, the required-field sets in
    adk/ods/data.py and adk/ods/tools/validate_catalog.py may need widening;
    check FIELD COVERAGE across all records, not just the first one.

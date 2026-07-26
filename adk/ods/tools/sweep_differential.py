@@ -36,7 +36,7 @@ if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 
 from adk.ods.model_types import OdsError  # noqa: E402
-from adk.ods.resolver import OdsResolver  # noqa: E402
+from adk.ods.resolver import ROLE_PREFERENCES, OdsResolver  # noqa: E402
 
 # Threshold-adjacent VRAM values (ODS tier edges sit at 6/8/12/24/40/48/90GB),
 # probed at n-1 / n / n+1 so off-by-one comparisons surface.
@@ -89,6 +89,55 @@ def _ours(resolver: OdsResolver, case: tuple) -> tuple[str, str]:
     return ("ok", rec.selected.id)
 
 
+def _role_invariants(resolver: OdsResolver, case: tuple) -> list[str]:
+    """Check what CAN be checked about role picks.
+
+    There is no upstream reference for `resolve_role()` — upstream has no notion
+    of roles — so this cannot be a differential. What it can assert is the
+    invariant that makes role selection safe: a role pick must come from the
+    feasible set upstream produced for the SAME envelope (or be upstream's own
+    arch-policy substitution). A role that widens the candidate set could hand a
+    host a model that does not fit.
+    """
+    backend, mem, vram, ram, prof, tier, arch, inst, ceil = case
+    kwargs = dict(
+        backend=backend, memory_type=mem, vram_mb=vram, ram_gb=ram,
+        profile=prof, tier=tier, host_arch=arch,
+        installable_only=inst, max_size_mb=ceil,
+    )
+    try:
+        baseline = resolver.resolve(**kwargs)
+    except OdsError:
+        return []  # envelope rejected outright; roles are expected to match
+    feasible = {m["id"] for m in resolver._envelope(  # noqa: SLF001 - tool, not API
+        backend, mem, vram, ram, prof, tier, arch, ceil, inst,
+    ).ranked}
+    feasible.add(baseline.selected.id)  # arch-policy substitution is legitimate
+
+    problems = []
+    for role in ROLE_PREFERENCES:
+        try:
+            rec = resolver.resolve_role(role, **kwargs)
+        except OdsError as e:
+            problems.append(f"role={role} raised: {str(e)[:80]}")
+            continue
+        if rec.selected.id not in feasible:
+            problems.append(
+                f"role={role} picked {rec.selected.id}, which is NOT in upstream's "
+                f"feasible set for this envelope"
+            )
+        if rec.selected.vram_required_gb > rec.memory_capacity_gb + 0.25:
+            # The one exception upstream itself allows: when nothing fits, it
+            # returns the smallest model anyway rather than nothing.
+            if rec.selected.id != baseline.selected.id:
+                problems.append(
+                    f"role={role} picked {rec.selected.id} needing "
+                    f"{rec.selected.vram_required_gb}GB in a "
+                    f"{rec.memory_capacity_gb}GB envelope"
+                )
+    return problems
+
+
 def main() -> int:
     n = int(sys.argv[1]) if len(sys.argv) > 1 else 250
     # Fixed seed: a sweep that shuffles differently every run makes a failure
@@ -104,8 +153,10 @@ def main() -> int:
     resolver = OdsResolver(catalog_path=str(CATALOG))
     match = divergent = both_err = 0
     failures: list[tuple] = []
+    role_problems: list[str] = []
 
     for i, case in enumerate(cases, 1):
+        role_problems.extend(f"{case}: {p}" for p in _role_invariants(resolver, case))
         u_kind, u_val = _upstream(case)
         o_kind, o_val = _ours(resolver, case)
         if u_kind == "ok" and o_kind == "ok":
@@ -125,12 +176,17 @@ def main() -> int:
 
     print(f"\nmatch={match}  divergent={divergent}  both_errored={both_err}  "
           f"total={len(cases)}")
+    print(f"role-invariant violations={len(role_problems)}")
     for case, up, ours_ in failures[:15]:
         print(f"  DIVERGE {case}\n     upstream={up}\n     ours    ={ours_}")
-    if divergent:
-        print("\n[FAIL] resolver.py disagrees with the vendored upstream selector.")
+    for problem in role_problems[:15]:
+        print(f"  ROLE {problem}")
+    if divergent or role_problems:
+        print("\n[FAIL] resolver.py disagrees with the vendored upstream selector "
+              "or violates a role invariant.")
         return 1
-    print("[OK] resolver matches upstream on every sampled envelope")
+    print("[OK] resolver matches upstream on every sampled envelope, and every "
+          "role pick came from upstream's feasible set")
     return 0
 
 

@@ -349,7 +349,19 @@ class TestLLMFitClientRecommendConfig:
         for tier in ("fast", "balanced", "reasoning", "coding", "embedding"):
             assert isinstance(config[tier], dict), f"{tier} tier missing"
             assert config[tier]["model"], f"{tier} tier has no model"
+
+        generation_tiers = ("fast", "balanced", "reasoning", "coding")
+        for tier in generation_tiers:
             assert config[tier]["provider"] == "ods"
+        # CONTRACT CHANGE (D-916): the four generation tiers must not collapse
+        # to one model — calling resolve() once per tier used to return the
+        # SAME pick five times.
+        assert len({config[t]["model"] for t in generation_tiers}) >= 3, config
+        # CONTRACT CHANGE: the ODS catalog holds no embedding models, so this
+        # tier is answered by the SDK's canonical embedder, not by a chat model
+        # wearing an "embedding" label.
+        assert config["embedding"]["provider"] == "aither-embeddings"
+        assert config["embedding"]["model"] == "nomic-embed-text"
 
 
 class TestLLMFitClientOllamaModels:
@@ -604,4 +616,79 @@ class TestOdsBackendMapping:
         config = await client.recommend_config()
         assert "error" not in config
         # 24GB VRAM must yield a substantial model, not a ~3B RAM-tier fallback.
-        assert config["fast"]["params_b"] >= 10, config["fast"]
+        # Asserted on `balanced`, NOT `fast`: since D-916 the fast tier is
+        # deliberately a small low-latency model on every box, so it can no
+        # longer discriminate a mis-sized envelope. With the backend map broken
+        # (cuda_12 -> cpu) capacity collapses to 8GB and balanced drops to ~2B,
+        # so this still catches the original defect.
+        assert config["balanced"]["params_b"] >= 10, config["balanced"]
+        # The host must also be classified off the real VRAM, not RAM.
+        assert config["hardware"]["ods_tier"] == "T3", config["hardware"]
+
+    @pytest.mark.asyncio
+    async def test_unclassified_gpu_vendor_keeps_its_vram(self):
+        """An Intel Arc host must not be sized from RAM.
+
+        Upstream's heuristic ladder enumerates nvidia/amd/apple/none only — there
+        is no `intel` vendor — so an Arc box classifies as cpu/T1. Adopting that
+        backend discards its VRAM: a 16GB Arc dropped from a 12B model to a 3B
+        one. Regression introduced when `backend` began coming from the
+        classifier, caught by asking what happens to a vendor upstream omits.
+        """
+        from adk.llmfit import LLMFitClient
+
+        client = LLMFitClient(base_url="http://localhost:8793")
+        mock = AsyncMock()
+        mock.get = AsyncMock(side_effect=ConnectionError())
+        client._client = mock
+        client._find_binary = lambda: None
+        client._system_cache = {
+            "backend": "sycl", "gpu_vram_gb": 16.0, "total_ram_gb": 32.0,
+            "cpu_cores": 16, "gpu_name": "Intel Arc B580", "has_gpu": True,
+        }
+        client._system_cache_time = float("inf")
+
+        config = await client.recommend_config()
+        assert "error" not in config
+        # 16GB of VRAM, not min(max(32*0.35, 3), 8) = 8GB of RAM.
+        assert config["balanced"]["params_b"] >= 5, config["balanced"]
+        # The classifier genuinely has no class for it — that is upstream's
+        # behaviour and is faithfully reported; only the SIZING is preserved.
+        assert config["hardware"]["ods_class"] == "unknown", config["hardware"]
+        assert config["hardware"]["classified_backend"] == "cpu", config["hardware"]
+        # ...and the dict must report the backend actually USED for sizing,
+        # not the classification it diverged from.
+        assert config["hardware"]["ods_backend"] == "intel", config["hardware"]
+
+
+class TestLlmRouterTierResolution:
+    """The SECOND dead `is_available()` gate, in adk/llm.
+
+    `adk/setup.py` had a gate that probed the external llmfit binary before
+    calling `recommend_config()` — which resolves offline from the vendored ODS
+    catalog. On any box without llmfit (the normal case) it returned None and
+    the caller silently used a static table, so the resolver was never reached.
+    That gate was removed from setup.py; an identical one survived in
+    `LLMRouter._llmfit_model_for_tier` and is removed here.
+    """
+
+    def test_tiers_resolve_offline_without_the_llmfit_binary(self):
+        import adk.llm as llm_mod
+
+        # The module caches globally; reset so this test actually resolves.
+        llm_mod._llmfit_models = None
+        llm_mod._llmfit_checked = False
+
+        resolved = {
+            tier: llm_mod.LLMRouter._llmfit_model_for_tier(tier)
+            for tier in ("small", "medium", "large")
+        }
+        # POSITIVE assertion: real model names, not None. With the old gate in
+        # place every one of these was None on a box without llmfit.
+        for tier, model in resolved.items():
+            assert model, f"{tier} did not resolve (dead is_available() gate is back?)"
+            assert "/" not in model, f"{tier} returned an HF-style name: {model}"
+
+        # D-916: small/medium/large map to fast/balanced/reasoning, which used
+        # to be the same model three times.
+        assert len(set(resolved.values())) >= 2, resolved
