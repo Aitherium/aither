@@ -439,6 +439,34 @@ class TestEnqueueFailureHandling:
         assert spool.local_nodes(limit=10) == []
         spool.close()
 
+    def test_enqueue_returns_minus_one_when_the_db_write_itself_raises(self, tmp_path):
+        """The RAISING branch of enqueue, not just the no-connection branch.
+
+        The test above exercises a spool whose connection could never be opened,
+        so ``_ensure_connection`` returns None and enqueue takes an early exit —
+        the ``except`` handler is never reached. Proven by mutation: making that
+        handler ``raise`` instead of returning -1 left the suite green, because
+        nothing drove a live connection into a failing write.
+
+        This drives that path: a working spool whose INSERT then blows up. The
+        offline-first contract is that a failed graph write can never break the
+        agent run that produced it, so this must return -1 and not propagate.
+        """
+        spool = Spool(db_path=tmp_path / "ok.db")
+        assert spool.enqueue(_make_test_update()) > 0, "spool must work before we break it"
+
+        class _ExplodingConn:
+            def execute(self, *a, **k):
+                raise sqlite3.OperationalError("disk I/O error")
+
+            def commit(self):
+                raise sqlite3.OperationalError("disk I/O error")
+
+        spool._conn = _ExplodingConn()
+
+        rowid = spool.enqueue(_make_test_update(run_id="after-break"))
+        assert rowid == -1, "a raising write must degrade to -1, never propagate"
+
 
 class TestThreadSafety:
     """Test thread-safe concurrent access."""

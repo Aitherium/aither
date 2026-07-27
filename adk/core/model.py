@@ -55,7 +55,15 @@ class ModelBackend(Protocol):
         **opts: Any,
     ) -> ModelResponse: ...
 
-    async def stream(
+    # NOT ``async def``: every implementation is an async *generator*, so
+    # callers do ``async for chunk in backend.stream(...)``. Declaring this
+    # ``async def`` would type it as a coroutine returning an iterator --
+    # i.e. ``await backend.stream(...)`` -- which raises ``TypeError: object
+    # async_generator can't be used in 'await' expression`` against every
+    # backend we ship. A plain ``def`` returning ``AsyncIterator`` is the
+    # correct Protocol form for an async generator.
+    # Pinned by tests/test_backend_conformance.py.
+    def stream(
         self,
         messages: list[Message],
         *,

@@ -24,17 +24,29 @@ import yaml
 
 logger = logging.getLogger("node_bootstrap_recipes")
 
-RECIPE_IDS = [
-    "cpu-1bit-llamacpp",
-    "cpu-ollama",
-    "cuda-vllm-8gb",
-    "cuda-vllm-24gb",
-    "cuda-vllm-40gb",
-    "cuda-dual-stack-32gb",
-    "unified-memory-vllm",
-    "metal-ollama",
-    "cloud-api",
-]
+RECIPES_DIR = Path(__file__).parent / "recipes"
+
+
+def _discover_recipe_ids() -> list[str]:
+    """Every .yaml in recipes/, sorted.
+
+    This used to be a hardcoded list, and that made adding a recipe a SILENT no-op: the
+    YAML parsed, `get_recipe(<id>)` loaded it by path, and every test that touched the file
+    directly passed — but `resolve_recipe` gates on membership in this list both for the
+    explicit `recipe_id` branch and for the auto-resolution loop, so an unlisted recipe was
+    never selectable by any caller. `bonsai-selfhost` shipped inert exactly this way.
+
+    Deriving from disk is safe because the candidate sort is fully deterministic on
+    (-score, -tier_rank, needs_delegate, rid) — iteration order does not affect the winner.
+    """
+    try:
+        return sorted(p.stem for p in RECIPES_DIR.glob("*.yaml"))
+    except OSError as e:  # unreadable dir — better to serve nothing than to crash import
+        logger.error("Cannot enumerate recipes dir %s: %s", RECIPES_DIR, e)
+        return []
+
+
+RECIPE_IDS = _discover_recipe_ids()
 
 TIER_RANKS = {
     "cpu": 1,
@@ -189,6 +201,11 @@ def resolve_recipe(
     for rid in RECIPE_IDS:
         recipe = _load_recipe(rid)
         if not recipe:
+            continue
+        # `auto_select: false` = reachable by explicit id, never chosen for you. Now that the
+        # id list comes off disk, any new recipe would otherwise silently enter the ranking
+        # and could displace a fleet default by tier-and-alphabet accident.
+        if recipe.get("auto_select") is False:
             continue
         score, warnings = _score_recipe(recipe, system_info)
         if score > 0 or recipe.get("id") == "cloud-api":  # cloud-api always available

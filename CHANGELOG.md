@@ -2,6 +2,33 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [2.44.0] - 2026-07-27
+
+### Fixed — `adk enroll` silently registered devices into the WRONG TENANT
+
+- **`adk enroll` succeeded without an identity and bound the device to the tenant
+  `"personal"` instead of the caller's workspace.** `_extract_tenant_slug()`
+  (`fleet_enroll.py:217`) falls back to `"personal"` when `~/.aither/auth.json` is
+  absent, so enrolling a fresh machine reported success while registering it
+  somewhere the owner cannot see. Nothing failed, nothing warned, and the endpoint
+  simply never appeared in their workspace — the fail-open shape where the
+  operation reports success and does the wrong thing.
+
+  This bites hardest on unattended installs (phones, headless VMs, cloud images),
+  which are exactly the machines nobody is watching closely enough to notice.
+
+  `cmd_enroll` now **refuses** when no identity is present, and names the two ways
+  to supply one:
+
+      adk login                     # browser flow
+      adk login --api-key <key>     # headless / phone / VM
+
+  Verified by running it with an empty `HOME`: refuses, **exit 1**. (`AITHER_NODE_TOKEN`
+  is accepted as an identity, so token-based fleet enrolment is unaffected.)
+
+  Found while building a one-command self-host installer for Android's Linux
+  terminal, by running the installer rather than reasoning about it.
+
 ## [2.39.0] - 2026-07-25
 
 ### Fixed — containerized agents were unreachable

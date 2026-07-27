@@ -38,7 +38,7 @@ from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
 
 from adk.core.logging import get_logger
-from adk.core.model import Message, ModelResponse
+from adk.core.model import Message, ModelBackend, ModelResponse
 
 from .tiers import ModelTier, ReasoningRouter
 
@@ -63,8 +63,8 @@ class SpeculativeBackend:
 
     def __init__(
         self,
-        draft: Any,
-        verifier: Any,
+        draft: ModelBackend,
+        verifier: ModelBackend,
         *,
         k: int = 3,
         verifier_max_tokens: int = 64,
@@ -75,10 +75,11 @@ class SpeculativeBackend:
         self.verifier = verifier
         self.k = k
         self.verifier_max_tokens = verifier_max_tokens
-        self.model = (
-            f"speculative({getattr(draft, 'model', '?')}|"
-            f"{getattr(verifier, 'model', '?')})"
-        )
+        # Direct access, not ``getattr(draft, "model", "?")``: ``model`` is a
+        # total member of the ModelBackend contract (enforced by
+        # tests/test_backend_conformance.py), so probing it could only ever
+        # mask a genuinely broken backend behind a cosmetic "speculative(?|?)".
+        self.model = f"speculative({draft.model}|{verifier.model})"
         self.stats = SpeculativeStats()
 
     # ------------------------------------------------------------------

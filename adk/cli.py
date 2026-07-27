@@ -3645,6 +3645,35 @@ def cmd_enroll(args) -> int:
         from adk.fleet_enroll import enroll_on_boot, _load_node_auth, _generate_node_id
         from adk.enrollment import build_registration
 
+        # FAIL CLOSED ON IDENTITY. `_extract_tenant_slug()` (fleet_enroll.py:217) falls back
+        # to "personal" when ~/.aither/auth.json is absent, so an unauthenticated `adk enroll`
+        # SUCCEEDED while binding the device to a tenant that is not yours. The endpoint then
+        # never appears in your workspace and nothing says why — the operation reports success
+        # and does the wrong thing, which is the fail-open shape this codebase keeps hitting.
+        #
+        # Onboarding a device is exactly when identity has to be certain. `--api-key` is the
+        # non-interactive path, which is what a phone or a headless VM needs.
+        from adk.fleet_enroll import _load_auth_config
+        _auth = _load_auth_config()
+        _has_identity = bool(
+            _auth.get("tenant_slug")
+            or (_auth.get("user") or {}).get("tenant_slug")
+            or _auth.get("api_key")
+            or _auth.get("token")
+        )
+        if not _has_identity and not os.environ.get("AITHER_NODE_TOKEN"):
+            print("✗ Not signed in — refusing to enrol.")
+            print()
+            print("  Without an identity this device registers under the tenant 'personal'")
+            print("  instead of your workspace, and it looks like it worked.")
+            print()
+            print("  Sign in first, then re-run:")
+            print("    adk login                     # browser flow")
+            print("    adk login --api-key <key>     # headless / phone / VM")
+            print(f"    adk enroll --portal {portal_url}")
+            print()
+            return 1
+
         # Check if already enrolled
         existing = _load_node_auth()
         if existing.get("node_id") and not force:

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from adk.toolpacks.node_bootstrap.recipes import (
     RECIPE_IDS,
+    RECIPES_DIR,
     get_recipe,
     list_recipes,
     resolve_recipe,
@@ -75,18 +76,33 @@ class TestRecipeLoading:
     """Test that all recipes load and conform to schema."""
 
     def test_all_recipes_load(self):
-        """Each of 9 recipes should load without error."""
-        assert len(RECIPE_IDS) == 9
+        """Every recipe loads and its `id` matches its filename."""
+        assert RECIPE_IDS, "no recipes discovered at all"
         for recipe_id in RECIPE_IDS:
             recipe = get_recipe(recipe_id)
             assert recipe is not None, f"Recipe {recipe_id} failed to load"
             assert recipe.get("id") == recipe_id
 
+    def test_every_yaml_on_disk_is_selectable(self):
+        """A recipe file that RECIPE_IDS omits is INERT — it parses, `get_recipe` finds it by
+        path, and nothing can ever select it, because `resolve_recipe` gates on membership.
+
+        `bonsai-selfhost` shipped exactly that way against the old hardcoded list. This is the
+        assertion the count-based test could not make: it compares against DISK, so adding a
+        recipe and forgetting to register it fails here instead of silently doing nothing.
+        """
+        on_disk = {p.stem for p in RECIPES_DIR.glob("*.yaml")}
+        assert on_disk, "recipes/ contains no yaml — the loader path is wrong"
+        assert on_disk == set(RECIPE_IDS), (
+            f"recipe files not selectable: {sorted(on_disk - set(RECIPE_IDS))}; "
+            f"ids with no file: {sorted(set(RECIPE_IDS) - on_disk)}"
+        )
+
     def test_recipe_list(self):
         """list_recipes() returns all recipe IDs."""
         recipes = list_recipes()
-        assert len(recipes) == 9
         assert set(recipes) == set(RECIPE_IDS)
+        assert len(recipes) == len(RECIPE_IDS)
 
     def test_schema_root_keys(self):
         """Every recipe has required top-level keys."""
