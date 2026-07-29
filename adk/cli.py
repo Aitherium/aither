@@ -2325,6 +2325,98 @@ def cmd_balance(args) -> int:
     return 0
 
 
+def cmd_x_session(args) -> int:
+    """Bootstrap / inspect the browser-transport X session.
+
+    The autonomous X poster (browser transport) needs a logged-in x.com session
+    stored in the fleet's local vault. This never handles a password: it takes an
+    ALREADY logged-in session — exported from a browser you are signed into — and
+    hands it to the fleet's verify-and-store endpoint, which proves it is live
+    before persisting it. The AitherConnect extension does the same thing with a
+    single click; this is the headless/operator path.
+
+    Export a state file with any of:
+      * the AitherConnect sidepanel "Sync X session" (no file needed — it POSTs
+        directly), or
+      * `playwright open --save-storage=x_state.json x.com` after logging in, or
+      * any tool that writes a Playwright storage_state JSON.
+    """
+    import json as _json
+
+    import requests
+
+    from adk._tls import tls_verify
+
+    sub = getattr(args, "x_session_command", None)
+
+    # Fleet endpoints, host-side. Genesis LB terminates plain HTTP on 8001; the
+    # worker serves the same router on 8159 (TLS). Try both.
+    bases = [
+        ("http://localhost:8001", False),
+        ("https://localhost:8159", tls_verify()),
+    ]
+    saved = load_saved_config()
+    api_key = saved.get("api_key", "")
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    def _call(method, path, body=None):
+        # Try each base; a 404 means THIS host does not serve the route (Genesis
+        # bakes its code and lacks /social/x/* until rebuilt), so fall through to
+        # the next base rather than reporting the 404. Only a non-404 response —
+        # or the last base — is authoritative. Without this the worker's real
+        # verdict is shadowed by Genesis's 404 (the route lives on the worker).
+        last = None
+        last_404 = None
+        for base, verify in bases:
+            try:
+                url = f"{base}{path}"
+                resp = requests.request(
+                    method, url, headers=headers, json=body, timeout=90, verify=verify
+                )
+                data = resp.json()
+                if resp.status_code == 404:
+                    last_404 = (resp.status_code, data)
+                    continue
+                return resp.status_code, data
+            except Exception as exc:  # noqa: BLE001 — try the next base
+                last = exc
+        if last_404 is not None:
+            return last_404
+        return 0, {"error": f"no fleet endpoint reachable: {last}"}
+
+    if sub == "status":
+        code, data = _call("GET", "/social/x/session-status")
+        print(_json.dumps(data, indent=2))
+        return 0 if data.get("connected") else 1
+
+    if sub == "import":
+        state_path = getattr(args, "state", None)
+        if not state_path:
+            print("  Error: --state <file.json> is required for import")
+            return 1
+        try:
+            with open(state_path, encoding="utf-8") as fh:
+                state = _json.load(fh)
+        except Exception as exc:  # noqa: BLE001
+            print(f"  Error: could not read {state_path}: {exc}")
+            return 1
+        # Accept either a full storage_state or {"cookies": [...]}.
+        body = {"storage_state": state} if "cookies" in state else state
+        code, data = _call("POST", "/social/x/import-session", body)
+        if data.get("ok"):
+            print(f"  Stored a verified X session for @{data.get('handle')} "
+                  f"({data.get('cookie_count')} cookies).")
+            print("  Flip x_autopost.enabled=true in config/social.yaml to go live.")
+            return 0
+        print(f"  Import failed ({data.get('reason')}): {data.get('error')}")
+        return 1
+
+    print("  Usage: adk x-session {import --state <file.json> | status}")
+    return 1
+
+
 def cmd_connect(args):
     """Connect to AitherOS — detect local LLMs, activate cloud, join mesh."""
     import asyncio
@@ -11236,6 +11328,19 @@ def _register_commands(sub):
     # adk balance — show Aitherium credit account info
     sub.add_parser("balance", help="Show your Aitherium credit balance and earnings")
 
+    # adk x-session — bootstrap / inspect the browser-transport X session
+    x_session_p = sub.add_parser(
+        "x-session", help="Bootstrap the autonomous X poster's logged-in session"
+    )
+    x_session_sub = x_session_p.add_subparsers(dest="x_session_command")
+    x_import_p = x_session_sub.add_parser(
+        "import", help="Verify and store an exported logged-in x.com session"
+    )
+    x_import_p.add_argument(
+        "--state", required=True, help="Path to a Playwright storage_state JSON"
+    )
+    x_session_sub.add_parser("status", help="Is the stored X session logged in right now?")
+
     # adk claude-account — manage multiple Claude Code logins
     claude_account_p = sub.add_parser(
         "claude-account",
@@ -13024,6 +13129,8 @@ def main():
         sys.exit(cmd_logout(args))
     elif args.command == "balance":
         sys.exit(cmd_balance(args))
+    elif args.command == "x-session":
+        sys.exit(cmd_x_session(args))
     elif args.command == "claude-account":
         from adk.claude_accounts import cmd_claude_account
         sys.exit(cmd_claude_account(args))

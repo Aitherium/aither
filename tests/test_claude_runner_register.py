@@ -388,3 +388,46 @@ class TestDispatcher:
             mock_serve.return_value = 0
             cmd_claude(Args())
             assert mock_serve.called
+
+
+# ---------------------------------------------------------------------------
+# Wrapper env passthrough — the ntfy config must survive into the daemon
+# ---------------------------------------------------------------------------
+
+
+class TestWrapperEnvPassthrough:
+    def _win(self) -> str:
+        from adk.claude_runner import _get_wrapper_ps1_content
+
+        return _get_wrapper_ps1_content("D:\repo", "0.0.0.0", 8365)
+
+    def test_ntfy_vars_are_sourced_from_env_file(self):
+        w = self._win()
+        assert "AITHER_CLAUDE_RUNNER_NTFY_URL" in w
+        assert "AITHER_CLAUDE_RUNNER_NTFY_TOKEN" in w
+
+    def test_internal_secret_still_required(self):
+        w = self._win()
+        assert "AITHER_INTERNAL_SECRET" in w
+        assert "Exit 1" in w  # fail-closed when absent
+
+    def test_no_early_break_strands_later_keys(self):
+        # The original parser `break`ed on the first match, so any key after
+        # AITHER_INTERNAL_SECRET in .env was silently never exported.
+        w = self._win()
+        loop = w[w.index("foreach ($Line in $Lines)"):]
+        assert "break" not in loop
+
+    def test_secrets_are_never_baked_into_the_wrapper(self):
+        # The wrapper lands in ~/.aither/bin — it must carry no values, only names.
+        w = self._win()
+        assert "sk-ant-" not in w
+        for marker in ("ntfy.sh/", "https://ntfy."):
+            assert marker not in w
+
+    def test_posix_wrapper_exports_whole_env_file(self):
+        from adk.claude_runner import _get_wrapper_sh_content
+
+        sh = _get_wrapper_sh_content("/repo", "0.0.0.0", 8365)
+        # `set -a; source` already exports everything, so no per-key list needed.
+        assert "set -a" in sh and 'source "$EnvFile"' in sh
