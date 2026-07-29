@@ -403,3 +403,176 @@ class TestAccountAutoSelect:
         scope = _scope()
         runner._autoselect_account(scope)
         assert scope.account_profile == ""  # never fails the spawn
+
+
+# ---------------------------------------------------------------------------
+# Resume — continuing an existing conversation
+# ---------------------------------------------------------------------------
+
+RESUME_ID = "11111111-2222-3333-4444-555555555555"
+
+
+class TestResumeScope:
+    def test_non_uuid_denied(self, tmp_path: Path):
+        with pytest.raises(ScopeError, match="must be a UUID"):
+            _scope(resume_session_id="not-a-uuid", cwd=str(tmp_path))
+
+    def test_resume_without_cwd_denied(self):
+        # The killer case: without cwd the run lands in the throwaway workdir,
+        # whose project slug has no sessions, so claude would silently start a
+        # NEW conversation that looks resumed.
+        with pytest.raises(ScopeError, match="cwd is required"):
+            _scope(resume_session_id=RESUME_ID)
+
+    def test_resume_with_account_profile_denied(self, tmp_path: Path):
+        with pytest.raises(ScopeError, match="account_profile cannot be combined"):
+            _scope(resume_session_id=RESUME_ID, cwd=str(tmp_path), account_profile="alice")
+
+    def test_valid_resume_scope_round_trips(self, tmp_path: Path):
+        scope = _scope(resume_session_id=RESUME_ID, cwd=str(tmp_path))
+        assert scope.resume_session_id == RESUME_ID
+        assert RunScope.from_dict(scope.to_dict()).resume_session_id == RESUME_ID
+
+    def test_absent_resume_is_the_default(self):
+        assert _scope().resume_session_id == ""
+
+
+class TestResumeArgv:
+    def _argv(self, runner_root: Path, tmp_path: Path, **overrides) -> list[str]:
+        runner = ClaudeRunner()
+        scope = _scope(**overrides)
+        rec = RunRecord(run_id="r-1", session_id=overrides.get("resume_session_id") or "fresh-id")
+        return runner._build_argv(rec, scope, tmp_path)
+
+    def test_fresh_run_creates_a_session(self, runner_root: Path, tmp_path: Path):
+        argv = self._argv(runner_root, tmp_path)
+        assert "--session-id" in argv
+        assert "--resume" not in argv
+
+    def test_resume_continues_instead_of_creating(self, runner_root: Path, tmp_path: Path):
+        argv = self._argv(runner_root, tmp_path, resume_session_id=RESUME_ID, cwd=str(tmp_path))
+        # --session-id would REJECT an id that already exists, so passing both
+        # (or the wrong one) is the difference between continuing and erroring.
+        assert "--session-id" not in argv
+        assert argv[argv.index("--resume") + 1] == RESUME_ID
+
+    def test_submit_threads_the_existing_session_id(
+        self, runner_root: Path, tmp_path: Path, fake_claude: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        monkeypatch.setenv("AITHER_CLAUDE_RUNNER_BIN", fake_claude)
+        runner = ClaudeRunner()
+        rec = runner.submit("continue", _scope(resume_session_id=RESUME_ID, cwd=str(tmp_path)))
+        # A fresh uuid here would orphan every follow-up from its conversation.
+        assert rec.session_id == RESUME_ID
+
+    def test_resume_skips_account_autoselect(
+        self, runner_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ):
+        # Auto-select would point CLAUDE_CONFIG_DIR at an isolated home with no
+        # history — the resume would find nothing and start over.
+        runner = ClaudeRunner()
+        import adk.claude_accounts as acc
+
+        def _boom(self):
+            raise AssertionError("account auto-select must not run for a resume")
+
+        monkeypatch.setattr(acc.ClaudeAccountStore, "list_profiles", _boom)
+        scope = _scope(resume_session_id=RESUME_ID, cwd=str(tmp_path))
+        runner._autoselect_account(scope)
+        assert scope.account_profile == ""
+
+
+# ---------------------------------------------------------------------------
+# ntfy push on terminal state
+# ---------------------------------------------------------------------------
+
+
+class TestNtfyPush:
+    def test_no_url_configured_is_a_noop(
+        self, runner_root: Path, monkeypatch: pytest.MonkeyPatch,
+    ):
+        monkeypatch.delenv("AITHER_CLAUDE_RUNNER_NTFY_URL", raising=False)
+        runner = ClaudeRunner()
+        called: list[str] = []
+        monkeypatch.setattr(runner, "_post_ntfy", lambda *a: called.append("x"))
+        runner._notify_terminal(RunRecord(run_id="r-1"))
+        assert called == []
+
+    def test_push_carries_the_resume_id(
+        self, runner_root: Path, monkeypatch: pytest.MonkeyPatch,
+    ):
+        sent: dict = {}
+
+        class _Resp:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def _urlopen(req, timeout=0):
+            sent["url"] = req.full_url
+            sent["body"] = req.data.decode("utf-8")
+            sent["headers"] = {k.lower(): v for k, v in req.header_items()}
+            return _Resp()
+
+        import urllib.request
+        monkeypatch.setattr(urllib.request, "urlopen", _urlopen)
+        monkeypatch.setenv("AITHER_CLAUDE_RUNNER_NTFY_TOKEN", "tok-123")
+        runner = ClaudeRunner()
+        rec = RunRecord(
+            run_id="r-9", session_id=RESUME_ID, status="completed",
+            result_text="all green", num_turns=3, total_cost_usd=0.05,
+            scope={"cwd": str(Path.home() / "media-forge")},
+        )
+        runner._post_ntfy("https://ntfy.example.com/claude", rec)
+        # The resume id is the whole point — without it the phone cannot reply.
+        assert RESUME_ID in sent["body"]
+        assert "all green" in sent["body"]
+        assert sent["headers"]["authorization"] == "Bearer tok-123"
+
+    def test_push_failure_never_raises(
+        self, runner_root: Path, monkeypatch: pytest.MonkeyPatch,
+    ):
+        import urllib.request
+
+        def _boom(req, timeout=0):
+            raise OSError("network down")
+
+        monkeypatch.setattr(urllib.request, "urlopen", _boom)
+        runner = ClaudeRunner()
+        # A dead ntfy must not fail the run that just succeeded.
+        runner._post_ntfy("https://ntfy.example.com/claude", RunRecord(run_id="r-1"))
+
+    def test_secrets_are_redacted_before_leaving_the_host(
+        self, runner_root: Path, monkeypatch: pytest.MonkeyPatch,
+    ):
+        sent: dict = {}
+
+        class _Resp:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def _urlopen(req, timeout=0):
+            sent["body"] = req.data.decode("utf-8")
+            return _Resp()
+
+        import urllib.request
+        monkeypatch.setattr(urllib.request, "urlopen", _urlopen)
+        runner = ClaudeRunner()
+        # Synthetic, never a real credential: built at runtime so no secret-shaped
+        # literal exists in source for scanners (and humans) to trip over.
+        leak = "sk-" + "ant-" + 'api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' + "A" * 8
+        runner._post_ntfy(
+            "https://ntfy.example.com/claude",
+            RunRecord(run_id="r-1", result_text=f"token was {leak}"),
+        )
+        assert leak not in sent["body"]
