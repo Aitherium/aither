@@ -1961,6 +1961,7 @@ TOOL_CATEGORIES: dict = {
     "voice": [],  # populated lazily by _init_voice_tools()
     "formbridge": [],  # populated lazily by _init_formbridge_tools()
     "notebooks": [],  # populated lazily by _init_notebook_tools()
+    "persona": [],  # populated lazily by _init_persona_tools()
 }
 
 # Default categories for common identity profiles
@@ -2048,6 +2049,26 @@ def _init_notebook_tools():
         TOOL_CATEGORIES["notebooks"] = []
 
 
+def _init_persona_tools():
+    """Lazily populate the persona category (desktop avatar bridge).
+
+    Persona tools are optional (require local D:\\persona running on loopback).
+    Fire-and-forget — if persona is unavailable, tools silently no-op.
+    This function is called once at tool registration time.
+    """
+    if TOOL_CATEGORIES.get("persona"):
+        return  # Already initialized
+    try:
+        from adk.persona import PERSONA_TOOLS
+        TOOL_CATEGORIES["persona"] = list(PERSONA_TOOLS)
+        for fn in PERSONA_TOOLS:
+            TOOL_INTENT_CATEGORIES.setdefault(fn, [])
+        logger.info("Persona tools initialized (%d tools)", len(PERSONA_TOOLS))
+    except ImportError:
+        logger.debug("Persona tools not available; persona category remains empty")
+        TOOL_CATEGORIES["persona"] = []
+
+
 def register_builtin_tools(
     agent: AitherAgent,
     categories: list[str] | None = None,
@@ -2069,6 +2090,7 @@ def register_builtin_tools(
     _init_voice_tools()  # lazily populate voice category
     _init_formbridge_tools()  # lazily populate formbridge category
     _init_notebook_tools()  # lazily populate notebooks category
+    _init_persona_tools()  # lazily populate persona category
 
     if categories is None and auto:
         # Unknown identities get a minimal, fully-local default. "workspace"
