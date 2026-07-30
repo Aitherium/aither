@@ -899,11 +899,74 @@ def repowise_search(query: str, max_results: int = 10) -> str:
     return code_search(pattern=query, max_results=max_results)
 
 
+def _swarm_code_local(problem: str, mode: str = "forge", effort: int = 8) -> str:
+    """Local A2A-based multi-agent dispatch for sovereign swarm coding.
+
+    Runs a bounded fan-out of subtasks to local agents instead of calling Genesis.
+    This is used when AITHER_OFFLINE=1 (sovereign mode).
+
+    Args:
+        problem: Task description
+        mode: "llm" (text-only), "forge" (with tools/sandbox), "plan_only" (design only)
+        effort: Effort level 1-10
+
+    Returns:
+        JSON string with status, plan, code, tests, artifacts keys
+    """
+    import json as _json
+
+    try:
+        import asyncio
+        from adk.a2a_dispatch import bounded_recursive_dispatch
+
+        # Run the async dispatcher in a new event loop (if not already in one)
+        try:
+            loop = asyncio.get_running_loop()
+            # Already in an event loop; create a task
+            task = loop.create_task(
+                bounded_recursive_dispatch(
+                    problem,
+                    max_depth=2,  # Bounded depth
+                    max_breadth=3,  # Bounded fan-out
+                )
+            )
+            # For sync context, we can't await; return a placeholder
+            return _json.dumps({
+                "status": "working",
+                "message": "Local swarm dispatch submitted; results will be available async",
+            })
+        except RuntimeError:
+            # No event loop; create one
+            result = asyncio.run(
+                bounded_recursive_dispatch(
+                    problem,
+                    max_depth=2,  # Bounded depth
+                    max_breadth=3,  # Bounded fan-out
+                )
+            )
+            return _json.dumps({
+                "status": result.get("status", "unknown"),
+                "plan": result.get("plan", "")[:2000],
+                "code": "",  # Local dispatch doesn't generate code; that's follow-up work
+                "tests": "",
+                "artifacts": result.get("results", []),
+            })
+
+    except Exception as e:
+        return _json.dumps({
+            "status": "failed",
+            "error": f"Local dispatch failed: {str(e)}",
+        })
+
+
 def swarm_code(problem: str, mode: str = "forge", effort: int = 8) -> str:
     """Dispatch to AitherOS swarm coding engine for complex implementation tasks.
 
     The swarm runs 11 specialized agents in 4 phases:
     ARCHITECT -> SWARM (8 parallel) -> REVIEW -> JUDGE
+
+    In sovereign (AITHER_OFFLINE=1) mode, uses local A2A dispatch instead of Genesis.
+    In cloud mode, delegates to Genesis.
 
     Args:
         problem: Task or feature description to implement
@@ -911,6 +974,7 @@ def swarm_code(problem: str, mode: str = "forge", effort: int = 8) -> str:
         effort: Effort level 1-10 (affects model selection)
     """
     import json as _json
+
     # GATED: swarm coding drives the Genesis multi-agent engine — a paid-tier
     # capability. Free agents get a clear upgrade prompt instead of a dispatch.
     try:
@@ -925,6 +989,12 @@ def swarm_code(problem: str, mode: str = "forge", effort: int = 8) -> str:
             })
     except ImportError:
         pass
+
+    # Sovereign (offline) mode: use local A2A dispatch
+    if os.environ.get("AITHER_OFFLINE") == "1":
+        return _swarm_code_local(problem, mode, effort)
+
+    # Cloud mode: call Genesis
     genesis_url = os.environ.get("AITHER_GENESIS_URL", "http://localhost:8001")
     try:
         import httpx
@@ -1968,6 +2038,7 @@ TOOL_CATEGORIES: dict = {
 # Every identity gets "self" by default — self-introspection is universally safe and
 # directly addresses Reddit pain ("I asked the agent what it did and it lied").
 IDENTITY_DEFAULTS = {
+    "adk-daemon": ["file_io", "shell", "python", "web", "git", "code", "repowise", "swarm", "graph", "workspace", "notebooks", "safety", "self"],
     "demiurge": ["file_io", "shell", "python", "web", "git", "code", "repowise", "swarm", "graph", "workspace", "notebooks", "safety", "self"],
     "analyst": ["file_io", "web", "python", "code", "graph", "structured_ml", "workspace", "notebooks", "safety", "self"],
     "atlas": ["file_io", "web", "secrets", "code", "graph", "workspace", "notebooks", "safety", "self"],

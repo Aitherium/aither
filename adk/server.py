@@ -13,6 +13,7 @@ import hmac
 import json
 import logging
 import os
+import socket
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -377,6 +378,17 @@ def create_app(
         if offline:
             logger.info("AITHER_OFFLINE=1 — sovereign mode: local only, no network registration")
 
+        # Sovereign mode still gets TOOLS. AITHER_OFFLINE means "do not phone home", not
+        # "run with 7 built-in tools" — a LOCAL MCP gateway (127.0.0.1:8182) is not the
+        # cloud, so connecting to it is fully consistent with the sovereign posture and is
+        # what closes the parity gap against genesis's ~1500 platform tools.
+        if offline:
+            await _connect_local_mcp_if_available()
+            # Do NOT let a momentary gateway flap cost this daemon its 1,227 platform
+            # tools for the rest of its life (D-1621). Both loops are background tasks:
+            # boot must never block on the gateway being up.
+            _state["mcp_retry_now"] = asyncio.Event()
+            _state["mcp_supervisor_task"] = asyncio.create_task(_supervise_local_mcp())
         if not offline:
             await _connect_gateway_mcp()
             await _register_with_gateway()
@@ -687,6 +699,34 @@ def create_app(
             "gateway_connected": _state.get("gateway_connected", False),
             "gateway_mcp_connected": _state.get("gateway_mcp_connected", False),
         }
+
+        # Capability, not liveness (D-1621). `status: healthy` is TRUE of a daemon serving
+        # turns with 7 built-in tools — and useless, because the interesting failure is
+        # that it lost the other 1,227 to a gateway flap and will never notice. A probe
+        # that cannot distinguish those two states is the reason two verification runs
+        # returned false "silently non-functional" verdicts. So say which one this is.
+        # "Attached" means TOOLS ARE CALLABLE, not "a socket opened". A client that
+        # connected but registered nothing is the inert-feature state, and reporting it as
+        # `platform` is exactly the lie this block exists to prevent.
+        _attached = (
+            bool(_state.get("gateway_mcp_connected"))
+            and _state.get("mcp_tools_registered", 0) > 0
+            and _state.get("mcp_tools_catalogue", 0) > 0
+        )
+        result["tools"] = {
+            "mode": "platform" if _attached else "builtin-only",
+            "registered": _state.get("mcp_tools_registered", 0),
+            "catalogue": _state.get("mcp_tools_catalogue", 0),
+            "attach_attempts": _state.get("mcp_attach_attempts", 0),
+            "last_error": _state.get("mcp_last_error", ""),
+            "retrying": bool(
+                _state.get("mcp_supervisor_task")
+                and not _state.get("mcp_attach_permanent_failure")
+                and not _attached
+            ),
+        }
+        if not _attached and _state.get("mcp_attach_attempts", 0):
+            result["degraded"] = ["mcp-gateway-detached: running with built-in tools only"]
 
         if is_fleet and _state["fleet"]:
             fleet = _state["fleet"]
@@ -1006,6 +1046,7 @@ def create_app(
 
     @app.post("/chat")
     async def chat(request: Request):
+        _nudge_mcp_attach()
         body = await request.json()
         message = body.get("message", body.get("content", ""))
         session_id = body.get("session_id")
@@ -1131,6 +1172,55 @@ def create_app(
                              mcp_endpoints, gen_params=gen_params or None),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    @app.post("/chat/steer")
+    async def chat_steer(request: Request):
+        """Inject a steering message into an active chat session.
+
+        Clients call this while a /chat/stream SSE is open. The steering message
+        is forwarded into the session's queue so the agent pipeline sees it
+        immediately and can react before the next LLM call.
+
+        Body:
+            session_id: str     — the session to steer
+            message: str        — steering text (e.g. "focus on X", "stop", "@abort")
+            action: str         — "append" (default), "cancel", or "hint"
+
+        Actions:
+            append — user follow-up message, visible in chat and injected as
+                     a user message in the conversation history.
+            hint   — invisible system-level context nudge. NOT shown in
+                     conversation history. Injected as a [STEERING HINT]
+                     system block that guides the agent's next reasoning step
+                     without interrupting flow.
+            cancel — abort the running generation (not yet implemented).
+        """
+        body = await request.json()
+        session_id = body.get("session_id", "")
+        message = body.get("message", "")
+        action = body.get("action", "append")
+
+        if not session_id:
+            return JSONResponse({"ok": False, "error": "session_id required"}, status_code=400)
+
+        from adk.steering import queue_steering_message
+        queued = await queue_steering_message(session_id, action, message)
+
+        if not queued:
+            return JSONResponse(
+                {"ok": False, "error": "no active session", "session_id": session_id},
+                status_code=404,
+            )
+
+        return JSONResponse(
+            {
+                "ok": True,
+                "session_id": session_id,
+                "queued": True,
+                "action": action,
+            },
+            status_code=200,
         )
 
     @app.post("/aeon/stream")
@@ -1754,6 +1844,361 @@ def create_app(
         except (ImportError, RuntimeError, OSError, ConnectionError, httpx.HTTPError) as exc:
             logger.debug("Secrets sync failed (non-fatal): %s", exc)
 
+    # Prefix -> intent categories, using the SAME vocabulary the built-in tools use
+    # (builtin_tools.py TOOL_INTENT_CATEGORIES): code, file, analysis, command, research,
+    # web_research, question. Tagging is what lets _filter_tools_by_intent actually exclude
+    # a tool — an untagged tool matches every intent and defeats the filter.
+    _MCP_INTENT_PREFIXES = (
+        (("codegraph_", "repowise_", "git_", "graph_code", "scope_", "acc_"), ["code", "analysis"]),
+        (("fs_", "file_"), ["code", "file"]),
+        (("web_", "search_", "research_", "fetch_", "context7_"), ["research", "web_research", "question"]),
+        (("recall", "remember", "memory", "knowledge_", "graph_", "rag_", "query_"), ["analysis", "question"]),
+        (("http_", "cf_", "cloudflare_", "docker", "k3s_", "hetzner_", "ring_"), ["command"]),
+    )
+
+    def _mcp_intent_categories(name: str) -> list:
+        """Best-effort intent tags for a gateway tool, by name prefix."""
+        lowered = name.lower()
+        for prefixes, cats in _MCP_INTENT_PREFIXES:
+            if lowered.startswith(prefixes):
+                return list(cats)
+        return ["analysis"]  # a real tag beats none: an untagged tool bypasses filtering
+
+    def _prioritise_mcp_tools(specs: list) -> list:
+        """Order gateway tools so the eager cap keeps the broadly-useful ones.
+
+        This is a deliberate stopgap, not the end state: the right answer is runtime
+        selection (tool search over the tool graph / MCTS planning / intent), so the agent
+        retrieves from all ~1200 on demand instead of pre-loading any fixed slice.
+        """
+        preferred = (
+            "codegraph_", "repowise_", "fs_", "git_", "web_", "search_", "recall",
+            "remember", "query_", "knowledge_", "graph_", "http_",
+        )
+        head = [s for s in specs if str(s.get("name", "")).lower().startswith(preferred)]
+        tail = [s for s in specs if s not in head]
+        return head + tail
+
+    def _nudge_mcp_attach() -> None:
+        """A turn is starting while we have no platform tools — retry NOW, don't block.
+
+        Closes most of the recovery window without putting the gateway on the turn's
+        critical path. Measured before this existed: the live daemon sat detached for
+        **115s** after the gateway came back, purely because it was mid-backoff, and every
+        turn in that window silently ran on 7 built-in tools instead of 1,227.
+
+        Deliberately does NOT await the attach. The failure being recovered from is a
+        gateway that HANGS rather than refuses (D-1629), so awaiting here would add that
+        hang to every single turn — trading a degraded answer for no answer at all.
+        """
+        if _state.get("mcp_attach_permanent_failure"):
+            return
+        if _state.get("gateway_mcp_connected") and _state.get("mcp_tools_catalogue", 0) > 0:
+            return
+        ev = _state.get("mcp_retry_now")
+        if ev is not None:
+            ev.set()
+
+    def _mark_mcp_detached(reason: str) -> None:
+        """Record that platform tools are NOT usable right now.
+
+        Both flags must move together. Leaving `mcp_tools_registered` at its last good
+        value while the gateway is gone made /health report `mode: platform, registered:
+        18` against a dead gateway for 140s in the D-1621 flap test — a stale success is
+        worse than no signal, because it is the signal a probe trusts.
+        """
+        _state["gateway_mcp_connected"] = False
+        _state["mcp_tools_registered"] = 0
+        _state["mcp_tools_catalogue"] = 0
+        _state["mcp_last_error"] = reason
+        # Drop the stale CATALOGUE too. Leaving it meant `search_tools` kept returning
+        # 1,227 real-looking names against a dead gateway, so the model would pick one,
+        # `call_tool` would fail at invoke time, and the model would burn its tool budget
+        # retrying plausible-looking names that could not work. An empty catalogue makes
+        # search_tools say "nothing available", which the model handles correctly by
+        # answering from what it knows. The eager tool closures stay registered on the
+        # agent by design — they re-point at a fresh client on the next attach, and
+        # unregistering/re-registering 16 closures on every flap is churn for no gain.
+        _state["all_mcp_tools"] = []
+
+    async def _connect_local_mcp_if_available() -> bool:
+        """Sovereign-mode tool access: attach to a LOCAL MCP gateway only.
+
+        Offline mode must not mean tool-less. This targets a loopback gateway
+        (AITHER_MCP_GATEWAY, default 127.0.0.1:8182) and REFUSES anything non-loopback, so
+        turning on sovereign mode can never silently start talking to the cloud. Entirely
+        fail-soft: if the local gateway is down the daemon still serves with its built-in
+        tools, and says so.
+
+        Returns True when the gateway is attached and tools are registered. The caller
+        (`_supervise_local_mcp`) retries on False — see D-1621: this used to run exactly
+        once at boot, so a daemon that started during a gateway flap ran with 7 built-in
+        tools for its ENTIRE lifetime and looked merely "not very capable".
+        """
+        _state["mcp_attach_attempts"] = _state.get("mcp_attach_attempts", 0) + 1
+        target = os.getenv("AITHER_MCP_GATEWAY", "127.0.0.1:8182").strip()
+        if not target:
+            _state["mcp_last_error"] = "AITHER_MCP_GATEWAY is empty"
+            return False
+        if "://" not in target:
+            target = f"http://{target}"
+        host = target.split("://", 1)[1].split("/", 1)[0].split(":", 1)[0]
+        if host not in ("127.0.0.1", "localhost", "::1", "[::1]"):
+            logger.info(
+                "Sovereign mode: refusing non-loopback MCP gateway %s — built-in tools only",
+                target,
+            )
+            # A config choice, not a transient fault — retrying can never fix it.
+            _state["mcp_last_error"] = f"non-loopback gateway refused: {target}"
+            _state["mcp_attach_permanent_failure"] = True
+            return False
+        try:
+            from adk.client._gateway_mcp import create_gateway_mcp_client
+
+            mcp_client = await create_gateway_mcp_client(
+                gateway_url=target,
+                api_key=config.aither_api_key or os.getenv("AITHER_INTERNAL_KEY", ""),
+            )
+            if not mcp_client:
+                logger.info("Sovereign mode: local MCP gateway %s unavailable — built-in tools only", target)
+                _mark_mcp_detached(f"gateway {target} unavailable")
+                return False
+            _state["gateway_mcp_client"] = mcp_client
+            # NOTE: `gateway_mcp_connected` is deliberately NOT set here. Listing and
+            # registering 1,227 tools takes ~11s, and flipping the flag on connect made
+            # /health report `mode: platform, registered: 0` for that whole window —
+            # measured 2026-07-29 during the D-1621 flap test. The flag is set at the
+            # bottom, once tools are actually usable, so "attached" never means
+            # "connected but inert".
+            tools = await mcp_client.list_tools()
+            # An EMPTY catalogue is a FAILED attach, not a small one. `list_tools()` returns
+            # [] for unreachable/401/402/4xx alike, and the two meta-tools below register
+            # unconditionally — so without this guard the daemon reported
+            # `mode: platform, registered: 2, catalogue: 0`: attached to nothing, offering a
+            # `search_tools` that searches an empty list. Measured in the D-1621 flap test.
+            if not tools:
+                logger.info(
+                    "Sovereign mode: local MCP gateway %s listed 0 tools — built-in tools only",
+                    target,
+                )
+                _mark_mcp_detached(f"gateway {target} listed 0 tools")
+                return False
+            # REGISTER them with the agent. Listing alone is worthless: the first version of
+            # this logged "1192 tools" while the agent answered with tool_calls=0, because
+            # nothing was ever wired into the tool registry — a textbook inert feature that
+            # reads as parity in the logs.
+            #
+            # But registering them FLAT is just as broken, and measurably so: 7 built-in
+            # tools answered a trivial turn in 4.4s, while 1227 flat-registered tools made
+            # the SAME turn time out at 230s — every request carries every schema.
+            # `_filter_tools_by_intent` (agent.py:146) already narrows at runtime, but it
+            # treats a tool with NO intent_categories as always-matching, so untagged tools
+            # defeat it entirely. Two things are therefore required:
+            #   1. TAG each MCP tool so intent filtering can actually exclude it.
+            #   2. CAP the eager set, because that filter FAILS OPEN when intent is None —
+            #      without a cap a no-intent turn is back to shipping every schema.
+            # Cache the full tool catalogue for runtime retrieval (meta-tools).
+            # This enables search_tools and call_tool to access all ~1227 tools on demand
+            # without shipping every schema in every request.
+            _state["all_mcp_tools"] = tools
+
+            # Register meta-tools first: search_tools and call_tool enable on-demand
+            # retrieval instead of pre-loading all ~1227 schemas (latency cliff:
+            # 64 eager tools = 29.9s, 1227 eager = 230s timeout).
+            registered = 0
+            a = await get_agent()
+            if a:
+                # Register search_tools: find tools by query
+                from adk.tools_meta import search_tools as search_tools_impl
+
+                async def search_tools(query: str = "", limit: int = 8) -> str:
+                    return search_tools_impl(query, _state.get("all_mcp_tools", []), limit)
+
+                search_tools.__doc__ = (
+                    "Search available tools by name and description. Returns "
+                    "top matches with name and description. Use this to discover "
+                    "specialized tools for your task."
+                )
+                try:
+                    a._tools.register(
+                        search_tools,
+                        name="search_tools",
+                        description=(
+                            "Search for MCP tools by query. Returns name, description "
+                            "of up to 8 matching tools. Essential for finding tools not "
+                            "in the eager-loaded core."
+                        ),
+                        intent_categories=["analysis", "code", "research", "question"],
+                    )
+                    registered += 1
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("Failed to register search_tools: %s", e)
+
+                # Register call_tool: invoke any tool by name
+                from adk.tools_meta import call_tool as call_tool_impl
+
+                async def call_tool(name: str, arguments: dict | None = None) -> str:
+                    return await call_tool_impl(
+                        name, arguments or {}, _state.get("gateway_mcp_client")
+                    )
+
+                call_tool.__doc__ = (
+                    "Call a tool by name with arguments. Use search_tools first to "
+                    "find the tool name and signature."
+                )
+                try:
+                    a._tools.register(
+                        call_tool,
+                        name="call_tool",
+                        description=(
+                            "Call any MCP tool by name without pre-registration. "
+                            "Pair with search_tools to find and invoke tools on demand."
+                        ),
+                        intent_categories=["analysis", "code", "research", "question", "command"],
+                    )
+                    registered += 1
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("Failed to register call_tool: %s", e)
+
+            # Register eager-loaded core tools (reduced from 64 to 16 based on
+            # latency measurements: knee point is ~16 tools before curve flattens).
+            max_tools = int(os.getenv("ADK_MCP_MAX_TOOLS", "16"))
+            if a:
+                for tool_spec in _prioritise_mcp_tools(tools)[:max_tools]:
+                    tool_name = tool_spec.get("name") or ""
+                    if not tool_name:
+                        continue
+
+                    async def _local_tool_call(tn=tool_name, **kwargs) -> str:
+                        result = await mcp_client.call_tool(tn, kwargs)
+                        if result.get("success"):
+                            return result.get("text", "")
+                        return f"Error: {result.get('message', 'unknown')}"
+
+                    _local_tool_call.__name__ = tool_name
+                    _local_tool_call.__doc__ = tool_spec.get("description", "")
+                    try:
+                        a._tools.register(
+                            _local_tool_call,
+                            name=tool_name,
+                            description=tool_spec.get("description", ""),
+                            intent_categories=_mcp_intent_categories(tool_name),
+                        )
+                        registered += 1
+                    except Exception:  # noqa: BLE001 — one bad spec must not drop the rest
+                        continue
+            logger.info(
+                "Sovereign mode: local MCP gateway %s connected — %d tools listed, "
+                "%d REGISTERED (%d eager + 2 meta-tools for runtime retrieval)",
+                target, len(tools), registered, max_tools,
+            )
+            _state["mcp_tools_registered"] = registered
+            _state["mcp_tools_catalogue"] = len(tools)
+            # Registering zero tools is NOT an attachment: it is the inert-feature failure
+            # (security-review-patterns #5) wearing a success log. Make the supervisor retry.
+            if registered <= 0:
+                _mark_mcp_detached(f"gateway {target} listed {len(tools)} tools, registered 0")
+                return False
+            _state["gateway_mcp_connected"] = True
+            _state["mcp_last_error"] = ""
+            return True
+        except Exception as exc:  # noqa: BLE001 — tools are optional, serving is not
+            logger.info("Sovereign mode: local MCP gateway unreachable (%s) — built-in tools only", exc)
+            _mark_mcp_detached(f"{type(exc).__name__}: {exc}")
+            return False
+
+    async def _supervise_local_mcp():
+        """Keep re-attempting the local MCP attachment until it succeeds, then watch it.
+
+        D-1621: the gateway FLAPS — measured 2026-07-29, `curl -m 8` returned nothing and
+        four minutes later the identical endpoint answered 200 in 0.0026s, while the
+        container read `Up 2 hours (healthy)` throughout. A one-shot attach at boot turns
+        that momentary flap into a permanent capability loss for the daemon's whole
+        lifetime: 1,227 platform tools silently become 7 built-in ones. That produced two
+        FALSE "silently non-functional" verdicts in one verification run, because the
+        feature under test was fine and the attachment was not.
+
+        This is ONE loop covering both lifecycle halves, deliberately. It was briefly two
+        (a fast retry task + a slow watchdog task) and they raced: the watchdog attached at
+        16:41:25, the retry task woke from its backoff sleep at 16:42:39 and re-attached
+        against a by-then-dead gateway, which tore down a working attachment and left
+        /health asserting `platform, registered: 18` at nothing. Two loops sharing one
+        piece of mutable state is the bug; one loop cannot race itself.
+
+        Backoff while detached is bounded and then CONSTANT rather than giving up: the
+        failure being recovered from is "the gateway is down right now", which has no
+        deadline. One `initialize` round-trip every 2 minutes is negligible against a
+        loopback service.
+        """
+        detached_delay = 5.0
+        # 30s, not the 300s a list_tools()-based probe forced: an 8ms/36-byte ping means the
+        # stale window costs nothing to shrink by 10x, and /health can no longer assert
+        # `platform` at a gateway that died four minutes ago.
+        attached_interval = float(os.getenv("ADK_MCP_WATCH_INTERVAL", "30"))
+        while True:
+            if _state.get("mcp_attach_permanent_failure"):
+                return  # misconfiguration, not a flap — retrying cannot help
+
+            # Key on the ATTACH VERDICT, not on `gateway_mcp_connected` alone: that flag is
+            # also written by the cloud `_connect_gateway_mcp` path, and keying this on
+            # someone else's flag is how "connected but zero tools" reads as a success.
+            attached = (
+                bool(_state.get("gateway_mcp_connected"))
+                and _state.get("mcp_tools_registered", 0) > 0
+                and _state.get("mcp_tools_catalogue", 0) > 0
+            )
+
+            if attached:
+                await asyncio.sleep(attached_interval)
+                client = _state.get("gateway_mcp_client")
+                if not client:
+                    _mark_mcp_detached("client handle vanished")
+                    continue
+                # Probe with MCP `ping`, NOT `list_tools()` and NOT the gateway's /health:
+                #   - /health answers 200 while /mcp is unresponsive on this very gateway —
+                #     that lie is how the D-1621 flap stayed invisible;
+                #   - list_tools() costs 3.2s and 366 KB (1,227 schemas), too heavy to run
+                #     on a watch interval, which forced a 300s window in which /health could
+                #     assert `platform` at a gateway that had already died;
+                #   - ping measures 8ms / 36 bytes on the same session and endpoint.
+                # `ping()` returns False rather than raising on every failure path, so the
+                # `except` here is belt-and-braces, not the detection mechanism — the first
+                # version of this watchdog wrapped `list_tools()` in a try/except that could
+                # NEVER fire (it returns [] instead of raising) and was therefore itself
+                # inert: security-review-patterns #5, committed by the check meant to catch it.
+                try:
+                    alive = await client.ping()
+                except Exception as exc:  # noqa: BLE001 — a dead client must not kill the loop
+                    alive = False
+                    _state["mcp_last_error"] = f"probe raised: {type(exc).__name__}: {exc}"
+                if not alive:
+                    logger.warning("Sovereign mode: MCP gateway went away — re-attaching")
+                    _mark_mcp_detached(
+                        _state.get("mcp_last_error") or "gateway ping failed"
+                    )
+                    detached_delay = 5.0  # recover fast from a flap, as at boot
+                continue
+
+            # Interruptible backoff: a turn arriving while detached sets this event and we
+            # retry immediately instead of serving it tool-less for up to the full delay.
+            ev = _state.get("mcp_retry_now")
+            if ev is not None:
+                try:
+                    await asyncio.wait_for(ev.wait(), timeout=detached_delay)
+                    detached_delay = 5.0  # a live caller wants tools — retry eagerly again
+                except asyncio.TimeoutError:
+                    detached_delay = min(detached_delay * 2, 30.0)
+                ev.clear()
+            else:
+                await asyncio.sleep(detached_delay)
+                detached_delay = min(detached_delay * 2, 30.0)
+            if await _connect_local_mcp_if_available():
+                logger.info(
+                    "Sovereign mode: MCP gateway attached on attempt #%d — %d tools registered",
+                    _state.get("mcp_attach_attempts", 0),
+                    _state.get("mcp_tools_registered", 0),
+                )
+
     async def _connect_gateway_mcp():
         """Connect MCP client to gateway for platform tool access.
 
@@ -1789,13 +2234,72 @@ def create_app(
                 logger.info("Gateway MCP client connected: %s", gateway_url)
 
                 # Register gateway tools in agent (best-effort, async)
+                # Use the same meta-tools + eager-core strategy as sovereign mode
                 try:
                     a = await get_agent()
                     if a:
                         tools = await mcp_client.list_tools()
-                        for tool_spec in tools:
-                            # Create a closure for this tool
-                            tool_name = tool_spec["name"]
+                        # Cache the full tool catalogue for runtime retrieval
+                        _state["all_mcp_tools"] = tools
+
+                        # Register meta-tools (search_tools, call_tool)
+                        from adk.tools_meta import search_tools as search_tools_impl
+
+                        async def search_tools(query: str = "", limit: int = 8) -> str:
+                            return search_tools_impl(
+                                query, _state.get("all_mcp_tools", []), limit
+                            )
+
+                        search_tools.__doc__ = (
+                            "Search available tools by name and description. Returns "
+                            "top matches. Essential for finding tools not in the eager core."
+                        )
+                        try:
+                            a._tools.register(
+                                search_tools,
+                                name="search_tools",
+                                description=(
+                                    "Search for MCP tools by query. Returns name, "
+                                    "description of up to 8 matches."
+                                ),
+                                intent_categories=[
+                                    "analysis", "code", "research", "question"
+                                ],
+                            )
+                        except Exception as e:  # noqa: BLE001
+                            logger.debug("Failed to register search_tools: %s", e)
+
+                        from adk.tools_meta import call_tool as call_tool_impl
+
+                        async def call_tool(
+                            name: str, arguments: dict | None = None
+                        ) -> str:
+                            return await call_tool_impl(name, arguments or {}, mcp_client)
+
+                        call_tool.__doc__ = (
+                            "Call a tool by name. Pair with search_tools to find tools."
+                        )
+                        try:
+                            a._tools.register(
+                                call_tool,
+                                name="call_tool",
+                                description=(
+                                    "Call any MCP tool by name without pre-registration."
+                                ),
+                                intent_categories=[
+                                    "analysis", "code", "research", "question", "command"
+                                ],
+                            )
+                        except Exception as e:  # noqa: BLE001
+                            logger.debug("Failed to register call_tool: %s", e)
+
+                        # Register eager-loaded core (reduced to 16)
+                        max_tools = int(os.getenv("ADK_MCP_MAX_TOOLS", "16"))
+                        registered = 2  # search_tools + call_tool
+                        for tool_spec in tools[:max_tools]:
+                            tool_name = tool_spec.get("name", "").strip()
+                            if not tool_name:
+                                continue
 
                             async def _gateway_tool_call(
                                 tn=tool_name, **kwargs
@@ -1803,20 +2307,25 @@ def create_app(
                                 result = await mcp_client.call_tool(tn, kwargs)
                                 if result.get("success"):
                                     return result.get("text", "")
-                                else:
-                                    return f"Error: {result.get('message', 'unknown')}"
+                                return f"Error: {result.get('message', 'unknown')}"
 
                             _gateway_tool_call.__name__ = tool_name
                             _gateway_tool_call.__doc__ = tool_spec.get("description", "")
+                            try:
+                                a._tools.register(
+                                    _gateway_tool_call,
+                                    name=tool_name,
+                                    description=tool_spec.get("description", ""),
+                                    intent_categories=_mcp_intent_categories(tool_name),
+                                )
+                                registered += 1
+                            except Exception:  # noqa: BLE001
+                                continue
 
-                            a._tools.register(
-                                _gateway_tool_call,
-                                name=tool_name,
-                                description=tool_spec.get("description", ""),
-                            )
                         logger.info(
-                            "Registered %d gateway tools with agent %s",
-                            len(tools), a.name,
+                            "Registered %d gateway tools with agent %s "
+                            "(%d eager + 2 meta-tools)",
+                            registered, a.name, max_tools,
                         )
                 except Exception as exc:  # noqa: BLE001 — tool registration is advisory
                     logger.debug("Gateway tool registration failed (non-fatal): %s", exc)
@@ -2877,41 +3386,58 @@ async def _aitheros_stream(get_agent_fn, message: str, session_id: str, agent_na
         yield f"event: session_start\ndata: {json.dumps({'type': 'session_start', 'session_id': session_id, 'agent': agent.name, 'model': model_name})}\n\n"
 
         _gp = gen_params or {}
-        # If agent has tools, use sync chat with background heartbeat
+        # If agent has tools, use stream_react to emit events (KG, steering, tokens)
         if agent._tools.list_tools():
-            # Run chat in a task with heartbeat to keep SSE alive
-            chat_task = asyncio.ensure_future(agent.chat(message, session_id=session_id, **_gp))
-            while not chat_task.done():
-                yield f"event: heartbeat\ndata: {json.dumps({'type': 'heartbeat'})}\n\n"
-                await asyncio.sleep(2)
-            resp = chat_task.result()
+            from adk.steering import steering_session, register_steering_queue, unregister_steering_queue
 
-            # HITL: the turn paused for tool approval — surface the pending tools and stop.
-            # The customer allows/denies via POST /sessions/{id}/confirm, which resumes.
-            if getattr(resp, "requires_action", False):
-                pending = getattr(resp, "pending", []) or []
-                yield f"event: requires_action\ndata: {json.dumps({'type': 'requires_action', 'pending': pending, 'session_id': session_id})}\n\n"
-                duration_ms = int((time.time() - start) * 1000)
-                yield f"event: complete\ndata: {json.dumps({'type': 'complete', 'content': resp.content, 'pending': pending, 'requires_action': True, 'duration_ms': duration_ms, 'session_id': session_id})}\n\n"
-                return
+            # Collect emitted events to re-yield as SSE + build KG context
+            emitted_events = []
+            tool_calls_for_kg = []
 
-            # Emit tool calls if any. AgentResponse.tool_calls_made is a list[str]
-            # of tool names (a clean name = success; a "name[denied|blocked|
-            # circuit_break]" suffix marks a non-execution). Tolerate dict entries
-            # too in case a caller enriches them.
-            if resp.tool_calls_made:
-                for tc in resp.tool_calls_made:
-                    if isinstance(tc, dict):
-                        tname = tc.get("name", "?")
-                        targs = tc.get("args", {})
-                        toutput = tc.get("output", "")
-                    else:
-                        tname = str(tc)
-                        targs = {}
-                        toutput = ""
-                    success = "[" not in tname
-                    yield f"event: tool_call\ndata: {json.dumps({'type': 'tool_call', 'tools': [{'name': tname, 'args': targs}]})}\n\n"
-                    yield f"event: tool_result\ndata: {json.dumps({'type': 'tool_result', 'results': [{'tool': tname, 'success': success, 'output': str(toutput)[:500]}]})}\n\n"
+            def _on_stream_event(ev: dict) -> None:
+                """Collect stream_react events for re-emission as SSE."""
+                emitted_events.append(ev)
+                if ev.get("type") == "tool":
+                    tool_calls_for_kg.append(ev.get("name", "?"))
+
+            # Register steering session BEFORE stream_react so client can inject
+            # (unregister happens at the end, after all yields)
+            try:
+                await register_steering_queue(session_id)
+                resp = await agent.stream_react(
+                    message,
+                    on_event=_on_stream_event,
+                    session_id=session_id,
+                )
+            finally:
+                unregister_steering_queue(session_id)
+
+            # Yield collected events as SSE
+            for ev in emitted_events:
+                ev_type = ev.get("type", "")
+
+                if ev_type == "thinking":
+                    text = ev.get("text", "")
+                    if text:
+                        yield f"event: token\ndata: {json.dumps({'type': 'token', 't': text})}\n\n"
+                elif ev_type == "token":
+                    text = ev.get("text", "")
+                    if text:
+                        yield f"event: token\ndata: {json.dumps({'type': 'token', 't': text})}\n\n"
+                elif ev_type == "tool":
+                    tool_name = ev.get("name", "?")
+                    yield f"event: tool_call\ndata: {json.dumps({'type': 'tool_call', 'tools': [{'name': tool_name, 'args': ev.get('args', {})}]})}\n\n"
+                elif ev_type == "tool_result":
+                    tool_name = ev.get("name", "?")
+                    result = ev.get("result", "")
+                    yield f"event: tool_result\ndata: {json.dumps({'type': 'tool_result', 'results': [{'tool': tool_name, 'success': True, 'output': str(result)[:500]}]})}\n\n"
+                elif ev_type == "knowledge_graph":
+                    # Emit KG event directly (gap B fix)
+                    yield f"event: knowledge_graph\ndata: {json.dumps({'type': 'knowledge_graph', 'nodes': ev.get('nodes', []), 'edges': ev.get('edges', [])})}\n\n"
+                elif ev_type == "error":
+                    error_msg = ev.get("error", "Unknown error")
+                    yield f"event: error\ndata: {json.dumps({'type': 'error', 'error': error_msg})}\n\n"
+                # Skip "done" events - we emit complete separately
 
             yield f"event: answer\ndata: {json.dumps({'type': 'answer', 'answer': resp.content})}\n\n"
 
@@ -2923,7 +3449,7 @@ async def _aitheros_stream(get_agent_fn, message: str, session_id: str, agent_na
                 agent=agent.name, session_id=session_id,
                 user_message=message, assistant_response=resp.content,
                 model=resp.model, tokens_used=resp.tokens_used,
-                latency_ms=resp.latency_ms, tool_calls=resp.tool_calls_made,
+                latency_ms=resp.latency_ms, tool_calls=tool_calls_for_kg,
             ))
             return
 
@@ -3504,7 +4030,34 @@ def main():
     print(f"  Health: GET  http://localhost:{port}/health")
     print(f"  Docs:   GET  http://localhost:{port}/docs")
     print(gateway_line)
-    uvicorn.run(app, host=host, port=port, log_level="info")
+    # Publish where we actually bound so consumers (MCP delegation, AitherShell) DISCOVER
+    # the daemon instead of hardcoding a port that can silently drift out of agreement.
+    try:
+        from adk.daemon_endpoint import clear_daemon_url, publish_daemon_url
+
+        # Prove we can actually BIND before advertising ourselves. Publishing first is how
+        # a daemon that never starts still overwrites the live daemon's entry: on
+        # 2026-07-29 one launched on a Windows excluded port range, published, failed to
+        # bind with WinError 10013, and took the healthy :9001 daemon's endpoint down with
+        # it on the way out. An advertised address that was never listened on is worse than
+        # no advertisement, because consumers trust the file over their default.
+        _probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            _probe.bind((host, port))
+        finally:
+            _probe.close()
+        published = publish_daemon_url(host, port)
+        print(f"  Endpoint published: {published} (~/.aither/daemon.json)")
+    except OSError as exc:
+        print(f"  Endpoint NOT published — cannot bind {host}:{port} ({exc})")
+        clear_daemon_url = None
+    except Exception:  # noqa: BLE001 — discovery is an optimisation, never fatal
+        clear_daemon_url = None
+    try:
+        uvicorn.run(app, host=host, port=port, log_level="info")
+    finally:
+        if clear_daemon_url:
+            clear_daemon_url()
 
 
 def main_workspace():

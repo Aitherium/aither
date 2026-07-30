@@ -5,9 +5,10 @@ from importlib.metadata import PackageNotFoundError, version as _pkg_version
 try:  # single source of truth = the installed package metadata (pyproject version)
     __version__ = _pkg_version("aither-adk")
 except PackageNotFoundError:  # running from a source checkout without install
-    __version__ = "2.44.0"  # kept in sync by packaging/sync_versions.py
+    __version__ = "2.45.0"  # kept in sync by packaging/sync_versions.py
 
 from adk.agent import AitherAgent
+from adk.dispatch import MultiAgentDispatcher, DispatchSpec, DispatchResult
 from adk.gate import CompletionGate, GateVerdict, gated_run, hard_checks
 from adk.tools import tool, ToolRegistry
 from adk.llm import LLMRouter
@@ -15,6 +16,10 @@ from adk.config import Config
 
 __all__ = [
     "AitherAgent",
+    # Multi-agent dispatch
+    "MultiAgentDispatcher",
+    "DispatchSpec",
+    "DispatchResult",
     "CompletionGate",
     "GateVerdict",
     "gated_run",

@@ -17,18 +17,24 @@ from adk import coherence
 from adk.config import Config
 from adk.grounding import ground_system_prompt
 from adk.identity import Identity, load_identity
-from adk.llm import DegenerationDetector, LLMRouter, Message, LLMResponse, strip_internal_tags
-from adk.llm.continuation import run_continuation
+from adk.llm import DegenerationDetector, LLMResponse, LLMRouter, Message, strip_internal_tags
 from adk.llm.advisor import (
     AdvisorConfig,
     advisor_brevity_line,
     steering_system_block,
     strip_advisor_blocks,
 )
-from adk.loop_guard import LoopGuard, LoopAction
+from adk.llm.continuation import run_continuation
+from adk.loop_guard import LoopAction, LoopGuard
 from adk.memory import Memory
 from adk.metering import AgentMeter, QuotaAction, get_meter, is_metered_backend
 from adk.metrics import get_metrics
+from adk.steering import (
+    drain_steering_hints,
+    drain_steering_inputs,
+    register_steering_queue,
+    unregister_steering_queue,
+)
 from adk.tools import ToolDef, ToolRegistry
 from adk.trace import get_trace_id
 
@@ -152,6 +158,116 @@ def _filter_tools_by_intent(
         t for t in tools_list
         if _intent_matches_categories(intent_type, getattr(t, "intent_categories", []))
     ]
+
+
+def _build_knowledge_graph(
+    agent_name: str,
+    tool_calls_made: list[str],
+    memory_recalls: set[str],
+    sources_touched: set[str],
+    session_id: str,
+) -> dict:
+    """Build a knowledge graph from turn metadata.
+
+    Returns a dict with 'nodes' and 'edges' suitable for SSE emission.
+    Matches the shape Genesis emits: {nodes: [{id, type, label, weight}],
+    edges: [{from, to, rel, weight}]}.
+    """
+    nodes = []
+    edges = []
+    node_ids = set()
+
+    # Add user node
+    user_id = f"user_{session_id[:8]}" if session_id else "user_anon"
+    nodes.append({
+        "id": user_id,
+        "type": "user",
+        "label": "User",
+        "weight": 1.0,
+    })
+    node_ids.add(user_id)
+
+    # Add agent node
+    agent_id = f"agent_{agent_name}".lower()
+    nodes.append({
+        "id": agent_id,
+        "type": "agent",
+        "label": agent_name.replace("_", " ").title(),
+        "weight": 1.0,
+    })
+    node_ids.add(agent_id)
+
+    # Edge: user → agent
+    edges.append({
+        "from": user_id,
+        "to": agent_id,
+        "rel": "asks",
+        "weight": 1.0,
+    })
+
+    # Add tool nodes (capped at 20)
+    for i, tool_name in enumerate(sorted(list(set(tool_calls_made)))[:20]):
+        # Strip circuit_break/blocked/denied suffixes added during execution
+        tool_clean = tool_name.split("[")[0]
+        tool_id = f"tool_{tool_clean}".lower()
+        if tool_id not in node_ids:
+            nodes.append({
+                "id": tool_id,
+                "type": "tool",
+                "label": tool_clean.replace("_", " ").title(),
+                "weight": 0.8,
+            })
+            node_ids.add(tool_id)
+
+        # Edge: agent → tool
+        edges.append({
+            "from": agent_id,
+            "to": tool_id,
+            "rel": "calls",
+            "weight": 0.8,
+        })
+
+    # Add memory nodes (capped at 10)
+    for mem_key in sorted(list(memory_recalls))[:10]:
+        mem_id = f"memory_{mem_key}".lower()
+        if mem_id not in node_ids:
+            nodes.append({
+                "id": mem_id,
+                "type": "memory",
+                "label": mem_key.replace("_", " ").title(),
+                "weight": 0.7,
+            })
+            node_ids.add(mem_id)
+
+        # Edge: agent → memory
+        edges.append({
+            "from": agent_id,
+            "to": mem_id,
+            "rel": "recalls",
+            "weight": 0.7,
+        })
+
+    # Add source nodes (capped at 10)
+    for source in sorted(list(sources_touched))[:10]:
+        src_id = f"source_{source}".lower()
+        if src_id not in node_ids:
+            nodes.append({
+                "id": src_id,
+                "type": "source",
+                "label": source.replace("_", " ").title()[:50],
+                "weight": 0.6,
+            })
+            node_ids.add(src_id)
+
+        # Edge: agent → source
+        edges.append({
+            "from": agent_id,
+            "to": src_id,
+            "rel": "reads",
+            "weight": 0.6,
+        })
+
+    return {"nodes": nodes[:40], "edges": edges[:60]}
 
 
 @dataclass
@@ -1109,12 +1225,19 @@ class AitherAgent:
             except Exception:
                 pass
 
+        # Register steering for this session
+        try:
+            await register_steering_queue(sid)
+        except Exception:
+            pass
+
         # Input safety check
         if self._safety:
             try:
                 safety_result = self._safety.check(message)
                 if safety_result.blocked:
                     logger.warning("Safety blocked input for agent %s", self.name)
+                    unregister_steering_queue(sid)
                     return AgentResponse(
                         content="I can't process that request — it was flagged by the safety filter.",
                         session_id=sid,
@@ -1244,7 +1367,7 @@ class AitherAgent:
         # call → invention is impossible. Soft "don't invent" prompting alone does
         # not stop weaker local models from confabulating.
         try:
-            from adk.coherence import is_memory_question, history_may_answer, honest_miss_reply
+            from adk.coherence import history_may_answer, honest_miss_reply, is_memory_question
             _companion_active = False
             try:
                 from adk.private_companion import get_companion_vault
@@ -1327,15 +1450,25 @@ class AitherAgent:
         _top_p = kwargs.pop("top_p", None)
         _repetition_penalty = kwargs.pop("repetition_penalty", None)
         _effort = kwargs.pop("effort", None)
-        # License effort cap: free (COMMUNITY) tier is capped at effort 3 (small
-        # models only). Reasoning effort (7-10) unlocks at the Professional tier.
-        # Hitting this cap is the organic pull toward an upgrade.
-        # The effort cap applies ONLY on the metered gateway (community tier =
-        # effort<=3, the pull toward an upgrade). Self-hosted / BYO / local agents
-        # pay for their own inference and keep FULL reasoning effort (7-10) so they
-        # can escalate to a reasoning backend. The getattr guard keeps agents
-        # constructed before this attribute existed working.
+        # License effort gate (fail-closed): free (COMMUNITY) tier is capped at
+        # effort 3 (small models only). Reasoning effort (7-10) unlocks at
+        # Professional tier. Hitting this cap is the organic pull toward upgrade.
+        # The gate applies ONLY on the metered gateway (community tier = effort<=3).
+        # Self-hosted / BYO / local agents pay for their own inference and keep
+        # FULL reasoning effort (7-10) to escalate to reasoning backends.
+        # The getattr guard keeps agents constructed before this attribute existed.
         if self._license is not None and getattr(self, "_metered_gateway", False):
+            # Fail-closed enforcement: if effort > license max, raise (don't silently cap)
+            if _effort is not None and isinstance(_effort, int):
+                cap = self._license.max_effort()
+                if _effort > cap:
+                    from adk.licensing import LicenseError
+                    raise LicenseError(
+                        f"Reasoning effort {_effort} requires a paid tier "
+                        f"(current: {self._license.license.tier.value}). "
+                        f"Upgrade at portal.aitherium.com/portal/marketplace/packs"
+                    )
+            # If we didn't raise, clamp to the max and log (defensive fallback)
             _effort, _capped = self._license.clamp_effort(_effort)
             if _capped:
                 logger.info(
@@ -1371,6 +1504,7 @@ class AitherAgent:
                         "This should not happen on BYO or local backends (they are never capped). "
                         "Check logs for details: https://aitherium.com/help"
                     )
+                unregister_steering_queue(sid)
                 return AgentResponse(
                     content=msg,
                     session_id=sid,
@@ -1432,6 +1566,25 @@ class AitherAgent:
             if loop_guard.tripped and _effort_int < 4:
                 logger.info("Loop guard circuit breaker tripped — forcing synthesis")
                 break
+
+            # ── Mid-turn steering: drain and inject user follow-ups ──
+            # Allows clients to inject messages via /chat/steer between tool
+            # iterations. Inputs are appended as user messages; hints are
+            # injected as system context (invisible to user).
+            try:
+                _steering_msgs = drain_steering_inputs(sid)
+                if _steering_msgs:
+                    for _steer_msg in _steering_msgs:
+                        messages.append(Message(role="user", content=_steer_msg))
+                        logger.debug("[STEERING] Injected user follow-up: %s", _steer_msg[:50])
+
+                _steering_hints = drain_steering_hints(sid)
+                if _steering_hints:
+                    combined_hints = "\n".join(_steering_hints)
+                    messages.append(Message(role="system", content=f"[STEERING HINT]\n{combined_hints}"))
+                    logger.debug("[STEERING] Injected %d system hints", len(_steering_hints))
+            except Exception as _steer_err:
+                logger.warning("Steering drain error (non-fatal): %s", _steer_err)
 
             # ── Gap K: Message normalization ──
             # Merge consecutive same-role messages and strip empties
@@ -1787,7 +1940,7 @@ class AitherAgent:
             try:
                 if (self._wm is not None and self._wm_prev_state is not None
                         and len(resp.tool_calls) > 1):
-                    from adk.worldmodel import wm_mode, MODE_SHADOW, MODE_STEER
+                    from adk.worldmodel import MODE_SHADOW, MODE_STEER, wm_mode
                     mode = wm_mode()
                     if mode in (MODE_SHADOW, MODE_STEER):
                         candidates = [tc.name for tc in resp.tool_calls]
@@ -1964,6 +2117,7 @@ class AitherAgent:
                 )
                 pend_names = ", ".join(p["tool"] for p in _pending_approvals)
                 _total_ms = (time.perf_counter() - _chat_start) * 1000
+                unregister_steering_queue(sid)
                 return AgentResponse(
                     content=(f"Waiting for your approval to run: {pend_names}."),
                     model=getattr(resp, "model", ""),
@@ -2064,6 +2218,7 @@ class AitherAgent:
             _approval_store.clear(sid)
         except Exception:  # noqa: BLE001
             pass
+        unregister_steering_queue(sid)
         return AgentResponse(
             content=content,
             model=final.model,
@@ -2314,8 +2469,8 @@ class AitherAgent:
             {"type": "error", "error": ...}
             {"type": "done"}
         """
-        import re as _re
         import json as _json
+        import re as _re
         sid = session_id or self._session_id
         _t0 = time.perf_counter()
 
@@ -2367,6 +2522,12 @@ class AitherAgent:
 
         answer = ""
         tools_made: list[str] = []
+
+        # Knowledge graph tracking — tools, memory, sources touched in this turn
+        _kg_tools = set()  # tool names called
+        _kg_memory_recalls = set()  # memory keys/types recalled
+        _kg_sources = set()  # source identifiers
+
         for _step in range(max_steps):
             # Chat-as-steering (Layer 2): drain messages the user sent WHILE this
             # loop is running and inject them so it REDIRECTS mid-flight, instead of
@@ -2466,18 +2627,36 @@ class AitherAgent:
                 except Exception:
                     args = {}
             await _emit({"type": "tool", "name": name, "args": args})
+            # Knowledge graph tracking
+            _kg_tools.add(str(name).lower())
             try:
                 obs = str(await self._tools.execute(name, args))
             except Exception as exc:
                 obs = f"(tool error: {type(exc).__name__}: {exc})"
             tools_made.append(name)
             await _emit({"type": "tool_result", "name": name, "result": obs[:1500]})
+            # Track tool result for knowledge graph
+            _kg_tools.add(str(name).lower())
             msgs.append(Message(role="assistant", content=full))
             msgs.append(Message(role="user", content=f"OBSERVATION: {obs[:3000]}"))
         else:
             await _emit({"type": "token", "text": "\n(reached step limit)"})
 
         await _emit({"type": "done"})
+
+        # Emit knowledge graph event (matching Genesis shape for AitherShell rendering)
+        try:
+            kg_data = _build_knowledge_graph(
+                self.name, list(tools_made), _kg_memory_recalls, _kg_sources, sid
+            )
+            await _emit({
+                "type": "knowledge_graph",
+                "nodes": kg_data["nodes"],
+                "edges": kg_data["edges"],
+            })
+        except Exception as kg_err:
+            logger.debug("Failed to build/emit knowledge graph: %s", kg_err)
+
         try:
             await self.memory.add_message(sid, "user", message)
             if answer:

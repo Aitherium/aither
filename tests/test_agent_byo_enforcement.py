@@ -122,8 +122,22 @@ def test_byo_agent_keeps_full_effort():
     assert fake.last_effort == 10
 
 
-def test_gateway_agent_effort_clamped_to_community_ceiling():
-    """On the metered gateway, community tier clamps effort to <=3."""
+def test_gateway_agent_effort_refused_above_community_ceiling():
+    """On the metered gateway, community tier REFUSES effort above its cap.
+
+    agent.chat() enforces fail-closed (raise, don't silently cap) — a silently
+    clamped effort looked like the paid feature working. This test previously
+    asserted the old clamp behavior and went red when enforcement hardened.
+    """
+    from adk.licensing import LicenseError
     agent, fake = _make_agent("gateway")
-    asyncio.run(agent.chat("hello there", effort=10))
+    with pytest.raises(LicenseError):
+        asyncio.run(agent.chat("hello there", effort=10))
+    assert fake.last_effort == "UNSET"  # the LLM was never reached
+
+
+def test_gateway_agent_effort_within_ceiling_passes():
+    """Effort at/below the community cap still reaches the LLM on the gateway."""
+    agent, fake = _make_agent("gateway")
+    asyncio.run(agent.chat("hello there", effort=3))
     assert fake.last_effort == 3

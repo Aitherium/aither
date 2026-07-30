@@ -179,7 +179,16 @@ class RoutineStore:
     ) -> Routine:
         """Register a new routine. Raises ValueError on a duplicate name, a bad
         cron expression, or when ``max_routines`` is reached (system-registered
-        maintenance routines bypass the cap but still count toward it)."""
+        maintenance routines bypass the cap but still count toward it).
+        Raises LicenseError if cron routines are not licensed."""
+        # Fail-closed: cron routines require BUILDER+ tier (or INTERNAL/SOVEREIGN)
+        if not _system:  # system routines bypass the license gate
+            try:
+                from adk.licensing import get_license_manager
+                get_license_manager().require("cron", friendly="Cron routines")
+            except ImportError:
+                pass  # licensing unavailable; proceed without gate
+
         name = str(name).strip()
         if not name:
             raise ValueError("Routine name must not be empty")

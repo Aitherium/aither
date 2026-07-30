@@ -294,6 +294,51 @@ class TestOpenAIProvider:
 
     @respx.mock
     @pytest.mark.asyncio
+    async def test_chat_stream_parses_aitheros_typed_sse(self):
+        """MicroScheduler's /v1 facade answers stream=true with AitherOS-typed
+        events, not OpenAI chunks. Parsing only the OpenAI shape made that a
+        perfectly silent EMPTY stream (zero chunks, no error)."""
+        sse = (
+            'event: session_start\n'
+            'data: {"type":"session_start","model":"aither-orchestrator"}\n\n'
+            'event: token\n'
+            'data: {"type":"token","t":"Hel","n":1}\n\n'
+            'event: token\n'
+            'data: {"type":"token","t":"lo","n":2}\n\n'
+            'event: answer\n'
+            'data: {"type":"answer","answer":"Hello"}\n\n'
+            'event: complete\n'
+            'data: {"type":"complete","duration_ms":10,"model":"aither-orchestrator"}\n\n'
+        )
+        respx.post("https://api.openai.com/v1/chat/completions").mock(
+            return_value=httpx.Response(200, text=sse)
+        )
+        provider = OpenAIProvider(api_key="sk-test")
+        chunks = [c async for c in provider.chat_stream([Message(role="user", content="hi")])]
+        # tokens streamed; the trailing "answer" event must NOT double the text
+        assert "".join(c.content for c in chunks) == "Hello"
+        assert any(c.done for c in chunks)
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_chat_stream_typed_sse_answer_only(self):
+        """A typed stream with no token events still yields the final answer."""
+        sse = (
+            'event: answer\n'
+            'data: {"type":"answer","answer":"42"}\n\n'
+            'event: complete\n'
+            'data: {"type":"complete","duration_ms":5}\n\n'
+        )
+        respx.post("https://api.openai.com/v1/chat/completions").mock(
+            return_value=httpx.Response(200, text=sse)
+        )
+        provider = OpenAIProvider(api_key="sk-test")
+        chunks = [c async for c in provider.chat_stream([Message(role="user", content="hi")])]
+        assert "".join(c.content for c in chunks) == "42"
+        assert any(c.done for c in chunks)
+
+    @respx.mock
+    @pytest.mark.asyncio
     async def test_list_models(self):
         respx.get("https://api.openai.com/v1/models").mock(
             return_value=httpx.Response(200, json={

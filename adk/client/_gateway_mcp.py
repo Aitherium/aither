@@ -60,6 +60,9 @@ class GatewayMCPClient:
         self._timeout = timeout
         self._connected = False
         self._request_id = 0
+        # MCP StreamableHTTP session. The server issues an Mcp-Session-Id on `initialize`
+        # and rejects every later call without it ("400 Bad Request: Missing session ID").
+        self._session_id: str = ""
 
     def _next_id(self) -> int:
         """Generate next JSON-RPC request ID."""
@@ -67,11 +70,76 @@ class GatewayMCPClient:
         return self._request_id
 
     def _headers(self) -> dict[str, str]:
-        """Build request headers."""
-        h = {"Content-Type": "application/json"}
+        """Build request headers.
+
+        The Accept header is REQUIRED, not cosmetic: an MCP StreamableHTTP server rejects a
+        request without it as ``406 Not Acceptable: Client must accept application/json``.
+        Because list_tools() treats any >=400 as "no tools" and returns [], omitting it made
+        the agent silently report ZERO tools while logging a successful connection — an
+        inert tool surface that looks like parity. Measured against the local gateway
+        (127.0.0.1:8182) 2026-07-29.
+        """
+        h = {
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+        }
         if self.api_key:
             h["Authorization"] = f"Bearer {self.api_key}"
+        if self._session_id:
+            h["Mcp-Session-Id"] = self._session_id
         return h
+
+    async def _ensure_session(self) -> bool:
+        """Perform the MCP `initialize` handshake and capture the session id.
+
+        MCP StreamableHTTP is not plain JSON-RPC-over-POST: a client must `initialize`
+        first, then send every subsequent request with the returned Mcp-Session-Id. Without
+        this the gateway answers "400 Bad Request: Missing session ID", list_tools() maps
+        that to [], and the agent runs with ZERO platform tools while reporting a healthy
+        connection. Idempotent — a live session is reused.
+        """
+        if self._session_id:
+            return True
+        try:
+            async with httpx.AsyncClient(timeout=self._timeout, headers=self._headers()) as client:
+                resp = await client.post(
+                    f"{self.gateway_url}/mcp",
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": self._next_id(),
+                        "method": "initialize",
+                        "params": {
+                            "protocolVersion": "2025-06-18",
+                            "capabilities": {},
+                            "clientInfo": {"name": "aither-adk", "version": "1.0"},
+                        },
+                    },
+                )
+                if resp.status_code >= 400:
+                    logger.warning(
+                        "MCP initialize failed (%d): %s", resp.status_code, resp.text[:160]
+                    )
+                    return False
+                # The id arrives as a response header, not in the JSON body.
+                self._session_id = (
+                    resp.headers.get("mcp-session-id") or resp.headers.get("Mcp-Session-Id") or ""
+                )
+                if not self._session_id:
+                    logger.warning("MCP initialize returned no Mcp-Session-Id header")
+                    return False
+                # Best-effort: the spec expects this notification after initialize.
+                try:
+                    await client.post(
+                        f"{self.gateway_url}/mcp",
+                        headers=self._headers(),
+                        json={"jsonrpc": "2.0", "method": "notifications/initialized"},
+                    )
+                except httpx.HTTPError:
+                    pass
+                return True
+        except httpx.HTTPError as exc:
+            logger.warning("MCP initialize error: %s", exc)
+            return False
 
     async def connect(self) -> bool:
         """Test connection to gateway.
@@ -96,6 +164,38 @@ class GatewayMCPClient:
             logger.warning("Gateway connection check failed: %s", exc)
             return False
 
+    async def ping(self) -> bool:
+        """Cheap liveness probe that exercises the REAL MCP path.
+
+        `connect()` is not a substitute: it GETs `/health`, and this gateway is known to
+        answer that 200 while `/mcp` is unresponsive — that exact lie is what let a flap
+        go unnoticed in D-1621. `list_tools()` does exercise `/mcp`, but it costs 3.2s and
+        366 KB (1,227 tool schemas), which is far too heavy to run on a watch interval.
+        The JSON-RPC `ping` method measures **8ms / 36 bytes** against the same session
+        and endpoint, so loss can be detected in seconds instead of minutes for free.
+
+        Returns False on ANY failure — unreachable, auth, malformed, JSON-RPC error — so
+        callers get a fail-closed liveness answer rather than an exception to forget.
+        """
+        if not self.api_key:
+            return False
+        if not await self._ensure_session():
+            return False
+        try:
+            async with httpx.AsyncClient(
+                timeout=self._timeout, headers=self._headers()
+            ) as client:
+                resp = await client.post(
+                    f"{self.gateway_url}/mcp",
+                    json={"jsonrpc": "2.0", "method": "ping", "id": self._next_id()},
+                )
+            if resp.status_code != 200:
+                return False
+            return "error" not in resp.json()
+        except Exception as exc:  # noqa: BLE001 — a probe must answer, never raise
+            logger.debug("Gateway ping failed: %s", exc)
+            return False
+
     async def list_tools(self) -> list[dict]:
         """Discover available tools on gateway.
 
@@ -104,6 +204,8 @@ class GatewayMCPClient:
         """
         if not self.api_key:
             logger.error("Cannot list tools: no API key configured")
+            return []
+        if not await self._ensure_session():
             return []
 
         try:

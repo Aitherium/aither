@@ -341,6 +341,33 @@ class OpenAIProvider(LLMProvider):
                         yield StreamChunk(done=True, model=model)
                         return
                     data = json.loads(data_str)
+                    # Some AitherOS backends (MicroScheduler's /v1 facade, Genesis)
+                    # answer stream=true with AitherOS-typed SSE events
+                    # ({"type": "token", "t": ...}) instead of OpenAI chunks
+                    # ({"choices": [{"delta": ...}]}). Parsing only the OpenAI
+                    # shape turns such a stream into a perfectly silent EMPTY
+                    # answer — zero chunks, no error, every probe green. Accept
+                    # both dialects; "thinking"/other typed events are skipped.
+                    if "choices" not in data and "type" in data:
+                        ev = data.get("type")
+                        if ev == "token":
+                            t = data.get("t") or data.get("text") or ""
+                            if t:
+                                saw_content = True
+                                yield StreamChunk(content=t, model=data.get("model", model))
+                        elif ev == "answer" and not saw_content:
+                            ans = data.get("answer") or ""
+                            if ans:
+                                saw_content = True
+                                yield StreamChunk(content=ans, model=data.get("model", model))
+                        elif ev == "complete":
+                            yield StreamChunk(done=True, model=data.get("model", model))
+                            return
+                        elif ev == "error":
+                            raise RuntimeError(
+                                f"provider stream error: {data.get('error') or data}"
+                            )
+                        continue
                     choice = data.get("choices", [{}])[0]
                     delta = choice.get("delta", {})
                     chunk_content = delta.get("content", "") or ""

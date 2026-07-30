@@ -2,6 +2,21 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [2.45.0] - 2026-07-29
+
+### Fixed — streaming against an AitherOS-typed SSE backend returned a silent EMPTY answer
+
+- **`OpenAIProvider.chat_stream` now parses BOTH stream dialects.** MicroScheduler's
+  `/v1/chat/completions` facade (and Genesis) answer `stream=true` with AitherOS-typed
+  SSE events (`event: token`, `data: {"t": "..."}`) rather than OpenAI chunks
+  (`choices[].delta.content`). Parsing only the OpenAI shape yielded **zero chunks and
+  no error** — the agent loop (`stream_react`) completed "successfully" with an empty
+  answer while non-stream `chat()` worked against the same endpoint, which made every
+  `/chat/stream` turn on an MS-backed daemon silently empty. The provider now accepts
+  typed `token`/`answer`/`complete`/`error` events alongside OpenAI chunks; a trailing
+  `answer` event never duplicates already-streamed tokens. Two regression tests pin
+  both dialect paths (`tests/test_llm_providers.py`).
+
 ## [2.44.0] - 2026-07-27
 
 ### Fixed — `adk enroll` silently registered devices into the WRONG TENANT
