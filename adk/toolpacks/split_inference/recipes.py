@@ -23,6 +23,7 @@ RECIPE_IDS = [
     "single-node-cuda",
     "bonsai-27b-5090-dgx-rpc",
     "multi-node-rpc-generic",
+    "kimi-k3-mesh-rpc",
 ]
 
 # Honest fallback: zero remote backends is not a split, and we say so.

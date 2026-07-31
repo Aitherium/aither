@@ -440,6 +440,14 @@ def install_model(
             download is deleted and treated as a failure. Empty means unpinned
             (3 of the 52 catalog models are multi-part and carry no single hash).
     """
+    # Kimi-K3 dispatch: multi-shard vision model requires dedicated provisioner
+    if "kimi-k3" in repo.lower():
+        raise NotImplementedError(
+            f"Kimi-K3 model '{repo}' requires multi-shard download. "
+            "Use adk.unsloth_gguf_download or the upcoming "
+            "'adk mesh serve kimi-k3' surface instead."
+        )
+
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
     # Convention: <repo-base>-<quant>.gguf (matches bartowski/nvidia layout)
     # Try standard naming first

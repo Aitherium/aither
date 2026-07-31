@@ -1313,7 +1313,10 @@ def _autostart_up_argv(identity: str, port: int, provider: str, offline: bool) -
 
 
 def cmd_bonsai_local(args) -> int:
-    """One command: run Bonsai-27B locally on :8090 (the ladder's `local` tier).
+    """One command: run Bonsai-27B locally on :8090, reachable as `--backend bonsai-local`.
+
+    NOT the `local` preset: that one targets AitherVLLMSwap on :8201, a fleet service.
+    This docstring used to claim otherwise, which is why the pairing looked wired.
 
     Runs the baked PrismML llama.cpp fork image (aither-llamacpp-bonsai:latest) —
     llama-server on the 1-bit Q1_0 GGUF — mapped to host :8090, so the Living OS at
@@ -1328,7 +1331,10 @@ def cmd_bonsai_local(args) -> int:
 
     image = os.environ.get("AITHER_BONSAI_IMAGE", "aither-llamacpp-bonsai:latest")
     name = os.environ.get("AITHER_BONSAI_CONTAINER", "aither-bonsai-local")
-    port = int(getattr(args, "port", 0) or os.environ.get("AITHER_BONSAI_PORT", "8090"))
+    port = int(
+        getattr(args, "port", 0)
+        or os.environ.get("AITHER_BONSAI_PORT", str(BONSAI_LOCAL_PORT))
+    )
     gpus = os.environ.get("AITHER_BONSAI_GPUS", "all")
 
     if not shutil.which("docker"):
@@ -1358,6 +1364,9 @@ def cmd_bonsai_local(args) -> int:
         print("    gpu        :", "yes (nvidia runtime)" if gpu_args else "no — CPU (AVX) fallback")
         print("    command    :", " ".join(run_cmd))
         print("  Then the Living OS at aitherium.com auto-detects it and chats on your box.")
+        print("    agents via : adk --backend bonsai-local"
+              if port == BONSAI_LOCAL_PORT else
+              f"    agents via : adk --backend openai --base-url http://localhost:{port}/v1")
         return 0
 
     # Reuse an existing container if already up.
@@ -1392,6 +1401,11 @@ def cmd_bonsai_local(args) -> int:
             time.sleep(2)
     if healthy:
         print(f"  [+] Bonsai-27B live on http://localhost:{port} — open aitherium.com; it'll chat on your hardware.")
+        if port == BONSAI_LOCAL_PORT:
+            print("  [+] Point agents at it with:  adk --backend bonsai-local")
+        else:
+            print(f"  [!] Non-default port {port}: no preset targets it. Use "
+                  f"`adk --backend openai --base-url http://localhost:{port}/v1`.")
         return 0
     print(f"  [!] Container started but :{port}/health didn't come up in ~60s. Check `docker logs {name}`.")
     return 1
@@ -2119,6 +2133,21 @@ def cmd_login(args) -> int:
     eps = _persist_workspace_endpoints(identity_url)
     _persist_shell_auth(identity_url, eps, result)
 
+    # Auto-sync the account's secrets vault into the local encrypted keyring so a
+    # just-logged-in user has their keys (BYO provider keys, tokens) available
+    # immediately. The #1 onboarding gap was that `adk secret sync` was manual and
+    # nobody ran it after login. Best-effort — a sync hiccup must NEVER fail login.
+    # Opt out with `adk login --no-sync`.
+    synced_count = None
+    if not getattr(args, "no_sync", False):
+        try:
+            import asyncio as _aio
+            from adk.sync.secrets import SecretsSync
+            _synced = _aio.run(SecretsSync(api_key=token).sync())
+            synced_count = len(_synced) if _synced is not None else 0
+        except Exception:  # noqa: BLE001 — sync is a convenience, not a gate
+            synced_count = -1
+
     username = user.get("username", "") if isinstance(user, dict) else ""
     print()
     print(f"  Logged in{' as ' + username if username else ''}!")
@@ -2127,6 +2156,10 @@ def cmd_login(args) -> int:
         print(f"  License saved → tier '{license_tier}' (pack entitlements active)")
     if eps:
         print(f"  Workspace endpoints configured → {eps['api_url']} (inference + MCP)")
+    if synced_count is not None and synced_count >= 0:
+        print(f"  Vault synced → {synced_count} secret(s) available locally")
+    elif synced_count == -1:
+        print("  (vault sync skipped — run `adk secret sync` to pull your keys)")
     print()
     return 0
 
@@ -2197,6 +2230,66 @@ def cmd_logout(args) -> int:
         except Exception:
             pass
     return 0
+
+
+def cmd_ambient(args) -> int:
+    """Terminal sensor for the ambient expertise loop."""
+    from adk import ambient as amb
+
+    action = getattr(args, "ambient_command", None)
+
+    if action == "install":
+        print(amb.install_hook(args.shell))
+        print("The hook reports finished commands so the agent can research what")
+        print("you get stuck on. Disable anytime with AITHER_AMBIENT=0.")
+        return 0
+
+    if action == "uninstall":
+        print(amb.uninstall_hook(args.shell))
+        return 0
+
+    if action == "report":
+        try:
+            data = json.loads(args.payload)
+        except json.JSONDecodeError as e:
+            print(f"bad payload: {e}", file=sys.stderr)
+            return 1
+        result = amb.observe_command(
+            command=data.get("command", ""),
+            exit_code=int(data.get("exit_code", 0)),
+            cwd=data.get("cwd", ""),
+            error_text=data.get("error", ""),
+        )
+        # The hook discards this; printing keeps `aither ambient report` usable
+        # by hand, which is how you debug a sensor that looks installed and is
+        # silently 401ing.
+        print(json.dumps(result))
+        return 0
+
+    if action == "brief":
+        result = amb.brief(args.locator, args.surface)
+        if result.get("available"):
+            print(f"Topic: {result.get('topic')}\n")
+            print(result.get("brief", ""))
+        else:
+            print(f"Nothing known yet — {result.get('reason', 'no data')}")
+        return 0
+
+    if action == "status":
+        import urllib.request
+
+        url = f"{amb.DEFAULT_GENESIS.rstrip('/')}/ambient/stats"
+        try:
+            req = urllib.request.Request(url, headers=amb._auth_headers())
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                print(json.dumps(json.loads(resp.read().decode("utf-8")), indent=2))
+            return 0
+        except Exception as e:  # noqa: BLE001
+            print(f"could not reach {url}: {e}", file=sys.stderr)
+            return 1
+
+    print("usage: aither ambient {install|uninstall|report|brief|status}")
+    return 1
 
 
 def cmd_balance(args) -> int:
@@ -4746,10 +4839,25 @@ def cmd_test(args):
     return result.returncode
 
 
+# The port `adk bonsai-local` serves on, and the port its backend preset dials. These were
+# four separate literals (docstring, --port default, docker publish, preset URL) and the
+# preset's was a fifth number entirely — see the comment on "bonsai-local" below.
+BONSAI_LOCAL_PORT = 8090
+
+
 _BACKEND_PRESETS: dict[str, dict] = {
     # Sovereign local default — Bonsai-27B on the AitherVLLMSwap server.
     "local":   {"provider": "openai", "base_url": "http://localhost:8201/v1", "model": "bonsai-27b"},
     "bonsai":  {"provider": "openai", "base_url": "http://localhost:8201/v1", "model": "bonsai-27b"},
+    # `adk bonsai-local` serves llama.cpp on :8090 — a DIFFERENT backend from the two
+    # above, which target AitherVLLMSwap on :8201. That is a fleet service and does not
+    # exist on anyone else's machine, so before this preset existed the one-command
+    # install had no backend that could reach it: you ran `adk bonsai-local`, got a
+    # healthy server, and every `--backend local|bonsai` still dialled :8201 and found
+    # nothing. Named after the command that starts it so the pairing is discoverable.
+    "bonsai-local": {"provider": "openai",
+                     "base_url": f"http://localhost:{BONSAI_LOCAL_PORT}/v1",
+                     "model": "bonsai-27b"},
     # On-demand escalation to the mesh / cloud — each with a model the target serves.
     "genesis": {"provider": "openai", "base_url": "http://localhost:8001/v1", "model": "aither-orchestrator"},
     # Cloud inference is the AitherMCPGateway (mcp.aitherium.com) — it fronts the
@@ -6630,6 +6738,71 @@ def cmd_mesh(args) -> int:
                 return 1
 
         return asyncio.run(_provide())
+
+    elif sub == "serve":
+        async def _serve():
+            from adk import mesh_serve
+
+            role = getattr(args, "role", "plan")
+            dry_run = not getattr(args, "execute", False)
+            try:
+                if role == "plan":
+                    plan = mesh_serve.serve_plan(
+                        getattr(args, "nodes", ""), quant=getattr(args, "quant", "auto")
+                    )
+                    print("\n  Kimi-K3 Mesh Split Plan")
+                    print("  " + "=" * 60)
+                    print(f"  Quant:        {plan['quant']} "
+                          f"({plan['download_gb']}GB download)")
+                    print(f"  Pool:         {plan['pool_total_gb']:.0f}GB "
+                          f"(need {plan['required_gb']}GB)")
+                    def _nid(n):
+                        # plan entries are NodeBudget objects (or dicts in tests)
+                        if isinstance(n, dict):
+                            return n.get("node_id", "?"), n.get("host", "?")
+                        return getattr(n, "node_id", "?"), getattr(n, "host", "?")
+
+                    cid, chost = _nid(plan["coordinator"])
+                    print(f"  Coordinator:  {cid} ({chost})")
+                    for backend in plan["rpc_backends"]:
+                        bid, bhost = _nid(backend)
+                        print(f"  RPC backend:  {bid} ({bhost})")
+                    for skipped in plan.get("skipped_nodes", []):
+                        sid, _ = _nid(skipped)
+                        print(f"  Skipped:      {sid}")
+                    print(f"  Tensor split: {plan['tensor_split']}")
+                    print(f"\n  {plan['note']}\n")
+                    return 0
+                if role == "rpc-backend":
+                    report = mesh_serve.serve_rpc_backend(
+                        bind=getattr(args, "bind", ""),
+                        build_dir=getattr(args, "build_dir", "unsloth-llamacpp"),
+                        dry_run=dry_run,
+                    )
+                elif role == "coordinator":
+                    report = await mesh_serve.serve_coordinator(
+                        nodes_spec=getattr(args, "nodes", ""),
+                        backends=getattr(args, "backends", ""),
+                        quant=getattr(args, "quant", "auto"),
+                        model_dir=getattr(args, "model_dir", "kimi-k3-model"),
+                        build_dir=getattr(args, "build_dir", "unsloth-llamacpp"),
+                        bind=getattr(args, "bind", "") or "127.0.0.1",
+                        dry_run=dry_run,
+                        advertise=not getattr(args, "no_advertise", False),
+                        tenant_id=getattr(args, "tenant_id", "").strip() or None,
+                    )
+                else:
+                    print(f"ERROR: unknown role {role}")
+                    return 1
+                print(json.dumps(report, indent=2, default=str))
+                if dry_run:
+                    print("\n  (dry-run — re-run with --execute to act)")
+                return 0
+            except (ValueError, RuntimeError, NotImplementedError) as e:
+                print(f"ERROR: {e}", file=sys.stderr)
+                return 1
+
+        return asyncio.run(_serve())
 
     elif sub == "federation-token":
         async def _fed_token():
@@ -11269,7 +11442,8 @@ def _register_commands(sub):
     bonsai_p = sub.add_parser(
         "bonsai-local",
         help="Run Bonsai-27B on your own hardware (:8090) — GPU or CPU; aitherium.com then chats locally")
-    bonsai_p.add_argument("--port", type=int, default=8090, help="Host port to serve on (default: 8090)")
+    bonsai_p.add_argument("--port", type=int, default=BONSAI_LOCAL_PORT,
+                          help=f"Host port to serve on (default: {BONSAI_LOCAL_PORT})")
     bonsai_p.add_argument("--dry-run", action="store_true", help="Show what would run without starting anything")
     bonsai_p.add_argument("--stop", action="store_true", help="Stop and remove the local Bonsai container")
 
@@ -11316,6 +11490,8 @@ def _register_commands(sub):
     login_p.add_argument("--github", action="store_true",
                          help="Sign in with your GitHub identity (device flow)")
     login_p.add_argument("--api-key", help="Save an API key directly (no login flow)")
+    login_p.add_argument("--no-sync", action="store_true",
+                         help="Skip auto-syncing your secrets vault after login")
     login_p.add_argument("--portal-url", default="",
                          help="Portal/Identity URL (default: portal.aitherium.com)")
 
@@ -11327,6 +11503,35 @@ def _register_commands(sub):
 
     # adk balance — show Aitherium credit account info
     sub.add_parser("balance", help="Show your Aitherium credit balance and earnings")
+
+    # adk ambient — terminal sensor for the ambient expertise loop
+    ambient_p = sub.add_parser(
+        "ambient",
+        help="Make the agent an expert on what you're doing in this terminal",
+    )
+    ambient_sub = ambient_p.add_subparsers(dest="ambient_command")
+    amb_install = ambient_sub.add_parser(
+        "install", help="Add the shell hook to your profile (opt-in)"
+    )
+    amb_install.add_argument(
+        "--shell", choices=["powershell", "bash"],
+        default="powershell" if os.name == "nt" else "bash",
+    )
+    amb_uninstall = ambient_sub.add_parser("uninstall", help="Remove the shell hook")
+    amb_uninstall.add_argument(
+        "--shell", choices=["powershell", "bash"],
+        default="powershell" if os.name == "nt" else "bash",
+    )
+    amb_report = ambient_sub.add_parser(
+        "report", help="Report one finished command (called by the shell hook)"
+    )
+    amb_report.add_argument("--payload", required=True, help="JSON from the hook")
+    amb_brief = ambient_sub.add_parser(
+        "brief", help="What does the agent already know about this?"
+    )
+    amb_brief.add_argument("locator", help="Command, URL, or window title")
+    amb_brief.add_argument("--surface", default="terminal")
+    ambient_sub.add_parser("status", help="Show ambient loop stats and engine health")
 
     # adk x-session — bootstrap / inspect the browser-transport X session
     x_session_p = sub.add_parser(
@@ -12096,6 +12301,68 @@ def _register_commands(sub):
         "--auth-token",
         default=os.getenv("AITHER_AUTH_TOKEN", ""),
         help="Bearer token for API calls (auto-resolved from ~/.aither/config.json if not given)"
+    )
+
+    # adk mesh serve — serve Kimi-K3 from this mesh (intra-mesh llama.cpp RPC split)
+    mesh_serve_p = mesh_sub.add_parser(
+        "serve",
+        help="Serve Kimi-K3 from this mesh (plan / rpc-backend / coordinator roles)"
+    )
+    mesh_serve_p.add_argument(
+        "model_name",
+        choices=["kimi-k3"],
+        help="Model to serve (kimi-k3 only for now)"
+    )
+    mesh_serve_p.add_argument(
+        "--role",
+        choices=["plan", "rpc-backend", "coordinator"],
+        default="plan",
+        help="This node's role: plan (default, print only), rpc-backend, coordinator"
+    )
+    mesh_serve_p.add_argument(
+        "--nodes",
+        default="",
+        help="Participating nodes as id:host:ram_gb:vram_gb,... (plan/coordinator roles)"
+    )
+    mesh_serve_p.add_argument(
+        "--quant",
+        default="auto",
+        help="Quant name (UD-IQ1_S..UD-Q8_K_XL) or 'auto' (largest that fits the pool)"
+    )
+    mesh_serve_p.add_argument(
+        "--bind",
+        default="",
+        help="Overlay/private IP to bind (rpc-backend/coordinator; public IPs refused)"
+    )
+    mesh_serve_p.add_argument(
+        "--backends",
+        default="",
+        help="Comma-separated ip:port of RUNNING rpc-servers (coordinator role)"
+    )
+    mesh_serve_p.add_argument(
+        "--model-dir",
+        default=os.getenv("AITHER_KIMI_MODEL_DIR", "kimi-k3-model"),
+        help="Directory for the GGUF shards + mmproj (594GB+ for UD-IQ1_S)"
+    )
+    mesh_serve_p.add_argument(
+        "--build-dir",
+        default=os.getenv("AITHER_UNSLOTH_BUILD_DIR", "unsloth-llamacpp"),
+        help="Unsloth llama.cpp fork checkout/build directory"
+    )
+    mesh_serve_p.add_argument(
+        "--tenant-id",
+        default=os.getenv("AITHER_TENANT_ID", ""),
+        help="Owner tenant ID (for the community-market advertise step)"
+    )
+    mesh_serve_p.add_argument(
+        "--no-advertise",
+        action="store_true",
+        help="Serve without advertising into the community market"
+    )
+    mesh_serve_p.add_argument(
+        "--execute",
+        action="store_true",
+        help="Actually run (default is a dry-run that prints the plan/steps)"
     )
 
     # adk mesh leave — self-service pool exit (drain this node's community backend)
@@ -13129,6 +13396,8 @@ def main():
         sys.exit(cmd_logout(args))
     elif args.command == "balance":
         sys.exit(cmd_balance(args))
+    elif args.command == "ambient":
+        sys.exit(cmd_ambient(args))
     elif args.command == "x-session":
         sys.exit(cmd_x_session(args))
     elif args.command == "claude-account":

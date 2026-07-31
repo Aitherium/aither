@@ -51,7 +51,7 @@ profiles:
   full:
     description: "Complete AitherOS — all layers + all specialized"
     layers: [core, intelligence, autonomic, gateway, social, mcp, memory, perception, training, gpu]
-    specialized: [genesis, veil, microscheduler, atlas, saga, lyra, iris, vera, hera, demiurge, themis]
+    specialized: [genesis, veil, microscheduler, atlas, saga, lyra, iris, vera, hera, demiurge, themis, bonsai-image]
     infrastructure:
       - redis
       - postgres
@@ -116,6 +116,19 @@ profiles:
     min_vram_gb: 6
     containers_approx: 6
     compose_profiles: [personal-ollama]
+
+  creative-image:
+    description: "Image generation node — Bonsai Image 4B (ternary FLUX.2 Klein, 4-step)"
+    layers: []
+    specialized: [microscheduler, bonsai-image]
+    infrastructure:
+      - redis
+    min_ram_gb: 12
+    min_disk_gb: 30
+    gpu_required: true
+    min_vram_gb: 8
+    containers_approx: 4
+    compose_profiles: [creative-image]
 
   personal-cpu:
     description: "Personal Agent — Nemotron 8B GGUF on CPU (no GPU needed)"

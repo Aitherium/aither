@@ -3887,7 +3887,13 @@ def pack_install(pack_id, output_json):
 
     try:
         with httpx.Client(base_url=_genesis_url(), timeout=60) as c:
-            resp = c.get(f"/v1/packs/{pack_id}/download", headers=headers)
+            # POST /v1/packs/download/{id} is the endpoint Genesis has always
+            # served; the GET form only exists on Genesis >= 2026-07-30 (added
+            # as an alias for older ADK clients). Prefer POST, fall back to GET
+            # for sovereign nodes running something older than either.
+            resp = c.post(f"/v1/packs/download/{pack_id}", headers=headers)
+            if resp.status_code in (404, 405):
+                resp = c.get(f"/v1/packs/{pack_id}/download", headers=headers)
 
         if resp.status_code == 402:
             msg = resp.json().get("detail", "License required")

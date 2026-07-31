@@ -738,6 +738,666 @@ def create_app(
 
         return result
 
+    # ─── Autonomous-X session seeding (loopback → no manual step) ───
+    @app.post("/x-session/import")
+    async def x_session_import(request: Request):
+        """Seed the autonomous X poster's session from a browser that holds it.
+
+        The AitherConnect extension POSTs THIS browser's logged-in x.com cookies
+        here. Loopback is already trusted by the auth middleware (no token), and
+        the daemon runs as the owner — so we forward the cookies to the fleet's
+        verify-and-store endpoint with the owner's own credentials. No download,
+        no `adk x-session import`, no manual step. Cookies never leave the box.
+        """
+        import httpx
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse(status_code=400, content={"ok": False, "error": "invalid JSON"})
+        cookies = (body or {}).get("cookies") or []
+        names = {c.get("name") for c in cookies if isinstance(c, dict)}
+        if "auth_token" not in names or "ct0" not in names:
+            return JSONResponse(status_code=400, content={
+                "ok": False, "error": "missing auth_token/ct0 — log into x.com in this browser first"})
+
+        api_key = ""
+        try:
+            from adk.cli import load_saved_config
+            api_key = load_saved_config().get("api_key", "") or ""
+        except Exception:
+            try:
+                import json as _json
+                with open(os.path.expanduser("~/.aither/config.json"), encoding="utf-8") as fh:
+                    api_key = (_json.load(fh) or {}).get("api_key", "") or ""
+            except Exception:
+                api_key = ""
+
+        headers = {"Content-Type": "application/json"}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        payload = {"storage_state": {"cookies": cookies, "origins": []}}
+        # Genesis LB (plain HTTP) first, then the worker (TLS); the route lives on
+        # both. A 404 means that host doesn't serve it — fall through, don't report.
+        bases = [("http://localhost:8001", False), ("https://localhost:8159", False)]
+        last = None
+        async with httpx.AsyncClient(timeout=120.0, verify=False) as client:
+            for base, _verify in bases:
+                try:
+                    r = await client.post(f"{base}/social/x/import-session", headers=headers, json=payload)
+                    if r.status_code == 404:
+                        last = (404, (r.text or "")[:200])
+                        continue
+                    data = r.json()
+                    return JSONResponse(status_code=(200 if data.get("ok") else 502), content=data)
+                except Exception as e:  # noqa: BLE001 — try the next base
+                    last = (0, str(e)[:200])
+        return JSONResponse(status_code=502, content={
+            "ok": False, "error": f"no fleet endpoint reachable: {last}"})
+
+    # ─── Onboarding status endpoints (AitherConnect extension) ───
+
+    @app.get("/onboard/status")
+    async def onboard_status():
+        """Report onboarding status for the AitherConnect extension.
+
+        Returns: {logged_in, username, tenant, vault_secrets, enrolled, node_id, agents, hub_url}
+        Never errors (treats missing files as logged_out/not_enrolled/0-secrets).
+        """
+        import json as _json
+
+        # Read config.json
+        config_path = os.path.expanduser("~/.aither/config.json")
+        logged_in = False
+        username = None
+        tenant = None
+        api_key = ""
+
+        try:
+            with open(config_path, encoding="utf-8") as fh:
+                cfg = _json.load(fh) or {}
+                api_key = cfg.get("api_key", "") or ""
+                username = cfg.get("username")
+                tenant = cfg.get("tenant_id")
+                if api_key:
+                    logged_in = True
+        except (OSError, ValueError):
+            pass
+
+        # Read auth.json for tenant_slug if not in config
+        if not tenant:
+            try:
+                auth_path = os.path.expanduser("~/.aither/auth.json")
+                with open(auth_path, encoding="utf-8") as fh:
+                    auth = _json.load(fh) or {}
+                    tenant = auth.get("tenant_slug")
+            except (OSError, ValueError):
+                pass
+
+        # Count vault secrets (secrets.enc file)
+        vault_secrets = 0
+        try:
+            secrets_path = os.path.expanduser("~/.aither/secrets.enc")
+            if os.path.isfile(secrets_path):
+                # Estimate: encrypted secrets file size / avg secret size (~256 bytes per secret)
+                size = os.path.getsize(secrets_path)
+                vault_secrets = max(1, size // 256) if size > 0 else 0
+        except (OSError, ValueError):
+            pass
+
+        # Check enrollment
+        enrolled = False
+        node_id = None
+        hub_url = None
+        try:
+            node_auth_path = os.path.expanduser("~/.aither/node_auth.json")
+            if os.path.isfile(node_auth_path):
+                with open(node_auth_path, encoding="utf-8") as fh:
+                    na = _json.load(fh) or {}
+                    node_id = na.get("node_id")
+                    hub_url = na.get("hub_url")
+                    if node_id:
+                        enrolled = True
+        except (OSError, ValueError):
+            pass
+
+        # Load agents from agents.json
+        agents = []
+        try:
+            agents_path = os.path.expanduser("~/.aither/agents.json")
+            if os.path.isfile(agents_path):
+                with open(agents_path, encoding="utf-8") as fh:
+                    agents_data = _json.load(fh) or {}
+                    agents_map = agents_data.get("agents", {})
+                    for name, data in agents_map.items():
+                        if isinstance(data, dict):
+                            agents.append({
+                                "name": name,
+                                "url": data.get("url", ""),
+                                "status": data.get("status", "unknown"),
+                            })
+        except (OSError, ValueError):
+            pass
+
+        return JSONResponse({
+            "logged_in": logged_in,
+            "username": username,
+            "tenant": tenant,
+            "vault_secrets": vault_secrets,
+            "enrolled": enrolled,
+            "node_id": node_id,
+            "agents": agents,
+            "hub_url": hub_url,
+        })
+
+    @app.post("/onboard/sync")
+    async def onboard_sync():
+        """Run secrets sync in-process via SecretsSync.
+
+        Returns: {ok:true, synced:number} or {ok:false, error}
+        """
+        import json as _json
+
+        # Read api_key from config
+        api_key = ""
+        try:
+            config_path = os.path.expanduser("~/.aither/config.json")
+            with open(config_path, encoding="utf-8") as fh:
+                cfg = _json.load(fh) or {}
+                api_key = cfg.get("api_key", "") or ""
+        except (OSError, ValueError):
+            pass
+
+        if not api_key:
+            return JSONResponse(
+                status_code=400,
+                content={"ok": False, "error": "not logged in (no api_key in config)"}
+            )
+
+        try:
+            from adk.sync.secrets import SecretsSync
+            syncer = SecretsSync(api_key=api_key)
+            synced = await syncer.sync()
+            return JSONResponse({"ok": True, "synced": synced or 0})
+        except Exception as e:
+            return JSONResponse(
+                status_code=502,
+                content={"ok": False, "error": str(e)[:200]}
+            )
+
+    @app.post("/onboard/enroll")
+    async def onboard_enroll():
+        """Run enrollment as a subprocess with ~120s timeout.
+
+        Returns: {ok:true, node_id} or {ok:false, error:<stderr tail>}
+        """
+        import json as _json
+        import subprocess
+        import sys
+
+        try:
+            # Run enrollment subprocess
+            result = subprocess.run(
+                [sys.executable, '-m', 'adk', 'enroll', '--yes'],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+
+            # Read node_id from node_auth.json after enroll
+            node_id = None
+            try:
+                node_auth_path = os.path.expanduser("~/.aither/node_auth.json")
+                if os.path.isfile(node_auth_path):
+                    with open(node_auth_path, encoding="utf-8") as fh:
+                        na = _json.load(fh) or {}
+                        node_id = na.get("node_id")
+            except (OSError, ValueError):
+                pass
+
+            if node_id:
+                return JSONResponse({"ok": True, "node_id": node_id})
+
+            # Enroll ran but didn't produce node_id
+            stderr_tail = (result.stderr or "")[-200:]
+            return JSONResponse(
+                status_code=502,
+                content={
+                    "ok": False,
+                    "error": f"enroll completed but no node_id: {stderr_tail}"
+                }
+            )
+        except subprocess.TimeoutExpired:
+            return JSONResponse(
+                status_code=504,
+                content={"ok": False, "error": "enrollment timed out (>120s)"}
+            )
+        except Exception as e:
+            return JSONResponse(
+                status_code=502,
+                content={"ok": False, "error": str(e)[:200]}
+            )
+
+    # ─── Zero-Knowledge user backup (loopback → encryption local, ciphertext-only to GitHub) ───
+    # The passphrase is NEVER persisted — it is required on every /backup/now|list|restore
+    # call and lives only in the user's head. The GitHub token is stored ENCRYPTED with the
+    # passphrase-derived key, so ~/.aither/backup_config.json holds nothing usable on its own
+    # (repo name + salt + an encrypted token). Encryption happens on-daemon; GitHub receives
+    # ONLY base64 Fernet ciphertext. Aitherium never sees plaintext or any key.
+    # NOTE: the daemon is loopback-trusted (no bearer, like /onboard/* and /x-session/import);
+    # a same-user local process could still overwrite the config, but cannot decrypt any
+    # existing backup or read the stored token without the passphrase.
+
+    def _backup_config_path() -> str:
+        """Local config file path for backup settings."""
+        home = os.path.expanduser("~")
+        return os.path.join(home, ".aither", "backup_config.json")
+
+    def _load_backup_config() -> dict:
+        """Load backup config from ~/.aither/backup_config.json. Returns empty dict if unconfigured."""
+        import json as _json
+        config_path = _backup_config_path()
+        if os.path.isfile(config_path):
+            try:
+                with open(config_path, encoding="utf-8") as fh:
+                    return _json.load(fh) or {}
+            except (OSError, ValueError):
+                pass
+        return {}
+
+    def _save_backup_config(cfg: dict) -> None:
+        """Save backup config to ~/.aither/backup_config.json with restrictive permissions."""
+        import json as _json
+        config_path = _backup_config_path()
+        # Ensure dir exists
+        os.makedirs(os.path.dirname(config_path), exist_ok=True, mode=0o700)
+        # Write with restrictive perms (intent; actual depends on umask)
+        with open(config_path, "w", encoding="utf-8") as fh:
+            _json.dump(cfg, fh, indent=2)
+        # Try to chmod 0600 on the file itself
+        try:
+            os.chmod(config_path, 0o600)
+        except OSError:
+            pass
+
+    def _backup_derive_key(passphrase: str, salt_hex: str) -> bytes:
+        """Derive a Fernet key locally (PBKDF2-HMAC-SHA256, 600k iters). The
+        passphrase is never persisted; the key is re-derived per operation."""
+        import base64 as _b64
+        from cryptography.hazmat.primitives import hashes as _hashes
+        from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC as _PBKDF2HMAC
+        kdf = _PBKDF2HMAC(algorithm=_hashes.SHA256(), length=32,
+                          salt=bytes.fromhex(salt_hex), iterations=600000)
+        return _b64.urlsafe_b64encode(kdf.derive(passphrase.encode("utf-8")))
+
+    def _backup_unlock_token(cfg: dict, passphrase: str):
+        """Return (github_token, error). The token is stored ENCRYPTED with the
+        passphrase-derived key, so a wrong/absent passphrase yields no token and no
+        on-disk secret is usable on its own. Doubles as passphrase validation."""
+        from cryptography.fernet import Fernet as _Fernet, InvalidToken as _InvalidToken
+        token_enc = cfg.get("token_enc", "")
+        if not token_enc:
+            return None, "backup config missing encrypted token — reconfigure"
+        try:
+            key = _backup_derive_key(passphrase, cfg.get("salt", ""))
+            return _Fernet(key).decrypt(token_enc.encode("ascii")).decode("utf-8"), None
+        except _InvalidToken:
+            return None, "wrong passphrase"
+        except Exception as _e:  # noqa: BLE001
+            return None, f"token unlock failed: {str(_e)[:80]}"
+
+    @app.post("/backup/config")
+    async def backup_config_set(request: Request):
+        """Configure backup target (GitHub). Stores token + repo + salt locally only."""
+        import json as _json
+        import secrets
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse(status_code=400, content={"ok": False, "error": "invalid JSON"})
+
+        target = body.get("target", "").strip()
+        github_repo = body.get("github_repo", "").strip()
+        github_token = body.get("github_token", "").strip()
+        passphrase = body.get("passphrase", "").strip()
+
+        if not target or target != "github":
+            return JSONResponse(status_code=400, content={
+                "ok": False, "error": "target must be 'github'"})
+        if not github_repo or "/" not in github_repo:
+            return JSONResponse(status_code=400, content={
+                "ok": False, "error": "github_repo must be 'owner/repo'"})
+        if not github_token:
+            return JSONResponse(status_code=400, content={
+                "ok": False, "error": "github_token is required"})
+        if not passphrase or len(passphrase) < 8:
+            return JSONResponse(status_code=400, content={
+                "ok": False, "error": "passphrase must be at least 8 characters"})
+
+        # Encrypt the GitHub token with the passphrase-derived key and persist the
+        # CIPHERTEXT only — never the passphrase, never the plaintext token.
+        from cryptography.fernet import Fernet as _Fernet
+        salt = secrets.token_hex(16)  # 32 hex chars = 16 bytes
+        key = _backup_derive_key(passphrase, salt)
+        token_enc = _Fernet(key).encrypt(github_token.encode("utf-8")).decode("ascii")
+
+        cfg = {
+            "target": "github",
+            "github_repo": github_repo,
+            "salt": salt,
+            "token_enc": token_enc,
+            "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        _save_backup_config(cfg)
+        return JSONResponse({"ok": True})
+
+    @app.get("/backup/status")
+    async def backup_status():
+        """Report backup configuration. Does NOT contact GitHub — the token is
+        encrypted at rest and only unlocks with the passphrase, so a restore-point
+        count needs an unlocked call (POST /backup/list with the passphrase).
+        last_backup comes from a NON-secret local marker written by /backup/now."""
+        cfg = _load_backup_config()
+        if not cfg:
+            return JSONResponse({
+                "configured": False,
+                "target": None,
+                "github_repo": None,
+                "restore_points": None,
+                "last_backup": None,
+            })
+
+        last_backup = None
+        try:
+            marker = os.path.join(os.path.expanduser("~"), ".aither", ".backup_last")
+            if os.path.isfile(marker):
+                with open(marker, encoding="utf-8") as fh:
+                    last_backup = fh.read().strip() or None
+        except OSError:
+            pass
+
+        return JSONResponse({
+            "configured": True,
+            "target": cfg.get("target", "github"),
+            "github_repo": cfg.get("github_repo"),
+            "restore_points": None,  # unknown until unlocked with the passphrase
+            "last_backup": last_backup,
+        })
+
+    @app.post("/backup/now")
+    async def backup_now(request: Request):
+        """Create a backup: tar ~/.aither, encrypt locally, upload to GitHub."""
+        import tarfile
+        import base64
+        import io
+        import httpx
+        from datetime import datetime
+        from cryptography.fernet import Fernet
+        from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+        from cryptography.hazmat.primitives import hashes
+
+        cfg = _load_backup_config()
+        if not cfg:
+            return JSONResponse({"ok": False, "error": "backup not configured"},
+                               status_code=400)
+
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+
+        passphrase = body.get("passphrase", "").strip()
+        if not passphrase:
+            return JSONResponse({"ok": False, "error": "passphrase required"},
+                               status_code=400)
+
+        # Prepare backup — the destination comes from the STORED config (never the
+        # request), and the token unlocks only with the correct passphrase.
+        home = os.path.expanduser("~")
+        aither_dir = os.path.join(home, ".aither")
+        github_repo = cfg.get("github_repo", "")
+        salt_hex = cfg.get("salt", "")
+        github_token, _tok_err = _backup_unlock_token(cfg, passphrase)
+        if _tok_err:
+            return JSONResponse({"ok": False, "error": _tok_err}, status_code=400)
+
+        if not os.path.isdir(aither_dir):
+            return JSONResponse({"ok": False, "error": "~/.aither not found"},
+                               status_code=400)
+
+        # Curated allowlist of the USER's own data — identity, secrets, history.
+        # We deliberately do NOT tar the whole ~/.aither: frameworks/, bin/, llamacpp/,
+        # graph/ are installed tooling / re-derivable (2.8GB measured), not user data,
+        # and GitHub rejects >100MB blobs anyway.
+        include = [
+            "config.json", "auth.json", "node_auth.json", "agents.json",
+            "identities.json", "secrets.enc",
+            "memory", "conversations", "sessions",
+        ]
+
+        def _build_encrypted_blob():
+            """Tar the allowlisted user-data paths, then PBKDF2-derive + Fernet-encrypt.
+            Runs in a worker THREAD — tar+encrypt would otherwise block the daemon's
+            single asyncio loop for the whole operation (PQ010)."""
+            tar_bytes = io.BytesIO()
+            with tarfile.open(fileobj=tar_bytes, mode="w:gz") as tar:
+                for name in include:
+                    p = os.path.join(aither_dir, name)
+                    if os.path.exists(p):
+                        try:
+                            tar.add(p, arcname=os.path.join(".aither", name))
+                        except OSError:
+                            pass  # skip unreadable
+            tar_data = tar_bytes.getvalue()
+            kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32,
+                             salt=bytes.fromhex(salt_hex), iterations=600000)
+            key = base64.urlsafe_b64encode(kdf.derive(passphrase.encode("utf-8")))
+            ct = Fernet(key).encrypt(tar_data)
+            return base64.b64encode(ct).decode("ascii"), len(tar_data)
+
+        try:
+            import asyncio as _asyncio
+            ciphertext_b64, tar_size = await _asyncio.to_thread(_build_encrypted_blob)
+
+            # Upload to GitHub
+            backup_id = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+            filename = f"{backup_id}.enc"
+            github_path = f"aither-backups/{filename}"
+
+            headers = {"Authorization": f"token {github_token}"}
+            url = f"https://api.github.com/repos/{github_repo}/contents/{github_path}"
+            payload = {
+                "message": f"Backup: {backup_id}",
+                "content": ciphertext_b64,
+            }
+
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                r = await client.put(url, headers=headers, json=payload)
+                if r.status_code not in (201, 200):
+                    return JSONResponse({
+                        "ok": False,
+                        "error": f"GitHub upload failed: {r.status_code}",
+                    }, status_code=502)
+
+            # Non-secret local marker so /backup/status can show the latest
+            # backup without needing the passphrase.
+            try:
+                with open(os.path.join(home, ".aither", ".backup_last"),
+                          "w", encoding="utf-8") as _fh:
+                    _fh.write(backup_id)
+            except OSError:
+                pass
+
+            return JSONResponse({
+                "ok": True,
+                "backup_id": backup_id,
+                "size": tar_size,
+                "note": "ciphertext-only — Aitherium/GitHub never see plaintext",
+            })
+        except Exception as e:
+            logger.exception("backup_now failed")
+            return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=502)
+
+    @app.post("/backup/list")
+    async def backup_list(request: Request):
+        """List backups on GitHub. Requires the passphrase (the token is encrypted
+        at rest and only unlocks with it)."""
+        import httpx
+
+        cfg = _load_backup_config()
+        if not cfg:
+            return JSONResponse({"ok": False, "error": "backup not configured"},
+                               status_code=400)
+
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        passphrase = body.get("passphrase", "").strip()
+        if not passphrase:
+            return JSONResponse({"ok": False, "error": "passphrase required"},
+                               status_code=400)
+        github_token, _tok_err = _backup_unlock_token(cfg, passphrase)
+        if _tok_err:
+            return JSONResponse({"ok": False, "error": _tok_err}, status_code=400)
+
+        try:
+            github_repo = cfg.get("github_repo", "")
+            headers = {"Authorization": f"token {github_token}"}
+            url = f"https://api.github.com/repos/{github_repo}/contents/aither-backups"
+
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                r = await client.get(url, headers=headers)
+                if r.status_code == 404:
+                    return JSONResponse({"ok": True, "backups": []})
+                if r.status_code != 200:
+                    return JSONResponse({"ok": False, "error": f"GitHub error: {r.status_code}"},
+                                       status_code=502)
+
+                items = r.json()
+                backups = []
+                if isinstance(items, list):
+                    for item in items:
+                        if isinstance(item, dict) and item.get("name", "").endswith(".enc"):
+                            backup_id = item["name"].replace(".enc", "")
+                            backups.append({
+                                "backup_id": backup_id,
+                                "ts": backup_id,
+                                "size": item.get("size", 0),
+                            })
+                backups.sort(key=lambda x: x["backup_id"], reverse=True)
+                return JSONResponse({"ok": True, "backups": backups})
+        except Exception as e:
+            return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=502)
+
+    @app.post("/backup/restore")
+    async def backup_restore(request: Request):
+        """Restore a backup from GitHub and decrypt locally."""
+        import tarfile
+        import base64
+        import io
+        import httpx
+        from cryptography.fernet import Fernet, InvalidToken
+        from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+        from cryptography.hazmat.primitives import hashes
+
+        cfg = _load_backup_config()
+        if not cfg:
+            return JSONResponse({"ok": False, "error": "backup not configured"},
+                               status_code=400)
+
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse(status_code=400, content={"ok": False, "error": "invalid JSON"})
+
+        backup_id = body.get("backup_id", "").strip()
+        passphrase = body.get("passphrase", "").strip()
+
+        if not backup_id:
+            return JSONResponse({"ok": False, "error": "backup_id required"}, status_code=400)
+        if not passphrase:
+            return JSONResponse({"ok": False, "error": "passphrase required"}, status_code=400)
+
+        try:
+            github_repo = cfg.get("github_repo", "")
+            github_token, _tok_err = _backup_unlock_token(cfg, passphrase)
+            if _tok_err:
+                return JSONResponse({"ok": False, "error": _tok_err}, status_code=400)
+            salt_hex = cfg.get("salt", "")
+            filename = f"{backup_id}.enc"
+            github_path = f"aither-backups/{filename}"
+
+            # Fetch encrypted backup from GitHub
+            headers = {"Authorization": f"token {github_token}"}
+            url = f"https://api.github.com/repos/{github_repo}/contents/{github_path}"
+
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                r = await client.get(url, headers=headers)
+                if r.status_code == 404:
+                    # 200-with-ok:false (not HTTP 404) so the extension's port-probe,
+                    # which treats 404 as "route not on this port", isn't misled.
+                    return JSONResponse({"ok": False, "error": "backup not found"})
+                if r.status_code != 200:
+                    return JSONResponse({"ok": False, "error": f"GitHub error: {r.status_code}"},
+                                       status_code=502)
+
+                data = r.json()
+                ciphertext_b64 = data.get("content", "")
+
+            # Decode base64
+            try:
+                ciphertext = base64.b64decode(ciphertext_b64)
+            except Exception:
+                return JSONResponse({"ok": False, "error": "invalid base64 in backup"},
+                                   status_code=400)
+
+            # Derive key
+            salt_bytes = bytes.fromhex(salt_hex)
+            kdf = PBKDF2HMAC(
+                algorithm=hashes.SHA256(),
+                length=32,
+                salt=salt_bytes,
+                iterations=600000,
+            )
+            key = base64.urlsafe_b64encode(kdf.derive(passphrase.encode("utf-8")))
+
+            # Decrypt
+            cipher = Fernet(key)
+            try:
+                tar_data = cipher.decrypt(ciphertext)
+            except InvalidToken:
+                return JSONResponse({"ok": False, "error": "decryption failed (wrong passphrase?)"},
+                                   status_code=400)
+
+            # Extract to ~/.aither-restore/<backup_id>/
+            home = os.path.expanduser("~")
+            restore_dir = os.path.join(home, ".aither-restore", backup_id)
+            os.makedirs(restore_dir, exist_ok=True, mode=0o700)
+
+            tar_io = io.BytesIO(tar_data)
+            file_count = 0
+            try:
+                with tarfile.open(fileobj=tar_io, mode="r:gz") as tar:
+                    # filter="data" blocks path-traversal / absolute members (defense
+                    # in depth — the tar is the user's own passphrase-authenticated backup).
+                    try:
+                        tar.extractall(path=restore_dir, filter="data")
+                    except TypeError:  # Python < 3.12 has no filter kwarg
+                        tar.extractall(path=restore_dir)
+                    file_count = len(tar.getnames())
+            except Exception as e:
+                return JSONResponse({"ok": False, "error": f"extraction failed: {str(e)[:200]}"},
+                                   status_code=400)
+
+            return JSONResponse({
+                "ok": True,
+                "restored_to": restore_dir,
+                "files": file_count,
+            })
+        except Exception as e:
+            logger.exception("backup_restore failed")
+            return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=502)
+
     # ─── Built-in streaming chat page (so a human has somewhere to talk) ───
 
     @app.get("/", response_class=HTMLResponse)

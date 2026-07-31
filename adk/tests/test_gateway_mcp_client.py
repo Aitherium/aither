@@ -107,7 +107,19 @@ class TestGatewayMCPClient:
             assert len(result) == 2
             assert result[0]["name"] == "get_secret"
             assert result[1]["name"] == "search_code"
-            mock_client.post.assert_called_once()
+            # ASSERT THE tools/list CALL, NOT THE CALL COUNT. This was
+            # `post.assert_called_once()`, which silently encoded "the client makes exactly
+            # one POST" — i.e. "no MCP handshake exists". MCP StreamableHTTP REQUIRES
+            # `initialize` + `notifications/initialized` before any request, so the moment
+            # that handshake was implemented correctly this test went red while the client
+            # was right. Assert the thing that matters and the handshake can evolve freely.
+            methods = [
+                (c.kwargs.get("json") or {}).get("method")
+                for c in mock_client.post.call_args_list
+            ]
+            assert "tools/list" in methods, methods
+            assert "initialize" in methods, "the MCP handshake must precede tools/list"
+
 
     @pytest.mark.asyncio
     async def test_list_tools_auth_error(self):
@@ -423,7 +435,22 @@ class TestGatewayMCPIntegration:
             ]
 
             mock_client.get.return_value = responses[0]
-            mock_client.post.side_effect = responses[1:]
+
+            # DISPATCH ON THE JSON-RPC METHOD, NOT ON CALL ORDER. `side_effect =
+            # responses[1:]` assumed POST #1 is tools/list and POST #2 is call_tool. The MCP
+            # handshake inserts `initialize` and `notifications/initialized` ahead of both,
+            # so every response landed one or two calls off and the list ran out — a failure
+            # that reads as a broken client when it is really a test pinned to call order.
+            by_method = {"tools/list": responses[1], "tools/call": responses[2]}
+            init_resp = MagicMock(status_code=200)
+            init_resp.headers = {"mcp-session-id": "test-session"}
+            init_resp.json = MagicMock(return_value={"jsonrpc": "2.0", "result": {}, "id": 0})
+
+            def _post(*args, **kwargs):
+                method = (kwargs.get("json") or {}).get("method")
+                return by_method.get(method, init_resp)
+
+            mock_client.post.side_effect = _post
 
             # Execute workflow
             connected = await client.connect()

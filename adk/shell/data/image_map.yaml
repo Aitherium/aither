@@ -225,3 +225,7 @@ specialized:
     image: aither-rigify
   training-gpu:
     image: aitheros-training-gpu
+  # Bonsai Image ships its OWN image (gemlite/hqq/triton quant stack), not the
+  # shared perception layer image — see docker/bonsai-image/bonsai-image.Dockerfile.
+  bonsai-image:
+    image: aitheros-bonsai-image

@@ -143,12 +143,22 @@ def test_cmd_mesh_ls_node_structure():
 
 
 def test_genesis_backend_in_compat_urls():
-    """Test that 'genesis' backend is registered in LLMRouter._COMPAT_URLS."""
+    """Test that 'genesis' backend is registered in LLMRouter._COMPAT_URLS.
+
+    HTTPS, not HTTP. Genesis on :8001 speaks TLS with the internal AitherNet CA; plaintext
+    gets an empty reply, which is exactly what made it look "down". Corrected in 0a609f1f05
+    with a live-proven round-trip from inside the fleet net (cert SAN verified, no -k:
+    GET /v1/models returned the catalog, POST /v1/chat/completions returned GENESIS_OK).
+
+    That commit updated _COMPAT_URLS and ran the provider/router suites — 173 tests — but
+    not this file, so this assertion kept the old value and has been red on develop since.
+    A stale test is not evidence: the measurement is.
+    """
     from adk.llm import LLMRouter
 
     router = LLMRouter()
     assert "genesis" in router._COMPAT_URLS
-    assert router._COMPAT_URLS["genesis"] == "http://localhost:8001/v1"
+    assert router._COMPAT_URLS["genesis"] == "https://localhost:8001/v1"
 
 
 def test_genesis_backend_in_compat_models():

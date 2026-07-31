@@ -673,26 +673,34 @@ EXAMPLES:
 """
 
     def _format_packs_table(self, packs: List[Dict[str, Any]]) -> str:
-        """Format pack list as simple text table."""
+        """Format pack list as simple text table with optional branding tagline."""
         if not packs:
             return "No packs available."
 
         lines = []
-        lines.append("ID                          | NAME                        | TYPE     | PRICE")
-        lines.append("-" * 80)
+        header = (
+            "ID                    | NAME                    | TAGLINE"
+            "                   | TYPE     | PRICE"
+        )
+        lines.append(header)
+        lines.append("-" * 110)
 
         for pack in packs:
-            pack_id = pack.get("id", "unknown")[:25].ljust(27)
-            name = pack.get("name", "unnamed")[:25].ljust(27)
+            pack_id = pack.get("id", "unknown")[:20].ljust(22)
+            name = pack.get("name", "unnamed")[:20].ljust(24)
+            # Extract tagline from branding, truncate to 25 chars
+            branding = pack.get("branding", {}) or {}
+            tagline = branding.get("tagline", "") if isinstance(branding, dict) else ""
+            tagline_display = (tagline[:25] if tagline else "").ljust(27)
             pack_type = pack.get("type", "unknown")[:8].ljust(9)
             price = pack.get("price", "free")
 
-            lines.append(f"{pack_id}| {name}| {pack_type}| {price}")
+            lines.append(f"{pack_id}| {name}| {tagline_display}| {pack_type}| {price}")
 
         return "\n".join(lines)
 
     def _format_pack_detail(self, pack: Dict[str, Any]) -> str:
-        """Format pack detail view."""
+        """Format pack detail view with optional branding tagline and capabilities."""
         output = []
         output.append("=== PACK DETAILS ===\n")
 
@@ -706,6 +714,27 @@ EXAMPLES:
         if pack.get("description"):
             output.append(f"\nDescription:")
             output.append(f"  {pack['description']}")
+
+        # Add tagline from branding if present
+        branding = pack.get("branding", {}) or {}
+        if isinstance(branding, dict) and branding.get("tagline"):
+            output.append(f"\nTagline:      {branding['tagline']}")
+
+        # Add capabilities list if present
+        capabilities = pack.get("capabilities", []) or []
+        if capabilities and isinstance(capabilities, list):
+            output.append("\nCapabilities:")
+            # Show up to 3 capabilities inline, then "+N more" if there are more
+            shown = min(3, len(capabilities))
+            for i, cap in enumerate(capabilities[:shown]):
+                cap_name = cap.get("name", f"capability-{i}") if isinstance(cap, dict) else str(cap)
+                cap_desc = cap.get("description", "") if isinstance(cap, dict) else ""
+                if cap_desc:
+                    output.append(f"  • {cap_name} — {cap_desc[:60]}...")
+                else:
+                    output.append(f"  • {cap_name}")
+            if len(capabilities) > 3:
+                output.append(f"  +{len(capabilities) - 3} more capabilities")
 
         if pack.get("tags"):
             tags = ", ".join(pack["tags"])
