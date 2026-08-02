@@ -11774,6 +11774,53 @@ def _register_commands(sub):
     )
     x_session_sub.add_parser("status", help="Is the stored X session logged in right now?")
 
+    # adk harness — AitherShell core: one shell that drives every coding shell
+    shell_p = sub.add_parser(
+        "harness",
+        help="AitherShell — drive Claude Code, other coding harnesses, agents and real terminals",
+    )
+    shell_p.add_argument("--url", default="", help="Harness daemon URL (default 127.0.0.1:8362)")
+    shell_p.add_argument("--token", default="", help="Daemon bearer token")
+    shell_sub = shell_p.add_subparsers(dest="shell_command")
+
+    sh_serve = shell_sub.add_parser("serve", help="Run the harness daemon")
+    sh_serve.add_argument("--host", default="", help="Bind host (default 127.0.0.1)")
+    sh_serve.add_argument("--port", type=int, default=0, help="Bind port (default 8362)")
+
+    sh_harnesses = shell_sub.add_parser("harnesses", help="What this box can drive")
+    sh_harnesses.add_argument("--versions", action="store_true", help="Probe versions too")
+
+    shell_sub.add_parser("agents", help="Sovereign agent roster")
+    shell_sub.add_parser("profiles", help="Model profiles usable per session")
+    shell_sub.add_parser("list", help="Live sessions")
+
+    sh_new = shell_sub.add_parser("new", help="Start a session")
+    sh_new.add_argument("--harness", default="claude",
+                        help="claude|gemini|terminal|sandbox|aither|group")
+    sh_new.add_argument("--cwd", default="", help="Working directory")
+    sh_new.add_argument("--model-profile", dest="model_profile", default="",
+                        help="Per-session model profile")
+    sh_new.add_argument("--model", default="", help="Explicit model id")
+    sh_new.add_argument("--permission-mode", dest="permission_mode", default="",
+                        help="Harness permission mode")
+    sh_new.add_argument("--title", default="", help="Tab title")
+    sh_new.add_argument("--agent", default="", help="Sovereign agent id (harness=aither)")
+    sh_new.add_argument("--participants", default="", help="Comma list of agents (harness=group)")
+    sh_new.add_argument("--target", default="", help="Container name (harness=sandbox)")
+    sh_new.add_argument("--attach", action="store_true", help="Attach after creating")
+
+    sh_send = shell_sub.add_parser("send", help="Send a turn to a session")
+    sh_send.add_argument("session_id")
+    sh_send.add_argument("text")
+
+    sh_attach = shell_sub.add_parser("attach", help="Follow a session's event stream")
+    sh_attach.add_argument("session_id")
+    sh_attach.add_argument("--since", type=int, default=0, help="Resume from this seq")
+    sh_attach.add_argument("--follow", action="store_true", help="Keep following past turn end")
+
+    sh_kill = shell_sub.add_parser("kill", help="Stop a session")
+    sh_kill.add_argument("session_id")
+
     # adk claude-model — switch Claude Code backend (DeepSeek/Kimi/local/Anthropic)
     claude_model_p = sub.add_parser(
         "claude-model",
@@ -11798,6 +11845,10 @@ def _register_commands(sub):
     cm_auto_p.add_argument("profile", help="Profile name")
 
     claude_model_sub.add_parser("failover", help="Test current; if broken, switch to next working provider")
+
+    cm_watch_p = claude_model_sub.add_parser("watch", help="Auto-switch on rate limit (daemon)")
+    cm_watch_p.add_argument("--daemon", action="store_true", help="Run in background")
+    cm_watch_p.add_argument("--stop", action="store_true", help="Stop the background daemon")
 
     # Workflow shortcuts — instant model switching by role
     claude_model_sub.add_parser("plan", help="→ Anthropic Opus 5 (architecture, design, review)")
@@ -13706,6 +13757,9 @@ def main():
         sys.exit(cmd_ambient(args))
     elif args.command == "x-session":
         sys.exit(cmd_x_session(args))
+    elif args.command == "harness":
+        from adk.harnesses.cli import cmd_shell
+        sys.exit(cmd_shell(args))
     elif args.command == "claude-model":
         from adk.claude_model import cmd_claude_model
         sys.exit(cmd_claude_model(args))

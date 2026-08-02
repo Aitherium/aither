@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "aither-adk"
-version = "2.47.2"
+version = "2.48.0"
 description = "Build AI agents with real memory + faculties on any backend, local or cloud. Open-core: free local runtime with typed memory, knowledge graph, code graph and ReAct; paid tiers (portal.aitherium.com) unlock fleets, channels, reasoning and marketplace packs."
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -55,6 +55,17 @@ federation = ["cryptography>=41.0.0"]
 addons = ["docker>=7.0"]
 workspace = [
     "aither-adk[platform]",
+]
+harness = [
+    # AitherShell's harness layer: the daemon (fastapi/uvicorn), the agent relay
+    # (httpx) and a REAL pty. Without a pty backend the `terminal` and `sandbox`
+    # harnesses refuse to start rather than degrading to a pipe — a pipe-backed
+    # "terminal" looks right until you run something interactive.
+    "fastapi>=0.110",
+    "uvicorn>=0.27",
+    "httpx>=0.26",
+    "ptyprocess>=0.7; sys_platform != 'win32'",
+    "pywinpty>=2.0; sys_platform == 'win32'",
 ]
 shell = [
     "rich>=13.0",
