@@ -1,16 +1,32 @@
 # Aither ADK — Build AI Agent Fleets
 
-**3 lines. Any backend. Local or cloud.**
+[![PyPI](https://img.shields.io/pypi/v/aither-adk)](https://pypi.org/project/aither-adk/)
+[![License: BSL 1.1](https://img.shields.io/badge/license-BSL--1.1-blue)](LICENSE)
+[![Docs](https://img.shields.io/badge/docs-aitherium.github.io-8A2BE2)](https://aitherium.github.io/aither-adk/)
 
-Build single agents or coordinated fleets with effort-based model routing, runtime backend switching, real memory, and zero lock-in. Run on your GPU, on Ollama, or on cloud APIs — **same code, same agents.**
+**3 lines of code. Any backend. Local or cloud. Zero lock-in.**
+
+Aither ADK is a Python SDK + CLI for building AI agents that run on **your** hardware — a single helpful agent or a coordinated fleet that delegates work to each other. Agents get tools, persistent knowledge-graph memory, safety filtering, and effort-based model routing out of the box. Swap the LLM backend at runtime — your GPU, Ollama, llama.cpp, or any cloud API — **same code, same agents.**
 
 ```bash
 pip install aither-adk
-adk quickstart                                    # auto-detect GPU, set up inference, ready to go
+adk quickstart                                    # auto-detect hardware, set up inference
 adk init my-agent && cd my-agent && python agent.py
 ```
 
-**No Python? One line.** The bootstrap installer sets up an isolated environment (via [uv](https://astral.sh/uv)) and launches the first-run wizard:
+---
+
+## Get running in 60 seconds — pick your path
+
+| You have… | Run this | You get |
+|---|---|---|
+| **Nothing — not even Python** | one-line installer (below) | isolated env + first-run wizard |
+| **No GPU, no API key** | `adk setup --tier bonsai` | [Bonsai](#bonsai-an-agent-on-literally-anything) running **free, offline, on CPU** — even a phone or Pi |
+| **A GPU (6 GB+)** | `adk quickstart` | auto-detected vLLM/Ollama, models pulled, ready to chat |
+| **Just an API key** | `adk quickstart --cloud` | cloud inference (Anthropic / OpenAI / DeepSeek) |
+| **A whole LAN of machines** | `adk deploy grid` | [multi-machine effort-routed inference](#grid-inference-across-multiple-machines) |
+
+**The no-Python one-liner** — sets up an isolated environment (via [uv](https://astral.sh/uv)) and launches the wizard:
 
 ```bash
 # macOS / Linux
@@ -21,11 +37,61 @@ curl -fsSL https://aitherium.com/install.sh | sh
 powershell -ExecutionPolicy ByPass -c "irm https://aitherium.com/install.ps1 | iex"
 ```
 
-**No GPU? No problem.** Set an API key and your agents use cloud inference. Have a GPU? They auto-detect vLLM/Ollama. Both? They route intelligently by task complexity.
+Then, whichever path you took:
 
-> **Building a real agent or pack?** Read **[docs/AGENT_DEV_GUIDE.md](docs/AGENT_DEV_GUIDE.md)** — the opinionated golden path (`agent.chat()` is the agent; author a pack; never-forget RAG memory; BYO-key; the gotcha checklist). It saves you from re-learning the hard way.
+```bash
+adk start          # chat with your agent (zero config)
+adk doctor         # something wrong? this names it
+```
 
-> **Using an AI coding agent** (Claude Code, Cursor, Copilot)? Paste the [Agent Setup Prompt](adk/AGENT_PROMPT.md) into your session — it covers install, auth, inference setup, and the path from zero to fleet.
+> **Using an AI coding agent** (Claude Code, Cursor, Copilot)? Paste the [Agent Setup Prompt](adk/AGENT_PROMPT.md) into your session — it walks the agent through install, auth, inference, and the path from zero to fleet. There's also [`llms.txt`](llms.txt) / [`llms-full.txt`](llms-full.txt) for tools that ingest those.
+
+---
+
+## Contents
+
+- [New here? The five concepts](#new-here-the-five-concepts)
+- [Documentation map](#documentation-map) — every guide, linked
+- [Quick Start](#quick-start)
+- [Bonsai: an agent on literally anything](#bonsai-an-agent-on-literally-anything)
+- [Setting Up Inference](#setting-up-inference)
+- [Building Agents](#building-agents)
+- [Agent Fleets](#agent-fleets)
+- [Agents & Packs](#agents--packs)
+- [CLI Reference](#cli-reference)
+- [The Aitherium ecosystem](#the-aitherium-ecosystem-optional)
+- [Environment Variables](#environment-variables) · [Examples](#examples) · [License](#license)
+
+---
+
+## New here? The five concepts
+
+Everything in the ADK hangs off five ideas:
+
+1. **Agent** — `AitherAgent("aither")`. One object: `await agent.chat("...")` is the whole API. It has a persona, tools, and memory.
+2. **Backend** — where inference runs. Local (vLLM / Ollama / llama.cpp / Bonsai) or cloud (Anthropic / OpenAI / DeepSeek / Aitherium gateway). Switchable at runtime, mid-session.
+3. **Effort routing** — every call carries a 1–10 effort level; cheap calls go to small fast models, hard calls go to the big reasoning model. Automatically. You never pick a model per call again.
+4. **Memory** — a local SQLite knowledge graph that auto-ingests entities and relations from every conversation. Hybrid keyword + semantic search. No external services.
+5. **Fleet** — multiple agents that can call each other via the built-in `ask_agent` tool. One YAML file, one `adk-serve` command, and you have an orchestrator delegating to specialists.
+
+If you only remember one thing: **`agent.chat()` is the agent.** Everything else is configuration.
+
+## Documentation map
+
+| I want to… | Read this |
+|---|---|
+| Build a real agent or publish a pack | **[docs/AGENT_DEV_GUIDE.md](docs/AGENT_DEV_GUIDE.md)** — the golden path + gotcha checklist |
+| Self-host the full managed-agent experience | [QUICKSTART_SELF_HOSTED.md](QUICKSTART_SELF_HOSTED.md) — `adk onboard --quick` |
+| Operate a self-hosted node long-term | [docs/SELF_HOSTING_RUNBOOK.md](docs/SELF_HOSTING_RUNBOOK.md) |
+| Run inference across several machines | [GRID_SETUP.md](GRID_SETUP.md) |
+| Wire up a specific LLM provider | [docs/providers/](docs/providers/) — DeepSeek, Kimi, OpenAI-compatible, local AitherOS |
+| Give my agent a persistent identity/persona | [docs/PERSONA.md](docs/PERSONA.md) · `adk soul import|export` |
+| Understand the world-model layer | [docs/WORLD_MODEL.md](docs/WORLD_MODEL.md) |
+| Connect agents across machines (relay) | [docs/AITHERRELAY_GUIDE.md](docs/AITHERRELAY_GUIDE.md) |
+| Run a private, local-only companion | [PRIVATE_COMPANION.md](PRIVATE_COMPANION.md) |
+| See working code | [`examples/`](examples/) — five runnable scripts |
+| See what changed | [CHANGELOG.md](CHANGELOG.md) |
+| Browse rendered docs | [aitherium.github.io/aither-adk](https://aitherium.github.io/aither-adk/) |
 
 ---
 
@@ -98,9 +164,33 @@ adk-serve --fleet fleet.yaml --port 8080
 
 ---
 
+## Bonsai: an agent on literally anything
+
+**No GPU. No API key. No account. Nothing leaves your machine.**
+
+Bonsai is Aitherium's family of ultra-compact models built to make agents *sovereign by default* — they run on hardware everyone already owns. The 1-bit Bonsai-27B runs on a plain CPU with 4 GB of RAM; Bonsai-4B runs in 2 GB (Android via Termux, Raspberry Pi Zero). Agents on Bonsai get the **full harness** — tool calling, memory, safety, fleets — not a demo mode.
+
+```bash
+adk setup --tier bonsai         # Bonsai-27B Q1_0 — CPU, phone, Pi, 4GB RAM
+adk setup --tier bonsai-4b      # ultra-minimal — 2GB RAM
+adk bonsai-local                # one command: Docker pulls the image + serves Bonsai-27B on :8090
+adk --backend bonsai-local      # point your agents at it
+```
+
+Why this matters, concretely:
+
+- **Free forever, offline after setup** — one network pull for the model/image, then a fully working agent with zero external dependencies. Air-gapped targets work too: fetch the artifacts on a connected machine and sideload them.
+- **Tool calling works** — Bonsai drives the same `@tool` functions, `ask_agent` delegation, and pack skills as the big models.
+- **Private by construction** — no key means no telemetry decision to trust; there is simply no wire out.
+- **A floor, not a ceiling** — start on Bonsai today, add a GPU tier or a cloud reasoning backend later; your agent code does not change.
+
+When you outgrow it, effort routing lets you keep Bonsai for the cheap calls and send only the hard ones somewhere bigger — see [hybrid profiles](#hardware-profiles).
+
+---
+
 ## Setting Up Inference
 
-The backbone of the ADK: it runs your agents on whatever you have, and routes each call to the right model.
+The backbone of the ADK: it runs your agents on whatever you have, and routes each call to the right model. Per-provider setup guides live in **[docs/providers/](docs/providers/)**.
 
 ### Auto-detection
 
@@ -109,7 +199,7 @@ The backbone of the ADK: it runs your agents on whatever you have, and routes ea
 1. **NVIDIA + Docker** — starts vLLM (paged attention, continuous batching, tensor parallelism)
 2. **NVIDIA DGX Spark** — auto-detected on the LAN, registered as a remote inference node
 3. **AMD / Apple Silicon / no Docker** — falls back to Ollama
-4. **No GPU** — uses cloud APIs (Aitherium gateway, or OpenAI/Anthropic/DeepSeek direct)
+4. **No GPU** — Bonsai locally, or cloud APIs (Aitherium gateway, or OpenAI/Anthropic/DeepSeek direct)
 
 ```python
 from adk.setup import auto_setup
@@ -119,6 +209,7 @@ report = await auto_setup()    # detects GPU, starts vLLM, ready to go
 ### Pick a tier for your VRAM
 
 ```bash
+adk setup --tier bonsai        # no GPU   — Bonsai-27B 1-bit on CPU
 adk setup --tier nano          # 6–8 GB   — Nemotron-8B TQ4 (4-bit)
 adk setup --tier standard-tq4  # 12–16 GB — orchestrator + reasoning, both 4-bit
 adk setup --tier full          # 24 GB+   — orchestrator + reasoning + embeddings
@@ -186,15 +277,9 @@ TQ4 (TurboQuant 4-bit) runs on GPUs as small as 6 GB. Bonsai 1-bit runs on **any
 | `cpu_only` | none | Cloud gateway | Cloud | cloud only |
 | `grid_distributed` | 6 GB+ NVIDIA + Mac + mini PCs | Nemotron-8B TQ4 (vLLM) | DeepSeek-R1 (Mac llama.cpp) | + Qwen2.5-32B (CPU cluster) |
 
-```bash
-adk setup --tier bonsai         # runs on literally anything — phone, Pi, laptop, no GPU needed
-adk setup --tier bonsai-4b      # ultra-minimal: 2GB RAM, Android via Termux
-adk bonsai-local                # one command: Docker pulls image + serves Bonsai-27B on :8090
-```
-
 ### Grid: inference across multiple machines
 
-Run a 3-tier effort-routed cluster — GPU desktop + Mac + CPU mini-PCs — with automatic fallback:
+Run a 3-tier effort-routed cluster — GPU desktop + Mac + CPU mini-PCs — with automatic fallback. Full guide: **[GRID_SETUP.md](GRID_SETUP.md)**.
 
 ```
   Main PC (GPU)          Mac Mini              Mini PC Cluster
@@ -216,11 +301,14 @@ adk shell
 ```
 
 Omit `--mac-host` to auto-scan the LAN. For advanced multi-node sizing, start with
-`adk deploy grid --help`; deployment-specific runbooks live outside the public SDK package.
+`adk deploy grid --help`.
 
 ---
 
 ## Building Agents
+
+> The full golden path — pack authoring, never-forget RAG memory, BYO-key, the gotcha
+> checklist — is **[docs/AGENT_DEV_GUIDE.md](docs/AGENT_DEV_GUIDE.md)**. This section is the tour.
 
 ### Single agent
 
@@ -414,9 +502,9 @@ adk packs                  # list bundled packs
 adk install pack:hermes    # install one → usable as an agent in your fleet
 ```
 
-**2. Bring your own** — give any agent a `system_prompt` in `fleet.yaml` (no install needed), or drop a persona YAML in `~/.aither/agents/`.
+**2. Bring your own** — give any agent a `system_prompt` in `fleet.yaml` (no install needed), or drop a persona YAML in `~/.aither/agents/`. To give an agent a durable identity across machines, see [docs/PERSONA.md](docs/PERSONA.md) and `adk soul export`.
 
-**3. Author & publish** a pack for others — see **[docs/AGENT_DEV_GUIDE.md](docs/AGENT_DEV_GUIDE.md)**.
+**3. Author & publish** a pack for others — the complete guide is **[docs/AGENT_DEV_GUIDE.md](docs/AGENT_DEV_GUIDE.md)**.
 
 > The broader specialist roster (atlas, demiurge, lyra, athena, hydra, prometheus, …) lives in the Aitherium platform and marketplace — it is **not** bundled in the free SDK.
 
@@ -435,7 +523,8 @@ adk doctor                     # check system health (Python, GPU, LLM, keys)
 
 # Inference & backends
 adk setup                      # interactive GPU setup wizard (vLLM/Ollama)
-adk setup --tier nano          # force a tier
+adk setup --tier nano          # force a tier (bonsai, nano, standard, full, …)
+adk bonsai-local               # serve Bonsai-27B locally on :8090 (no GPU needed)
 adk backend list|set|set-reasoning|test
 adk deploy ollama              # install Ollama + pull models
 adk deploy vllm                # deploy vLLM containers
@@ -462,9 +551,15 @@ adk shell                      # interactive AitherShell terminal
 
 ---
 
-## Cloud Inference (optional)
+## The Aitherium ecosystem (optional)
 
-Start local; reach for the cloud only when you want more power. Set an API key and your agents use cloud models with the **same code** — local tools, memory, and identity stay on your machine.
+The SDK is free, open-core, and complete on its own. Around it sits an **optional** platform you can grow into — every piece works à la carte, and none is required to build or run agents:
+
+- **Cloud inference & gateway** — set one key (`adk login`) and your agents can burst to bigger models while local tools, memory, and identity stay on your machine.
+- **Cloud MCP tools** — code search, shared memory, web research, and hundreds more tools your agents can register in one call (`MCPBridge`).
+- **Agent marketplace** — install packs others published (`adk install pack:…`); publish your own (`adk publish`).
+- **Managed self-hosted nodes** — enroll your machine (`adk onboard --quick`) and manage its agents from the portal: [QUICKSTART_SELF_HOSTED.md](QUICKSTART_SELF_HOSTED.md), long-term ops in [docs/SELF_HOSTING_RUNBOOK.md](docs/SELF_HOSTING_RUNBOOK.md).
+- **Cross-machine relay** — agents on different machines talking to each other: [docs/AITHERRELAY_GUIDE.md](docs/AITHERRELAY_GUIDE.md).
 
 ```bash
 adk login                      # browser device flow, or:
@@ -510,10 +605,19 @@ See [`examples/`](examples/):
 - `multi_agent.py` — two agents collaborating
 - `openclaw_agent.py` — web-research agent
 
-## Bug Reports
+## Troubleshooting & bug reports
+
+First stop, always:
 
 ```bash
-aither-bug "description of the issue"      # CLI
+adk doctor                                 # names what's broken: Python, GPU, LLM, keys
+adk backend test                           # is the current backend actually answering?
+```
+
+Then:
+
+```bash
+aither-bug "description of the issue"      # file a report from the CLI
 aither-bug --dry-run                       # preview what would be sent
 ```
 

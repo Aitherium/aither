@@ -82,21 +82,37 @@ class TestA2AIdentity:
         get_a2a_public_key(directory=d)
         assert has_a2a_identity(directory=d) is True
 
+    @pytest.mark.skipif(
+        os.name != "posix",
+        reason="POSIX mode bits do not express Windows ACLs — the check is meaningless there",
+    )
     def test_private_key_file_permissions(self, tmp_path):
-        """Private key file is created with 0o600 permissions (best-effort)."""
+        """The private key is owner-only (0o600). This is a SECURITY assertion.
+
+        Two defects were fixed here, both of which made the test useless in
+        opposite directions:
+
+        * It accepted `0o644` as a pass. 0o644 is WORLD-READABLE — a private key
+          at that mode is exposed to every local account, so the test would have
+          gone green on precisely the failure it exists to catch.
+        * It claimed Windows tolerance via `except (OSError, AttributeError)`,
+          but `stat()` does not raise on Windows: it returns 0o666 (measured
+          2026-08-02), which matched neither accepted value, so the AssertionError
+          escaped the handler and the test failed on every Windows run.
+
+        Gated at DECORATION time rather than skipping inside the body (PQ004): a
+        body-level skip fires after partial execution and reports a real failure
+        as a skip.
+        """
         d = tmp_path / "a2a_test"
         get_a2a_private_key(directory=d)
         priv_file = d / "private_key"
         assert priv_file.is_file()
-        # Check permissions (Unix-only; Windows/FAT filesystems may not support this)
-        try:
-            stat = priv_file.stat()
-            mode = stat.st_mode & 0o777
-            # Should be 0o600 (user read + write only)
-            assert mode == 0o600 or mode == 0o644  # Windows may not support 0o600
-        except (OSError, AttributeError):
-            # Windows or non-POSIX filesystem — skip check
-            pass
+        mode = priv_file.stat().st_mode & 0o777
+        assert mode == 0o600, (
+            f"private key mode is 0o{mode:o}, want 0o600 — anything granting group "
+            f"or other access exposes the key (a2a_identity.py chmods 0o600)"
+        )
 
     def test_public_key_persistence(self, tmp_path):
         """Public key is persisted and matches on re-read."""
