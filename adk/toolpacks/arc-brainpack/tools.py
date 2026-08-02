@@ -286,6 +286,49 @@ def arc_contribute(games: str, n: int = 200) -> str:
         return json.dumps({"ok": False, "error": f"contribute_random failed: {e}"})
 
 
+def arc_enroll(game_id: str, episodes: int = 6, budget: int = 30,
+               epsilon: float = 0.3, submit: bool = True, name: str = "") -> str:
+    """Enroll a real ARC game through env_enroll (B1, BYO-cognition program).
+
+    Validates the ArcGatewayAdapter, runs the learn-safely explore loop
+    (surprise-driven, hard budget cap), records every transition into the LOCAL
+    world model (in-process when AITHER_OFFLINE=1), AND submits each transition to
+    the gateway — so a BYO agent plays a real game with its own policy, teaches
+    the shared model, and appears on the leaderboard, in one call. Writes a
+    sandbox proof (env_enroll) when the world model demonstrably learns the game.
+
+    Requires ARC_API_KEY to reach the real game API. Contribution additionally
+    wants a token (arc_register first); without one the game is still played and
+    learned locally — only the gateway half is skipped.
+
+    Args:
+        game_id: ARC game id or prefix (e.g. "ls20", "vc33").
+        episodes: exploration episodes (each starts a fresh game instance).
+        budget: hard step cap per episode — the safety budget.
+        epsilon: exploration probability for the epsilon-greedy loop.
+        submit: when False, play + learn locally without contributing.
+        name: proof registry key (default "arc:<game_id>").
+    """
+    if not (os.environ.get("ARC_API_KEY") or "").strip():
+        return json.dumps({"ok": False,
+                           "error": "ARC_API_KEY is unset — needed to reach a real "
+                                    "ARC game. Set it and retry."})
+    try:
+        from adk.packs.world_model.env_enroll import env_enroll as _enroll
+    except Exception as exc:  # noqa: BLE001
+        return json.dumps({"ok": False, "error": f"env_enroll unavailable: {exc}"})
+    try:
+        out = _enroll(
+            "adk.packs.arc_world.adapter:ArcGatewayAdapter",
+            adapter_kwargs={"game_id": str(game_id), "submit": bool(submit)},
+            episodes=int(episodes), budget=int(budget), epsilon=float(epsilon),
+            name=name or f"arc:{game_id}",
+        )
+        return json.dumps(out)
+    except Exception as exc:  # noqa: BLE001
+        return json.dumps({"ok": False, "error": f"arc_enroll failed: {exc}"})
+
+
 def arc_status() -> str:
     """This contributor's server-side status at the gateway (accepted count,
     quarantine path) as a JSON string. Reports 'not enrolled' if no token."""

@@ -103,6 +103,36 @@ class RelayClient:
         if r.status_code == 200:
             logger.info("relay: joined as %s on %s", self.nick, self.channel)
             return True
+        # NICK↔IDENTITY PARITY (2026-07-31): the relay is the single authority on
+        # an authenticated nick and 403s a requested nick that does not match the
+        # token's identity. Our nick is operator-CONFIGURED, so any drift between
+        # the config and the key made every join fail — and the old code just
+        # logged a warning and returned False, leaving the agent silently absent
+        # from the channel while the process looked healthy. AitherShell already
+        # solves this by omitting the nick when authenticated; do the same on
+        # retry, and ADOPT the identity nick so later logs name the real actor.
+        if r.status_code == 403 and self.nick:
+            retry = await client.post(
+                f"{self.base_url}/agent/join",
+                headers=self._headers(),
+                params={"channel": self.channel},
+                json={"agent_service": self.agent_service},
+            )
+            if retry.status_code == 200:
+                resolved = ""
+                try:
+                    resolved = (retry.json() or {}).get("nick") or ""
+                except ValueError:
+                    resolved = ""
+                logger.warning(
+                    "relay: configured nick %r rejected (does not match the "
+                    "authenticated identity); joined as %r instead — align the "
+                    "config with the key to silence this",
+                    self.nick, resolved or "<identity nick>",
+                )
+                if resolved:
+                    self.nick = resolved
+                return True
         logger.warning("relay: join failed %s: %s", r.status_code, r.text[:200])
         return False
 

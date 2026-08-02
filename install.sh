@@ -1,233 +1,110 @@
 #!/usr/bin/env bash
-# AitherADK Universal Installer
+# Aither — set up your AI assistant (macOS / Linux)
+#
+# The one-click installer for a non-technical user. It:
+#   1. Makes sure Python is available (installs it via Homebrew on macOS if not)
+#   2. Installs the Aither ADK (your assistant) from PyPI
+#   3. Launches the friendly setup wizard, which walks you through the rest
+#
 # Usage:
 #   curl -fsSL https://aitherium.com/install.sh | sh
-#   curl -fsSL https://aitherium.com/install.sh | sh -s -- --full
-#   curl -fsSL https://aitherium.com/install.sh | sh -s -- --with-openclaw
+#   curl -fsSL https://aitherium.com/install.sh | sh -s -- --skip-wizard
+#
+# After this, you have your own AI assistant that can chat, make images with
+# Stable Diffusion on your own hardware, and connect to aitherium.com.
 
 set -euo pipefail
 
-BOLD="\033[1m"
-CYAN="\033[96m"
-GREEN="\033[92m"
-YELLOW="\033[93m"
-RED="\033[91m"
-RESET="\033[0m"
-
-VERSION="0.9.0"
 ADK_PACKAGE="aither-adk"
-FULL_STACK=false
-WITH_OPENCLAW=false
-NONINTERACTIVE=false
+SKIP_WIZARD=false
 
-# ── Parse args ────────────────────────────────────────────────
+# Colors
+RED='\033[0;31m'; GREEN='\033[0;32m'; CYAN='\033[0;36m'; YELLOW='\033[1;33m'; NC='\033[0m'
+good() { echo -e "${GREEN}  OK:  ${NC}$*"; }
+step() { echo -e ""; echo -e "${CYAN}  ▸ $*${NC}"; }
+warn() { echo -e "${YELLOW}  note: ${NC}$*"; }
+bad()  { echo -e "${RED}  !!   ${NC}$*" >&2; }
+
+# Parse args
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --full)        FULL_STACK=true; shift ;;
-        --with-openclaw) WITH_OPENCLAW=true; shift ;;
-        --non-interactive|-y) NONINTERACTIVE=true; shift ;;
-        --help|-h)
-            echo "AitherADK Installer"
+        --skip-wizard) SKIP_WIZARD=true ;;
+        -h|--help)
+            echo "Aither installer — set up your AI assistant (macOS/Linux)"
             echo ""
-            echo "Usage: curl -fsSL https://aitherium.com/install.sh | sh [-- OPTIONS]"
-            echo ""
-            echo "Options:"
-            echo "  --full            Install ADK + local AitherOS stack"
-            echo "  --with-openclaw   Auto-integrate with OpenClaw if detected"
-            echo "  --non-interactive No prompts (auto-accept defaults)"
-            echo "  --help            Show this help"
-            exit 0
-            ;;
-        *) echo "Unknown option: $1"; exit 1 ;;
+            echo "Usage: curl -fsSL https://aitherium.com/install.sh | sh"
+            echo "       curl -fsSL https://aitherium.com/install.sh | sh -s -- --skip-wizard"
+            exit 0 ;;
+        *) bad "Unknown option: $1"; exit 1 ;;
     esac
+    shift
 done
 
 echo ""
-echo -e "${BOLD}${CYAN}AitherADK Installer v${VERSION}${RESET}"
-echo -e "${CYAN}=============================${RESET}"
+echo -e "${CYAN}  Aither — set up your AI assistant${NC}"
+echo -e "${CYAN}  ==================================${NC}"
+echo ""
+echo "  This installs your own AI assistant on this computer."
+echo "  It can chat with you, make images, and connect to aitherium.com."
 echo ""
 
-# ── Check Python ──────────────────────────────────────────────
-PYTHON=""
-for candidate in python3 python; do
-    if command -v "$candidate" &>/dev/null; then
-        py_version=$("$candidate" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "0.0")
-        major=$(echo "$py_version" | cut -d. -f1)
-        minor=$(echo "$py_version" | cut -d. -f2)
-        if [[ "$major" -ge 3 ]] && [[ "$minor" -ge 10 ]]; then
-            PYTHON="$candidate"
-            break
+# ── 1. Python ───────────────────────────────────────────────────────────────
+
+find_python() {
+    for c in python3 python; do
+        if command -v "$c" >/dev/null 2>&1; then
+            v=$("$c" -c "import sys;print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "0.0")
+            major=${v%%.*}; minor=${v#*.}
+            if [[ $major -ge 3 && $minor -ge 10 ]]; then echo "$c"; return; fi
         fi
-    fi
-done
+    done
+}
 
+PYTHON=$(find_python)
 if [[ -z "$PYTHON" ]]; then
-    echo -e "${RED}Python 3.10+ required but not found.${RESET}"
-    echo ""
-    echo "Install Python:"
-    echo "  macOS:  brew install python@3.12"
-    echo "  Ubuntu: sudo apt install python3.12"
-    echo "  Fedora: sudo dnf install python3.12"
-    echo "  Other:  https://python.org/downloads/"
+    step "Python is needed. Installing it for you…"
+    if [[ "$(uname)" == "Darwin" ]] && command -v brew >/dev/null 2>&1; then
+        brew install python@3.12 >/dev/null 2>&1 && PYTHON=$(find_python)
+    elif command -v apt-get >/dev/null 2>&1; then
+        sudo apt-get install -y python3.12 python3-pip >/dev/null 2>&1 && PYTHON=$(find_python)
+    fi
+fi
+if [[ -z "$PYTHON" ]]; then
+    bad "Could not install Python automatically."
+    echo "  Please install Python 3.10+ from https://python.org/downloads/ and run this again."
     exit 1
 fi
+good "Python is ready ($PYTHON)."
 
-echo -e "${GREEN}[OK]${RESET} Python: $($PYTHON --version)"
+# ── 2. Install the ADK ──────────────────────────────────────────────────────
 
-# ── Check pipx/pip ────────────────────────────────────────────
-INSTALLER=""
-if command -v pipx &>/dev/null; then
-    INSTALLER="pipx"
-    echo -e "${GREEN}[OK]${RESET} pipx available (recommended)"
-elif command -v pip &>/dev/null; then
-    INSTALLER="pip"
-    echo -e "${YELLOW}[OK]${RESET} pip available (pipx recommended: pip install pipx)"
-elif command -v pip3 &>/dev/null; then
-    INSTALLER="pip3"
-    echo -e "${YELLOW}[OK]${RESET} pip3 available"
-else
-    echo -e "${RED}No pip/pipx found. Install pip first:${RESET}"
-    echo "  $PYTHON -m ensurepip --upgrade"
+step "Installing your assistant (this takes a moment)…"
+if ! $PYTHON -m pip install --upgrade --quiet "$ADK_PACKAGE"; then
+    bad "The install did not complete. Check your internet connection and try again."
     exit 1
 fi
+good "Your assistant is installed."
 
-# ── Install ADK ───────────────────────────────────────────────
-echo ""
-echo -e "${BOLD}Installing AitherADK...${RESET}"
+# ── 3. Launch the wizard ────────────────────────────────────────────────────
 
-if [[ "$INSTALLER" == "pipx" ]]; then
-    pipx install "$ADK_PACKAGE" || pipx upgrade "$ADK_PACKAGE"
-else
-    "$INSTALLER" install --upgrade "$ADK_PACKAGE"
-fi
-
-# Verify installation
-if command -v aither &>/dev/null; then
-    echo -e "${GREEN}[OK]${RESET} AitherADK installed: $(which aither)"
-else
-    echo -e "${YELLOW}[!!]${RESET} 'aither' command not in PATH"
-    echo "  Add to PATH: export PATH=\"\$HOME/.local/bin:\$PATH\""
-fi
-
-# ── Detect environment ────────────────────────────────────────
-echo ""
-echo -e "${BOLD}Detecting environment...${RESET}"
-
-# GPU
-if command -v nvidia-smi &>/dev/null; then
-    GPU=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 || echo "")
-    if [[ -n "$GPU" ]]; then
-        echo -e "${GREEN}[OK]${RESET} GPU: $GPU"
-    fi
-fi
-
-# Ollama
-if command -v ollama &>/dev/null; then
-    echo -e "${GREEN}[OK]${RESET} Ollama installed"
-else
-    echo -e "${YELLOW}[--]${RESET} Ollama not found (optional: https://ollama.com)"
-fi
-
-# OpenClaw
-OPENCLAW_DIR="$HOME/.openclaw"
-if [[ -d "$OPENCLAW_DIR" ]]; then
-    echo -e "${GREEN}[OK]${RESET} OpenClaw detected at $OPENCLAW_DIR"
-
-    # Check if already integrated
-    INTEGRATED=false
-    if [[ -f "$OPENCLAW_DIR/openclaw.json" ]]; then
-        if grep -qi "aither" "$OPENCLAW_DIR/openclaw.json" 2>/dev/null; then
-            INTEGRATED=true
-            echo -e "${GREEN}[OK]${RESET} OpenClaw already integrated with AitherOS"
-        fi
-    fi
-
-    if [[ "$INTEGRATED" == "false" ]]; then
-        if [[ "$WITH_OPENCLAW" == "true" ]] || [[ "$NONINTERACTIVE" == "false" ]]; then
-            echo ""
-            echo -e "${CYAN}OpenClaw detected! Connect to AitherOS agent fleet?${RESET}"
-            echo "  This gives OpenClaw access to 29 agents, 100+ tools, swarm coding."
-            echo ""
-
-            INTEGRATE="y"
-            if [[ "$NONINTERACTIVE" == "false" ]] && [[ "$WITH_OPENCLAW" != "true" ]]; then
-                read -r -p "  Integrate? [Y/n] " INTEGRATE
-                INTEGRATE=${INTEGRATE:-y}
-            fi
-
-            if [[ "${INTEGRATE,,}" == "y" ]]; then
-                echo ""
-                aither integrate openclaw 2>/dev/null || echo "  Run 'aither integrate openclaw' after setup"
-            fi
-        fi
-    fi
-fi
-
-# ── Full stack install ────────────────────────────────────────
-if [[ "$FULL_STACK" == "true" ]]; then
+if [[ "$SKIP_WIZARD" != "true" ]]; then
+    step "Opening the setup wizard…"
+    echo "  A window will open. It asks a few simple questions and does the rest."
     echo ""
-    echo -e "${BOLD}Installing full AitherOS stack...${RESET}"
-
-    if command -v docker &>/dev/null; then
-        echo -e "${GREEN}[OK]${RESET} Docker available"
-        # Download and run docker-compose
-        echo "  Pulling AitherOS containers..."
-        echo "  .DEPLOYMENT/scripts/compose.sh aitheros up -d"
-        echo ""
-        echo -e "${YELLOW}[!!]${RESET} Full stack install requires the AitherOS repo."
-        echo "  git clone https://github.com/Aitherium/aither && cd aither"
-        echo "  .DEPLOYMENT/scripts/compose.sh aitheros up -d"
-    else
-        echo -e "${YELLOW}[!!]${RESET} Docker not found. Install Docker first:"
-        echo "  https://docs.docker.com/get-docker/"
+    if ! $PYTHON -m adk.cli wizard --gui 2>/dev/null; then
+        warn "The window did not open here — run:  aither wizard  to start it manually."
     fi
 fi
 
-# -- Local orchestrator (Nemotron-8B via llama.cpp) --------------------------
-INSTALL_ORCHESTRATOR=$WITH_LOCAL_ORCHESTRATOR
-if [[ "$INSTALL_ORCHESTRATOR" != "true" ]] && [[ "$NONINTERACTIVE" != "true" ]]; then
-    echo ""
-    echo -e "${CYAN}Install local Nemotron-Orchestrator-8B (native, no Docker)?${RESET}"
-    echo "  Adds an OpenAI-compatible endpoint at http://127.0.0.1:${ORCHESTRATOR_PORT}/v1"
-    echo "  ~5GB download, runs as a user service (systemd/launchd)."
-    read -r -p "  Install? [y/N] " ORCH_RESP
-    if [[ "${ORCH_RESP,,}" == "y" ]]; then
-        INSTALL_ORCHESTRATOR=true
-    fi
-fi
-if [[ "$INSTALL_ORCHESTRATOR" == "true" ]]; then
-    echo ""
-    echo -e "${BOLD}Installing local orchestrator (Nemotron-8B via llama.cpp)...${RESET}"
-    ORCH_ARGS=(setup llamacpp --llamacpp-port "$ORCHESTRATOR_PORT")
-    if [[ -n "$ORCHESTRATOR_QUANT" ]]; then
-        ORCH_ARGS+=(--llamacpp-quant "$ORCHESTRATOR_QUANT")
-    fi
-    if [[ "$NONINTERACTIVE" == "true" ]]; then
-        ORCH_ARGS+=(--non-interactive)
-    fi
-    if aither "${ORCH_ARGS[@]}"; then
-        echo -e "${GREEN}[OK]${RESET} Local orchestrator: http://127.0.0.1:${ORCHESTRATOR_PORT}/v1"
-    else
-        echo -e "${YELLOW}[!!]${RESET} Local orchestrator install failed. Retry: aither setup llamacpp"
-    fi
-fi
+# ── 4. Done ─────────────────────────────────────────────────────────────────
 
-# ── Summary ───────────────────────────────────────────────────
 echo ""
-echo -e "${BOLD}${GREEN}Installation complete!${RESET}"
+echo -e "${GREEN}  =========================================="
+echo "    You're all set! Your AI assistant is ready."
+echo -e "  ==========================================${NC}"
 echo ""
-echo "  Quick start:"
-echo "    aither register          # Create account (free)"
-echo "    aither init my-agent     # Scaffold a project"
-echo "    cd my-agent"
-echo "    aither run               # Start your agent"
-echo ""
-echo "  More commands:"
-echo "    aither connect           # Connect to cloud + detect backends"
-echo "    aither onboard           # Full interactive setup wizard"
-echo "    aither integrate         # Connect external tools"
-echo "    aither publish           # Submit to Elysium marketplace"
-echo "    aither aeon              # Multi-agent group chat"
-echo ""
-echo "  Docs: https://github.com/Aitherium/aither#readme"
+echo "  Next steps:"
+echo "    • aither wizard        — set up again / change options"
+echo "    • aither 'hello'       — start chatting"
+echo "    • Visit aitherium.com  — your apps, all in one place"
 echo ""

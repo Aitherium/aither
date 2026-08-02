@@ -170,10 +170,12 @@ Aither picks the model by task complexity, so cheap calls stay cheap and hard ca
 
 ### Hardware profiles
 
-TQ4 (TurboQuant 4-bit) runs on GPUs as small as 6 GB.
+TQ4 (TurboQuant 4-bit) runs on GPUs as small as 6 GB. Bonsai 1-bit runs on **anything** — including phones.
 
 | Profile | GPU VRAM | Orchestrator | Reasoning | Extras |
 |---------|----------|--------------|-----------|--------|
+| `bonsai` | **none** | Bonsai-27B Q1_0 (llama.cpp) | — | runs on CPU, phones, Pi, 4GB RAM |
+| `bonsai-4b` | **none** | Bonsai-4B Q4 (llama.cpp) | — | 2GB RAM minimum (Android, Pi Zero) |
 | `nano` | 6–8 GB | Nemotron-8B TQ4 | — | fits 6 GB |
 | `lite` | 10–16 GB | Nemotron-8B (8-bit) | — | single model |
 | `standard-tq4` | 12–16 GB | Nemotron-8B TQ4 | DeepSeek-R1 14B TQ4 | both, 4-bit |
@@ -183,6 +185,12 @@ TQ4 (TurboQuant 4-bit) runs on GPUs as small as 6 GB.
 | `apple_silicon` | M1–M4 | Ollama nemotron-8b | Ollama deepseek-r1:8b | — |
 | `cpu_only` | none | Cloud gateway | Cloud | cloud only |
 | `grid_distributed` | 6 GB+ NVIDIA + Mac + mini PCs | Nemotron-8B TQ4 (vLLM) | DeepSeek-R1 (Mac llama.cpp) | + Qwen2.5-32B (CPU cluster) |
+
+```bash
+adk setup --tier bonsai         # runs on literally anything — phone, Pi, laptop, no GPU needed
+adk setup --tier bonsai-4b      # ultra-minimal: 2GB RAM, Android via Termux
+adk bonsai-local                # one command: Docker pulls image + serves Bonsai-27B on :8090
+```
 
 ### Grid: inference across multiple machines
 

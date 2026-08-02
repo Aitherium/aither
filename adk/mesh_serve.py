@@ -20,6 +20,7 @@ catalog entry (kimi-k3-community) — required by the Kimi K3 license at scale.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import subprocess
 import time
@@ -251,15 +252,23 @@ async def serve_coordinator(
     if dry_run:
         return result
 
+    # Every step below is long-running SYNC work (HTTP shard enumeration, hundreds
+    # of GB of disk I/O, a CUDA build, a polling health gate). This coroutine is
+    # CLI-driven today, but a blocking call in a coroutine is one import away from
+    # stalling a service's whole event loop (PQ010), so each is pushed to a thread.
+    # asyncio.to_thread is correct HERE specifically because none of these schedule
+    # background work via get_event_loop().create_task() — the trap that silently
+    # kills fire-and-forget work when a sync subtree is moved off the loop.
     # 1. Shards (resumable; skips completed files via .part handling).
     have = {p.name for p in model_dir.glob("*.gguf")}
-    need = {Path(s["path"]).name for s in list_kimi_shards(plan["quant"])}
+    shards = await asyncio.to_thread(list_kimi_shards, plan["quant"])
+    need = {Path(s["path"]).name for s in shards}
     if not need.issubset(have):
         model_dir.mkdir(parents=True, exist_ok=True)
-        download_shards(plan["quant"], model_dir)
+        await asyncio.to_thread(download_shards, plan["quant"], model_dir)
 
     # 2. Binaries.
-    ensure_build(build_dir, dry_run=False)
+    await asyncio.to_thread(ensure_build, build_dir, False)
 
     # 3. Serve.
     proc = _popen(
@@ -270,9 +279,12 @@ async def serve_coordinator(
     )
     result["pid"] = proc.pid
 
-    # 4. Health gate — hard-fails on the local-only trap.
-    gate = _health_gate(
-        f"http://{bind}:{COORDINATOR_PORT}", expected_rpc_devices=len(backend_list)
+    # 4. Health gate — hard-fails on the local-only trap. Polls with time.sleep
+    # for up to 5 minutes, so it never runs on the caller's loop.
+    gate = await asyncio.to_thread(
+        _health_gate,
+        f"http://{bind}:{COORDINATOR_PORT}",
+        len(backend_list),
     )
     result["health"] = gate
     if not gate.get("ok"):

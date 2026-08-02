@@ -2,6 +2,24 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [2.47.0] - 2026-08-02
+
+### Added — Bonsai as a first-class default backend for low-resource hardware
+
+- **`pick_backend()` now auto-detects and recommends Bonsai** for CPU-only and
+  <6GB VRAM hardware. If the Bonsai container is already running or the GGUF is
+  downloaded, it is selected automatically — no explicit `--backend bonsai-local`
+  needed. This means `adk quickstart` on a phone, a Pi, or a laptop without a GPU
+  now defaults to local inference instead of requiring cloud fallback.
+- **New `bonsai` hardware profile** (`profiles/bonsai.yaml`) — targets 0 GPU,
+  4GB RAM minimum. Documents platform-specific binaries and expected throughput
+  for Android (Termux), iOS, Raspberry Pi, Windows, macOS, and Linux.
+- **`bonsai-4b` variant** for ultra-constrained devices (2GB RAM, Android phones).
+- **README hardware profiles table updated** — Bonsai leads the table as the
+  lowest-resource option. `adk setup --tier bonsai` documented.
+
+## [2.46.0] - 2026-07-31
+
 ## [2.45.0] - 2026-07-29
 
 ### Fixed — streaming against an AitherOS-typed SSE backend returned a silent EMPTY answer

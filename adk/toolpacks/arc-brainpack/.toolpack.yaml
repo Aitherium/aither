@@ -3,17 +3,21 @@ name: ARC Brain — Contribute & Earn
 version: 1.0.0
 description: >-
   Turnkey crowdsourcing pack for the AitherWorldModel: play real ARC-AGI-3 games
-  with a random policy and contribute every (state, action, next_state) transition
-  to the public Contribution Gateway, then track your standing. Five free arc_*
-  tools front a self-contained gateway client + a vendored random-policy ARC
-  player (no external checkout required):
+  (with a random policy, or your OWN via arc_enroll's EnvironmentAdapter) and
+  contribute every (state, action, next_state) transition to the public
+  Contribution Gateway, then track your standing. Six free arc_* tools front a
+  self-contained gateway client + a vendored random-policy ARC player (no external
+  checkout required):
   arc_register mints/exchanges an ACTA wallet and enrolls a contributor token
   (POST gateway /v1/register, persisted locally); arc_contribute plays N actions
-  over the given games and submits transitions; arc_status returns this token's
-  server-side accept count; arc_leaderboard shows the top contributors; and
-  arc_solo prints the one-command own-stack bootstrap (docker-compose.standalone.yml)
-  so you can run the world model + gateway entirely on your own box. A pack UI tab
-  ("ARC Contribute") shows live status + leaderboard + a how-to.
+  over the given games and submits transitions; arc_enroll enrolls a real game
+  through env_enroll — the ArcGatewayAdapter lets a BYO agent play with its own
+  policy while the local world model learns the game and every transition is
+  contributed; arc_status returns this token's server-side accept count;
+  arc_leaderboard shows the top contributors; and arc_solo prints the one-command
+  own-stack bootstrap (docker-compose.standalone.yml) so you can run the world
+  model + gateway entirely on your own box. A pack UI tab ("ARC Contribute") shows
+  live status + leaderboard + a how-to.
 category: tool_packs
 author: Aitherium
 icon: brain
@@ -53,4 +57,4 @@ ui:
       icon: brain
 
 persona_fragments:
-  - "You front the AitherWorldModel Contribution Gateway. When the operator wants to start contributing, call arc_register FIRST to enroll a contributor token (it mints/exchanges an ACTA wallet, hits the gateway /v1/register, and persists the token) — never invent a token. To contribute, call arc_contribute with the operator's game ids and action budget; relay the submitted/accepted counts faithfully. Use arc_status for this token's standing and arc_leaderboard for the ranking. If the operator would rather run everything locally, call arc_solo and relay the one-command bootstrap verbatim. Every tool is best-effort: if the gateway is down or the token is missing, relay the readable error — do not fabricate acceptance."
+  - "You front the AitherWorldModel Contribution Gateway. When the operator wants to start contributing, call arc_register FIRST to enroll a contributor token (it mints/exchanges an ACTA wallet, hits the gateway /v1/register, and persists the token) — never invent a token. To contribute, call arc_contribute with the operator's game ids and action budget; relay the submitted/accepted counts faithfully. To enroll a real game so the operator's OWN policy plays it (BYO-cognition), call arc_enroll(game_id) — it runs env_enroll over the ArcGatewayAdapter: the local world model learns the game while every transition is contributed. Use arc_status for this token's standing and arc_leaderboard for the ranking. If the operator would rather run everything locally, call arc_solo and relay the one-command bootstrap verbatim. Every tool is best-effort: if the gateway is down or the token is missing, relay the readable error — do not fabricate acceptance."

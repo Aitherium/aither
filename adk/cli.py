@@ -3441,14 +3441,32 @@ def _onboard_quick(args) -> int:
         no_heartbeat = False
         force = False
 
+    enrollment_success = False
     try:
         if cmd_enroll(EnrollArgs()) != 0:
             print()
             print("  WARNING: Enrollment failed (optional, you can retry later)")
             print("  You can retry with: adk enroll --force")
+        else:
+            enrollment_success = True
     except Exception as e:
         print()
         print(f"  WARNING: Enrollment error: {e} (optional, continuing)")
+
+    # Step 4: Start MicroScheduler heartbeat (so personal agent appears in Fleet)
+    if enrollment_success:
+        try:
+            from adk.microscheduler_heartbeat import start_heartbeat_threaded
+
+            agent_id = start_heartbeat_threaded()
+
+            print()
+            print("  [4/3] Starting agent fleet registration...")
+            print(f"      Agent ID: {agent_id}")
+            print("      Status: Registering with fleet (visible in Portal → Fleet → Live)")
+        except Exception as e:
+            print()
+            print(f"  NOTE: Fleet registration skipped: {e}")
 
     print()
     print("=" * 60)
@@ -8035,7 +8053,12 @@ def _show_local_costs(mode: str, period: str):
 
 
 def cmd_tools(args):
-    """List available tools (local + MCP)."""
+    """Dispatch tools subcommands (list, sync)."""
+    # Dispatch to sync subcommand if specified
+    if getattr(args, "tools_command", None) == "sync":
+        return cmd_tools_sync(args)
+
+    # Default to list behavior (including when tools_command is 'list' or None)
     import asyncio
 
     async def _tools():
@@ -8082,6 +8105,111 @@ def cmd_tools(args):
 
     asyncio.run(_tools())
     return 0
+
+
+def cmd_tools_sync(args):
+    """Sync entitled tools from platform to local cache (~/.aither/tools-manifest.json)."""
+    import asyncio
+    import stat
+
+    async def _sync_tools():
+        import httpx
+        from adk.auth import resolve_credentials
+        from adk.config import Config
+
+        # Resolve credentials and gateway URL
+        try:
+            creds = resolve_credentials()
+        except Exception as e:
+            print(f"Error: Failed to resolve credentials: {e}")
+            return 1
+
+        if not creds.access_token:
+            print("Error: No API key found. Run 'adk login' first.")
+            return 1
+
+        config = Config.from_env()
+        gateway_url = config.gateway_url.rstrip("/")
+        url = f"{gateway_url}/tools/manifest"
+
+        # Prepare authorization header
+        auth_header = f"Bearer {creds.access_token}"
+
+        # Check for cached manifest and build If-None-Match header
+        cache_path = Path.home() / ".aither" / "tools-manifest.json"
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+
+        headers = {"Authorization": auth_header}
+        if cache_path.exists():
+            try:
+                cached_data = json.loads(cache_path.read_text(encoding="utf-8"))
+                if isinstance(cached_data, dict) and "version" in cached_data:
+                    headers["If-None-Match"] = cached_data["version"]
+                    if getattr(args, "verbose", False):
+                        print(f"Using cached version: {cached_data['version']}")
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        # Fetch tools manifest
+        try:
+            async with httpx.AsyncClient(timeout=30, verify=tls_verify()) as client:
+                response = await client.get(url, headers=headers)
+        except Exception as e:
+            print(f"Error: Failed to fetch tools manifest: {e}")
+            return 1
+
+        # Handle response status codes
+        if response.status_code == 304:
+            # Not Modified — cache is current
+            print("Tools manifest is up to date (cached).")
+            return 0
+        elif response.status_code == 401:
+            print("Error: Authentication failed. Check your API key (adk login).")
+            return 1
+        elif response.status_code == 503:
+            print("Error: Platform unavailable. Please try again later.")
+            return 1
+        elif response.status_code == 200:
+            # Success — parse and cache the manifest
+            try:
+                manifest = response.json()
+            except Exception as e:
+                print(f"Error: Failed to parse tools manifest: {e}")
+                return 1
+
+            # Validate response structure
+            if not isinstance(manifest, dict):
+                print("Error: Unexpected response format from server.")
+                return 1
+
+            tools_list = manifest.get("tools", [])
+            if not isinstance(tools_list, list):
+                print("Error: Invalid tools list in response.")
+                return 1
+
+            # Write to cache with restricted permissions (0600)
+            try:
+                cache_path.write_text(
+                    json.dumps(manifest, indent=2),
+                    encoding="utf-8"
+                )
+                cache_path.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 0600
+                tool_count = len(tools_list)
+                print(f"Synced {tool_count} tools to ~/.aither/tools-manifest.json")
+                if getattr(args, "verbose", False):
+                    print(f"Manifest version: {manifest.get('version', 'unknown')}")
+                return 0
+            except Exception as e:
+                print(f"Error: Failed to write tools manifest to cache: {e}")
+                return 1
+        else:
+            print(
+                f"Error: Server returned {response.status_code}: "
+                f"{response.text[:200]}"
+            )
+            return 1
+
+    return asyncio.run(_sync_tools())
 
 
 def cmd_backup(args):
@@ -9016,7 +9144,12 @@ def cmd_start(args):
     print(f"  Directory:  {target}")
 
     # ── Step 2: Detect LLM backend ──────────────────────────────────
-    llm_info = _detect_llm_backend()
+    explicit_model = getattr(args, "model", None)
+    explicit_provider = getattr(args, "provider", None)
+    if explicit_model or explicit_provider:
+        llm_info = _resolve_explicit_backend(explicit_provider, explicit_model)
+    else:
+        llm_info = _detect_llm_backend()
     print(f"  LLM:        {llm_info['display']}")
 
     # ── Step 3: Index codebase (if applicable) ────────────────────
@@ -9198,6 +9331,71 @@ def cmd_start(args):
     return 0
 
 
+def _resolve_explicit_backend(provider: str = None, model: str = None) -> dict:
+    """Resolve an explicitly requested provider/model to connection info."""
+    provider_keys_path = Path.home() / ".aither" / "provider_keys.json"
+    keys = {}
+    if provider_keys_path.exists():
+        try:
+            import json as _j
+            keys = _j.loads(provider_keys_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    # Shortcut names
+    shortcuts = {
+        "deepseek-flash": ("deepseek", "deepseek-v4-flash"),
+        "deepseek-pro": ("deepseek", "deepseek-v4-pro"),
+        "deepseek": ("deepseek", "deepseek-v4-flash"),
+        "openrouter": ("openrouter", "deepseek/deepseek-v4-flash"),
+        "ollama": ("ollama", "llama3.2:latest"),
+    }
+
+    if model and model in shortcuts:
+        provider, model = shortcuts[model]
+    if not provider:
+        provider = "deepseek"
+
+    configs = {
+        "deepseek": {
+            "provider": "openai",
+            "base_url": "https://api.deepseek.com/v1",
+            "api_key": keys.get("deepseek", os.environ.get("DEEPSEEK_API_KEY", "")),
+            "model": model or "deepseek-v4-flash",
+            "display": f"DeepSeek ({model or 'deepseek-v4-flash'})",
+        },
+        "openrouter": {
+            "provider": "openai",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": keys.get("openrouter", os.environ.get("OPENROUTER_API_KEY", "")),
+            "model": model or "deepseek/deepseek-v4-flash",
+            "display": f"OpenRouter ({model or 'deepseek/deepseek-v4-flash'})",
+        },
+        "ollama": {
+            "provider": "ollama",
+            "model": model or "llama3.2:latest",
+            "display": f"Ollama ({model or 'llama3.2:latest'})",
+        },
+        "openai": {
+            "provider": "openai",
+            "api_key": keys.get("openai", os.environ.get("OPENAI_API_KEY", "")),
+            "model": model or "gpt-4o-mini",
+            "display": f"OpenAI ({model or 'gpt-4o-mini'})",
+        },
+        "anthropic": {
+            "provider": "anthropic",
+            "api_key": keys.get("anthropic", os.environ.get("ANTHROPIC_API_KEY", "")),
+            "model": model or "claude-sonnet-4-6",
+            "display": f"Anthropic ({model or 'claude-sonnet-4-6'})",
+        },
+    }
+
+    info = configs.get(provider, configs["deepseek"])
+    if not info.get("api_key") and provider not in ("ollama",):
+        info["display"] += " [NO KEY — run: adk keys set " + provider + "]"
+    return info
+
+
 def _detect_llm_backend():
     """Detect available LLM backend. Returns dict with provider info."""
     import shutil
@@ -9279,7 +9477,32 @@ def _detect_llm_backend():
             "display": "Elysium Cloud (aither-orchestrator)",
         }
 
-    # 4. Check for OpenAI key
+    # 4. Check for provider keys (DeepSeek, OpenRouter, etc.)
+    provider_keys_path = Path.home() / ".aither" / "provider_keys.json"
+    if provider_keys_path.exists():
+        try:
+            import json as _j
+            pkeys = _j.loads(provider_keys_path.read_text(encoding="utf-8"))
+            if pkeys.get("deepseek"):
+                return {
+                    "provider": "openai",
+                    "base_url": "https://api.deepseek.com/v1",
+                    "api_key": pkeys["deepseek"],
+                    "model": "deepseek-v4-flash",
+                    "display": "DeepSeek V4 Flash (1M context)",
+                }
+            if pkeys.get("openrouter"):
+                return {
+                    "provider": "openai",
+                    "base_url": "https://openrouter.ai/api/v1",
+                    "api_key": pkeys["openrouter"],
+                    "model": "deepseek/deepseek-v4-flash",
+                    "display": "OpenRouter (DeepSeek V4 Flash)",
+                }
+        except Exception:
+            pass
+
+    # 5. Check for OpenAI key
     openai_key = os.environ.get("OPENAI_API_KEY", "")
     if openai_key:
         return {
@@ -11379,6 +11602,9 @@ def _register_commands(sub):
     # adk start — the main entry point for everyone
     start_p = sub.add_parser("start", help="Start chatting with your codebase (zero config)")
     start_p.add_argument("path", nargs="?", default=".", help="Project directory (default: current)")
+    start_p.add_argument("--model", help="Model: deepseek-flash, deepseek-pro, ollama, openrouter, or a model slug")
+    start_p.add_argument("--provider", help="Provider: deepseek, openrouter, ollama, openai, anthropic")
+    start_p.add_argument("--mcp", action="store_true", help="Connect to AitherOS MCP gateway (1200+ tools)")
 
     # aither init
     init_p = sub.add_parser("init", help="Scaffold a new agent project")
@@ -11477,6 +11703,8 @@ def _register_commands(sub):
     wizard_p = sub.add_parser("wizard", help="First-run wizard — hardware detection, setup recommendations, auth token")
     wizard_p.add_argument("--yes", action="store_true",
                          help="Non-interactive mode: accept defaults without prompts")
+    wizard_p.add_argument("--gui", action="store_true",
+                         help="Launch the point-and-click wizard window (no terminal needed)")
 
     # aither register
     register_p = sub.add_parser("register", help="Create a new Aitherium account")
@@ -11545,6 +11773,39 @@ def _register_commands(sub):
         "--state", required=True, help="Path to a Playwright storage_state JSON"
     )
     x_session_sub.add_parser("status", help="Is the stored X session logged in right now?")
+
+    # adk claude-model — switch Claude Code backend (DeepSeek/Kimi/local/Anthropic)
+    claude_model_p = sub.add_parser(
+        "claude-model",
+        help="Switch Claude Code between DeepSeek, Kimi, local AitherOS models, and Anthropic",
+    )
+    claude_model_sub = claude_model_p.add_subparsers(dest="claude_model_command")
+    claude_model_sub.add_parser("list", help="Show available model profiles")
+
+    cm_use_p = claude_model_sub.add_parser("use", help="Switch Claude Code to a profile")
+    cm_use_p.add_argument("profile", help="Profile name (e.g., deepseek-pro, aither-best, anthropic)")
+    cm_use_p.add_argument("--project", action="store_true", help="Write to project settings instead of global")
+
+    claude_model_sub.add_parser("status", help="Show the active profile")
+
+    cm_check_p = claude_model_sub.add_parser("check", help="Prove the active profile answers a real turn")
+    cm_check_p.add_argument("--timeout", type=float, default=120.0, help="Timeout in seconds")
+
+    cm_bridge_p = claude_model_sub.add_parser("bridge", help="Manage the translation bridge")
+    cm_bridge_p.add_argument("bridge_action", choices=["start", "status", "stop"], help="Bridge action")
+
+    cm_auto_p = claude_model_sub.add_parser("auto", help="One-shot: start bridge + switch + verify")
+    cm_auto_p.add_argument("profile", help="Profile name")
+
+    claude_model_sub.add_parser("failover", help="Test current; if broken, switch to next working provider")
+
+    # Workflow shortcuts — instant model switching by role
+    claude_model_sub.add_parser("plan", help="→ Anthropic Opus 5 (architecture, design, review)")
+    claude_model_sub.add_parser("code", help="→ DeepSeek Flash (fast ultracode, 1M context)")
+    claude_model_sub.add_parser("reason", help="→ DeepSeek Pro (deep reasoning, 1M context)")
+    claude_model_sub.add_parser("kimi", help="→ Kimi K3 (1M context, thinking always on)")
+    claude_model_sub.add_parser("local", help="→ qwen3.6-27b on DGX")
+    claude_model_sub.add_parser("fast", help="→ gemma4-12b for trivial tasks")
 
     # adk claude-account — manage multiple Claude Code logins
     claude_account_p = sub.add_parser(
@@ -12191,6 +12452,39 @@ def _register_commands(sub):
     grid_rm_mesh_p = grid_sub.add_parser("deregister", help="Remove an enrolled mesh node from the registry")
     grid_rm_mesh_p.add_argument("node_id", help="Node id or name to deregister")
 
+    # adk approvals — decide the permission cards blocking federated agents.
+    # Same cards as the portal tray and the AitherConnect popup; approving here
+    # clears them there.
+    appr_p = sub.add_parser(
+        "approvals",
+        help="List/approve/deny A2A permission cards blocking federated agents",
+    )
+    appr_p.add_argument(
+        "--url",
+        help="A2A gateway base URL (default $AITHER_A2A_URL or https://127.0.0.1:8766)",
+    )
+    appr_p.add_argument("--json", action="store_true", help="Emit raw JSON")
+    appr_sub = appr_p.add_subparsers(dest="approvals_command")
+    appr_ls = appr_sub.add_parser("list", help="Show pending permission cards")
+    appr_ls.add_argument("--tenant", help="Only cards raised in this tenant")
+    for _name, _help in (
+        ("approve", "Approve a card and mint its one-time grant token"),
+        ("deny", "Refuse a card; no token is minted"),
+    ):
+        _p = appr_sub.add_parser(_name, help=_help)
+        _p.add_argument("request_id", help="Card id (areq_…)")
+        _p.add_argument("--approver", help="Who is deciding (audited)")
+        _p.add_argument("--reason", help="Recorded with the decision")
+        if _name == "approve":
+            _p.add_argument(
+                "--ttl", type=int, default=60,
+                help="Grant lifetime in minutes (default 60)",
+            )
+            _p.add_argument(
+                "--tenant", default="platform",
+                help="Approving tenant authority (default platform)",
+            )
+
     # adk join — one-command community node onboarding (GitHub → hardware →
     # serve → mesh → earn)
     join_p = sub.add_parser(
@@ -12518,9 +12812,17 @@ def _register_commands(sub):
     costs_budget_p.add_argument("amount", type=float, help="Monthly budget in USD (0=unlimited)")
     costs_p.add_argument("--period", default="day", choices=["day", "week", "month"], help="Time period")
 
-    # adk tools — list available tools
-    tools_p = sub.add_parser("tools", help="List available tools (local + MCP)")
-    tools_p.add_argument("--upgrade", action="store_true", help="Show what pro/enterprise unlocks")
+    # adk tools — list and sync available tools
+    tools_p = sub.add_parser("tools", help="Manage available tools (list, sync from platform)")
+    tools_sub = tools_p.add_subparsers(dest="tools_command", help="Tools subcommands")
+
+    # adk tools list (default) — list available tools
+    tools_list_p = tools_sub.add_parser("list", help="List available tools (local + MCP)")
+    tools_list_p.add_argument("--upgrade", action="store_true", help="Show what pro/enterprise unlocks")
+
+    # adk tools sync — sync entitled tools from platform
+    tools_sync_p = tools_sub.add_parser("sync", help="Sync entitled tools from platform")
+    tools_sync_p.add_argument("--verbose", action="store_true", help="Verbose output with version info")
 
     # adk quickstart — unified first-run wizard
     quickstart_p = sub.add_parser("quickstart", help="One-command setup: GPU + auth + shell")
@@ -13384,6 +13686,10 @@ def main():
     elif args.command == "ssh-cert":
         sys.exit(cmd_ssh_cert(args))
     elif args.command == "wizard":
+        if getattr(args, "gui", False):
+            from adk.shell.gui_wizard import main as _gui_main
+            gui_argv = ["--auto"] if getattr(args, "yes", False) else []
+            sys.exit(_gui_main(gui_argv))
         from adk.setup_cli import cmd_wizard
         sys.exit(cmd_wizard(args))
     elif args.command == "register":
@@ -13400,6 +13706,9 @@ def main():
         sys.exit(cmd_ambient(args))
     elif args.command == "x-session":
         sys.exit(cmd_x_session(args))
+    elif args.command == "claude-model":
+        from adk.claude_model import cmd_claude_model
+        sys.exit(cmd_claude_model(args))
     elif args.command == "claude-account":
         from adk.claude_accounts import cmd_claude_account
         sys.exit(cmd_claude_account(args))
@@ -13479,6 +13788,9 @@ def main():
     elif args.command == "join":
         from adk.commands.join import cmd_join
         sys.exit(cmd_join(args))
+    elif args.command == "approvals":
+        from adk.commands.approvals import cmd_approvals
+        sys.exit(cmd_approvals(args))
     elif args.command == "mesh":
         sys.exit(cmd_mesh(args))
     elif args.command == "costs":

@@ -9,6 +9,9 @@ vendored random-policy ARC player (no external checkout required):
   arc_register([handle])        mint/exchange an ACTA wallet -> POST /v1/register
                                 -> persist the returned contributor token locally
   arc_contribute(games[, n])    play real ARC games random-policy, submit transitions
+  arc_enroll(game[, episodes])  enroll a real game through env_enroll: play with
+                                your OWN policy via the ArcGatewayAdapter, learn it
+                                in the local world model, contribute every transition
   arc_status()                  this token's server-side accept count / quarantine
   arc_leaderboard([limit])      GET /v1/leaderboard — top contributors
   arc_solo()                    print the own-stack one-command bootstrap
@@ -41,6 +44,7 @@ def register(registry) -> int:
         fns = (
             T.arc_register,
             T.arc_contribute,
+            T.arc_enroll,
             T.arc_status,
             T.arc_leaderboard,
             T.arc_solo,

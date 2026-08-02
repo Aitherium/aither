@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 logger = logging.getLogger("adk.tool_readiness")
 
@@ -40,14 +40,37 @@ def _get_deployment_mode() -> str:
 def check_tool_readiness_adk(
     tool_name: str,
     module_name: str = "",
+    require_sandbox_proven: bool = False,
 ) -> ADKReadinessReport:
     """Check if a tool can work in the current ADK deployment context.
 
     Returns an ADKReadinessReport with broken=True if the tool cannot
     function.  Uses _tool_deps declarations when available, otherwise
     falls back to a conservative heuristic.
+
+    Args:
+        tool_name: Name of the tool to check.
+        module_name: Optional module path for the tool.
+        require_sandbox_proven: If True, require the tool to be sandbox-proven
+                                (N>=20 probe transitions recorded with trailing-10
+                                mean surprise <= 0.3). Default False for
+                                backward compatibility.
     """
     mode = _get_deployment_mode()
+
+    # Sandbox-proven check happens first, independently of other readiness.
+    # If require_sandbox_proven=True, all other checks are bypassed if this fails.
+    if require_sandbox_proven:
+        is_proven = _check_sandbox_proven(tool_name)
+        if not is_proven:
+            return ADKReadinessReport(
+                broken=True,
+                reason=(
+                    f"Tool '{tool_name}' is not sandbox-proven "
+                    f"(requires >=20 probe transitions with trailing-10 "
+                    f"mean surprise <= 0.3)"
+                ),
+            )
 
     # Use a tool-dependency registry if one is installed (optional add-on),
     # otherwise fall back to the built-in heuristic.
@@ -76,6 +99,29 @@ def check_tool_readiness_adk(
         )
 
     return ADKReadinessReport()
+
+
+def _check_sandbox_proven(tool_name: str) -> bool:
+    """Check if a tool is sandbox-proven: >=20 transitions with trailing-10
+    mean surprise <= 0.3.
+
+    Reads the durable proof registry written by env_enroll (the world-model
+    pack's enrollment loop). Until 2026-08-01 this was a stub that always
+    returned False — which made require_sandbox_proven=True a gate nothing
+    could ever pass. A missing/unreadable registry still fails closed.
+
+    Args:
+        tool_name: Name of the tool/environment to check.
+
+    Returns:
+        True only when an enrollment run genuinely proved the environment
+        (recorded transitions with surprise driven under the threshold).
+    """
+    try:
+        from adk.packs.world_model.env_enroll import is_sandbox_proven
+        return is_sandbox_proven(tool_name)
+    except Exception:
+        return False  # fail closed: no registry, no proof
 
 
 # ── Heuristic fallback ─────────────────────────────────────────────────

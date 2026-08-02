@@ -52,6 +52,10 @@ def build(onedir: bool = False):
 
     # Hidden imports that PyInstaller misses
     hidden = [
+        # The GUI wizard imports tkinter lazily (see adk/shell/gui_wizard.py) —
+        # bundle it explicitly so the standalone exe can open the setup window.
+        "tkinter",
+        "tkinter.ttk",
         "httpx",
         "httpx._transports",
         "httpx._transports.default",

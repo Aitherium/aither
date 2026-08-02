@@ -83,7 +83,14 @@ _OLLAMA_PORT = 11434
 _OLLAMA_EMBED_MODEL = "nomic-embed-text"  # Ollama's name for the same 768-d model
 
 _HTTP_TIMEOUT = 30.0
-_PROBE_TIMEOUT = 3.0
+# 15s, not 3s: backend RESOLUTION IS CACHED FOR THE PROCESS LIFETIME, so one
+# probe that times out pins that service to a degraded 384-d fallback until it
+# restarts — and a consumer holding a 768-d index then stores NOTHING at all.
+# Measured 2026-07-31: a COLD vLLM embeddings backend answers its first call in
+# ~2.3s and every later call in 94-287ms, so a 3.0s probe was a coin-flip
+# against a cold backend, and losing it was silent and permanent. A slow probe
+# costs one-time startup latency; losing it costs the service its embeddings.
+_PROBE_TIMEOUT = float(os.getenv("AITHER_EMBED_PROBE_TIMEOUT", "15"))
 _BATCH = 64
 
 # Auto-deploy tuning

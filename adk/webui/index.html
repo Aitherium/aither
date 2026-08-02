@@ -99,9 +99,14 @@
   <button data-tab="ondevice">On-device</button>
   <button data-tab="backend">Backend</button>
   <button data-tab="config">Config</button>
+      <button data-tab="secrets">Secrets</button>
   <button data-tab="packs">Packs</button>
   <button data-tab="sessions">Sessions</button>
   <button data-tab="logs">Logs</button>
+  <button data-tab="chronicle">Chronicle</button>
+  <button data-tab="pulse">Pulse</button>
+  <button data-tab="watch">Watch</button>
+  <button data-tab="flux">Flux</button>
   <button data-tab="graph">Graph</button>
   <button data-tab="mcp">MCP</button>
   <button data-tab="cli">CLI</button>
@@ -121,6 +126,38 @@
       <textarea id="chatIn" rows="1" placeholder="Message the agent…" style="flex:1"></textarea>
       <button class="btn" id="chatSend">Send</button>
     </form>
+  </section>
+
+  <!-- SECRETS — the local encrypted vault (adk.vault_lockbox), same store as `aither vault` -->
+  <section class="tab" id="tab-secrets">
+    <div class="card" style="margin-bottom:12px">
+      <h3 style="margin-top:0">Secrets <span class="chip" id="sec-mode">local</span></h3>
+      <div class="muted">The same vault <code>aither vault</code> uses. Values are never shown here
+        by design — use <code>aither vault get &lt;name&gt;</code> if you need to read one back.</div>
+    </div>
+
+    <div class="card" style="margin-bottom:12px">
+      <div class="row" style="gap:8px">
+        <input id="sec-q" placeholder="Search secrets…" style="flex:1" />
+        <button class="btn" id="sec-refresh">Refresh</button>
+        <button class="btn" id="sec-new">+ New</button>
+      </div>
+      <div id="sec-status" class="muted" style="margin-top:8px">Not loaded.</div>
+    </div>
+
+    <div class="card" id="sec-form" style="display:none; margin-bottom:12px">
+      <div class="row" style="gap:8px; flex-wrap:wrap">
+        <input id="sec-name" placeholder="SECRET_NAME" style="flex:1; min-width:200px" />
+        <input id="sec-value" type="password" placeholder="value" style="flex:1; min-width:200px" />
+        <input id="sec-type" placeholder="type (generic)" style="width:140px" />
+      </div>
+      <div class="row" style="gap:8px; margin-top:8px">
+        <button class="btn" id="sec-save">Save</button>
+        <button class="btn" id="sec-cancel">Cancel</button>
+      </div>
+    </div>
+
+    <div class="card"><div id="sec-list"></div></div>
   </section>
 
   <!-- ON-DEVICE (WebGPU, in-browser, zero server compute) -->
@@ -202,6 +239,140 @@
       </div>
       <pre id="logsBody" class="mono">Loading…</pre>
     </div>
+  </section>
+
+  <!-- CHRONICLE — Logs & Search -->
+  <section class="tab" id="tab-chronicle">
+    <div class="card">
+      <h3 style="margin-top:0">Logs & Search <span class="chip" id="chron-mode">live</span></h3>
+      <div class="muted">Aggregated logging service — recent entries, full-text search, and storage stats.</div>
+    </div>
+
+    <div class="card">
+      <div class="row" style="gap:8px; flex-wrap:wrap">
+        <input id="chron-search" placeholder="Search logs (q=error)…" style="flex:1; min-width:200px" />
+        <select id="chron-service" style="min-width:140px"><option value="">All services</option></select>
+        <select id="chron-level" style="width:100px">
+          <option value="">All levels</option>
+          <option value="error">Error</option>
+          <option value="warning">Warning</option>
+          <option value="info">Info</option>
+        </select>
+        <button class="btn" id="chron-search-btn">Search</button>
+        <button class="btn ghost" id="chron-refresh">Refresh</button>
+      </div>
+      <div id="chron-status" class="muted" style="margin-top:8px">Not loaded.</div>
+    </div>
+
+    <div class="card">
+      <div class="row" style="gap:12px; flex-wrap:wrap">
+        <div style="flex:1; min-width:140px"><div class="muted" style="font-size:12px">Active services</div>
+          <div id="chron-svc-count" style="font-size:20px; font-weight:600">—</div></div>
+        <div style="flex:1; min-width:140px"><div class="muted" style="font-size:12px">Errors today</div>
+          <div id="chron-err-count" style="font-size:20px; font-weight:600">—</div></div>
+        <div style="flex:1; min-width:140px"><div class="muted" style="font-size:12px">Buffer size</div>
+          <div id="chron-buf-size" style="font-size:20px; font-weight:600">—</div></div>
+        <div style="flex:1; min-width:140px"><div class="muted" style="font-size:12px">Storage (MB)</div>
+          <div id="chron-storage" style="font-size:20px; font-weight:600">—</div></div>
+      </div>
+    </div>
+
+    <div class="card"><div id="chron-logs" style="max-height:50vh; overflow-y:auto"></div></div>
+  </section>
+
+  <!-- PULSE — Alerts & Health -->
+  <section class="tab" id="tab-pulse">
+    <div class="card">
+      <h3 style="margin-top:0">Alerts & Health <span class="chip" id="pulse-mode">live</span></h3>
+      <div class="muted">Infrastructure alerts, resource pressure signals, and fleet health status.</div>
+    </div>
+
+    <div class="card">
+      <div class="row" style="gap:8px">
+        <input id="pulse-filter" placeholder="Filter alerts (severity, title)…" style="flex:1" />
+        <button class="btn ghost" id="pulse-refresh">Refresh</button>
+      </div>
+      <div id="pulse-status" class="muted" style="margin-top:8px">Not loaded.</div>
+    </div>
+
+    <div class="card">
+      <div class="row" style="gap:12px; flex-wrap:wrap">
+        <div style="flex:1; min-width:140px"><div class="muted" style="font-size:12px">Active alerts</div>
+          <div id="pulse-alert-count" style="font-size:20px; font-weight:600">—</div></div>
+        <div style="flex:1; min-width:140px"><div class="muted" style="font-size:12px">Critical</div>
+          <div id="pulse-critical-count" style="font-size:20px; font-weight:600; color:var(--err)">—</div></div>
+        <div style="flex:1; min-width:140px"><div class="muted" style="font-size:12px">Uptime</div>
+          <div id="pulse-uptime" style="font-size:16px">—</div></div>
+      </div>
+    </div>
+
+    <div class="card" id="pulse-pain" style="display:none">
+      <h3 style="margin-bottom:8px">Infrastructure pressure</h3>
+      <div id="pulse-pain-list"></div>
+    </div>
+
+    <div class="card"><h3 style="margin-bottom:8px">Active alerts</h3><div id="pulse-alerts"></div></div>
+  </section>
+
+  <!-- WATCH — Components -->
+  <section class="tab" id="tab-watch">
+    <div class="card">
+      <h3 style="margin-top:0">Components <span class="chip" id="watch-mode">live</span></h3>
+      <div class="muted">Service monitoring — process status, uptime, resource usage, and agent heartbeats.</div>
+    </div>
+
+    <div class="card">
+      <div class="row" style="gap:8px">
+        <input id="watch-filter" placeholder="Filter components…" style="flex:1" />
+        <button class="btn ghost" id="watch-refresh">Refresh</button>
+      </div>
+      <div id="watch-status" class="muted" style="margin-top:8px">Not loaded.</div>
+    </div>
+
+    <div class="card">
+      <div class="row" style="gap:12px; flex-wrap:wrap">
+        <div style="flex:1; min-width:140px"><div class="muted" style="font-size:12px">Components</div>
+          <div id="watch-count" style="font-size:20px; font-weight:600">—</div></div>
+        <div style="flex:1; min-width:140px"><div class="muted" style="font-size:12px">Online</div>
+          <div id="watch-online" style="font-size:20px; font-weight:600; color:var(--ok)">—</div></div>
+        <div style="flex:1; min-width:140px"><div class="muted" style="font-size:12px">Offline</div>
+          <div id="watch-offline" style="font-size:20px; font-weight:600; color:var(--err)">—</div></div>
+      </div>
+    </div>
+
+    <div class="card"><div id="watch-components" style="max-height:50vh; overflow-y:auto"></div></div>
+  </section>
+
+  <!-- FLUX — Event Flow -->
+  <section class="tab" id="tab-flux">
+    <div class="card">
+      <h3 style="margin-top:0">Event Flow <span class="chip" id="flux-mode">live</span></h3>
+      <div class="muted">Event bus routing, mailbox depths, message flow statistics, and cognitive budgets.</div>
+    </div>
+
+    <div class="card">
+      <div class="row" style="gap:8px">
+        <button class="btn ghost" id="flux-refresh">Refresh</button>
+      </div>
+      <div id="flux-status" class="muted" style="margin-top:8px">Not loaded.</div>
+    </div>
+
+    <div class="card">
+      <div class="row" style="gap:12px; flex-wrap:wrap">
+        <div style="flex:1; min-width:140px"><div class="muted" style="font-size:12px">Services</div>
+          <div id="flux-svc-count" style="font-size:20px; font-weight:600">—</div></div>
+        <div style="flex:1; min-width:140px"><div class="muted" style="font-size:12px">Packets/sec</div>
+          <div id="flux-pps" style="font-size:20px; font-weight:600">—</div></div>
+        <div style="flex:1; min-width:140px"><div class="muted" style="font-size:12px">Success rate</div>
+          <div id="flux-success" style="font-size:20px; font-weight:600">—</div></div>
+        <div style="flex:1; min-width:140px"><div class="muted" style="font-size:12px">Avg latency (ms)</div>
+          <div id="flux-latency" style="font-size:20px; font-weight:600">—</div></div>
+      </div>
+    </div>
+
+    <div class="card"><h3 style="margin-bottom:8px">Mailboxes by service</h3><div id="flux-mailboxes" style="max-height:40vh; overflow-y:auto"></div></div>
+
+    <div class="card"><h3 style="margin-bottom:8px">Cognitive budgets</h3><div id="flux-budgets" style="max-height:40vh; overflow-y:auto"></div></div>
   </section>
 
   <!-- GRAPH -->
@@ -956,6 +1127,442 @@ if (KEY) (async () => {
     refreshPackTabs();
   } catch (_) {}
 })();
+
+// ── Secrets tab ────────────────────────────────────────────────────────────
+// Backed by adk.vault_lockbox via /secrets, i.e. the SAME store `aither vault`
+// manages — no second vault, no drift. Values are never fetched or rendered:
+// listing is names + metadata only, which is the console's existing secret
+// boundary ("never RENDERS a stored key"). Reading a value back is a CLI
+// action, where it lands in your own scrollback rather than a browser panel.
+let secretsCache = [];
+
+function secStatus(msg, cls) {
+  const el = $("sec-status");
+  if (!el) return;
+  el.textContent = msg;
+  el.className = cls === "err" ? "" : "muted";
+  el.style.color = cls === "err" ? "var(--bad, #e74c3c)" : "";
+}
+
+function secRender() {
+  const list = $("sec-list");
+  if (!list) return;
+  const q = ($("sec-q")?.value || "").trim().toLowerCase();
+  const rows = secretsCache
+    .filter((s) => !q || String(s.name || "").toLowerCase().includes(q))
+    .sort((a, b) => String(a.name).toLowerCase().localeCompare(String(b.name).toLowerCase()));
+
+  if (!rows.length) {
+    list.innerHTML = '<div class="muted">' +
+      (secretsCache.length ? "No secrets match that search." : "Nothing loaded.") + "</div>";
+    return;
+  }
+  list.innerHTML = rows.map((s) => {
+    const meta = [s.type, s.scope, s.access_level].filter(Boolean).map(esc).join(" · ");
+    return '<div class="row" style="justify-content:space-between; padding:6px 0; border-bottom:1px solid var(--border,#333)">' +
+      '<div style="min-width:0"><div style="font-family:monospace">' + esc(s.name) + "</div>" +
+      (meta ? '<div class="muted" style="font-size:11px">' + meta + "</div>" : "") +
+      "</div>" +
+      '<div class="row" style="gap:6px">' +
+      '<button class="btn" data-sec-edit="' + esc(s.name) + '">Replace</button>' +
+      "</div></div>";
+  }).join("");
+}
+
+async function secLoad() {
+  secStatus("Loading vault…");
+  try {
+    const d = await api("/secrets");
+    secretsCache = d.secrets || [];
+    const modeEl = $("sec-mode");
+    if (modeEl) modeEl.textContent = d.remote ? "remote: " + (d.source || "platform") : "local";
+    secStatus(d.count + " secrets");
+    secRender();
+  } catch (e) {
+    // Distinguish the failure modes: an empty list and an auth failure look
+    // identical otherwise, and that ambiguity is how a broken panel reads as an
+    // empty vault.
+    secStatus(
+      e.status === 401 ? "Not authorised — open the console with its token (#k=…)."
+      : e.status === 503 ? "Vault unavailable on this agent."
+      : e.status === 502 ? "Vault read failed: " + (e.message || "")
+      : "Could not reach the agent: " + (e.message || ""),
+      "err",
+    );
+  }
+}
+
+async function secSave() {
+  const name = ($("sec-name")?.value || "").trim();
+  const value = $("sec-value")?.value || "";
+  if (!name) { secStatus("Name is required.", "err"); return; }
+  if (!value) { secStatus("Value is required — an empty write would wipe a live secret.", "err"); return; }
+  try {
+    const d = await api("/secrets", {
+      method: "POST",
+      body: JSON.stringify({ name, value, secret_type: ($("sec-type")?.value || "generic") }),
+    });
+    // The server re-reads after writing, so this length proves it PERSISTED
+    // rather than merely that the POST returned 200.
+    toast("Saved " + d.name + " (" + d.length + " chars, verified)");
+    $("sec-form").style.display = "none";
+    $("sec-value").value = "";
+    await secLoad();
+  } catch (e) {
+    secStatus("Save failed: " + (e.message || e.status), "err");
+  }
+}
+
+function secOpenForm(name) {
+  const f = $("sec-form");
+  if (!f) return;
+  f.style.display = "block";
+  $("sec-name").value = name || "";
+  $("sec-value").value = "";
+  (name ? $("sec-value") : $("sec-name")).focus();
+}
+
+$("sec-refresh")?.addEventListener("click", secLoad);
+$("sec-new")?.addEventListener("click", () => secOpenForm(""));
+$("sec-cancel")?.addEventListener("click", () => {
+  $("sec-form").style.display = "none";
+  $("sec-value").value = "";
+});
+$("sec-save")?.addEventListener("click", secSave);
+$("sec-q")?.addEventListener("input", secRender);
+$("sec-list")?.addEventListener("click", (e) => {
+  const b = e.target.closest("[data-sec-edit]");
+  if (b) secOpenForm(b.getAttribute("data-sec-edit"));
+});
+// Load lazily on first visit to the tab.
+document.querySelector('[data-tab="secrets"]')?.addEventListener("click", () => {
+  if (!secretsCache.length) secLoad();
+});
+
+// ── CHRONICLE (Logs & Search) ────────────────────────────────────────────────
+// Reads from /operator/chronicle (aggregated logging service data).
+let chronCache = null;
+loaders.chronicle = async () => {
+  const status = (msg, cls) => {
+    const el = $("chron-status");
+    if (!el) return;
+    el.textContent = msg;
+    el.style.color = cls === "err" ? "var(--err, #dc2626)" : "";
+  };
+
+  status("Loading…");
+  try {
+    const d = await api("/operator/chronicle");
+    chronCache = d;
+    const logs = d.logs || [];
+    const stats = d.stats || {};
+    const services = d.services || [];
+
+    // Update service dropdown
+    const sel = $("chron-service");
+    if (sel && sel.children.length === 1) {
+      (services || []).forEach((s) => {
+        const o = document.createElement("option");
+        o.value = s; o.textContent = s;
+        sel.appendChild(o);
+      });
+    }
+
+    // Render stats cards
+    const statsFields = { svc_count: stats.active_services || "—", err_count: (stats.level_counts?.error || 0),
+      buf_size: stats.buffer_size || "—", storage: (stats.combined_log_size_mb || 0).toFixed(1) };
+    ["svc-count", "err-count", "buf-size", "storage"].forEach((k, i) => {
+      const el = $("chron-" + k);
+      if (el) el.textContent = Object.values(statsFields)[i];
+    });
+
+    // Render logs table
+    const logHtml = (logs || []).length
+      ? logs.map((log) => {
+          const ts = log.timestamp ? new Date(log.timestamp).toLocaleTimeString("en-US", { hour12: false }) : "?";
+          const level = log.level || "?";
+          const level_color = level === "error" ? "var(--err)" : level === "warning" ? "var(--warn)" : "var(--ok)";
+          return `<div class="list-item" style="padding:8px 0; border-bottom:1px solid var(--line)">` +
+            `<div class="meta"><div class="muted" style="font-size:11px">${esc(ts)} <span style="color:${level_color}">${esc(level)}</span> ${esc(log.service || "?")}</div>` +
+            `<div style="margin-top:2px">${esc(String(log.message || "").slice(0, 280))}</div></div></div>`;
+        }).join("")
+      : '<div class="muted">No logs loaded.</div>';
+    const logEl = $("chron-logs");
+    if (logEl) logEl.innerHTML = logHtml;
+
+    status(`${logs.length} recent entries · ${services.length} services`);
+  } catch (e) {
+    status(
+      e.status === 401 ? "Not authorised — console needs #k=…"
+      : e.status === 503 ? "Chronicle unavailable on this agent."
+      : e.status === 502 ? "Chronicle unreachable: " + (e.message || "network error")
+      : e.status === 404 ? "Endpoint not found (Chronicle endpoint may be disabled)."
+      : "Could not reach the agent: " + (e.message || ""),
+      "err",
+    );
+  }
+};
+$("chron-refresh")?.addEventListener("click", loaders.chronicle);
+$("chron-search-btn")?.addEventListener("click", async () => {
+  const query = $("chron-search").value.trim();
+  const service = $("chron-service").value.trim();
+  const level = $("chron-level").value.trim();
+  if (!query) return toast("Enter a search term");
+  const status = (msg, cls) => { const el = $("chron-status");
+    if (el) { el.textContent = msg; el.style.color = cls === "err" ? "var(--err, #dc2626)" : ""; } };
+  status("Searching…");
+  try {
+    const d = await api("/operator/chronicle");
+    const results = (d.search || []).filter((r) =>
+      (!service || String(r.service || "").includes(service)) &&
+      (!level || (r.level || "").toLowerCase() === level.toLowerCase()) &&
+      String(r.message || "").toLowerCase().includes(query.toLowerCase())
+    );
+    const logHtml = results.length
+      ? results.slice(0, 100).map((log) => {
+          const ts = log.timestamp ? new Date(log.timestamp).toLocaleTimeString("en-US", { hour12: false }) : "?";
+          const level_color = (log.level || "?") === "error" ? "var(--err)" : (log.level || "?") === "warning" ? "var(--warn)" : "var(--ok)";
+          return `<div class="list-item" style="padding:8px 0; border-bottom:1px solid var(--line)">` +
+            `<div class="meta"><div class="muted" style="font-size:11px">${esc(ts)} <span style="color:${level_color}">${esc(log.level || "?")}</span> ${esc(log.service || "?")}</div>` +
+            `<div style="margin-top:2px">${esc(String(log.message || "").slice(0, 280))}</div></div></div>`;
+        }).join("")
+      : '<div class="muted">No results matching that search.</div>';
+    const logEl = $("chron-logs");
+    if (logEl) logEl.innerHTML = logHtml;
+    status(`${results.length} matches (showing first 100)`);
+  } catch (e) { status("Search failed: " + (e.message || e.status), "err"); }
+});
+document.querySelector('[data-tab="chronicle"]')?.addEventListener("click", () => {
+  if (!chronCache) loaders.chronicle();
+});
+
+// ── PULSE (Alerts & Health) ────────────────────────────────────────────────
+// Reads from /operator/pulse (infrastructure alerts and resource pressure).
+let pulseCache = null;
+loaders.pulse = async () => {
+  const status = (msg, cls) => {
+    const el = $("pulse-status");
+    if (!el) return;
+    el.textContent = msg;
+    el.style.color = cls === "err" ? "var(--err, #dc2626)" : "";
+  };
+
+  status("Loading…");
+  try {
+    const d = await api("/operator/pulse");
+    pulseCache = d;
+    const alerts = d.alerts || [];
+    const stats = d.stats || {};
+    const pain = d.pain || [];
+
+    // Update summary cards
+    const alertStats = stats.alerts || {};
+    const uptime = stats.uptime_seconds ? Math.round(stats.uptime_seconds / 3600) + "h" : "—";
+    $("pulse-alert-count").textContent = alertStats.active_count || "0";
+    $("pulse-critical-count").textContent = alertStats.critical_count || "0";
+    $("pulse-uptime").textContent = uptime;
+
+    // Render alerts
+    const alertHtml = alerts.length
+      ? alerts.map((a) => {
+          const severity = (a.severity || 0.5) >= 0.8 ? "error" : (a.severity || 0.5) >= 0.5 ? "warn" : "ok";
+          const severity_color = severity === "error" ? "var(--err)" : severity === "warn" ? "var(--warn)" : "var(--ok)";
+          const lastSeen = a.last_seen ? new Date(a.last_seen).toLocaleTimeString("en-US", { hour12: false }) : "?";
+          return `<div class="list-item" style="padding:8px 0; border-bottom:1px solid var(--line)">` +
+            `<div class="meta"><div style="color:${severity_color}; font-weight:600">${esc(a.title || a.alert_key || "?")}</div>` +
+            `<div class="muted" style="font-size:12px; margin-top:2px">${esc(a.message || "")} · ${esc(a.category || "?")} · ${a.occurrence_count || 1} occurrences</div>` +
+            `<div class="muted" style="font-size:11px; margin-top:2px">Last: ${lastSeen}</div></div>` +
+            `<div class="row" style="gap:6px"><button class="btn" data-pulse-ack="${esc(a.alert_key || "")}">Ack</button>` +
+            `<button class="btn ghost" data-pulse-resolve="${esc(a.alert_key || "")}">Resolve</button></div></div>`;
+        }).join("")
+      : '<div class="muted">No active alerts.</div>';
+    const alertEl = $("pulse-alerts");
+    if (alertEl) alertEl.innerHTML = alertHtml;
+
+    // Handle alert actions
+    $("pulse-alerts")?.querySelectorAll("[data-pulse-ack]").forEach((b) =>
+      b.onclick = async () => {
+        toast("Alert action not yet implemented in console (use CLI)");
+      });
+    $("pulse-alerts")?.querySelectorAll("[data-pulse-resolve]").forEach((b) =>
+      b.onclick = async () => {
+        toast("Alert action not yet implemented in console (use CLI)");
+      });
+
+    // Render pain signals if present
+    const painEl = $("pulse-pain");
+    if (pain.length && painEl) {
+      painEl.style.display = "block";
+      const painHtml = pain.map((p) => {
+        const val = p.current_value ? p.current_value.toFixed(1) : "?";
+        const thr = p.threshold ? p.threshold.toFixed(1) : "?";
+        const pct = p.threshold ? Math.round((p.current_value / p.threshold) * 100) : "?";
+        return `<div class="list-item" style="padding:6px 0; border-bottom:1px solid var(--line)">` +
+          `<div class="meta"><div class="t">${esc(p.pain_point_id || "?")}</div>` +
+          `<div class="muted" style="font-size:11px">${val} / ${thr} threshold (${pct}%)</div></div></div>`;
+      }).join("");
+      const painListEl = $("pulse-pain-list");
+      if (painListEl) painListEl.innerHTML = painHtml;
+    } else if (painEl) {
+      painEl.style.display = "none";
+    }
+
+    status(`${alerts.length} active alerts · ${(stats.uptime_seconds || 0).toFixed(0)}s uptime`);
+  } catch (e) {
+    status(
+      e.status === 401 ? "Not authorised — console needs #k=…"
+      : e.status === 503 ? "Pulse unavailable on this agent."
+      : e.status === 502 ? "Pulse unreachable (infrastructure degraded): " + (e.message || "network error")
+      : e.status === 504 ? "Pulse timeout (slow response from fleet)."
+      : "Could not reach the agent: " + (e.message || ""),
+      "err",
+    );
+  }
+};
+$("pulse-refresh")?.addEventListener("click", loaders.pulse);
+document.querySelector('[data-tab="pulse"]')?.addEventListener("click", () => {
+  if (!pulseCache) loaders.pulse();
+});
+
+// ── WATCH (Components) ────────────────────────────────────────────────
+// Reads from /operator/watch (service monitoring and health).
+let watchCache = null;
+loaders.watch = async () => {
+  const status = (msg, cls) => {
+    const el = $("watch-status");
+    if (!el) return;
+    el.textContent = msg;
+    el.style.color = cls === "err" ? "var(--err, #dc2626)" : "";
+  };
+
+  status("Loading…");
+  try {
+    const d = await api("/operator/watch");
+    watchCache = d;
+    const components = d.components || [];
+    const health = d.health || {};
+
+    // Count online/offline
+    let online = 0, offline = 0;
+    (components || []).forEach((c) => {
+      if (c.status === "online" || c.status === "running") online++; else offline++;
+    });
+
+    $("watch-count").textContent = components.length;
+    $("watch-online").textContent = online;
+    $("watch-offline").textContent = offline;
+
+    // Render components table
+    const compHtml = components.length
+      ? components.map((c) => {
+          const status_color = (c.status === "online" || c.status === "running") ? "var(--ok)" : (c.status === "degraded") ? "var(--warn)" : "var(--err)";
+          const uptime = c.uptime_seconds ? Math.round(c.uptime_seconds / 60) + "m" : "—";
+          return `<div class="list-item" style="padding:8px 0; border-bottom:1px solid var(--line)">` +
+            `<div class="meta"><div><span style="color:${status_color}; font-weight:600">●</span> ${esc(c.name || c.id || "?")}</div>` +
+            `<div class="muted" style="font-size:12px">${esc(c.status || "?")}</div>` +
+            `<div class="muted" style="font-size:11px; margin-top:2px">Up ${uptime} · ${c.memory_mb || "?"}MB · CPU ${(c.cpu_percent || 0).toFixed(0)}%` +
+            (c.restart_count ? ` · restarts: ${c.restart_count}` : "") + `</div>` +
+            (c.error ? `<div style="color:var(--err); font-size:11px; margin-top:2px">${esc(c.error.slice(0, 120))}</div>` : "") +
+            `</div></div>`;
+        }).join("")
+      : '<div class="muted">No components loaded (Watch service may be unreachable).</div>';
+    const compEl = $("watch-components");
+    if (compEl) compEl.innerHTML = compHtml;
+
+    status(`${components.length} components · ${online} online · ${offline} offline`);
+  } catch (e) {
+    status(
+      e.status === 401 ? "Not authorised — console needs #k=…"
+      : e.status === 503 ? "Watch module unavailable on this agent."
+      : e.status === 502 ? "Watch service unreachable (fleet network degraded)"
+      : e.status === 504 ? "Watch timeout (service slow or DNS issue)"
+      : "Could not reach the agent: " + (e.message || ""),
+      "err",
+    );
+  }
+};
+$("watch-refresh")?.addEventListener("click", loaders.watch);
+document.querySelector('[data-tab="watch"]')?.addEventListener("click", () => {
+  if (!watchCache) loaders.watch();
+});
+
+// ── FLUX (Event Flow) ────────────────────────────────────────────────
+// Reads from /operator/flux (event bus routing and cognitive budgets).
+let fluxCache = null;
+loaders.flux = async () => {
+  const status = (msg, cls) => {
+    const el = $("flux-status");
+    if (!el) return;
+    el.textContent = msg;
+    el.style.color = cls === "err" ? "var(--err, #dc2626)" : "";
+  };
+
+  status("Loading…");
+  try {
+    const d = await api("/operator/flux");
+    fluxCache = d;
+    const mailboxes = d.mailboxes || [];
+    const routes = d.routes || [];
+    const services = d.services || [];
+    const stats = d.stats || {};
+    const budgets = d.cognitive_budgets || [];
+
+    // Update summary cards
+    const pps = stats.packets_per_second || 0;
+    const success = stats.success_rate ? (stats.success_rate * 100).toFixed(0) : "?";
+    const latency = stats.avg_latency_ms ? stats.avg_latency_ms.toFixed(1) : "?";
+    $("flux-svc-count").textContent = services.length || "—";
+    $("flux-pps").textContent = pps.toFixed(1);
+    $("flux-success").textContent = (typeof success === "string" ? success : success) + "%";
+    $("flux-latency").textContent = latency;
+
+    // Render mailboxes table (sorted by depth descending)
+    const mbHtml = (mailboxes || []).length
+      ? mailboxes.sort((a, b) => (b.messages_queued || 0) - (a.messages_queued || 0))
+        .slice(0, 50)
+        .map((m) => {
+          const depth = m.messages_queued || 0;
+          const color = depth > 100 ? "var(--err)" : depth > 20 ? "var(--warn)" : "var(--ok)";
+          return `<div class="list-item" style="padding:6px 0; border-bottom:1px solid var(--line)">` +
+            `<div class="meta"><div class="t">${esc(m.service_id || m.service || "?")}</div>` +
+            `<div class="muted" style="font-size:12px">${m.type || "queue"}</div></div>` +
+            `<div style="color:${color}; font-weight:600">${depth} msgs</div></div>`;
+        }).join("")
+      : '<div class="muted">No mailbox data.</div>';
+    const mbEl = $("flux-mailboxes");
+    if (mbEl) mbEl.innerHTML = mbHtml;
+
+    // Render cognitive budgets
+    const budgetHtml = (budgets || []).length
+      ? budgets.map((b) => {
+          const pct = b.remaining && b.used ? Math.round((b.used / (b.used + b.remaining)) * 100) : 0;
+          const barColor = pct > 80 ? "var(--err)" : pct > 50 ? "var(--warn)" : "var(--ok)";
+          return `<div class="list-item" style="padding:8px 0; border-bottom:1px solid var(--line)">` +
+            `<div class="meta"><div class="t">${esc(b.service || "?")}</div>` +
+            `<div style="height:6px; background:var(--chip); border-radius:3px; margin-top:4px">` +
+            `<div style="height:100%; width:${pct}%; background:${barColor}; border-radius:3px; transition:width 0.3s"></div></div>` +
+            `<div class="muted" style="font-size:11px; margin-top:2px">${b.used || 0} / ${(b.used || 0) + (b.remaining || 0)} tokens (${pct}%)</div></div></div>`;
+        }).join("")
+      : '<div class="muted">No budget data.</div>';
+    const budgetEl = $("flux-budgets");
+    if (budgetEl) budgetEl.innerHTML = budgetHtml;
+
+    status(`${services.length} services · ${(mailboxes || []).reduce((a, m) => a + (m.messages_queued || 0), 0)} queued messages`);
+  } catch (e) {
+    status(
+      e.status === 401 ? "Not authorised — console needs #k=…"
+      : e.status === 503 ? "Flux module unavailable on this agent."
+      : e.status === 502 ? "Flux unreachable (TLS/connection error): " + (e.message || "network")
+      : e.status === 504 ? "Flux timeout (mesh DNS issue or service wedged)"
+      : "Could not reach the agent: " + (e.message || ""),
+      "err",
+    );
+  }
+};
+$("flux-refresh")?.addEventListener("click", loaders.flux);
+document.querySelector('[data-tab="flux"]')?.addEventListener("click", () => {
+  if (!fluxCache) loaders.flux();
+});
 </script>
 
 <!-- On-device WebGPU chat: transformers.js runs the model in the browser on the GPU.

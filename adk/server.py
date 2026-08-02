@@ -13,6 +13,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import socket
 import time
 import uuid
@@ -26,6 +27,7 @@ from fastapi import Response
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
 
 from adk import __version__
+from adk._tls import tls_verify
 from adk.agent import AitherAgent, AgentResponse
 from adk.config import Config
 from adk.identity import list_identities, load_identity
@@ -36,6 +38,79 @@ from adk.trace import TraceMiddleware, get_trace_id, new_trace
 logger = logging.getLogger("adk.server")
 
 _WEBUI_CACHE: str | None = None
+
+# Secret names are used to build vault paths, so constrain them rather than
+# trusting whatever the browser sends.
+_SECRET_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
+
+# Resolved base URL per fleet service, so the probe cost is paid once.
+_OPERATOR_BASE_CACHE: dict[str, str] = {}
+
+
+def _operator_bases(service: str, port: int) -> list[str]:
+    """Candidate base URLs for a fleet service, in preference order.
+
+    The operator console runs in BOTH contexts and they need different hosts:
+      - inside the fleet network, `aitheros-<service>` resolves
+      - on the operator's own machine (the common case — adk is a pip package,
+        not a fleet container) it does NOT, and every call dies with
+        `getaddrinfo failed`
+    Measured 2026-07-31: container-DNS-only endpoints returned ConnectError from
+    the host for chronicle/pulse/flux, while `https://127.0.0.1:<port>` returned
+    200 for all three. Hardcoding either host alone makes the panel permanently
+    inert in the other context — and an always-502 panel is the failure this
+    whole surface was supposed to avoid.
+
+    Loopback works because these containers publish to 127.0.0.1. Note the scheme
+    is https for both: plain http on these ports fails, which has previously been
+    misread as "service unreachable".
+
+    ORDER IS CORRECTNESS, NOT PREFERENCE. Inside a container `127.0.0.1:<port>` is
+    that container's OWN port — a different service, or nothing — so loopback must
+    not be tried first there. On the host the container name cannot resolve at all,
+    and this fleet has a documented flaky resolver, so leading with it makes the
+    probe slow AND nondeterministic (measured: chronicle and flux answered 200
+    directly on loopback while the endpoint reported them unreachable).
+    So decide by context rather than trying to be clever about failures.
+    """
+    in_container = os.path.exists("/.dockerenv")
+    container_url = f"https://aitheros-{service}:{port}"
+    loopback_url = f"https://127.0.0.1:{port}"
+    return [container_url, loopback_url] if in_container else [loopback_url, container_url]
+
+
+async def _resolve_operator_base(client, service: str, port: int):
+    """First candidate whose /health answers. None when the service is truly down.
+
+    Returning None (rather than a guess) is deliberate: the caller must be able to
+    say "unreachable" instead of rendering an empty panel that reads as "no data".
+    """
+    cached = _OPERATOR_BASE_CACHE.get(service)
+    if cached:
+        return cached
+    for base in _operator_bases(service, port):
+        # Two attempts per candidate. This fleet has a MEASURED chronic fault
+        # where the resolver drops a large fraction of queries, and these health
+        # endpoints are slow under load — so a single attempt made this probe
+        # nondeterministic: consecutive runs reported chronicle/watch/flux as
+        # alternately fine and unreachable while all four answered 200 when
+        # probed directly. One retry converts most of that flapping into a
+        # correct answer; a panel that lies half the time is worse than a slow one.
+        for attempt in (1, 2):
+            try:
+                # 8s, not 4s: a tight timeout turns "slow" into "unreachable",
+                # which renders as a dead panel for a service that is fine.
+                resp = await client.get(f"{base}/health", timeout=8.0)
+            except Exception as exc:  # noqa: BLE001 — any transport failure
+                logger.debug(
+                    "operator base %s attempt %d: %s", base, attempt, type(exc).__name__
+                )
+                continue
+            if resp.status_code < 500:
+                _OPERATOR_BASE_CACHE[service] = base
+                return base
+            logger.debug("operator base %s attempt %d: HTTP %s", base, attempt, resp.status_code)
+    return None
 
 
 def _load_webui() -> str | None:
@@ -478,9 +553,35 @@ def create_app(
 
     _cors_origins = os.getenv("AITHER_CORS_ORIGINS", "").split(",")
     _cors_origins = [o.strip() for o in _cors_origins if o.strip()]
+    # THE AITHERIUM SURFACES MUST BE HERE OR THE DAEMON IS UNDETECTABLE FROM THE WEB.
+    #
+    # aitherium.com's Living OS probes the visitor's own loopback for a running node
+    # (AitherVeil components/os/use-local-node.ts) — that is the "the page notices the
+    # software you just installed" moment. Measured 2026-07-31 on the owner's own box: the
+    # daemon answered `GET http://127.0.0.1:9001/health` with 200 and
+    # `{"status":"healthy","agent":"adk-daemon","version":"2.25.1"}`, and the page still
+    # said "no node", because the default list below was localhost-dev only, so the browser
+    # discarded the response for want of an Access-Control-Allow-Origin. Nothing logged on
+    # either side. The AitherConnect EXTENSION saw the same daemon fine (extensions bypass
+    # CORS with host permissions) and displayed "node online" a few pixels away from the
+    # page's "no node" — which reads as the page being broken rather than as a CORS policy.
+    #
+    # Still an explicit allowlist, never a wildcard: this daemon is on loopback with the
+    # user's own tools attached, so the set of origins that may talk to it is a security
+    # decision. allow_credentials stays OFF, so no ambient cookie rides along.
+    _aitherium_origins = [
+        "https://aitherium.com",
+        "https://www.aitherium.com",
+        "https://portal.aitherium.com",
+        "https://veil.aitherium.com",
+    ]
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=_cors_origins or ["http://localhost:3000", "http://localhost:8080"],
+        allow_origins=_cors_origins or [
+            *_aitherium_origins,
+            "http://localhost:3000",
+            "http://localhost:8080",
+        ],
         allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         # Athena: no wildcard — only the headers our clients actually send. A
         # permissive list widens what a whitelisted-origin page can do cross-site.
@@ -780,7 +881,7 @@ def create_app(
         # both. A 404 means that host doesn't serve it — fall through, don't report.
         bases = [("http://localhost:8001", False), ("https://localhost:8159", False)]
         last = None
-        async with httpx.AsyncClient(timeout=120.0, verify=False) as client:
+        async with httpx.AsyncClient(timeout=120.0, verify=tls_verify()) as client:
             for base, _verify in bases:
                 try:
                     r = await client.post(f"{base}/social/x/import-session", headers=headers, json=payload)
@@ -805,23 +906,30 @@ def create_app(
         """
         import json as _json
 
-        # Read config.json
-        config_path = os.path.expanduser("~/.aither/config.json")
+        # Resolve auth via the CANONICAL loader (merges config.json + auth.json +
+        # env), so 'logged_in' matches what the rest of adk sees — a raw config.json
+        # read reported logged_out on a machine that was actually signed in.
         logged_in = False
         username = None
         tenant = None
         api_key = ""
-
         try:
-            with open(config_path, encoding="utf-8") as fh:
-                cfg = _json.load(fh) or {}
-                api_key = cfg.get("api_key", "") or ""
-                username = cfg.get("username")
-                tenant = cfg.get("tenant_id")
-                if api_key:
-                    logged_in = True
-        except (OSError, ValueError):
-            pass
+            from adk.cli import load_saved_config
+            cfg = load_saved_config() or {}
+            api_key = cfg.get("api_key", "") or ""
+            username = cfg.get("username")
+            tenant = cfg.get("tenant_id")
+            logged_in = bool(api_key)
+        except Exception:  # noqa: BLE001 — fall back to a direct read
+            try:
+                with open(os.path.expanduser("~/.aither/config.json"), encoding="utf-8") as fh:
+                    cfg = _json.load(fh) or {}
+                    api_key = cfg.get("api_key", "") or ""
+                    username = cfg.get("username")
+                    tenant = cfg.get("tenant_id")
+                    logged_in = bool(api_key)
+            except (OSError, ValueError):
+                pass
 
         # Read auth.json for tenant_slug if not in config
         if not tenant:
@@ -1089,6 +1197,121 @@ def create_app(
         }
         _save_backup_config(cfg)
         return JSONResponse({"ok": True})
+
+    # ── Secrets vault ────────────────────────────────────────────────────────
+    # Backed by adk.vault_lockbox (the local encrypted store at
+    # ~/.aither/secrets.enc, or the platform vault in remote mode) so the bundled
+    # console manages the SAME vault the CLI (`aither vault`) does. No second
+    # store, no drift.
+    #
+    # SECRET BOUNDARY (the console's existing policy, upheld here): this NEVER
+    # returns a stored value. Listing is names + metadata only. Writes flow
+    # browser -> here -> vault. If you need a value, `aither vault get <name>`
+    # prints it in your terminal, where it is your shell's scrollback rather
+    # than a long-lived panel in a browser.
+    #
+    # Auth: the global middleware above already gates every route (loopback, or
+    # the server bearer). No extra dependency needed — and adding a weaker one
+    # here would only create a second, softer door.
+
+    @app.get("/secrets")
+    async def secrets_list():
+        """Names + metadata for every secret. Never values."""
+        try:
+            from adk import vault_lockbox
+        except Exception as exc:  # noqa: BLE001 — report, never 500 silently
+            return JSONResponse(
+                status_code=503,
+                content={"error": f"vault unavailable: {type(exc).__name__}"},
+            )
+        try:
+            items = vault_lockbox.list_secrets() or []
+        except Exception as exc:  # noqa: BLE001
+            return JSONResponse(
+                status_code=502,
+                content={"error": f"vault read failed: {type(exc).__name__}: {exc}"},
+            )
+        remote, where = (False, "local")
+        try:
+            remote, where = vault_lockbox.remote_mode()
+        except Exception:  # noqa: BLE001 — mode is informational only
+            pass
+        out = []
+        for it in items:
+            if isinstance(it, str):
+                out.append({"name": it})
+            elif isinstance(it, dict):
+                # Strip anything value-shaped defensively: list_secrets() is not
+                # supposed to carry values, and if that ever changes upstream the
+                # console must not start leaking them into a browser payload.
+                out.append({
+                    k: v for k, v in it.items()
+                    if k not in ("value", "secret", "plaintext")
+                })
+        return JSONResponse({
+            "count": len(out),
+            "secrets": out,
+            "remote": remote,
+            "source": where,
+        })
+
+    @app.post("/secrets")
+    async def secrets_set(request: Request):
+        """Create or replace a secret. Body: {name, value, secret_type?}"""
+        try:
+            from adk import vault_lockbox
+        except Exception as exc:  # noqa: BLE001
+            return JSONResponse(
+                status_code=503,
+                content={"error": f"vault unavailable: {type(exc).__name__}"},
+            )
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            return JSONResponse(status_code=400, content={"error": "invalid JSON body"})
+
+        name = str(body.get("name") or body.get("key") or "").strip()
+        value = body.get("value")
+        if not name:
+            return JSONResponse(status_code=400, content={"error": "name is required"})
+        if not isinstance(value, str) or value == "":
+            # An empty write would overwrite a working credential with nothing and
+            # still look like success.
+            return JSONResponse(
+                status_code=400,
+                content={"error": "value is required and must be a non-empty string"},
+            )
+        if not _SECRET_NAME_RE.match(name):
+            return JSONResponse(
+                status_code=400,
+                content={"error": "name must be 1-128 chars of A-Z a-z 0-9 _ . -"},
+            )
+        try:
+            ok = vault_lockbox.set_secret(
+                name, value, str(body.get("secret_type") or "generic")
+            )
+        except Exception as exc:  # noqa: BLE001
+            return JSONResponse(
+                status_code=502,
+                content={"error": f"vault write failed: {type(exc).__name__}: {exc}"},
+            )
+        if not ok:
+            return JSONResponse(
+                status_code=502, content={"error": "vault refused the write"}
+            )
+        # Confirm it PERSISTED. set_secret returning True is not proof the value
+        # is readable back, and "wrote successfully but stored nothing" is the
+        # exact class this codebase keeps producing.
+        try:
+            stored = vault_lockbox.get_secret(name)
+        except Exception:  # noqa: BLE001
+            stored = None
+        if not stored:
+            return JSONResponse(
+                status_code=502,
+                content={"error": "write reported success but the secret did not persist"},
+            )
+        return JSONResponse({"ok": True, "name": name, "length": len(stored)})
 
     @app.get("/backup/status")
     async def backup_status():
@@ -1397,6 +1620,378 @@ def create_app(
         except Exception as e:
             logger.exception("backup_restore failed")
             return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=502)
+
+    # ─── Operator service proxies (fleet monitoring dashboard) ───
+    # Read-only aggregated endpoints for the bundled console's operator panels.
+    # Each service endpoint is independent: a timeout/failure in one panel does
+    # not blank others. Auth: global middleware (loopback or bearer). Never
+    # returns secret values; errors are distinguishable (503 module missing,
+    # 502 upstream failed, 504 timeout).
+
+    @app.get("/operator/chronicle")
+    async def operator_chronicle():
+        """Aggregate Chronicle logs, search, stats for the operator dashboard.
+        Returns: {logs, search, stats, services, error?}
+        Never logs secret/credential values."""
+        try:
+            import httpx
+        except ImportError as exc:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "error": f"http client unavailable: {type(exc).__name__}",
+                    "logs": None, "search": None, "stats": None, "services": None,
+                },
+            )
+
+        result = {"logs": None, "search": None, "stats": None, "services": None}
+        errors: list[str] = []
+
+        # tls_verify(), never verify=False: it returns the AitherNet CA bundle so
+        # self-signed internal certs are trusted WITH verification, and only an
+        # explicit AITHER_TLS_VERIFY=false disables it (loudly). adk/_tls.py exists
+        # precisely to stop this call site hardcoding a bypass.
+        async with httpx.AsyncClient(timeout=10.0, verify=tls_verify()) as client:
+            base_url = await _resolve_operator_base(client, "chronicle", 8121)
+            if base_url is None:
+                return JSONResponse(
+                    status_code=502,
+                    content={
+                        "error": "chronicle unreachable on "
+                                 "aitheros-chronicle:8121 or 127.0.0.1:8121",
+                        "tried": _operator_bases("chronicle", 8121),
+                    },
+                )
+            # Recent logs (default 50 entries)
+            try:
+                r = await client.get(f"{base_url}/logs?count=50")
+                if r.status_code == 200:
+                    result["logs"] = r.json()
+
+                else:
+                    errors.append(f"tools: HTTP {r.status_code}")
+            except Exception as exc:  # noqa: BLE001 - one dead sub-call
+                # must not blank the whole panel, but it must not vanish either
+                errors.append(f"tools: {type(exc).__name__}")
+
+            # Statistics (buffer, service counts, level counts)
+            try:
+                r = await client.get(f"{base_url}/stats")
+                if r.status_code == 200:
+                    result["stats"] = r.json()
+
+                else:
+                    errors.append(f"stats: HTTP {r.status_code}")
+            except Exception as exc:  # noqa: BLE001 - one dead sub-call
+                # must not blank the whole panel, but it must not vanish either
+                errors.append(f"stats: {type(exc).__name__}")
+
+            # Services list (for filter dropdowns)
+            try:
+                r = await client.get(f"{base_url}/services")
+                if r.status_code == 200:
+                    result["services"] = r.json()
+
+                else:
+                    errors.append(f"services: HTTP {r.status_code}")
+            except Exception as exc:  # noqa: BLE001 - one dead sub-call
+                # must not blank the whole panel, but it must not vanish either
+                errors.append(f"services: {type(exc).__name__}")
+
+            # Search (example: recent errors)
+            try:
+                r = await client.get(f"{base_url}/search?q=level:error&limit=20")
+                if r.status_code == 200:
+                    result["search"] = r.json()
+
+                else:
+                    errors.append(f"search: HTTP {r.status_code}")
+            except Exception as exc:  # noqa: BLE001 - one dead sub-call
+                # must not blank the whole panel, but it must not vanish either
+                errors.append(f"search: {type(exc).__name__}")
+
+        if all(v is None for v in result.values()):
+            return JSONResponse(
+                status_code=502,
+                content={"error": "chronicle service unreachable", **result},
+            )
+        return JSONResponse({**result, "errors": errors, "degraded": bool(errors)})
+
+    @app.get("/operator/pulse")
+    async def operator_pulse():
+        """Aggregate Pulse alerts, pain signals, system metrics for operator
+        console. Returns: {alerts, pain, stats, disk, error?}
+        Never returns secret alert values."""
+        try:
+            import httpx
+        except ImportError as exc:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "error": f"http client unavailable: {type(exc).__name__}",
+                    "alerts": None, "pain": None, "stats": None, "disk": None,
+                },
+            )
+
+        result = {"alerts": None, "pain": None, "stats": None, "disk": None}
+        errors: list[str] = []
+
+        async with httpx.AsyncClient(
+            timeout=8.0, verify=tls_verify(),
+            http2=False,  # Pulse may not support h2; stick to h1
+        ) as client:
+            base_url = await _resolve_operator_base(client, "pulse", 8081)
+            if base_url is None:
+                return JSONResponse(
+                    status_code=502,
+                    content={
+                        "error": "pulse unreachable on aitheros-pulse:8081 "
+                                 "or 127.0.0.1:8081",
+                        "tried": _operator_bases("pulse", 8081),
+                    },
+                )
+            # Active alerts (aggregated, with severity)
+            try:
+                r = await client.get(f"{base_url}/alerts")
+                if r.status_code == 200:
+                    result["alerts"] = r.json()
+
+                else:
+                    errors.append(f"alerts: HTTP {r.status_code}")
+            except Exception as exc:  # noqa: BLE001 - one dead sub-call
+                # must not blank the whole panel, but it must not vanish either
+                errors.append(f"alerts: {type(exc).__name__}")
+
+            # Pain signal plane (infrastructure pressure)
+            try:
+                r = await client.get(f"{base_url}/pain")
+                if r.status_code == 200:
+                    result["pain"] = r.json()
+
+                else:
+                    errors.append(f"pain: HTTP {r.status_code}")
+            except Exception as exc:  # noqa: BLE001 - one dead sub-call
+                # must not blank the whole panel, but it must not vanish either
+                errors.append(f"pain: {type(exc).__name__}")
+
+            # Stats (uptime, metrics, active signal count)
+            try:
+                r = await client.get(f"{base_url}/stats")
+                if r.status_code == 200:
+                    result["stats"] = r.json()
+
+                else:
+                    errors.append(f"stats: HTTP {r.status_code}")
+            except Exception as exc:  # noqa: BLE001 - one dead sub-call
+                # must not blank the whole panel, but it must not vanish either
+                errors.append(f"stats: {type(exc).__name__}")
+
+            # Disk pressure (reclaimable space, current usage)
+            try:
+                r = await client.get(f"{base_url}/disk/status")
+                if r.status_code == 200:
+                    result["disk"] = r.json()
+
+                else:
+                    errors.append(f"disk: HTTP {r.status_code}")
+            except Exception as exc:  # noqa: BLE001 - one dead sub-call
+                # must not blank the whole panel, but it must not vanish either
+                errors.append(f"disk: {type(exc).__name__}")
+
+        if all(v is None for v in result.values()):
+            return JSONResponse(
+                status_code=502,
+                content={"error": "pulse service unreachable", **result},
+            )
+        return JSONResponse({**result, "errors": errors, "degraded": bool(errors)})
+
+    @app.get("/operator/watch")
+    async def operator_watch():
+        """Aggregate AitherWatch component status for operator console.
+        Returns: {components, health, agents, error?}
+        Currently may timeout due to fleet network issues."""
+        try:
+            import httpx
+        except ImportError as exc:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "error": f"http client unavailable: {type(exc).__name__}",
+                    "components": None, "health": None, "agents": None,
+                },
+            )
+
+        result = {"components": None, "health": None, "agents": None}
+        errors: list[str] = []
+
+        # Was hardcoded to http://127.0.0.1:8082. Two defects: plain HTTP fails on
+        # these ports (measured — they serve HTTPS, and an http probe returns a
+        # transport error that reads as "service down"), and a loopback-only URL
+        # is wrong whenever adk runs inside the fleet network. The resolver tries
+        # both hosts over https.
+        async with httpx.AsyncClient(timeout=5.0, verify=tls_verify()) as client:
+            base_url = await _resolve_operator_base(client, "watch", 8082)
+            if base_url is None:
+                return JSONResponse(
+                    status_code=502,
+                    content={
+                        "error": "watch unreachable on aitheros-watch:8082 "
+                                 "or 127.0.0.1:8082",
+                        "tried": _operator_bases("watch", 8082),
+                        "components": None, "health": None, "agents": None,
+                    },
+                )
+            # Component status (process/service health)
+            try:
+                r = await client.get(f"{base_url}/status")
+                if r.status_code == 200:
+                    result["components"] = r.json()
+
+                else:
+                    errors.append(f"components: HTTP {r.status_code}")
+            except Exception as exc:  # noqa: BLE001 - one dead sub-call
+                # must not blank the whole panel, but it must not vanish either
+                errors.append(f"components: {type(exc).__name__}")
+
+            # Health check (service liveness)
+            try:
+                r = await client.get(f"{base_url}/health")
+                if r.status_code == 200:
+                    result["health"] = r.json()
+
+                else:
+                    errors.append(f"health: HTTP {r.status_code}")
+            except Exception as exc:  # noqa: BLE001 - one dead sub-call
+                # must not blank the whole panel, but it must not vanish either
+                errors.append(f"health: {type(exc).__name__}")
+
+            # Agent heartbeats (fleet member status)
+            try:
+                r = await client.get(f"{base_url}/agents")
+                if r.status_code == 200:
+                    result["agents"] = r.json()
+
+                else:
+                    errors.append(f"agents: HTTP {r.status_code}")
+            except Exception as exc:  # noqa: BLE001 - one dead sub-call
+                # must not blank the whole panel, but it must not vanish either
+                errors.append(f"agents: {type(exc).__name__}")
+
+        if all(v is None for v in result.values()):
+            return JSONResponse(
+                status_code=502,
+                content={"error": "watch service unreachable", **result},
+            )
+        return JSONResponse({**result, "errors": errors, "degraded": bool(errors)})
+
+    @app.get("/operator/flux")
+    async def operator_flux():
+        """Aggregate AitherFlux mailbox/routing/cognitive budget state for
+        operator console. Returns: {mailboxes, routes, services, stats,
+        cognitive_budgets, error?}"""
+        try:
+            import httpx
+        except ImportError as exc:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "error": f"http client unavailable: {type(exc).__name__}",
+                    "mailboxes": None, "routes": None, "services": None,
+                    "stats": None, "cognitive_budgets": None,
+                },
+            )
+
+        # Flux requires X-Internal-Key header for auth (internal mesh boundary)
+        internal_key = os.getenv("AITHER_INTERNAL_SECRET", "")
+        headers = {}
+        if internal_key:
+            headers["X-Internal-Key"] = internal_key
+
+        result = {
+            "mailboxes": None, "routes": None, "services": None,
+            "stats": None, "cognitive_budgets": None,
+        }
+        errors: list[str] = []
+
+        async with httpx.AsyncClient(
+            timeout=8.0, verify=tls_verify(), http2=False,
+        ) as client:
+            base_url = await _resolve_operator_base(client, "flux", 8117)
+            if base_url is None:
+                return JSONResponse(
+                    status_code=502,
+                    content={
+                        "error": "flux unreachable on aitheros-flux:8117 "
+                                 "or 127.0.0.1:8117",
+                        "tried": _operator_bases("flux", 8117),
+                    },
+                )
+            # Mailbox registry (services + queue depths)
+            try:
+                r = await client.get(f"{base_url}/mailboxes", headers=headers)
+                if r.status_code == 200:
+                    result["mailboxes"] = r.json()
+
+                else:
+                    errors.append(f"mailboxes: HTTP {r.status_code}")
+            except Exception as exc:  # noqa: BLE001 - one dead sub-call
+                # must not blank the whole panel, but it must not vanish either
+                errors.append(f"mailboxes: {type(exc).__name__}")
+
+            # Routing table (service → node → port mapping)
+            try:
+                r = await client.get(f"{base_url}/routes", headers=headers)
+                if r.status_code == 200:
+                    result["routes"] = r.json()
+
+                else:
+                    errors.append(f"routes: HTTP {r.status_code}")
+            except Exception as exc:  # noqa: BLE001 - one dead sub-call
+                # must not blank the whole panel, but it must not vanish either
+                errors.append(f"routes: {type(exc).__name__}")
+
+            # Service registry (all known services)
+            try:
+                r = await client.get(f"{base_url}/services", headers=headers)
+                if r.status_code == 200:
+                    result["services"] = r.json()
+
+                else:
+                    errors.append(f"services: HTTP {r.status_code}")
+            except Exception as exc:  # noqa: BLE001 - one dead sub-call
+                # must not blank the whole panel, but it must not vanish either
+                errors.append(f"services: {type(exc).__name__}")
+
+            # Statistics (packets/sec, success rate, latency)
+            try:
+                r = await client.get(f"{base_url}/stats", headers=headers)
+                if r.status_code == 200:
+                    result["stats"] = r.json()
+
+                else:
+                    errors.append(f"stats: HTTP {r.status_code}")
+            except Exception as exc:  # noqa: BLE001 - one dead sub-call
+                # must not blank the whole panel, but it must not vanish either
+                errors.append(f"stats: {type(exc).__name__}")
+
+            # Cognitive resource budgets (service allocations)
+            try:
+                r = await client.get(f"{base_url}/cognitive/budgets", headers=headers)
+                if r.status_code == 200:
+                    result["cognitive_budgets"] = r.json()
+
+                else:
+                    errors.append(f"cognitive_budgets: HTTP {r.status_code}")
+            except Exception as exc:  # noqa: BLE001 - one dead sub-call
+                # must not blank the whole panel, but it must not vanish either
+                errors.append(f"cognitive_budgets: {type(exc).__name__}")
+
+        if all(v is None for v in result.values()):
+            return JSONResponse(
+                status_code=502,
+                content={"error": "flux service unreachable", **result},
+            )
+        return JSONResponse({**result, "errors": errors, "degraded": bool(errors)})
 
     # ─── Built-in streaming chat page (so a human has somewhere to talk) ───
 
