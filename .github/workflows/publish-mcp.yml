@@ -24,7 +24,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to publish (defaults to server.json's own value)"
+        description: "Publish this version instead of server.json's own value"
         required: false
         type: string
 
@@ -38,6 +38,19 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Apply the version override, if one was given
+        # The `version` input was DECLARED and never read — a control that does
+        # nothing, which is worse than no control: a re-run with an explicit
+        # version silently published whatever server.json happened to say.
+        # Rewrites both places the version lives (server + packages[0]); the
+        # registry rejects a mismatch between them.
+        if: inputs.version != ''
+        run: |
+          V='${{ inputs.version }}'
+          jq --arg v "$V" '.version = $v | .packages[0].version = $v'             server.json > server.tmp && mv server.tmp server.json
+          echo "server.json pinned to $V"
+          jq -r '"name=\(.name) version=\(.version) pkg=\(.packages[0].version)"' server.json
 
       - name: Wait for the version to be live on PyPI
         # The registry fetches the PyPI description to verify the mcp-name
