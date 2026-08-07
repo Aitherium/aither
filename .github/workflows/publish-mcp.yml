@@ -3,7 +3,7 @@
 # =============================================================================
 # Runs AFTER the PyPI publish, on the same v* tag. Order matters: the registry
 # verifies ownership by fetching the package's description from PyPI and looking
-# for `mcp-name: io.github.aitherium/aither-adk`. Publishing here before the
+# for `mcp-name: io.github.Aitherium/aither-adk`. Publishing here before the
 # version exists on PyPI fails validation.
 #
 # Auth is OIDC — no token, no secret. The registry derives the namespace from
