@@ -1,0 +1,113 @@
+# =============================================================================
+# Publish aither-adk to the official MCP Registry
+# =============================================================================
+# Runs AFTER the PyPI publish, on the same v* tag. Order matters: the registry
+# verifies ownership by fetching the package's description from PyPI and looking
+# for `mcp-name: io.github.aitherium/aither-adk`. Publishing here before the
+# version exists on PyPI fails validation.
+#
+# Auth is OIDC — no token, no secret. The registry derives the namespace from
+# this repository's owner, which is why `name` in server.json must stay
+# `io.github.aitherium/...`: change the owner or the namespace and the publish
+# is rejected as unverified.
+#
+# server.json is SYNCED from the private monorepo (aither-adk/server.json) by
+# sync-adk.yml. Edit it there, not here — `.github/` is excluded from that sync,
+# which is why THIS file lives in the public repo and that one does not.
+# =============================================================================
+
+name: Publish to MCP Registry
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish (defaults to server.json's own value)"
+        required: false
+        type: string
+
+jobs:
+  publish:
+    name: Publish server to MCP Registry
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # OIDC — this is the whole auth story
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Wait for the version to be live on PyPI
+        # The registry fetches the PyPI description to verify the mcp-name
+        # marker. PyPI's index is eventually-consistent after an upload, so a
+        # publish that fires seconds after pypi-publish.yml can 404 on a version
+        # that really is there. Poll rather than sleep-and-hope; fail loudly if
+        # it never appears, because a silent skip here looks identical to a
+        # successful publish.
+        run: |
+          VERSION="$(jq -r '.version' server.json)"
+          echo "server.json version: $VERSION"
+          for i in $(seq 1 40); do
+            CODE=$(curl -s -o /dev/null -w '%{http_code}' \
+              "https://pypi.org/pypi/aither-adk/${VERSION}/json")
+            if [ "$CODE" = "200" ]; then
+              echo "aither-adk ${VERSION} is live on PyPI"
+              exit 0
+            fi
+            echo "  attempt $i: PyPI returned $CODE, waiting…"
+            sleep 15
+          done
+          echo "::error::aither-adk ${VERSION} never appeared on PyPI — refusing to publish a server.json pointing at a version nobody can install."
+          exit 1
+
+      - name: Assert the ownership marker is in the PUBLISHED description
+        # This is the check that actually predicts whether the registry will
+        # accept us. It reads what PyPI SERVES, not what is in the repo — the
+        # two diverge whenever a release ships without the README change, and
+        # the failure mode is a rejected publish with an opaque message.
+        run: |
+          NAME="$(jq -r '.name' server.json)"
+          VERSION="$(jq -r '.version' server.json)"
+          DESC=$(curl -sf "https://pypi.org/pypi/aither-adk/${VERSION}/json" \
+                 | jq -r '.info.description // ""')
+          if printf '%s' "$DESC" | grep -qF "mcp-name: ${NAME}"; then
+            echo "ownership marker present for ${NAME}"
+          else
+            echo "::error::PyPI's description for ${VERSION} has no 'mcp-name: ${NAME}' marker. The registry verifies ownership from this string; add it to aither-adk/README.md in the monorepo and re-release."
+            exit 1
+          fi
+
+      - name: Install mcp-publisher
+        run: |
+          curl -fsSL "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_linux_amd64.tar.gz" \
+            | tar xz mcp-publisher
+          ./mcp-publisher --version || true
+
+      - name: Authenticate (OIDC)
+        run: ./mcp-publisher login github-oidc
+
+      - name: Publish
+        run: ./mcp-publisher publish
+
+      - name: Verify the listing is really there
+        # `publish` exiting 0 is not proof the entry is queryable. Assert the
+        # registry can find it, so a silently-dropped publish cannot read as a
+        # green run — the same class this repo's other release gates exist for.
+        run: |
+          NAME="$(jq -r '.name' server.json)"
+          for i in $(seq 1 10); do
+            # NOTE the `.server` hop: each entry is {"server": {...}, "_meta": {...}},
+            # so `.servers[] | select(.name==$n)` matches NOTHING and this step
+            # would fail forever against a perfectly good listing.
+            if curl -sf "https://registry.modelcontextprotocol.io/v0/servers?search=aither" \
+               | jq -e --arg n "$NAME" '.servers[]?.server | select(.name == $n)' >/dev/null; then
+              echo "listed: $NAME"
+              exit 0
+            fi
+            echo "  attempt $i: not indexed yet…"
+            sleep 12
+          done
+          echo "::error::publish reported success but ${NAME} is not queryable in the registry."
+          exit 1
