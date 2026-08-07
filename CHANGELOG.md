@@ -2,6 +2,26 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [3.0.5] - 2026-08-07
+
+### Fixed — MCP Registry namespace is CASE-SENSITIVE
+
+3.0.4 published to PyPI correctly and the registry publish 403'd:
+
+    You have permission to publish: io.github.Aitherium/*
+    Attempting to publish:          io.github.aitherium/aither-adk
+
+The namespace is derived from the GitHub owner VERBATIM, and our org is
+`Aitherium`, not `aitherium`. Renamed to `io.github.Aitherium/aither-adk` in
+both `server.json` and the README ownership marker — they must match exactly,
+case included, because the registry proves ownership by string-matching
+`mcp-name: <name>` against the PUBLISHED PyPI description. That is also why this
+is a release and not a commit.
+
+Worth noting the workflow behaved correctly: it waited for PyPI, asserted the
+marker was in what PyPI actually serves, and only then failed at the publish
+itself with the registry's own diagnostic.
+
 ## [3.0.4] - 2026-08-07
 
 ### Added — listed in the official MCP Registry

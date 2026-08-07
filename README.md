@@ -1,6 +1,6 @@
 # Aither ADK — Build AI Agent Fleets
 
-<!-- mcp-name: io.github.aitherium/aither-adk -->
+<!-- mcp-name: io.github.Aitherium/aither-adk -->
 
 [![PyPI](https://img.shields.io/pypi/v/aither-adk)](https://pypi.org/project/aither-adk/)
 [![License: BSL 1.1](https://img.shields.io/badge/license-BSL--1.1-blue)](LICENSE)

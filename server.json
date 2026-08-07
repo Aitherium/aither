@@ -1,9 +1,9 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.aitherium/aither-adk",
+  "name": "io.github.Aitherium/aither-adk",
   "title": "AitherOS ADK",
   "description": "Agent runtime with typed memory, knowledge and code graphs, plus file and web tools",
-  "version": "3.0.4",
+  "version": "3.0.5",
   "websiteUrl": "https://aitherium.com",
   "repository": {
     "url": "https://github.com/Aitherium/aither-adk",
@@ -13,7 +13,7 @@
     {
       "registryType": "pypi",
       "identifier": "aither-adk",
-      "version": "3.0.4",
+      "version": "3.0.5",
       "transport": {
         "type": "stdio"
       },
