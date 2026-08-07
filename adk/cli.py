@@ -13771,7 +13771,10 @@ def _cmd_acp_login(args) -> int:
             print(f"Could not start sign-in: {e}")
             return 1
         except Exception as e:  # noqa: BLE001 — network/DNS/proxy land here
-            print(f"Could not reach AitherIdentity: {e}")
+            # `{e}` alone printed "Could not reach AitherIdentity:" with NOTHING
+            # after it, because several httpx errors carry an empty str(). A
+            # failure message that names no cause is barely better than silence.
+            print(f"Could not reach AitherIdentity: {type(e).__name__}: {e}".rstrip(": "))
             return 1
 
         print()

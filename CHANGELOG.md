@@ -2,6 +2,38 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [3.0.3] - 2026-08-07
+
+### Fixed — the device flow both ACP auth methods depend on was dead
+
+3.0.2 advertised `aither-device` and `aither-terminal` and neither could
+complete. FOUR defects stacked, so fixing any one only revealed the next:
+
+- **`DEFAULT_PORTAL_URL` was `https://api.aitheros.ai`, which does not resolve**
+  (`getaddrinfo failed`). Every developer box here has `AITHERIDENTITY_URL` set,
+  so the dead default only ever reached strangers. Now
+  `https://idp.aitherium.com/identity` — the value AitherIdentity's OWN
+  discovery document advertises, not a hand-picked host.
+- **`POST /oauth/device/code` 404s.** The real path is `/auth/device/code`,
+  which this same module's `autonomous_agent_login` had always used; the two
+  had silently diverged.
+- **A form-encoded body 422s** — the endpoint is a FastAPI model, so it takes
+  JSON. Same for the token poll.
+- **A pending poll answers HTTP 200 with `{"status": "authorization_pending"}`,
+  not RFC 8628's 400 + `error`.** Reading only `error` left it empty on every
+  tick, so the loop raised `device login failed: 200` on the FIRST poll. Both
+  shapes are now accepted, and a server-suggested `interval` is honoured.
+
+A failure now names the endpoint and the server's reason —
+`device login failed: 400` named neither, which is what made this slow to find.
+`adk acp login` likewise prints the exception TYPE, because several httpx errors
+carry an empty `str()` and it was printing "Could not reach AitherIdentity:"
+with nothing after it.
+
+`tests/test_device_login_contract.py` pins all of it, mutation-checked against
+each of the four originals — including a DNS assertion on the shipped default,
+which is the only one a mocked endpoint can never catch.
+
 ## [3.0.2] - 2026-08-07
 
 ### Added — ACP Registry admission (agentclientprotocol/registry)
