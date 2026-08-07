@@ -101,26 +101,52 @@ jobs:
       - name: Authenticate (OIDC)
         run: ./mcp-publisher login github-oidc
 
+      - name: Is this version already listed?
+        # The registry refuses a duplicate version with HTTP 400, so a re-run or
+        # a `workflow_dispatch` verification of an already-published version
+        # fails RED for a repo that is in exactly the desired state. That trains
+        # people to ignore this workflow's red, which is worse than the problem
+        # it reports. Publishing is the ACTION; being listed at the right version
+        # is the OUTCOME, and the outcome is what we gate on.
+        id: listed
+        run: |
+          NAME="$(jq -r '.name' server.json)"
+          VERSION="$(jq -r '.version' server.json)"
+          FOUND=$(curl -sf "https://registry.modelcontextprotocol.io/v0/servers?search=aither"             | jq -r --arg n "$NAME" --arg v "$VERSION"               '[.servers[]?.server | select(.name == $n and .version == $v)] | length')
+          echo "already=${FOUND:-0}" >> "$GITHUB_OUTPUT"
+          if [ "${FOUND:-0}" != "0" ]; then
+            echo "$NAME $VERSION is already listed - skipping publish."
+          else
+            echo "$NAME $VERSION not listed yet - will publish."
+          fi
+
       - name: Publish
+        if: steps.listed.outputs.already == '0'
         run: ./mcp-publisher publish
 
       - name: Verify the listing is really there
         # `publish` exiting 0 is not proof the entry is queryable. Assert the
         # registry can find it, so a silently-dropped publish cannot read as a
         # green run — the same class this repo's other release gates exist for.
+        #
+        # Matches on name AND VERSION. Name alone passes on a STALE listing: a
+        # publish that silently failed to move 3.0.5 -> 3.0.6 would still find
+        # "io.github.Aitherium/aither-adk" and report green, which is the exact
+        # false pass this step exists to prevent.
         run: |
           NAME="$(jq -r '.name' server.json)"
+          VERSION="$(jq -r '.version' server.json)"
           for i in $(seq 1 10); do
             # NOTE the `.server` hop: each entry is {"server": {...}, "_meta": {...}},
             # so `.servers[] | select(.name==$n)` matches NOTHING and this step
             # would fail forever against a perfectly good listing.
             if curl -sf "https://registry.modelcontextprotocol.io/v0/servers?search=aither" \
-               | jq -e --arg n "$NAME" '.servers[]?.server | select(.name == $n)' >/dev/null; then
-              echo "listed: $NAME"
+               | jq -e --arg n "$NAME" --arg v "$VERSION"                  '.servers[]?.server | select(.name == $n and .version == $v)' >/dev/null; then
+              echo "listed: $NAME $VERSION"
               exit 0
             fi
-            echo "  attempt $i: not indexed yet…"
+            echo "  attempt $i: $NAME $VERSION not indexed yet…"
             sleep 12
           done
-          echo "::error::publish reported success but ${NAME} is not queryable in the registry."
+          echo "::error::${NAME} is not queryable at version ${VERSION}."
           exit 1
