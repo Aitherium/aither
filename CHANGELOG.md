@@ -2,6 +2,29 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [3.0.4] - 2026-08-07
+
+### Added — listed in the official MCP Registry
+
+`adk mcp serve` has always been a working stdio MCP server (7 tools: file
+read/write/edit/list/search, web_search, web_fetch) and was discoverable by
+nobody. It is now published to `registry.modelcontextprotocol.io` as
+`io.github.aitherium/aither-adk`, which is the index Claude Desktop, Claude
+Code, VS Code, Cursor, Windsurf and Goose read.
+
+- `server.json` at the package root, schema-validated against
+  `2025-12-11/server.schema.json`.
+- An `mcp-name:` marker in this README. That is not decoration: the registry
+  proves ownership of a PyPI package by fetching its PUBLISHED description and
+  looking for that exact string, which is why this needed a release rather than
+  a commit.
+- Publishing is a GitHub Actions job on the public mirror using OIDC — no token,
+  no secret, and it re-publishes on every version tag instead of drifting until
+  someone remembers. It refuses to publish before the version is live on PyPI,
+  asserts the marker in what PyPI actually serves, and asserts the entry is
+  queryable afterwards, because `publish` exiting 0 does not prove a listing
+  exists.
+
 ## [3.0.3] - 2026-08-07
 
 ### Fixed — the device flow both ACP auth methods depend on was dead
