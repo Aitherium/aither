@@ -4889,6 +4889,10 @@ _BACKEND_PRESETS: dict[str, dict] = {
     "claude":   {"provider": "anthropic", "model": "claude-sonnet-4-6"},
     "anthropic": {"provider": "anthropic", "model": "claude-sonnet-4-6"},
     "deepseek": {"provider": "deepseek", "model": "deepseek-chat"},
+    # External ACP agent (claude-agent-acp, codex-acp, gemini-cli, ...) as the
+    # model. The provider binary is whatever `adk backend add acp --command`
+    # stored; this preset only says WHICH provider family to switch to.
+    "acp": {"provider": "acp", "model": "acp"},
 }
 
 
@@ -5590,6 +5594,30 @@ def cmd_backend(args):
         save_saved_config(data)
         print(f"Reasoning backend set to: {provider}")
         return 0
+
+    elif sub == "add":
+        kind = getattr(args, "kind", "")
+        command = getattr(args, "command", "")
+        if kind == "acp":
+            if not command or not command.strip():
+                print("Usage: adk backend add acp --command <cmd> [--arg ...] [--model NAME]")
+                return 1
+            data = {
+                "default_backend": "acp",
+                "acp_command": command.strip(),
+                "acp_args": list(getattr(args, "args", []) or []),
+            }
+            model = getattr(args, "model", None)
+            if model:
+                data["default_model"] = model
+            save_saved_config(data)
+            print(f"ACP backend registered: {command.strip()} "
+                  f"{' '.join(getattr(args, 'args', []) or [])}".rstrip())
+            print("  Switch live now:      adk backend use acp")
+            print("  Make it the default:  adk backend set acp")
+            return 0
+        print(f"Unknown backend kind: {kind} (currently only 'acp' is supported)")
+        return 1
 
     elif sub == "status":
         """Show current backend configuration and connectivity."""
@@ -12384,6 +12412,24 @@ def _register_commands(sub):
     backend_set_p.add_argument("--api-key", help="API key for the provider")
     backend_set_p.add_argument("--base-url", help="Custom base URL")
     backend_set_p.add_argument("--model", help="Default model")
+    backend_add_p = backend_sub.add_parser(
+        "add", help="Register a custom backend (acp: drive an external ACP agent)"
+    )
+    backend_add_p.add_argument(
+        "kind", choices=["acp"], help="Custom backend kind (currently: acp)"
+    )
+    backend_add_p.add_argument(
+        "--command", required=True,
+        help="Command that starts the external ACP agent "
+             "(e.g. 'claude' for claude-agent-acp, 'codex' for codex-acp)",
+    )
+    backend_add_p.add_argument(
+        "--arg", dest="args", action="append", default=[],
+        help="Argument passed to the agent command (repeatable)",
+    )
+    backend_add_p.add_argument(
+        "--model", help="Model name reported for this backend (default: acp)"
+    )
     backend_reason_p = backend_sub.add_parser("set-reasoning", help="Set reasoning-only backend (effort 7+)")
     backend_reason_p.add_argument("provider", help="Provider for reasoning tasks")
     backend_reason_p.add_argument("--api-key", help="API key")
@@ -12396,9 +12442,9 @@ def _register_commands(sub):
         "use", help="Switch the RUNNING agent live to a preset (no restart)")
     backend_use_p.add_argument(
         "preset",
-        choices=["local", "bonsai", "genesis", "mcp", "gateway", "managed", "claude", "anthropic", "deepseek"],
+        choices=["local", "bonsai", "genesis", "mcp", "gateway", "managed", "claude", "anthropic", "deepseek", "acp"],
         help="local/bonsai=sovereign Bonsai-27B; genesis/mcp/gateway/managed=mesh/cloud; "
-             "claude/deepseek=BYO-key (set key first)")
+             "claude/deepseek=BYO-key (set key first); acp=external ACP agent (adk backend add acp first)")
     backend_sub.add_parser("status", help="Show current backend configuration and connectivity")
 
     # adk keys — manage cloud provider API keys
@@ -13153,6 +13199,54 @@ def _register_commands(sub):
     # adk mcp status — check gateway connectivity
     mcp_sub.add_parser("status", help="Check MCP gateway connectivity and tier")
 
+    # adk acp — Agent Client Protocol. Two directions:
+    #   serve    — expose an AitherOS agent to ACP editors (JetBrains/Zed/...).
+    #   connect/ — drive an EXTERNAL ACP agent (claude-agent-acp, codex-acp, ...)
+    #   prompt/    via the v2 client.
+    #   list-sessions/config
+    acp_p = sub.add_parser(
+        "acp",
+        help="Agent Client Protocol: serve an agent to ACP editors, or drive an external ACP agent",
+    )
+    acp_sub = acp_p.add_subparsers(dest="acp_command")
+    acp_serve_p = acp_sub.add_parser(
+        "serve", help="Serve an AitherOS agent over ACP stdio (the editor-facing entrypoint)"
+    )
+    acp_serve_p.add_argument(
+        "--name", default="aither-agent", help="Agent name advertised in initialize"
+    )
+    acp_serve_p.add_argument(
+        "--version", default="2.0.0", help="Agent version advertised in initialize"
+    )
+    acp_serve_p.add_argument(
+        "--model", default=None, help="LLM model/backend for the served agent (default: auto-detect)"
+    )
+    acp_connect_p = acp_sub.add_parser(
+        "connect", help="Connect to an external ACP agent and report its identity"
+    )
+    acp_connect_p.add_argument("--command", dest="agent_command", required=True, help="Command that starts the agent (e.g. claude)")
+    acp_connect_p.add_argument("--arg", dest="arg", action="append", default=[], help="Agent argument (repeatable)")
+    acp_prompt_p = acp_sub.add_parser(
+        "prompt", help="Prompt an external ACP agent once and print its reply"
+    )
+    acp_prompt_p.add_argument("--command", dest="agent_command", required=True, help="Command that starts the agent (e.g. claude)")
+    acp_prompt_p.add_argument("--arg", dest="arg", action="append", default=[], help="Agent argument (repeatable)")
+    acp_prompt_p.add_argument("--timeout", type=float, default=2.0, help="Drain timeout for trailing updates")
+    acp_prompt_p.add_argument("message", help="The prompt text")
+    acp_ls_p = acp_sub.add_parser("list-sessions", help="List sessions of an external ACP agent")
+    acp_ls_p.add_argument("--command", dest="agent_command", required=True, help="Command that starts the agent (e.g. claude)")
+    acp_ls_p.add_argument("--arg", dest="arg", action="append", default=[], help="Agent argument (repeatable)")
+    acp_config_p = acp_sub.add_parser(
+        "config", help="Emit editor config that runs `adk acp serve` as an ACP agent"
+    )
+    acp_config_p.add_argument("ide", choices=["zed", "jetbrains", "vscode", "neovim"],
+                              help="Target editor")
+    acp_config_p.add_argument(
+        "--command", dest="agent_command", default=None,
+        help="Override the serve command embedded in the config "
+             "(default: the running python + adk.cli acp serve)",
+    )
+
     # adk shell — download/launch AitherShell interactive terminal
     shell_p = sub.add_parser("shell", help="Launch AitherShell interactive terminal")
     shell_p.add_argument("--install", action="store_true", help="Download/update the AitherShell binary")
@@ -13604,6 +13698,159 @@ def _stream_forge_session(genesis_url: str, session_id: str) -> int:
 # ── MCP subcommand handlers ───────────────────────────────────────────────
 
 
+def _cmd_acp_serve(args) -> int:
+    """Serve an AitherOS agent over ACP stdio — the editor-facing entrypoint.
+
+    An ACP client (JetBrains, Zed, VS Code, neovim, the ACP registry) runs
+    ``adk acp serve`` as a subprocess and drives it over stdio JSON-RPC. The
+    served agent is a real :class:`AitherAgent` on the configured LLM backend;
+    its approval gate maps onto ACP ``session/request_permission``.
+    """
+    import asyncio
+
+    from adk.acp_server import serve_stdio
+    from adk.agent import AitherAgent
+    from adk.llm import LLMRouter
+
+    async def _run() -> None:
+        llm = LLMRouter(model=args.model) if args.model else LLMRouter()
+        # Fail LOUD at startup if no LLM backend is configured — never hang at
+        # the first prompt with no way to answer.
+        await llm.get_provider()
+        agent = AitherAgent(
+            name=args.name,
+            llm=llm,
+            system_prompt=(
+                "You are an AitherOS agent exposed over the Agent Client Protocol. "
+                "Complete the user's request directly, using your tools when helpful."
+            ),
+        )
+        await serve_stdio(agent, name=args.name, version=args.version)
+
+    try:
+        asyncio.run(_run())
+    except KeyboardInterrupt:
+        pass
+    return 0
+
+
+def _cmd_acp_connect(args) -> int:
+    """Connect to an external ACP agent and report its identity and capabilities."""
+    import asyncio
+    import os
+
+    from adk.acp import ACPClient
+
+    async def _run() -> int:
+        client = ACPClient(command=args.agent_command, args=args.arg)
+        await client.connect()
+        try:
+            caps = await client.initialize()
+            print(f"Connected to ACP agent: {caps.agent_name} v{caps.agent_version}")
+            print(f"  protocol: {caps.protocol_version}")
+            sid = await client.create_session(cwd=os.getcwd())
+            print(f"  session:  {sid}")
+        finally:
+            await client.disconnect()
+        return 0
+
+    return asyncio.run(_run())
+
+
+def _cmd_acp_prompt(args) -> int:
+    """Prompt an external ACP agent once and print its reply."""
+    import asyncio
+    import os
+
+    from adk.acp import ACPClient
+
+    async def _run() -> int:
+        client = ACPClient(command=args.agent_command, args=args.arg)
+        await client.connect()
+        try:
+            await client.initialize()
+            sid = await client.create_session(cwd=os.getcwd())
+            result = await client.prompt(sid, args.message, drain_timeout=args.timeout)
+            print(result.text)
+        finally:
+            await client.disconnect()
+        return 0
+
+    return asyncio.run(_run())
+
+
+def _cmd_acp_list_sessions(args) -> int:
+    """List the sessions an external ACP agent currently holds."""
+    import asyncio
+
+    from adk.acp import ACPClient
+
+    async def _run() -> int:
+        client = ACPClient(command=args.agent_command, args=args.arg)
+        await client.connect()
+        try:
+            await client.initialize()
+            sessions = await client.list_sessions()
+            for s in sessions:
+                print(s)
+        finally:
+            await client.disconnect()
+        return 0
+
+    return asyncio.run(_run())
+
+
+def _cmd_acp_config(args) -> int:
+    """Emit editor config that runs ``adk acp serve`` as an ACP agent.
+
+    Every ACP editor needs (a) a way to launch the agent on stdio and (b) the
+    agent's advertised identity. The zed/registry format is the canonical
+    ``agent.json``; the others embed the same launch command in their own
+    shape. ``--command`` overrides the embedded serve command.
+    """
+    import json
+
+    if args.agent_command:
+        serve_argv = args.agent_command.split()
+    else:
+        serve_argv = [sys.executable, "-m", "adk.cli", "acp", "serve"]
+    agent_json = {
+        "name": "aither-adk",
+        "description": "AitherOS agent exposed over the Agent Client Protocol",
+        "distribution": {"type": "pip", "package": "aither-adk"},
+        "runtime": {"type": "stdio", "command": serve_argv},
+        "capabilities": {
+            "session": {"list": {}, "resume": {}, "close": {}, "delete": {}},
+            "prompt": {"text": {}},
+        },
+    }
+
+    if args.ide == "zed":
+        # Zed's ACP integration reads .zed/agents/<name>/agent.json (the ACP
+        # registry agent schema).
+        print(json.dumps(agent_json, indent=2))
+        print(
+            "\n# Install: save as .zed/agents/aither-adk/agent.json and restart Zed."
+        )
+    elif args.ide == "jetbrains":
+        # JetBrains' ACP plugin reads the same agent.json via its registry path.
+        print(json.dumps(agent_json, indent=2))
+        print("\n# Install: register this agent.json with the JetBrains ACP plugin.")
+    elif args.ide == "vscode":
+        print(json.dumps(agent_json, indent=2))
+        print(
+            "\n# Install: point the VS Code ACP extension at this agent.json "
+            "(or its folder) as a custom agent."
+        )
+    else:  # neovim
+        print(json.dumps(agent_json, indent=2))
+        print(
+            "\n# Install: configure your neovim ACP client to spawn the command "
+            "in this agent.json's runtime.command."
+        )
+    return 0
+
+
 def _cmd_mcp_setup(args) -> int:
     """Generate IDE MCP config with OAuth-first auth."""
     from adk.mcp_setup import resolve_auth, resolve_gateway_url, generate_config, write_config, probe_gateway
@@ -13912,6 +14159,27 @@ def main():
             print("  setup    Generate IDE config for MCP gateway (OAuth-first)")
             print("  node     Start lightweight local MCP server")
             print("  status   Check MCP gateway connectivity and tier")
+            sys.exit(1)
+    elif args.command == "acp":
+        acp_cmd = getattr(args, "acp_command", None)
+        if acp_cmd == "serve":
+            sys.exit(_cmd_acp_serve(args))
+        elif acp_cmd == "connect":
+            sys.exit(_cmd_acp_connect(args))
+        elif acp_cmd == "prompt":
+            sys.exit(_cmd_acp_prompt(args))
+        elif acp_cmd == "list-sessions":
+            sys.exit(_cmd_acp_list_sessions(args))
+        elif acp_cmd == "config":
+            sys.exit(_cmd_acp_config(args))
+        else:
+            print("Usage: adk acp [serve|connect|prompt|list-sessions|config]")
+            print()
+            print("  serve          Serve an AitherOS agent to ACP editors (JetBrains/Zed/...)")
+            print("  connect        Connect to an external ACP agent and report its identity")
+            print("  prompt         Prompt an external ACP agent once and print its reply")
+            print("  list-sessions  List an external ACP agent's sessions")
+            print("  config <ide>   Emit editor config that runs `adk acp serve`")
             sys.exit(1)
     elif args.command == "shell":
         from adk.shell_launcher import cmd_shell

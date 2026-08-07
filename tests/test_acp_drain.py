@@ -30,6 +30,11 @@ def _complete(tid: str, result: str = "ok") -> dict:
     return {"session_update": "tool_call_complete", "tool_call_id": tid, "result": result}
 
 
+def _idle() -> dict:
+    """A terminal ``state_update: idle`` — a v2 turn is only complete at idle."""
+    return {"session_update": "state_update", "state": "idle", "stop_reason": "end_turn"}
+
+
 # --- id-keyed aggregation ----------------------------------------------------
 
 def test_interleaved_tool_calls_both_survive():
@@ -87,6 +92,7 @@ def test_drain_waits_for_late_completion():
         async def complete_later():
             await asyncio.sleep(0.25)  # later than the old 0.1s window
             updates.append(_complete("late", "arrived"))
+            updates.append(_idle())
 
         task = asyncio.create_task(complete_later())
         await c._drain_updates(updates, timeout=2.0)
@@ -96,6 +102,31 @@ def test_drain_waits_for_late_completion():
     res = asyncio.run(scenario())
     assert [x.tool_call_id for x in res.tool_calls] == ["late"]
     assert res.tool_calls[0].result == "arrived"
+
+
+def test_drain_waits_for_idle_to_collect_text():
+    """Text arrives as chunks BEFORE idle, all AFTER the immediate prompt
+    response — the drain must NOT return early on 'no outstanding tool calls',
+    or a text-only turn comes back empty (measured live: PONG was dropped)."""
+    c = _client()
+    updates: list[dict] = []
+
+    async def scenario():
+        async def emit_text_later():
+            await asyncio.sleep(0.25)  # later than any settle window
+            updates.append(
+                {"session_update": "agent_message_chunk",
+                 "content": {"type": "text", "text": "PONG"}}
+            )
+            updates.append(_idle())
+
+        task = asyncio.create_task(emit_text_later())
+        await c._drain_updates(updates, timeout=5.0)
+        await task
+        return c._parse_prompt_result({}, updates)
+
+    res = asyncio.run(scenario())
+    assert res.text == "PONG"
 
 
 def test_drain_is_bounded_and_warns(caplog):
@@ -116,13 +147,16 @@ def test_drain_is_bounded_and_warns(caplog):
                for r in caplog.records), "late/missing completion must be logged, not silent"
 
 
-def test_drain_returns_fast_when_nothing_outstanding():
+def test_drain_returns_fast_when_turn_complete():
+    """A completed v2 turn (all tool calls done AND idle seen) returns fast."""
     c = _client()
 
     async def scenario():
         loop = asyncio.get_running_loop()
         t0 = loop.time()
-        await c._drain_updates([_start("a"), _complete("a")], timeout=5.0)
+        await c._drain_updates(
+            [_start("a"), _complete("a"), _idle()], timeout=5.0
+        )
         return loop.time() - t0
 
     assert asyncio.run(scenario()) < 1.0

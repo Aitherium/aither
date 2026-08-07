@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "aither-adk"
-version = "2.48.0"
+version = "3.0.0"
 description = "Build AI agents with real memory + faculties on any backend, local or cloud. Open-core: free local runtime with typed memory, knowledge graph, code graph and ReAct; paid tiers (portal.aitherium.com) unlock fleets, channels, reasoning and marketplace packs."
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -116,6 +116,11 @@ dev = [
     # Real coverage for pack-signature verification (pack_verifier degrades
     # gracefully without it, but then CI never exercises the verify path).
     "cryptography>=41.0.0",
+    # ACP v2 conformance ORACLE — dev-only. The adk ACP client/server are
+    # deliberately hand-rolled with zero runtime deps; this reference SDK is
+    # what tests prove our wire against (tests importorskip it, so the wheel
+    # and runtime stay untouched). NOT a runtime dependency.
+    "agent-client-protocol>=0.12.0",
 ]
 
 [project.urls]

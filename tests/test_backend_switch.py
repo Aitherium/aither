@@ -227,9 +227,66 @@ class TestBackendList:
 
         args = argparse.Namespace(backend_command="list")
 
-        # Mock async list function
+        # Mock async list function. Close the coroutine `asyncio.run` is handed
+        # (it is created before the call, so the mock discards it live) —
+        # otherwise GC later warns "coroutine '_list' was never awaited" in
+        # whichever test happens to run next.
         with patch("asyncio.run") as mock_run:
-            mock_run.return_value = None
+            mock_run.side_effect = lambda coro: coro.close()
             result = cmd_backend(args)
             assert result == 0
             assert mock_run.called
+
+
+class TestBackendAddAcp:
+    """Test `adk backend add acp` — register an external ACP agent as a backend."""
+
+    def test_add_acp_saves_command_and_args(self, tmp_path, monkeypatch):
+        """Registers the command, its args and model into the saved config."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        args = argparse.Namespace(
+            backend_command="add",
+            kind="acp",
+            command="claude",
+            args=["-p", "claude-agent-acp"],
+            model="acp",
+        )
+
+        with patch("adk.cli.save_saved_config") as mock_save:
+            with patch("builtins.print"):
+                result = cmd_backend(args)
+
+        assert result == 0
+        saved = mock_save.call_args[0][0]
+        assert saved["default_backend"] == "acp"
+        assert saved["acp_command"] == "claude"
+        assert saved["acp_args"] == ["-p", "claude-agent-acp"]
+        assert saved["default_model"] == "acp"
+
+    def test_add_acp_without_command_fails(self, tmp_path, monkeypatch):
+        """A missing command must not be silently persisted."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        args = argparse.Namespace(
+            backend_command="add", kind="acp", command="", args=[], model=None
+        )
+
+        with patch("adk.cli.save_saved_config") as mock_save:
+            with patch("builtins.print"):
+                result = cmd_backend(args)
+
+        assert result == 1
+        mock_save.assert_not_called()
+
+    def test_add_unknown_kind_fails(self, tmp_path, monkeypatch):
+        """An unsupported backend kind is rejected loudly."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        args = argparse.Namespace(
+            backend_command="add", kind="voodoo", command="x", args=[], model=None
+        )
+
+        with patch("adk.cli.save_saved_config") as mock_save:
+            with patch("builtins.print"):
+                result = cmd_backend(args)
+
+        assert result == 1
+        mock_save.assert_not_called()

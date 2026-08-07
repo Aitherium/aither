@@ -179,6 +179,9 @@ class LLMRouter:
         self._perception_provider: LLMProvider | None = None
         self._perception_provider_name: str = ""
         self._perception_model: str | None = None
+        # Failover chain — tried in order when primary returns 429/5xx/timeout
+        self._failover_providers: list[tuple[str, LLMProvider]] = []
+        self._failover_cooldown: float = 0.0
 
         if provider:
             self._provider = self._create_provider(provider, base_url, api_key)
@@ -263,12 +266,37 @@ class LLMRouter:
                 binary=base_url or "",  # Overload base_url as binary path
                 model=self._model or "",
             )
+        elif name == "acp":
+            # External ACP agent (claude-agent-acp, codex-acp, gemini-cli, ...)
+            # as the model. The command comes from `adk backend add acp --command`
+            # (persisted config) or AITHER_ACP_COMMAND / AITHER_ACP_ARGS for
+            # headless use. A missing command raises LOUD at construction — a
+            # misconfigured backend must never degrade into an inert provider.
+            from .acp_provider import ACPProvider
+
+            cmd = os.environ.get("AITHER_ACP_COMMAND", "").strip()
+            acp_args: list[str] = []
+            _env_args = os.environ.get("AITHER_ACP_ARGS", "").strip()
+            if _env_args:
+                import shlex
+
+                acp_args = shlex.split(_env_args)
+            if not cmd:
+                try:
+                    from adk.config import load_saved_config
+
+                    saved = load_saved_config()
+                    cmd = str(saved.get("acp_command", "") or "").strip()
+                    acp_args = list(saved.get("acp_args") or []) or acp_args
+                except Exception:  # noqa: BLE001 — a read failure must not hide the error below
+                    cmd = ""
+            return ACPProvider(command=cmd, args=acp_args, model=self._model or "acp")
         else:
             raise ValueError(
                 f"Unknown provider: {name}. "
                 "Use 'gateway', 'ollama', 'openai', 'anthropic', 'gemini', 'deepseek', "
                 "'moonshot', 'groq', 'together', 'vllm', 'lmstudio', 'llamacpp', "
-                "'genesis', or 'picolm'."
+                "'genesis', 'picolm', or 'acp'."
             )
 
     async def _try_ollama(self) -> LLMProvider | None:
@@ -276,13 +304,28 @@ class LLMRouter:
         try:
             from .ollama import OllamaProvider
             host = (self._config.ollama_host if self._config else None) or "http://localhost:11434"
-            p = OllamaProvider(host=host, default_model=self._model or "gemma4:4b")
+            model = self._model or ""
+            p = OllamaProvider(host=host, default_model=model or "gemma4:4b")
             if await p.health_check():
+                if not model:
+                    # Validate against what is actually installed — a hardcoded
+                    # default that does not exist on this host 404s every chat
+                    # (measured: a box with only llama3.2:3b was defaulted to a
+                    # phantom gemma4:4b). Prefer a chat model over embedding tags.
+                    try:
+                        installed = [
+                            m for m in await p.list_models()
+                            if "embed" not in m.lower()
+                        ]
+                        if installed:
+                            p.default_model = installed[0]
+                    except Exception as e:  # noqa: BLE001 — list_models is best-effort
+                        logger.debug("Ollama model list unavailable, keeping default: %s", e)
                 self._provider_name = "ollama"
-                logger.info("Auto-detected Ollama at %s", host)
+                logger.info("Auto-detected Ollama at %s (model: %s)", host, p.default_model)
                 return p
-        except Exception:
-            pass
+        except Exception as e:  # noqa: BLE001 — detection is best-effort
+            logger.debug("Ollama auto-detect failed: %s", e)
         return None
 
     async def _try_vllm(self) -> LLMProvider | None:
@@ -377,19 +420,32 @@ class LLMRouter:
     async def _try_desktop(self) -> LLMProvider | None:
         """Try connecting to a desktop AitherOS MicroScheduler for remote inference.
 
-        Reads AITHER_CORE_LLM_URL from env or ~/.aither/config.json.
+        Reads AITHER_CORE_LLM_URL from env or ~/.aither/config.json. The saved
+        config stores the spine under ``inference_url`` (the key ``adk setup``
+        writes) — ``core_llm_url`` is honored as a legacy alias. The MicroScheduler
+        serves TLS with the AitherNet internal CA, so the provider must be given
+        ``verify=tls_verify()``; a default system-trust client fails the handshake
+        and the whole desktop path silently returns None, letting a blind vLLM
+        port scan shadow the configured spine.
         Returns an OpenAI-compatible provider pointing at the desktop's MicroScheduler.
         """
         import os
         from .openai_compat import OpenAIProvider
+        from adk._tls import tls_verify
         from adk.config import load_saved_config
 
         # Check env var first, then saved config
         desktop_url = os.environ.get("AITHER_CORE_LLM_URL", "")
+        default_model = self._model or ""
         if not desktop_url:
             try:
                 saved = load_saved_config()
-                desktop_url = saved.get("core_llm_url", "")
+                desktop_url = (
+                    saved.get("inference_url", "")
+                    or saved.get("core_llm_url", "")
+                )
+                if not default_model:
+                    default_model = saved.get("default_model", "") or ""
             except (OSError, ValueError):
                 pass
 
@@ -412,8 +468,9 @@ class LLMRouter:
             p = OpenAIProvider(
                 base_url=desktop_url,
                 api_key=token or "not-needed",
-                default_model=self._model or "",
+                default_model=default_model,
                 ctk_by_model=_DEFAULT_CTK_BY_MODEL,
+                verify=tls_verify(),
             )
             if await p.health_check():
                 try:
@@ -695,28 +752,40 @@ class LLMRouter:
             # cloud_first: fall through to try local as fallback
             logger.info("Cloud-first: no cloud providers available, trying local backends")
 
-        # 1. vLLM containers — PRIMARY local backend (best GPU utilization)
-        vllm = await self._try_vllm()
-        if vllm:
-            return vllm
-
-        # 1.5. Desktop MicroScheduler — remote inference from connected desktop
+        # 1. Desktop MicroScheduler — the AitherOS spine. Tried FIRST because it
+        # requires explicit config (AITHER_CORE_LLM_URL env or config inference_url);
+        # a configured spine must never be shadowed by a blind vLLM port scan that
+        # picks up an unrelated local container (e.g. a swap model on a stray port).
         desktop = await self._try_desktop()
         if desktop:
             self._remote_provider = desktop
             self._remote_provider_name = "desktop"
             self._remote_healthy = True
-            self._provider_name = "desktop"
-            # Also try local Ollama for dual-mode (low-effort local, high-effort remote)
+            # Also try local Ollama as an explicit low-effort fast path.
             ollama = await self._try_ollama()
             if ollama:
                 self._local_provider = ollama
                 self._provider_name = "dual"
-                logger.info("Dual-mode: local Ollama (effort 1-3) + desktop MicroScheduler (effort 4+)")
-                return ollama  # Default to local; chat() handles routing
+                logger.info(
+                    "Dual-mode: local Ollama (%s) as low-effort fast path, "
+                    "desktop MicroScheduler (%s) as the default brain",
+                    getattr(ollama, "default_model", "?"),
+                    getattr(desktop, "default_model", "?"),
+                )
+            else:
+                self._provider_name = "desktop"
+            # The configured desktop spine is the DEFAULT provider. A configured
+            # spine must never be shadowed by local inference by default; the
+            # local fast path is only reached on an explicit low effort (<=3),
+            # routed in chat().
             return desktop
 
-        # 2. Ollama — fallback local backend (AMD, Apple Silicon, no Docker)
+        # 2. vLLM containers — standalone local backend (best GPU utilization)
+        vllm = await self._try_vllm()
+        if vllm:
+            return vllm
+
+        # 3. Ollama — fallback local backend (AMD, Apple Silicon, no Docker)
         ollama = await self._try_ollama()
         if ollama:
             return ollama
@@ -887,6 +956,29 @@ class LLMRouter:
         self._reasoning_provider_name = provider
         self._reasoning_model = model
         logger.info("Set reasoning backend to %s (model=%s)", provider, model or "default")
+
+    def set_failover_chain(self, providers: list[tuple[str, str | None, str | None]]) -> None:
+        """Set backup providers tried when the primary fails (429/5xx/timeout).
+
+        Args:
+            providers: List of (provider_name, base_url, api_key) tuples.
+
+        Usage:
+            router.set_failover_chain([
+                ("deepseek", None, deepseek_key),
+                ("moonshot", None, moonshot_key),
+                ("ollama", None, None),
+            ])
+        """
+        self._failover_providers = []
+        for name, url, key in providers:
+            try:
+                p = self._create_provider(name, url, key)
+                self._failover_providers.append((name, p))
+            except Exception as e:
+                logger.warning("Failover provider %s failed to init: %s", name, e)
+        names = [n for n, _ in self._failover_providers]
+        logger.info("Failover chain: %s", " → ".join(names) if names else "none")
 
     def set_perception_backend(
         self,
@@ -1184,7 +1276,26 @@ class LLMRouter:
             except Exception as e:
                 logger.warning("Reasoning backend failed, falling back to primary: %s", e)
 
-        # Dual-mode routing: high effort → remote desktop, low effort → local
+        # Dual-mode routing: high effort → remote desktop, low effort → local,
+        # default (None) and mid effort → the default provider (the configured
+        # desktop spine when present).
+        if (
+            effort is not None
+            and effort <= 3
+            and getattr(self, "_local_provider", None) is not None
+        ):
+            local = self._local_provider
+            try:
+                resp = await local.chat(
+                    messages, model=model, tool_choice=tool_choice,
+                    top_p=top_p, repetition_penalty=repetition_penalty, **kwargs,
+                )
+                resp.effort_level = effort
+                self._log_cost(resp, "local")
+                return resp
+            except Exception as e:
+                logger.warning("Local fast-path inference failed, falling back to primary: %s", e)
+
         if (
             effort is not None
             and effort > 3
@@ -1203,14 +1314,37 @@ class LLMRouter:
                 logger.warning("Remote desktop inference failed, falling back to local: %s", e)
                 self._remote_healthy = False
 
-        resp = await provider.chat(
-            messages, model=model, tool_choice=tool_choice,
-            top_p=top_p, repetition_penalty=repetition_penalty, **kwargs,
-        )
-        if effort is not None:
-            resp.effort_level = effort
-        self._log_cost(resp, self._provider_name)
-        return resp
+        try:
+            resp = await provider.chat(
+                messages, model=model, tool_choice=tool_choice,
+                top_p=top_p, repetition_penalty=repetition_penalty, **kwargs,
+            )
+            if effort is not None:
+                resp.effort_level = effort
+            self._log_cost(resp, self._provider_name)
+            return resp
+        except Exception as primary_err:
+            # Failover chain: try each backup provider in order
+            if not self._failover_providers:
+                raise
+            import time
+            if time.time() < self._failover_cooldown:
+                raise
+            for fb_name, fb_provider in self._failover_providers:
+                try:
+                    logger.warning("Primary (%s) failed: %s — trying %s", self._provider_name, primary_err, fb_name)
+                    resp = await fb_provider.chat(
+                        messages, model=None, tool_choice=tool_choice,
+                        top_p=top_p, repetition_penalty=repetition_penalty, **kwargs,
+                    )
+                    if effort is not None:
+                        resp.effort_level = effort
+                    self._log_cost(resp, fb_name)
+                    self._failover_cooldown = time.time() + 60
+                    return resp
+                except Exception:
+                    continue
+            raise primary_err
 
     async def chat_with_continuation(
         self,

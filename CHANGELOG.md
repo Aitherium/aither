@@ -2,6 +2,49 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [3.0.0] - 2026-08-06
+
+### Added — Agent Client Protocol v2, full two-way
+
+aither-adk now speaks ACP v2 in both directions — as the **agent** an editor
+drives, and as the **driver** of any external ACP agent.
+
+- **ACP v2 server** (`adk acp serve`): full prompt lifecycle (user_message
+  confirm → running → chunk-streamed agent_message/thought/tool_call updates →
+  terminal `state_update: idle` + stopReason), session new/list/resume/close/delete,
+  outbound `session/request_permission` mapped onto AitherAgent's human-in-the-loop
+  gate, cancel semantics, batch-safe framing. Works with any object exposing the adk
+  agent contract, not just AitherAgent.
+- **ACP v2 client** (`adk acp`): streaming `stream_prompt`, aggregate `prompt`
+  (waits for the terminal idle — text-only turns no longer drop their reply),
+  session lifecycle, `session/request_permission` answering, `additionalDirectories`.
+- **ACP LLM backend** (`adk backend add acp --command <cmd>`): wrap an external
+  ACP agent (claude-agent-acp, codex-acp, gemini-cli, …) as a model/provider for
+  AitherAgent — memory and faculties on top of the external agent's loop.
+- **CLI**: `adk acp serve / connect / prompt / agents / list-sessions / config <ide>`
+- **Tool pack + skills**: `acp_*` fleet tools and `acp-drive` / `acp-serve` skills;
+  Supervisor drives `protocol: acp` manifests.
+
+### Fixed — routing honours the configured AitherOS spine
+
+- `LLMRouter` auto-detect could pick up a stray local vLLM (a swap container on
+  :8201) BEFORE the configured desktop MicroScheduler — every chat silently went to
+  the wrong model. The configured spine (`inference_url` in `~/.aither/config.json`,
+  or `AITHER_CORE_LLM_URL`) is now tried FIRST, with the AitherNet internal CA
+  trusted via `tls_verify()`.
+- The desktop spine is the default provider when configured; a local fast path is
+  only reached on an explicit low effort.
+- Ollama auto-detect validates against installed models instead of defaulting to a
+  phantom `gemma4:4b`.
+
+## [2.48.0] - 2026-08-02
+
+### Added — AitherShell harness layer
+
+- AitherShell as a shell-of-shells over the adk harness; per-session model routing
+  via `--setting-sources project,local`.
+- Two D-975-family release gates (ignored-source, doc-drift).
+
 ## [2.47.0] - 2026-08-02
 
 ### Added — Bonsai as a first-class default backend for low-resource hardware
