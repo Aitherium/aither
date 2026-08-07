@@ -210,7 +210,10 @@ def test_initialize_v2():
         caps = result.get("capabilities") or {}
         assert caps.get("session", {}).get("list") == {}
         assert result["info"]["name"] == "v2test"
-        assert result.get("authMethods") == []
+        # Was `== []` while auth was a stub. The ACP registry rejects an agent
+        # that advertises no method, so this now asserts the real advertisement;
+        # its full contract lives in tests/test_acp_registry_contract.py.
+        assert [m["type"] for m in result["authMethods"]] == ["agent", "terminal"]
 
     asyncio.run(_with_server(EchoAgent(), body))
 

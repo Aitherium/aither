@@ -2,6 +2,38 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [3.0.2] - 2026-08-07
+
+### Added — ACP Registry admission (agentclientprotocol/registry)
+
+- **`initialize` advertises real `authMethods`.** Two AitherIdentity device-flow
+  (RFC 8628) methods: `aither-device` (type `agent` — we open the browser and
+  poll) and `aither-terminal` (type `terminal` — the client relaunches us as
+  `adk acp login`). The registry lists no agent that returns none, and it accepts
+  only these two types: a method typed anything else is DROPPED by its verifier,
+  so the advertisement looks populated locally and reads as "no auth" in CI.
+- **`authenticate` and `logout` do the real thing.** They were stubs returning
+  `{}`. An authenticate that returns `{}` without a token tells the client to
+  proceed and then fails at the first prompt with an unrelated error; every
+  failure path now raises. `logout` clears the `portal` profile and is advertised
+  via `agentCapabilities.auth.logout`.
+- **`adk acp login`** — interactive sign-in, the Terminal Auth entrypoint. A
+  method naming a command that does not exist fails inside the editor, where
+  nobody sees the output.
+- **`aither-adk` console script.** `uvx <package>` runs the script whose name
+  MATCHES the package; without this alias the registry's uvx distribution
+  installs and cannot launch, while validating fine (the registry only checks
+  that the PyPI package exists, never that it runs).
+
+### Fixed
+
+- **`adk acp serve` no longer probes for an LLM backend at startup.** It awaited
+  `get_provider()` before serving, so on a machine with no fleet, no Ollama and
+  no API key — exactly the registry's CI runner — the process exited before
+  answering `initialize`. That surfaces as "timeout waiting for initialize",
+  i.e. as a protocol bug. Loudness moved to the first `session/prompt`, where a
+  missing backend is a real turn error.
+
 ## [3.0.1] - 2026-08-06
 
 ### Fixed — AitherShell (adk-shell) front door and status surfaces
