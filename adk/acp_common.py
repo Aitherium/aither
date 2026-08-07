@@ -29,9 +29,7 @@ __all__ = [
     "METHOD_NOT_FOUND",
     "INVALID_PARAMS",
     "INTERNAL_ERROR",
-    "AUTH_REQUIRED",
     # Enumerations
-    "AUTH_METHOD_TYPES",
     "SESSION_STATES",
     "STOP_REASONS",
     "TOOL_KINDS",
@@ -82,15 +80,6 @@ INTERNAL_ERROR = -32603
 
 #: Agent foreground states (v2 prompt lifecycle).
 SESSION_STATES = frozenset({"running", "idle", "requires_action"})
-
-#: `auth_required` — the agent needs `authenticate` before session work. Not a
-#: JSON-RPC standard code; ACP defines it in the -32000 application range.
-AUTH_REQUIRED = -32000
-
-#: The two authentication method types the ACP registry accepts. A method with
-#: any other `type` is ignored by the registry's CI verifier, so an agent that
-#: advertises only e.g. an env-var method is rejected while looking configured.
-AUTH_METHOD_TYPES = frozenset({"agent", "terminal"})
 
 #: Terminal stop reasons. Custom reasons must begin with "_".
 STOP_REASONS = frozenset(

@@ -304,28 +304,13 @@ class LLMRouter:
         try:
             from .ollama import OllamaProvider
             host = (self._config.ollama_host if self._config else None) or "http://localhost:11434"
-            model = self._model or ""
-            p = OllamaProvider(host=host, default_model=model or "gemma4:4b")
+            p = OllamaProvider(host=host, default_model=self._model or "gemma4:4b")
             if await p.health_check():
-                if not model:
-                    # Validate against what is actually installed — a hardcoded
-                    # default that does not exist on this host 404s every chat
-                    # (measured: a box with only llama3.2:3b was defaulted to a
-                    # phantom gemma4:4b). Prefer a chat model over embedding tags.
-                    try:
-                        installed = [
-                            m for m in await p.list_models()
-                            if "embed" not in m.lower()
-                        ]
-                        if installed:
-                            p.default_model = installed[0]
-                    except Exception as e:  # noqa: BLE001 — list_models is best-effort
-                        logger.debug("Ollama model list unavailable, keeping default: %s", e)
                 self._provider_name = "ollama"
-                logger.info("Auto-detected Ollama at %s (model: %s)", host, p.default_model)
+                logger.info("Auto-detected Ollama at %s", host)
                 return p
-        except Exception as e:  # noqa: BLE001 — detection is best-effort
-            logger.debug("Ollama auto-detect failed: %s", e)
+        except Exception:
+            pass
         return None
 
     async def _try_vllm(self) -> LLMProvider | None:
@@ -420,32 +405,19 @@ class LLMRouter:
     async def _try_desktop(self) -> LLMProvider | None:
         """Try connecting to a desktop AitherOS MicroScheduler for remote inference.
 
-        Reads AITHER_CORE_LLM_URL from env or ~/.aither/config.json. The saved
-        config stores the spine under ``inference_url`` (the key ``adk setup``
-        writes) — ``core_llm_url`` is honored as a legacy alias. The MicroScheduler
-        serves TLS with the AitherNet internal CA, so the provider must be given
-        ``verify=tls_verify()``; a default system-trust client fails the handshake
-        and the whole desktop path silently returns None, letting a blind vLLM
-        port scan shadow the configured spine.
+        Reads AITHER_CORE_LLM_URL from env or ~/.aither/config.json.
         Returns an OpenAI-compatible provider pointing at the desktop's MicroScheduler.
         """
         import os
         from .openai_compat import OpenAIProvider
-        from adk._tls import tls_verify
         from adk.config import load_saved_config
 
         # Check env var first, then saved config
         desktop_url = os.environ.get("AITHER_CORE_LLM_URL", "")
-        default_model = self._model or ""
         if not desktop_url:
             try:
                 saved = load_saved_config()
-                desktop_url = (
-                    saved.get("inference_url", "")
-                    or saved.get("core_llm_url", "")
-                )
-                if not default_model:
-                    default_model = saved.get("default_model", "") or ""
+                desktop_url = saved.get("core_llm_url", "")
             except (OSError, ValueError):
                 pass
 
@@ -468,9 +440,8 @@ class LLMRouter:
             p = OpenAIProvider(
                 base_url=desktop_url,
                 api_key=token or "not-needed",
-                default_model=default_model,
+                default_model=self._model or "",
                 ctk_by_model=_DEFAULT_CTK_BY_MODEL,
-                verify=tls_verify(),
             )
             if await p.health_check():
                 try:
@@ -752,40 +723,28 @@ class LLMRouter:
             # cloud_first: fall through to try local as fallback
             logger.info("Cloud-first: no cloud providers available, trying local backends")
 
-        # 1. Desktop MicroScheduler — the AitherOS spine. Tried FIRST because it
-        # requires explicit config (AITHER_CORE_LLM_URL env or config inference_url);
-        # a configured spine must never be shadowed by a blind vLLM port scan that
-        # picks up an unrelated local container (e.g. a swap model on a stray port).
+        # 1. vLLM containers — PRIMARY local backend (best GPU utilization)
+        vllm = await self._try_vllm()
+        if vllm:
+            return vllm
+
+        # 1.5. Desktop MicroScheduler — remote inference from connected desktop
         desktop = await self._try_desktop()
         if desktop:
             self._remote_provider = desktop
             self._remote_provider_name = "desktop"
             self._remote_healthy = True
-            # Also try local Ollama as an explicit low-effort fast path.
+            self._provider_name = "desktop"
+            # Also try local Ollama for dual-mode (low-effort local, high-effort remote)
             ollama = await self._try_ollama()
             if ollama:
                 self._local_provider = ollama
                 self._provider_name = "dual"
-                logger.info(
-                    "Dual-mode: local Ollama (%s) as low-effort fast path, "
-                    "desktop MicroScheduler (%s) as the default brain",
-                    getattr(ollama, "default_model", "?"),
-                    getattr(desktop, "default_model", "?"),
-                )
-            else:
-                self._provider_name = "desktop"
-            # The configured desktop spine is the DEFAULT provider. A configured
-            # spine must never be shadowed by local inference by default; the
-            # local fast path is only reached on an explicit low effort (<=3),
-            # routed in chat().
+                logger.info("Dual-mode: local Ollama (effort 1-3) + desktop MicroScheduler (effort 4+)")
+                return ollama  # Default to local; chat() handles routing
             return desktop
 
-        # 2. vLLM containers — standalone local backend (best GPU utilization)
-        vllm = await self._try_vllm()
-        if vllm:
-            return vllm
-
-        # 3. Ollama — fallback local backend (AMD, Apple Silicon, no Docker)
+        # 2. Ollama — fallback local backend (AMD, Apple Silicon, no Docker)
         ollama = await self._try_ollama()
         if ollama:
             return ollama
@@ -1276,26 +1235,7 @@ class LLMRouter:
             except Exception as e:
                 logger.warning("Reasoning backend failed, falling back to primary: %s", e)
 
-        # Dual-mode routing: high effort → remote desktop, low effort → local,
-        # default (None) and mid effort → the default provider (the configured
-        # desktop spine when present).
-        if (
-            effort is not None
-            and effort <= 3
-            and getattr(self, "_local_provider", None) is not None
-        ):
-            local = self._local_provider
-            try:
-                resp = await local.chat(
-                    messages, model=model, tool_choice=tool_choice,
-                    top_p=top_p, repetition_penalty=repetition_penalty, **kwargs,
-                )
-                resp.effort_level = effort
-                self._log_cost(resp, "local")
-                return resp
-            except Exception as e:
-                logger.warning("Local fast-path inference failed, falling back to primary: %s", e)
-
+        # Dual-mode routing: high effort → remote desktop, low effort → local
         if (
             effort is not None
             and effort > 3

@@ -42,14 +42,11 @@ import asyncio
 import json
 import logging
 import os
-import sys
 import time
 import uuid
 from typing import Any, Awaitable, Callable, Optional
 
 from adk.acp_common import (
-    AUTH_METHOD_TYPES,
-    AUTH_REQUIRED,
     INTERNAL_ERROR,
     INVALID_PARAMS,
     INVALID_REQUEST,
@@ -144,11 +141,6 @@ class ACPServer:
         # never a concurrent session's (a global resolve would wrongly end a
         # different session's in-flight turn when this one is cancelled).
         self._pending_requests: dict[int, tuple[str, asyncio.Future]] = {}
-        # Whether `authenticate` succeeded THIS connection. Deliberately NOT
-        # seeded from ~/.aither/auth.json: the stdio-local path has always been
-        # usable without a login (a self-hosted fleet is the owner's own box),
-        # so this only records what happened on this wire.
-        self._authenticated = False
 
     # ---- wire I/O ---------------------------------------------------------
 
@@ -209,155 +201,17 @@ class ACPServer:
             # both and never starve one wire of the agent's identity.
             "info": {"name": self.name, "title": self.name, "version": self.version},
             "agentInfo": {"name": self.name, "title": self.name, "version": self.version},
-            # Advertised UNCONDITIONALLY, including when credentials are already
-            # on disk. The ACP registry's CI verifier reads this field on a cold
-            # `initialize` and rejects an agent that returns none, and a client
-            # needs to know how a user could RE-authenticate after a logout or an
-            # expiry. Answering "[] because this machine happens to be logged in"
-            # would make the entry pass locally and fail in CI.
-            "authMethods": self.auth_methods(),
-            # Both spellings: v2 nests under `capabilities`, the v1-era clients
-            # (and the registry validator) read `agentCapabilities`.
-            "agentCapabilities": {"auth": {"logout": {}}},
+            # Empty: no auth for the stdio-local path. The registry/remote path
+            # (Phase 4) advertises authMethods and wires auth/login for real.
+            "authMethods": [],
         }
 
-    # ---- authentication ----------------------------------------------------
-    #
-    # AitherIdentity device flow (RFC 8628) — the platform's own sign-in, not an
-    # API key. Two methods are advertised because ACP clients differ in what they
-    # can host:
-    #   * `aither-device` (type "agent")    — WE run the flow: open the browser,
-    #     poll the token endpoint, persist to ~/.aither/auth.json. Needs no
-    #     terminal, which is what a GUI editor can offer.
-    #   * `aither-terminal` (type "terminal") — the client RE-LAUNCHES us as
-    #     `adk acp login` in a real terminal. The args below replace our normal
-    #     ones for that one invocation (per AUTHENTICATION.md), so they must name
-    #     a command that exists; `adk acp login` is asserted by the CLI tests.
-    #
-    # The registry accepts only these two types. An agent that advertises, say,
-    # an env-var method is silently ignored by its verifier — it reads as "no
-    # auth" while looking configured, so keep both entries typed explicitly.
-
-    #: Method id → the ACP auth method type. Single source for the advertisement
-    #: and the `authenticate` dispatch, so the two can never disagree.
-    AUTH_METHODS: tuple[tuple[str, str, str, str], ...] = (
-        (
-            "aither-device",
-            "agent",
-            "Sign in with Aitherium",
-            "Opens your browser to approve this device (AitherIdentity device flow).",
-        ),
-        (
-            "aither-terminal",
-            "terminal",
-            "Sign in from a terminal",
-            "Runs `adk acp login` interactively and prints a code to enter.",
-        ),
-    )
-
-    def auth_methods(self) -> list[dict[str, Any]]:
-        """The `authMethods` advertisement, in registry-validated shape."""
-        methods: list[dict[str, Any]] = []
-        for mid, mtype, name, description in self.AUTH_METHODS:
-            if mtype not in AUTH_METHOD_TYPES:
-                # Fail LOUD here rather than shipping an advertisement the
-                # registry silently ignores: a bad type reads as "no auth" in
-                # CI while every local probe shows a populated authMethods.
-                raise RuntimeError(
-                    f"auth method {mid!r} has type {mtype!r}; the ACP registry "
-                    f"accepts only {sorted(AUTH_METHOD_TYPES)}"
-                )
-            entry: dict[str, Any] = {
-                "id": mid,
-                "name": name,
-                "description": description,
-                "type": mtype,
-            }
-            if mtype == "terminal":
-                # Replaces the default args for the setup launch only.
-                entry["args"] = ["acp", "login"]
-            methods.append(entry)
-        return methods
-
     async def handle_auth_login(self, params: dict[str, Any]) -> dict[str, Any]:
-        """`authenticate` — run the AitherIdentity device flow for real.
-
-        Returns `{}` on success per the spec. Every failure path raises, because
-        an authenticate that returns `{}` without a token tells the client it may
-        proceed and then fails at the first prompt with an unrelated error.
-        """
-        method_id = pick(params, "methodId", "method_id", default="")
-        known = {mid for mid, _t, _n, _d in self.AUTH_METHODS}
-        if method_id and method_id not in known:
-            raise RpcError(
-                INVALID_PARAMS,
-                f"Unknown authentication method: {method_id!r} "
-                f"(advertised: {', '.join(sorted(known))})",
-            )
-
-        from adk.auth import AuthError, begin_device_login, finish_device_login
-
-        try:
-            challenge = await begin_device_login()
-        except AuthError as e:
-            raise RpcError(AUTH_REQUIRED, f"Could not start device login: {e}") from e
-        except Exception as e:  # noqa: BLE001 — network/DNS/proxy all land here
-            raise RpcError(AUTH_REQUIRED, f"Could not reach AitherIdentity: {e}") from e
-
-        # Tell the human what to do on BOTH channels: stderr is what a terminal
-        # client shows, and the notification is what a GUI client can render.
-        # A device flow that prints nowhere is a silent 10-minute hang.
-        prompt = (
-            f"To sign in, open {challenge.verification_uri} "
-            f"and enter the code {challenge.user_code}"
-        )
-        logger.warning("acp_server: %s", prompt)
-        try:
-            print(prompt, file=sys.stderr, flush=True)
-        except Exception:  # noqa: BLE001 — stderr may be closed by the host
-            logger.debug("acp_server: stderr unavailable for the auth prompt")
-        if self.auth_method_is(method_id, "agent"):
-            # Agent Auth: WE open the browser. Best-effort — a headless box has
-            # no browser, and the code printed above is still actionable.
-            try:
-                import webbrowser
-
-                webbrowser.open(challenge.verification_uri_complete)
-            except Exception as e:  # noqa: BLE001
-                logger.debug("acp_server: could not open a browser: %s", e)
-
-        try:
-            await finish_device_login(challenge)
-        except AuthError as e:
-            raise RpcError(AUTH_REQUIRED, f"Device login failed: {e}") from e
-        self._authenticated = True
+        # Stub until the registry/remote path (Phase 4) wires real auth. With an
+        # empty authMethods no client calls this.
         return {}
 
-    def auth_method_is(self, method_id: str, mtype: str) -> bool:
-        """True when *method_id* is advertised with type *mtype*.
-
-        An empty/absent id means "the default", which per AUTHENTICATION.md is
-        the agent type — so a client that omits `methodId` still gets a browser.
-        """
-        if not method_id:
-            return mtype == "agent"
-        for mid, t, _n, _d in self.AUTH_METHODS:
-            if mid == method_id:
-                return t == mtype
-        return False
-
     async def handle_auth_logout(self, params: dict[str, Any]) -> dict[str, Any]:
-        """`logout` — drop the stored credentials. Advertised via auth.logout."""
-        self._authenticated = False
-        try:
-            from adk.auth import AuthStore
-
-            # "portal" is the profile finish_device_login writes; clearing any
-            # other name would return {} having revoked nothing, which reads to
-            # the client as a successful logout.
-            AuthStore().clear_profile("portal")
-        except Exception as e:  # noqa: BLE001
-            raise RpcError(INTERNAL_ERROR, f"Could not clear credentials: {e}") from e
         return {}
 
     async def handle_new_session(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -706,11 +560,7 @@ class ACPServer:
             "initialize": self.handle_initialize,
             "auth/login": self.handle_auth_login,
             "auth/logout": self.handle_auth_logout,
-            # The SPEC names these `authenticate` / `logout`; `auth/*` is our v2
-            # namespaced spelling. Both are routed because the registry's
-            # verifier and the reference clients use the bare names.
-            "authenticate": self.handle_auth_login,
-            "logout": self.handle_auth_logout,
+            "authenticate": self.handle_auth_login,  # v1 legacy alias
             "session/new": self.handle_new_session,
             "session/list": self.handle_list_sessions,
             "session/resume": self.handle_resume_session,

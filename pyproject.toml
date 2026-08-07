@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "aither-adk"
-version = "3.0.5"
+version = "2.48.0"
 description = "Build AI agents with real memory + faculties on any backend, local or cloud. Open-core: free local runtime with typed memory, knowledge graph, code graph and ReAct; paid tiers (portal.aitherium.com) unlock fleets, channels, reasoning and marketplace packs."
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -131,12 +131,6 @@ Documentation = "https://github.com/Aitherium/aither-adk#readme"
 [project.scripts]
 adk = "adk.cli:main"
 adk-py = "adk.cli:main"
-# `uvx <package> <args>` runs the console script whose name MATCHES the package.
-# The ACP registry's uvx distribution is exactly that shape, so without this
-# alias `uvx aither-adk acp serve` fails with "no such executable" and the
-# registry entry is unusable while validating fine (the schema check only
-# confirms the package exists on PyPI, never that it is runnable).
-aither-adk = "adk.cli:main"
 adk-serve = "adk.server:main"
 adk-workspace = "adk.server:main_workspace"
 adk-bug = "adk.bugreport:main"

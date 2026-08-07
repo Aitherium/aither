@@ -709,24 +709,6 @@ class ACPClient:
                     done.add(tid)
         return started - done
 
-    @staticmethod
-    def _terminal_idle(updates: list[dict[str, Any]]) -> bool:
-        """True once a terminal ``state_update: idle`` has arrived.
-
-        A v2 turn is only complete at idle — the agent text is streamed as
-        ``agent_message_chunk`` updates BEFORE idle, all of them arriving after
-        the immediate ``session/prompt`` response. Waiting on "no outstanding
-        tool calls" alone returns before any text has arrived on a text-only
-        turn (measured live: PONG was dropped), so the drain must key on idle.
-        """
-        for update in updates:
-            if (
-                _pick(update, "sessionUpdate", "session_update") == "state_update"
-                and _pick(update, "state", default="") == "idle"
-            ):
-                return True
-        return False
-
     async def _drain_updates(
         self,
         updates: list[dict[str, Any]],
@@ -738,19 +720,18 @@ class ACPClient:
         """Wait (bounded) for trailing ``session/update`` notifications.
 
         Replaces a fixed sleep, which silently dropped tool-call completions that
-        arrived later than the sleep. Returns once the terminal
-        ``state_update: idle`` has arrived (after a short settle window for
-        trailing usage/plan updates), and at the deadline logs a WARNING naming
-        anything still outstanding OR the missing idle — so a dead turn is never
-        silently empty and late data is never lost silently.
+        arrived later than the sleep. Returns as soon as no tool call is
+        outstanding (after a short settle window for trailing text/usage chunks),
+        and at the deadline logs a WARNING naming anything still outstanding —
+        so late data is never lost silently.
         """
         loop = asyncio.get_running_loop()
         start = loop.time()
         deadline = start + max(timeout, settle)
         while True:
-            if self._terminal_idle(updates) and (loop.time() - start) >= settle:
-                return
             outstanding = self._outstanding_tool_calls(updates)
+            if not outstanding and (loop.time() - start) >= settle:
+                return
             if loop.time() >= deadline:
                 if outstanding:
                     logger.warning(
@@ -759,13 +740,6 @@ class ACPClient:
                         len(outstanding),
                         timeout,
                         ", ".join(sorted(outstanding)),
-                    )
-                if not self._terminal_idle(updates):
-                    logger.warning(
-                        "acp.prompt.drain_timeout: no terminal idle within %.2fs "
-                        "(%d update(s) collected)",
-                        timeout,
-                        len(updates),
                     )
                 return
             await asyncio.sleep(poll)

@@ -29,12 +29,7 @@ class AitherConfig:
     """Shell configuration with layered resolution."""
 
     # Connection
-    # Host-side default: the genesis LB publishes PLAIN HTTP on :8001 (TLS is
-    # the in-network listener), and 127.0.0.1 avoids the ::1-first resolution
-    # tax. Measured: the old https://localhost:8001 default made `aither
-    # --status` report UNREACHABLE while genesis answered on http://127.0.0.1.
-    # Override with AITHER_URL / config for in-network or remote topologies.
-    url: str = "http://127.0.0.1:8001"
+    url: str = "https://localhost:8001"
     will_url: str = "https://localhost:8097"
     gateway_url: str = "https://gateway.aitherium.com"
 

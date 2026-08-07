@@ -58,13 +58,6 @@ MOCK_ACP_AGENT = textwrap.dedent(
                               "params": {"sessionId": "s-1", "update": {
                                   "sessionUpdate": "agent_message_chunk",
                                   "content": {"type": "text", "text": "echo:" + b.get("text", "")}}}})
-                # A v2 turn is only complete at a terminal state_update: idle.
-                # The client's drain waits for it (text arrives as chunks BEFORE
-                # idle); omitting it makes every prompt hang the full drain_timeout.
-                send({"jsonrpc": "2.0", "method": "session/update",
-                      "params": {"sessionId": "s-1", "update": {
-                          "sessionUpdate": "state_update", "state": "idle",
-                          "stopReason": "end_turn"}}})
                 send({"jsonrpc": "2.0", "id": rid, "result": {
                     "stopReason": "end_turn",
                     "usage": {"inputTokens": 3, "outputTokens": 5}}})

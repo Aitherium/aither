@@ -59,7 +59,6 @@ class ACPProvider(LLMProvider):
         cwd: str | None = None,
         approval_callback: Callable[[Any], bool] | None = None,
         connect_timeout: float = 30.0,
-        drain_timeout: float = 120.0,
     ) -> None:
         if not command or not str(command).strip():
             raise ValueError(
@@ -73,10 +72,6 @@ class ACPProvider(LLMProvider):
         self.cwd = cwd or os.getcwd()
         self._approval_callback = approval_callback
         self._connect_timeout = connect_timeout
-        # An external agent turn (tool loops, sub-agents) takes seconds to
-        # minutes; the client must wait for the terminal idle, not a 2s settle
-        # (measured: a text-only turn came back empty at drain_timeout=2.0).
-        self._drain_timeout = drain_timeout
         self._client: Any = None
         self._session_id: str | None = None
         self._delivered = 0
@@ -159,7 +154,7 @@ class ACPProvider(LLMProvider):
             await self._ensure_ready(len(messages))
             delivered, blocks = self._build_blocks(messages)
             result = await self._client.prompt(
-                self._session_id, "", blocks=blocks, drain_timeout=self._drain_timeout
+                self._session_id, "", blocks=blocks, drain_timeout=2.0
             )
             self._delivered = delivered
         return LLMResponse(
@@ -189,7 +184,7 @@ class ACPProvider(LLMProvider):
             await self._ensure_ready(len(messages))
             delivered, blocks = self._build_blocks(messages)
             async for update in self._client.stream_prompt(
-                self._session_id, "", blocks=blocks, drain_timeout=self._drain_timeout
+                self._session_id, "", blocks=blocks, drain_timeout=2.0
             ):
                 if update.get("sessionUpdate") == "agent_message_chunk":
                     content = update.get("content") or {}

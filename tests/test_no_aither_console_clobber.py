@@ -37,42 +37,13 @@ def test_aither_console_script_not_registered() -> None:
     )
 
 
-#: The distribution's own name. `uvx <package>` runs the console script whose
-#: name MATCHES the package, and the ACP registry's uvx distribution is exactly
-#: that shape — without this entry `uvx aither-adk acp serve` fails with "no
-#: such executable" while the registry entry validates fine (it only checks that
-#: the PyPI package exists, never that it runs).
-#:
-#: It is a NARROW exception, not a loosening: `aither-adk` is a distinct binary
-#: from `aither`, so the invariant this file exists for — the `aither` command
-#: belongs to the npm shell-cli — is untouched and still asserted above.
-DISTRIBUTION_SCRIPT = "aither-adk"
-
-
 def test_only_adk_prefixed_scripts() -> None:
-    """All aither-adk console_scripts must be `adk`, `adk-*`, or the dist name."""
+    """All aither-adk console_scripts must be `adk` or `adk-*`."""
     data = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))
     scripts = data.get("project", {}).get("scripts", {})
-    bad = [
-        name for name in scripts
-        if not (name == "adk" or name.startswith("adk-") or name == DISTRIBUTION_SCRIPT)
-    ]
+    bad = [name for name in scripts if not (name == "adk" or name.startswith("adk-"))]
     assert not bad, (
-        f"aither-adk console_scripts must be `adk`, `adk-*`, or `{DISTRIBUTION_SCRIPT}`. "
+        f"aither-adk console_scripts must be `adk` or `adk-*` prefix only. "
         f"Found non-conforming entries: {bad}. "
         f"All scripts: {list(scripts.keys())}"
-    )
-
-
-def test_uvx_entrypoint_is_present() -> None:
-    """The exception above must actually be USED, not merely permitted.
-
-    Allowing `aither-adk` without registering it is the worst of both: the fence
-    is widened and `uvx aither-adk` still cannot launch.
-    """
-    data = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))
-    scripts = data.get("project", {}).get("scripts", {})
-    assert DISTRIBUTION_SCRIPT in scripts, (
-        f"`{DISTRIBUTION_SCRIPT}` console script missing — the ACP registry's "
-        f"uvx distribution cannot launch this package"
     )

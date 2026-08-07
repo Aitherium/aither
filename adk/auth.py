@@ -207,19 +207,7 @@ class DenyAllResolver(PrincipalResolver):
 AUTH_FILE = Path.home() / ".aither" / "auth.json"
 AUTH_VERSION = 1
 
-# Measured 2026-08-07: `api.aitheros.ai` does not resolve — `getaddrinfo failed`
-# on every fresh install. It had been the baked default for the whole device
-# flow, so `adk acp login` and the ACP server's `aither-device` method were both
-# dead on arrival for anyone who had not set AITHERIDENTITY_URL. Nothing caught
-# it because a DNS failure on a login nobody ran is silent, and every developer
-# box here has the env var set.
-#
-# This value is the one AitherIdentity's OWN discovery document advertises:
-#   GET https://idp.aitherium.com/.well-known/openid-configuration
-#     issuer                        https://idp.aitherium.com/identity
-#     device_authorization_endpoint https://idp.aitherium.com/identity/auth/device/code
-# Re-derive it from discovery rather than editing this string by hand.
-DEFAULT_PORTAL_URL = "https://idp.aitherium.com/identity"
+DEFAULT_PORTAL_URL = "https://api.aitheros.ai"
 DEFAULT_CLIENT_ID = "aither-cli"
 
 # Same root profile aithershell uses — keeps the two tools in lock-step.
@@ -420,15 +408,9 @@ async def begin_device_login(
     cid = client_id or os.environ.get("AITHER_OIDC_CLIENT_ID", DEFAULT_CLIENT_ID)
 
     async with httpx.AsyncClient(timeout=15) as client:
-        # `/auth/device/code`, JSON body. Both were wrong here until 2026-08-07:
-        # the RFC-8628-style `/oauth/device/code` 404s on AitherIdentity, and a
-        # form-encoded body is rejected 422 ("Input should be a valid dictionary")
-        # because the endpoint is a FastAPI model. Its sibling
-        # `autonomous_agent_login` in this same file has always used the right
-        # shape — the two had silently diverged.
         resp = await client.post(
-            f"{url}/auth/device/code",
-            json={"client_id": cid, "scope": scope},
+            f"{url}/oauth/device/code",
+            data={"client_id": cid, "scope": scope},
         )
         if resp.status_code >= 400:
             raise AuthError(
@@ -480,38 +462,23 @@ async def finish_device_login(
                 raise AuthError("device login expired before user approval")
             await asyncio.sleep(interval)
             resp = await client.post(
-                f"{url}/auth/device/token",
-                json={"device_code": challenge.device_code, "client_id": cid},
+                f"{url}/oauth/token",
+                data={
+                    "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                    "device_code": challenge.device_code,
+                    "client_id": cid,
+                },
             )
             body = resp.json() if resp.content else {}
             if resp.status_code == 200 and body.get("access_token"):
                 break
-            # AitherIdentity answers a pending poll with HTTP **200** and
-            # `{"status": "authorization_pending", "interval": 5}` — not the
-            # RFC 8628 `400` + `{"error": "authorization_pending"}`. Reading only
-            # `error` left `err` empty on every tick, so the loop raised
-            # "device login failed: 200" on the FIRST poll and no device login
-            # could ever complete. Accept both shapes; the RFC form is still
-            # honoured so a standards-compliant IdP keeps working.
-            err = body.get("error") or body.get("status") or ""
+            err = body.get("error", "")
             if err == "authorization_pending":
-                # A server-suggested interval wins — it is how it asks us to
-                # back off without an explicit slow_down.
-                interval = max(interval, int(body.get("interval", interval) or interval))
                 continue
             if err == "slow_down":
                 interval += 5
                 continue
-            # Carry the server's own explanation. `f"...: {resp.status_code}"`
-            # alone produced "device login failed: 400" — a message that names
-            # neither the endpoint nor the reason, which is what made this whole
-            # path so slow to diagnose.
-            detail = body.get("detail") or body.get("error_description") or ""
-            why = " ".join(p for p in (err, detail) if p) or resp.text[:200]
-            raise AuthError(
-                f"device login failed at {url}/auth/device/token: "
-                f"HTTP {resp.status_code} {why}".rstrip()
-            )
+            raise AuthError(f"device login failed: {err or resp.status_code}")
 
     creds = Credentials(
         access_token=body["access_token"],

@@ -5,7 +5,6 @@ Reads the canonical version from aither-adk/pyproject.toml and updates:
   - packaging/npm/package.json
   - packaging/brew/aither-adk.rb
   - packaging/winget/Aitherium.ADK.yaml
-  - server.json (MCP Registry entry — carries the version TWICE)
 
 Usage:
     python packaging/sync_versions.py           # Sync versions
@@ -99,51 +98,6 @@ def get_version() -> str:
     return match.group(1)
 
 
-def sync_server_json(version: str, check: bool) -> bool:
-    """Update server.json — the MCP Registry entry.
-
-    TWO versions live in this file and BOTH must match the package: the server
-    version and `packages[0].version`. The registry rejects a package version
-    that is not on PyPI, so a half-bumped file fails the publish with a message
-    about the registry rather than about us.
-
-    Also asserts the ownership marker in README.md still names this server. The
-    registry proves ownership by fetching the PUBLISHED PyPI description and
-    looking for `mcp-name: <name>`; if the two drift, publishing fails with an
-    opaque verification error and nothing local shows a problem.
-    """
-    root = Path(__file__).parent.parent
-    path = root / "server.json"
-    if not path.exists():
-        print("  server.json: absent (skipped)")
-        return True
-    data = json.loads(path.read_text(encoding="utf-8"))
-    pkgs = data.get("packages") or [{}]
-
-    ok = True
-    marker = f"mcp-name: {data.get('name', '')}"
-    readme = root / "README.md"
-    if readme.exists() and marker not in readme.read_text(encoding="utf-8"):
-        print(f"  server.json: README.md has no '{marker}' — MCP Registry "
-              f"ownership verification WILL fail")
-        ok = False
-
-    if data.get("version") == version and pkgs[0].get("version") == version:
-        print(f"  server.json: already {version}")
-        return ok
-    if check:
-        print(f"  server.json: {data.get('version')}/{pkgs[0].get('version')} "
-              f"-> {version} (needs update)")
-        return False
-    data["version"] = version
-    if pkgs and pkgs[0]:
-        pkgs[0]["version"] = version
-        data["packages"] = pkgs
-    path.write_text(json.dumps(data, indent=2) + chr(10), encoding="utf-8")
-    print(f"  server.json: updated to {version}")
-    return ok
-
-
 def sync_npm(version: str, check: bool) -> bool:
     """Update packaging/npm/package.json."""
     path = Path(__file__).parent / "npm" / "package.json"
@@ -194,7 +148,7 @@ def sync_brew(version: str, check: bool) -> bool:
     )
     path.write_text(text, encoding="utf-8")
     print(f"  brew: updated to {version}")
-    print("  brew: SHA256 set to PLACEHOLDER — update after PyPI publish")
+    print(f"  brew: SHA256 set to PLACEHOLDER — update after PyPI publish")
     return True
 
 
@@ -233,7 +187,7 @@ def sync_winget(version: str, check: bool) -> bool:
     )
     path.write_text(text, encoding="utf-8")
     print(f"  winget: updated to {version}")
-    print("  winget: SHA256 set to PLACEHOLDER — update after build")
+    print(f"  winget: SHA256 set to PLACEHOLDER — update after build")
     return True
 
 
@@ -275,7 +229,6 @@ def main():
         all_ok &= sync_npm(version, check)
         all_ok &= sync_brew(version, check)
         all_ok &= sync_winget(version, check)
-        all_ok &= sync_server_json(version, check)
 
     # Runs in --check too: a PUBLISHED version whose formula still carries a
     # placeholder digest is a broken `brew install`, and used to pass silently.

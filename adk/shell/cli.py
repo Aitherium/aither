@@ -49,24 +49,7 @@ def setup_logging(verbose: bool = False):
     logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
-class _QueryFallbackGroup(click.Group):
-    """`aither "question"` is the advertised front door — a first token that is
-    not a known subcommand must run as a QUERY, not die with `No such command`
-    (which is exactly what a plain click.Group does: it resolves the first bare
-    argument as a subcommand name BEFORE the group callback's ctx.args logic
-    can ever see it, so the documented single-query mode was unreachable)."""
-
-    def resolve_command(self, ctx, args):
-        try:
-            return super().resolve_command(ctx, args)
-        except click.UsageError:
-            query_cmd = self.get_command(ctx, "__query__")
-            if query_cmd is None:  # defensive: fall back to the original error
-                raise
-            return "__query__", query_cmd, args
-
-
-@click.group(cls=_QueryFallbackGroup, invoke_without_command=True, context_settings={"allow_extra_args": True, "allow_interspersed_args": False})
+@click.group(invoke_without_command=True, context_settings={"allow_extra_args": True, "allow_interspersed_args": False})
 @click.option("--print", "output_format", flag_value="text", help="Plain text output")
 @click.option("--json", "output_format", flag_value="json", help="JSON output")
 @click.option("--private", is_flag=True, help="Private mode (no logging)")
@@ -195,16 +178,6 @@ def cli(
             asyncio.run(run_repl(aither_config))
         except KeyboardInterrupt:
             print("\nGoodbye!")
-
-
-@cli.command("__query__", hidden=True, context_settings={"ignore_unknown_options": True})
-@click.argument("words", nargs=-1, type=click.UNPROCESSED)
-@click.pass_context
-def _query_fallback(ctx, words):
-    """Single-query mode reached via _QueryFallbackGroup (never typed by hand)."""
-    aither_config = ctx.obj["config"]
-    output_format = ctx.parent.params.get("output_format")
-    asyncio.run(_cmd_query(aither_config, " ".join(words), output_format))
 
 
 async def _cmd_query(
@@ -353,25 +326,22 @@ async def _cmd_query_direct(
 
 async def _cmd_config(config: AitherConfig) -> None:
     """Show configuration."""
-    # execute_command RETURNS the output — dropping it makes every one of
-    # these flags a silent no-op (measured: `aither --status` printed nothing
-    # while the status text was fully computed and discarded).
-    print(await execute_command(config, "config", ["show"]))
+    await execute_command(config, "config", ["show"])
 
 
 async def _cmd_plugins(config: AitherConfig) -> None:
     """List plugins."""
-    print(await execute_command(config, "plugins", ["list"]))
+    await execute_command(config, "plugins", ["list"])
 
 
 async def _cmd_status(config: AitherConfig) -> None:
     """Check Genesis status."""
-    print(await execute_command(config, "status"))
+    await execute_command(config, "status")
 
 
 async def _cmd_history(config: AitherConfig, count: int) -> None:
     """Show command history."""
-    print(await execute_command(config, "history", [str(count)] if count else []))
+    await execute_command(config, "history", [str(count)] if count else [])
 
 
 def _init_shell():
