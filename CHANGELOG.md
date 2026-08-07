@@ -2,6 +2,21 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [3.0.1] - 2026-08-06
+
+### Fixed — AitherShell (adk-shell) front door and status surfaces
+
+- **`aither "question"` / `aither --print "query"` work.** The first two usage
+  lines in the CLI's own help died with `No such command` (a click Group resolved
+  the bare query as a subcommand name). An unknown first token now runs as a query.
+- **`--status`, `--config`, `--plugins`, `--history` print their output** — all
+  four computed their result and silently discarded it.
+- **`config show` unshadowed** — the `config` command method was hidden by the
+  instance's `config` attribute and failed with "config is not a command".
+- **Host-correct genesis default** — `http://127.0.0.1:8001` (the LB's plain-HTTP
+  listener) instead of `https://localhost:8001`, which reported UNREACHABLE
+  against a healthy genesis.
+
 ## [3.0.0] - 2026-08-06
 
 ### Added — Agent Client Protocol v2, full two-way

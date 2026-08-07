@@ -500,11 +500,18 @@ async def execute_command(
     """
     commands = Commands(config)
     args = args or []
-    
-    method = getattr(commands, command, None)
+
+    # Class-first lookup: instance attributes shadow same-named command
+    # methods — `self.config` (an AitherConfig) hid `async def config`, so
+    # `config show` failed with "config is not a command" everywhere.
+    method = getattr(type(commands), command, None)
+    if callable(method):
+        method = method.__get__(commands, type(commands))
+    else:
+        method = getattr(commands, command, None)
     if not method:
         raise CommandError(f"Unknown command: {command}")
-    
+
     if not callable(method):
         raise CommandError(f"{command} is not a command")
     
