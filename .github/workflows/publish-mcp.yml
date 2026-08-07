@@ -8,7 +8,7 @@
 #
 # Auth is OIDC — no token, no secret. The registry derives the namespace from
 # this repository's owner, which is why `name` in server.json must stay
-# `io.github.aitherium/...`: change the owner or the namespace and the publish
+# `io.github.Aitherium/... (CASE-SENSITIVE: the org is Aitherium)`: change the owner or the namespace and the publish
 # is rejected as unverified.
 #
 # server.json is SYNCED from the private monorepo (aither-adk/server.json) by
