@@ -49,6 +49,23 @@
       ]
     },
     {
+      "id": "jgames",
+      "name": "J GAMES & REPAIR",
+      "type": "agent_pack",
+      "version": "1.0.0",
+      "description": "Console and mobile device repair assistant \u2014 repair quotes, pricing research (AMV/HDV), ticket status lookup, inventory & budget management for J GAMES & REPAIR in Leavittsburg, Ohio",
+      "tier": "free",
+      "category": "business",
+      "tags": [
+        "jgames",
+        "local-business",
+        "repair",
+        "pricing",
+        "inventory",
+        "tenant-app"
+      ]
+    },
+    {
       "id": "arc-brainpack",
       "name": "ARC Brain \u2014 Contribute & Earn",
       "type": "agent_pack",

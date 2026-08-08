@@ -1,4 +1,4 @@
-#Requires -Version 7.0
+﻿#Requires -Version 7.0
 <#
 .SYNOPSIS
     Start the AitherADK Agent Daemon — Local Sovereign Runtime

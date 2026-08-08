@@ -116,9 +116,21 @@ def test_acp_prompt_live(tmp_path):
     assert "reply:hello" in buf.getvalue()
 
 
-def test_acp_serve_fails_loud_without_backend():
-    """serve must fail at startup (never hang at the first prompt) when no
-    LLM backend is configured — and must NOT reach stdio serving."""
+def test_acp_serve_starts_without_a_backend():
+    """serve must reach stdio even with NO LLM backend configured.
+
+    This test asserted the OPPOSITE until 2026-08-07 — serve awaited
+    `get_provider()` at startup and raised there. That is the wrong place: an
+    ACP client handshakes and may `authenticate` before any model is needed, and
+    the ACP registry's CI verifier runs exactly that handshake on a machine with
+    no fleet, no Ollama and no API key. Exiting at startup makes it time out
+    waiting for `initialize`, which reads as a protocol bug rather than a
+    missing backend, and the entry is rejected.
+
+    Loudness is not lost, it MOVED: the first `session/prompt` resolves the
+    provider, so a missing backend becomes a real turn error the user sees in
+    their editor — with a session to see it in.
+    """
     args = argparse.Namespace(name="x", version="1", model=None)
     serve_calls = []
     with patch(
@@ -127,11 +139,14 @@ def test_acp_serve_fails_loud_without_backend():
     ):
         with patch(
             "adk.acp_server.serve_stdio",
-            new=AsyncMock(side_effect=lambda *a, **k: serve_calls.append(a)),
+            new=AsyncMock(side_effect=lambda agent, **kw: serve_calls.append(agent)),
         ):
-            with pytest.raises(RuntimeError, match="no LLM backend"):
-                _cmd_acp_serve(args)
-    assert serve_calls == [], "serve must not reach stdio when no backend exists"
+            rc = _cmd_acp_serve(args)
+    assert rc == 0
+    assert len(serve_calls) == 1, (
+        "serve must hand control to stdio with no backend — otherwise the ACP "
+        "registry's handshake times out and the agent is unlistable"
+    )
 
 
 def test_acp_serve_reaches_stdio_with_backend():

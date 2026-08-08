@@ -4,7 +4,8 @@
 Reads the canonical version from aither-adk/pyproject.toml and updates:
   - packaging/npm/package.json
   - packaging/brew/aither-adk.rb
-  - packaging/winget/Aitherium.ADK.yaml
+  - packaging/winget/*.yaml  (AitherShell — ASSERTED, not bumped: it versions separately)
+  - server.json (MCP Registry entry — carries the version TWICE)
 
 Usage:
     python packaging/sync_versions.py           # Sync versions
@@ -98,6 +99,51 @@ def get_version() -> str:
     return match.group(1)
 
 
+def sync_server_json(version: str, check: bool) -> bool:
+    """Update server.json — the MCP Registry entry.
+
+    TWO versions live in this file and BOTH must match the package: the server
+    version and `packages[0].version`. The registry rejects a package version
+    that is not on PyPI, so a half-bumped file fails the publish with a message
+    about the registry rather than about us.
+
+    Also asserts the ownership marker in README.md still names this server. The
+    registry proves ownership by fetching the PUBLISHED PyPI description and
+    looking for `mcp-name: <name>`; if the two drift, publishing fails with an
+    opaque verification error and nothing local shows a problem.
+    """
+    root = Path(__file__).parent.parent
+    path = root / "server.json"
+    if not path.exists():
+        print("  server.json: absent (skipped)")
+        return True
+    data = json.loads(path.read_text(encoding="utf-8"))
+    pkgs = data.get("packages") or [{}]
+
+    ok = True
+    marker = f"mcp-name: {data.get('name', '')}"
+    readme = root / "README.md"
+    if readme.exists() and marker not in readme.read_text(encoding="utf-8"):
+        print(f"  server.json: README.md has no '{marker}' — MCP Registry "
+              f"ownership verification WILL fail")
+        ok = False
+
+    if data.get("version") == version and pkgs[0].get("version") == version:
+        print(f"  server.json: already {version}")
+        return ok
+    if check:
+        print(f"  server.json: {data.get('version')}/{pkgs[0].get('version')} "
+              f"-> {version} (needs update)")
+        return False
+    data["version"] = version
+    if pkgs and pkgs[0]:
+        pkgs[0]["version"] = version
+        data["packages"] = pkgs
+    path.write_text(json.dumps(data, indent=2) + chr(10), encoding="utf-8")
+    print(f"  server.json: updated to {version}")
+    return ok
+
+
 def sync_npm(version: str, check: bool) -> bool:
     """Update packaging/npm/package.json."""
     path = Path(__file__).parent / "npm" / "package.json"
@@ -148,47 +194,58 @@ def sync_brew(version: str, check: bool) -> bool:
     )
     path.write_text(text, encoding="utf-8")
     print(f"  brew: updated to {version}")
-    print(f"  brew: SHA256 set to PLACEHOLDER — update after PyPI publish")
+    print("  brew: SHA256 set to PLACEHOLDER — update after PyPI publish")
     return True
 
 
 def sync_winget(version: str, check: bool) -> bool:
-    """Update packaging/winget/Aitherium.ADK.yaml."""
-    path = Path(__file__).parent / "winget" / "Aitherium.ADK.yaml"
-    text = path.read_text(encoding="utf-8")
+    """ASSERT the winget manifests are consistent. Does NOT bump them.
 
-    old_match = re.search(r'^PackageVersion:\s*(.+)$', text, re.MULTILINE)
-    old_ver = old_match.group(1).strip() if old_match else None
+    This used to stamp aither-adk's version and a fabricated
+    `https://aitherium.com/download/aither-adk-<v>-win64.exe` into a manifest —
+    for a product that has no Windows binary. That URL 404s, and winget installs
+    executables, not pip packages, so `Aitherium.ADK` was unsubmittable by
+    construction while a version-sync kept it looking maintained.
 
-    if old_ver == version:
-        print(f"  winget: already {version}")
+    The winget package is **AitherShell**, which versions INDEPENDENTLY of the
+    adk (1.16.0 vs 3.0.5). Tying it to this repo's version would be wrong on
+    every release. So: assert internal consistency, bump nothing.
+
+    Checked: all three files exist and agree on PackageIdentifier and
+    PackageVersion, and the installer carries a real sha256 rather than a
+    placeholder — a placeholder is a submission winget's validator rejects after
+    downloading the artifact.
+    """
+    d = Path(__file__).parent / "winget"
+    files = sorted(d.glob("*.yaml")) if d.exists() else []
+    if not files:
+        print("  winget: no manifests (skipped)")
         return True
-    if check:
-        print(f"  winget: {old_ver} -> {version} (needs update)")
-        return False
 
-    text = re.sub(
-        r'^PackageVersion:.*$',
-        f'PackageVersion: {version}',
-        text,
-        flags=re.MULTILINE,
-    )
-    text = re.sub(
-        r'InstallerUrl:.*$',
-        f'InstallerUrl: https://aitherium.com/download/aither-adk-{version}-win64.exe',
-        text,
-        flags=re.MULTILINE,
-    )
-    text = re.sub(
-        r'InstallerSha256:.*$',
-        'InstallerSha256: PLACEHOLDER_SHA256',
-        text,
-        flags=re.MULTILINE,
-    )
-    path.write_text(text, encoding="utf-8")
-    print(f"  winget: updated to {version}")
-    print(f"  winget: SHA256 set to PLACEHOLDER — update after build")
-    return True
+    ids, vers, ok = set(), set(), True
+    for f in files:
+        t = f.read_text(encoding="utf-8")
+        m = re.search(r"^PackageIdentifier:\s*(\S+)", t, re.M)
+        v = re.search(r"^PackageVersion:\s*(\S+)", t, re.M)
+        if m:
+            ids.add(m.group(1))
+        if v:
+            vers.add(v.group(1).strip('"'))
+        if "PLACEHOLDER" in t:
+            print(f"  winget: {f.name} still has a PLACEHOLDER — winget downloads "
+                  f"the installer and hash-checks it, so this would be rejected")
+            ok = False
+    if len(ids) > 1:
+        print(f"  winget: manifests disagree on PackageIdentifier: {sorted(ids)}")
+        ok = False
+    if len(vers) > 1:
+        print(f"  winget: manifests disagree on PackageVersion: {sorted(vers)}")
+        ok = False
+    if ok:
+        print(f"  winget: {', '.join(sorted(ids)) or '?'} "
+              f"{', '.join(sorted(vers)) or '?'} consistent "
+              f"(versioned with AitherShell, not this package)")
+    return ok
 
 
 def sync_init(version: str, check: bool) -> bool:
@@ -229,6 +286,7 @@ def main():
         all_ok &= sync_npm(version, check)
         all_ok &= sync_brew(version, check)
         all_ok &= sync_winget(version, check)
+        all_ok &= sync_server_json(version, check)
 
     # Runs in --check too: a PUBLISHED version whose formula still carries a
     # placeholder digest is a broken `brew install`, and used to pass silently.

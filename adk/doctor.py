@@ -146,7 +146,12 @@ def check_dgx() -> tuple[bool, list[str]]:
             except Exception:
                 pass
 
-    # Not configured, not found — that's fine
+    # Not configured and not found. This is a perfectly normal state, but it
+    # must still SAY so: run_doctor counts 11 checks, and a check that returns
+    # falsy while printing nothing is invisible — the user is told "8/11" with
+    # only one visible problem and no way to find the other two. A diagnostic
+    # whose own summary disagrees with its output teaches people to ignore it.
+    _warn("DGX/Remote: none configured (set AITHER_DGX_URL if you have one)")
     return False, []
 
 
@@ -171,6 +176,9 @@ def check_cloud_keys() -> bool:
     if keys_found:
         _ok(f"Cloud APIs: {', '.join(keys_found)}")
         return True
+    # Same rule as check_dgx: a counted check must be visible. Silent absence
+    # is what made the summary unreconcilable with the screen.
+    _warn("Cloud APIs: no keys set (ANTHROPIC_API_KEY / OPENAI_API_KEY / DEEPSEEK_API_KEY)")
     return False
 
 
@@ -387,6 +395,29 @@ def check_packs() -> bool:
     return not broken
 
 
+#: The checks `cmd_doctor` counts, as (label, callable).
+#:
+#: Module-level on purpose: the summary prints "<passed>/<len(DOCTOR_CHECKS)>",
+#: so a check that returns falsy WITHOUT printing anything is arithmetic the
+#: user cannot reconcile with the screen — measured 2026-08-07 as "8/11 checks
+#: passed" above 10 visible lines, with two of the three failures invisible.
+#: tests/test_doctor_summary_reconciles.py iterates THIS list and asserts each
+#: entry says something; keeping it inline in cmd_doctor let the test drift.
+DOCTOR_CHECKS: list[tuple[str, object]] = [
+    ("Python", check_python),
+    ("Version", check_version),
+    ("GPU", check_gpu),
+    ("Docker", check_docker),
+    ("Ollama", lambda: check_ollama()[0]),
+    ("vLLM", lambda: check_vllm()[0]),
+    ("DGX/Remote", lambda: check_dgx()[0]),
+    ("API Key", check_api_key),
+    ("Cloud APIs", check_cloud_keys),
+    ("Disk", check_disk),
+    ("Packs", check_packs),
+]
+
+
 def cmd_doctor(_args=None) -> int:
     """Run all health checks."""
     from adk import __version__
@@ -399,19 +430,7 @@ def cmd_doctor(_args=None) -> int:
     checks = 0
     passed = 0
 
-    for name, fn in [
-        ("Python", check_python),
-        ("Version", check_version),
-        ("GPU", check_gpu),
-        ("Docker", check_docker),
-        ("Ollama", lambda: check_ollama()[0]),
-        ("vLLM", lambda: check_vllm()[0]),
-        ("DGX/Remote", lambda: check_dgx()[0]),
-        ("API Key", check_api_key),
-        ("Cloud APIs", check_cloud_keys),
-        ("Disk", check_disk),
-        ("Packs", check_packs),
-    ]:
+    for name, fn in DOCTOR_CHECKS:
         checks += 1
         try:
             if fn():

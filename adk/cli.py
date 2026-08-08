@@ -12296,12 +12296,6 @@ def _register_commands(sub):
     enroll_p.add_argument("--no-heartbeat", action="store_true", help="Skip background heartbeat")
     enroll_p.add_argument("--force", action="store_true", help="Re-enroll even if already registered")
 
-    # adk pair <CODE> — node-initiated pairing (the no-login sibling of enroll: the
-    # 6-character code from the portal's "Add local node" flow IS the credential).
-    pair_p = sub.add_parser("pair", help="Pair this machine with the portal using a pairing code")
-    pair_p.add_argument("code", help="6-character code shown by the portal")
-    pair_p.add_argument("--portal", help="Portal URL (default: portal.aitherium.com)")
-
     # aither host — one command: serve a self-hosted agent + connect it to your fleet
     host_p = sub.add_parser(
         "host",
@@ -13244,6 +13238,14 @@ def _register_commands(sub):
     acp_serve_p.add_argument(
         "--model", default=None, help="LLM model/backend for the served agent (default: auto-detect)"
     )
+    # Terminal Auth (AUTHENTICATION.md): an ACP client re-launches the agent
+    # with the authMethod's `args` instead of its normal ones. `aither-terminal`
+    # advertises ["acp", "login"], so this subcommand MUST exist — a method
+    # naming a command that is not there fails as "command not found" inside the
+    # editor, where nobody sees it.
+    acp_sub.add_parser(
+        "login", help="Interactive AitherIdentity sign-in (ACP Terminal Auth entrypoint)"
+    )
     acp_connect_p = acp_sub.add_parser(
         "connect", help="Connect to an external ACP agent and report its identity"
     )
@@ -13737,9 +13739,18 @@ def _cmd_acp_serve(args) -> int:
 
     async def _run() -> None:
         llm = LLMRouter(model=args.model) if args.model else LLMRouter()
-        # Fail LOUD at startup if no LLM backend is configured — never hang at
-        # the first prompt with no way to answer.
-        await llm.get_provider()
+        # Backend resolution is DEFERRED to the first prompt, on purpose.
+        #
+        # This used to `await llm.get_provider()` here so a missing backend
+        # failed loudly at startup. That is the wrong place: `initialize` and
+        # `authenticate` need no model, and an ACP client — including the ACP
+        # registry's CI verifier, which handshakes on a machine with no fleet,
+        # no Ollama and no API key — sees the process exit before it can read
+        # the `authMethods` it is there to check. The failure surfaces as
+        # "timeout waiting for initialize", i.e. as a protocol bug.
+        #
+        # Loudness is preserved where it belongs: the first `session/prompt`
+        # resolves the provider and its failure becomes a real turn error.
         agent = AitherAgent(
             name=args.name,
             llm=llm,
@@ -13755,6 +13766,64 @@ def _cmd_acp_serve(args) -> int:
     except KeyboardInterrupt:
         pass
     return 0
+
+
+def _cmd_acp_login(args) -> int:
+    """ACP **Terminal Auth** entrypoint — interactive AitherIdentity sign-in.
+
+    An ACP client that picks the `aither-terminal` auth method re-launches this
+    process with the method's `args` (`["acp", "login"]`) in a real terminal, so
+    everything here must be visible on a TTY and must exit non-zero on failure —
+    a login that prints nothing and exits 0 tells the editor the user is signed
+    in when they are not.
+    """
+    import asyncio
+
+    from adk.auth import AuthError, begin_device_login, finish_device_login
+
+    async def _run() -> int:
+        try:
+            challenge = await begin_device_login()
+        except AuthError as e:
+            print(f"Could not start sign-in: {e}")
+            return 1
+        except Exception as e:  # noqa: BLE001 — network/DNS/proxy land here
+            # `{e}` alone printed "Could not reach AitherIdentity:" with NOTHING
+            # after it, because several httpx errors carry an empty str(). A
+            # failure message that names no cause is barely better than silence.
+            print(f"Could not reach AitherIdentity: {type(e).__name__}: {e}".rstrip(": "))
+            return 1
+
+        print()
+        print("  Sign in to Aitherium")
+        print(f"    1. open  {challenge.verification_uri}")
+        print(f"    2. enter {challenge.user_code}")
+        print()
+        try:
+            import webbrowser
+
+            webbrowser.open(challenge.verification_uri_complete)
+        except Exception as e:  # noqa: BLE001 — headless box has no browser
+            # Not fatal: the URL and code are printed above and are enough. Say
+            # so rather than swallowing it, or a user on a box where the browser
+            # never opens has no way to tell that was expected.
+            print(f"  (could not open a browser here: {e} — use the link above)")
+
+        print("  Waiting for approval...")
+        try:
+            creds = await finish_device_login(challenge)
+        except AuthError as e:
+            print(f"  Sign-in failed: {e}")
+            return 1
+        who = (creds.user or {}).get("email") or (creds.user or {}).get("username") or ""
+        print(f"  Signed in{f' as {who}' if who else ''}.")
+        return 0
+
+    try:
+        return asyncio.run(_run())
+    except KeyboardInterrupt:
+        print("\n  Sign-in cancelled.")
+        return 1
 
 
 def _cmd_acp_connect(args) -> int:
@@ -14080,9 +14149,6 @@ def main():
         sys.exit(cmd_onboard(args))
     elif args.command == "enroll":
         sys.exit(cmd_enroll(args))
-    elif args.command == "pair":
-        from adk.node_pairing import cmd_pair
-        sys.exit(cmd_pair(args))
     elif args.command == "host":
         sys.exit(cmd_host(args))
     elif args.command == "integrate":
@@ -14190,6 +14256,8 @@ def main():
         acp_cmd = getattr(args, "acp_command", None)
         if acp_cmd == "serve":
             sys.exit(_cmd_acp_serve(args))
+        elif acp_cmd == "login":
+            sys.exit(_cmd_acp_login(args))
         elif acp_cmd == "connect":
             sys.exit(_cmd_acp_connect(args))
         elif acp_cmd == "prompt":
@@ -14199,9 +14267,10 @@ def main():
         elif acp_cmd == "config":
             sys.exit(_cmd_acp_config(args))
         else:
-            print("Usage: adk acp [serve|connect|prompt|list-sessions|config]")
+            print("Usage: adk acp [serve|login|connect|prompt|list-sessions|config]")
             print()
             print("  serve          Serve an AitherOS agent to ACP editors (JetBrains/Zed/...)")
+            print("  login          Interactive AitherIdentity sign-in (ACP Terminal Auth)")
             print("  connect        Connect to an external ACP agent and report its identity")
             print("  prompt         Prompt an external ACP agent once and print its reply")
             print("  list-sessions  List an external ACP agent's sessions")

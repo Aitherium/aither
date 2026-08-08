@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
 AitherADK bootstrap installer (Windows) — no Python required.
 
