@@ -3504,6 +3504,11 @@ def cmd_onboard(args):
     if getattr(args, 'webgpu', False):
         return _onboard_webgpu(args)
 
+    # ── Discord mode: automated onboarding — deploy the agent as a Discord bot ──
+    if getattr(args, 'discord', False):
+        from adk.onboard_discord import onboard_discord
+        return onboard_discord(args)
+
     async def _onboard():
         # Inline ProductDetector (no AitherOS lib dependency)
         from pathlib import Path
@@ -12271,6 +12276,18 @@ def _register_commands(sub):
     onboard_p.add_argument("--pack", default="openclaw", help="Pack to install (default: openclaw)")
     onboard_p.add_argument("--webgpu", action="store_true",
         help="Self-bootstrap onto in-browser WebGPU inference (no server model — the GUI runs the model on the user's GPU)")
+    onboard_p.add_argument("--discord", action="store_true",
+        help="Automated onboarding: deploy your agent as a Discord bot (validate token live, print invite link, verify identity/tools, optional --run)")
+    onboard_p.add_argument("--identity", default=None,
+        help="Agent identity for the Discord bot (default: $ADK_AGENT or 'aither')")
+    onboard_p.add_argument("--token", default=None,
+        help="Discord bot token (or set DISCORD_BOT_TOKEN)")
+    onboard_p.add_argument("--tools-module", default=None,
+        help="optional module path whose @tool tools register (e.g. pack.tools.shop)")
+    onboard_p.add_argument("--run", action="store_true",
+        help="launch the Discord bot after onboarding (stays connected)")
+    onboard_p.add_argument("--skip-pack-install", action="store_true",
+        help="don't `adk install` the --pack (assume it's already installed)")
 
     # adk enroll — register workstation with control plane
     enroll_p = sub.add_parser("enroll", help="Register this workstation with the control plane")
