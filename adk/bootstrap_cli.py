@@ -1,6 +1,6 @@
 """``adk setup-all`` — one command to install / set up all AitherOS client products.
 
-Installs, in dependency order, whichever of the five client products are requested:
+Installs, in dependency order, whichever of the eight client products are requested:
 
   1. aither-adk[shell,platform,node]  — this SDK + extras (pip; also brings AitherNode)
   2. AitherShell CLI                  — npm ``@aitherium/shell-cli`` (if Node present)
@@ -8,6 +8,12 @@ Installs, in dependency order, whichever of the five client products are request
   4. AitherConnect                    — federation bundle (setup hint / wizard)
   5. AitherZero public stack          — heavy; opt-in via ``--with-stack`` (delegates to
                                         ``adk setup --stack``)
+  6. awgit                            — semantic VCS on top of git (edit-ops on stable
+                                        node ids, verified-identity attribution, differential
+                                        sync; github.com/aitherium/awgit)
+  7. aitherkvcache                    — near-optimal KV-cache quantization lib
+                                        (github.com/aitherium/aitherkvcache)
+  8. aither-skills                    — the agent skill catalog (github.com/aitherium/aither-skills)
 
 Design: this orchestrator calls each product's REAL install entry point over subprocess
 (pip / npm / pwsh / adk) rather than reimplementing any of them — so it never drifts from
@@ -22,9 +28,13 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 
 # Canonical product ids (order = dependency/install order).
-PRODUCTS = ["adk", "shell", "node", "connect", "aitherzero"]
+PRODUCTS = [
+    "adk", "shell", "node", "connect", "aitherzero",
+    "awgit", "aitherkvcache", "aither-skills",
+]
 
 # pip extras installed with the SDK (shell CLI + platform helpers + node/MCP gateway).
 _ADK_EXTRAS = "shell,platform,node"
@@ -158,12 +168,80 @@ def _step_aitherzero(ctx: _Ctx) -> StepResult:
     return _run(ctx, cmd, "aitherzero", f"adk setup --stack {ctx.with_stack}")
 
 
+def _step_awgit(ctx: _Ctx) -> StepResult:
+    """awgit — semantic VCS on top of git (github.com/aitherium/awgit).
+
+    Every commit becomes an edit-op keyed on stable node ids, with a verified
+    GitHub identity, content-addressed bodies, and differential sync. Install
+    the package, then wire the chained post-commit capture hook if the current
+    directory is a git worktree (best-effort bonus — a non-git cwd is fine).
+    """
+    res = _run(ctx, [sys.executable, "-m", "pip", "install", "-U", "awgit"],
+               "awgit", "pip install awgit (semantic VCS on top of git)")
+    if res.status == "failed":
+        # Not on PyPI yet → install straight from the public repo.
+        res = _run(ctx, [sys.executable, "-m", "pip", "install", "-U",
+                         "git+https://github.com/aitherium/awgit.git"],
+                   "awgit", "pip install awgit from github.com/aitherium/awgit")
+    if res.status == "ok" and not ctx.dry_run and _have("awgit"):
+        hooks = _run(ctx, ["awgit", "hooks", "install"],
+                     "awgit", "awgit hooks install (chained post-commit capture)")
+        if hooks.status == "ok":
+            res.detail = f"{res.detail}; hooks installed"
+    return res
+
+
+def _step_aitherkvcache(ctx: _Ctx) -> StepResult:
+    """aitherkvcache — near-optimal KV-cache quantization (github.com/aitherium/aitherkvcache)."""
+    res = _run(ctx, [sys.executable, "-m", "pip", "install", "-U", "aither-kvcache"],
+               "aitherkvcache", "pip install aither-kvcache (sub-byte KV-cache quantization)")
+    if res.status == "failed":
+        res = _run(ctx, [sys.executable, "-m", "pip", "install", "-U",
+                         "git+https://github.com/aitherium/aitherkvcache.git"],
+                   "aitherkvcache", "pip install aither-kvcache from github.com/aitherium/aitherkvcache")
+    return res
+
+
+def _step_aither_skills(ctx: _Ctx) -> StepResult:
+    """aither-skills — the agent skill catalog (github.com/aitherium/aither-skills).
+
+    Clones the catalog into ``~/.aither/skills`` so agent tools (Claude Code,
+    an adk agent) can invoke skills like ``/awgit-setup``. Re-clones/pulls are
+    idempotent.
+    """
+    root = Path.home() / ".aither" / "skills"
+    if ctx.dry_run:
+        print(f"  [dry-run] aither-skills: would clone "
+              f"https://github.com/aitherium/aither-skills.git -> {root}")
+        return StepResult("aither-skills", "planned", f"clone into {root}")
+    try:
+        root.parent.mkdir(parents=True, exist_ok=True)
+        if root.exists():
+            proc = subprocess.run(["git", "-C", str(root), "pull", "--ff-only", "-q"],
+                                  capture_output=True, text=True, timeout=600)
+            if proc.returncode == 0:
+                return StepResult("aither-skills", "ok", f"updated {root}")
+        proc = subprocess.run(
+            ["git", "clone", "--depth", "1",
+             "https://github.com/aitherium/aither-skills.git", str(root)],
+            capture_output=True, text=True, timeout=600)
+        if proc.returncode == 0:
+            return StepResult("aither-skills", "ok", f"cloned into {root}")
+        tail = (proc.stderr or proc.stdout or "").strip().splitlines()
+        return StepResult("aither-skills", "failed", tail[-1] if tail else f"exit {proc.returncode}")
+    except Exception as exc:  # noqa: BLE001 — best-effort installer
+        return StepResult("aither-skills", "failed", f"{type(exc).__name__}: {exc}")
+
+
 _STEPS = {
     "adk": _step_adk,
     "shell": _step_shell,
     "node": _step_node,
     "connect": _step_connect,
     "aitherzero": _step_aitherzero,
+    "awgit": _step_awgit,
+    "aitherkvcache": _step_aitherkvcache,
+    "aither-skills": _step_aither_skills,
 }
 
 

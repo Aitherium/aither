@@ -12195,11 +12195,11 @@ def _register_commands(sub):
                            help="Don't save config")
 
     # aither setup
-    # adk setup-all — one command to install ALL client products (adk, shell, node, connect, +stack)
+    # adk setup-all — one command to install ALL client products (adk, shell, node, connect, +stack + ecosystem)
     setup_all_p = sub.add_parser(
-        "setup-all", help="Install/set up all AitherOS client products (adk + shell + node + connect)")
+        "setup-all", help="Install/set up all AitherOS client products (adk + shell + node + connect + ecosystem)")
     setup_all_p.add_argument("--only", default="",
-                             help="Comma list — install ONLY these (adk,shell,node,connect,aitherzero)")
+                             help="Comma list — install ONLY these (adk,shell,node,connect,aitherzero,awgit,aitherkvcache,aither-skills)")
     setup_all_p.add_argument("--skip", default="",
                              help="Comma list — skip these products")
     setup_all_p.add_argument("--with-stack", dest="with_stack", default="", metavar="PROFILE",
