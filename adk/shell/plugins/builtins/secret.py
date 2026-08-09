@@ -17,14 +17,19 @@ Usage:
 Aliases: /secrets, /vault
 
 Reads:
-    AITHER_SECRETS_URL  (default: http://localhost:8111)
-    AITHER_ADMIN_KEY    (or AITHER_INTERNAL_SECRET / AITHER_MASTER_KEY)
+    AITHER_SECRETS_URL  (default: http://127.0.0.1:8001 — the genesis proxy, the
+                         host-reachable path that accepts the session bearer)
+    AITHER_ADMIN_KEY    (or AITHER_INTERNAL_SECRET / AITHER_MASTER_KEY) — the
+                         in-network vault / explicit elevation path
+    ~/.aither/session-bearer — the logged-in session. If you are the owner you
+                         already have platform-wide access; this is the elevation.
 """
 
 from __future__ import annotations
 from adk._tls import tls_verify
 
 import os
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -33,10 +38,13 @@ from adk.shell.plugins import SlashCommand
 
 
 def _resolve_url() -> str:
+    # Host path: the genesis proxy (127.0.0.1:8001) authenticates the logged-in
+    # session and routes to the vault. In-container deployments set
+    # AITHER_SECRETS_URL to the vault directly (e.g. https://aitheros-secrets:8111).
     return (
         os.environ.get("AITHER_SECRETS_URL")
         or os.environ.get("AITHERSECRETS_URL")
-        or "https://localhost:8111"
+        or "http://127.0.0.1:8001"
     ).rstrip("/")
 
 
@@ -48,11 +56,26 @@ def _resolve_admin_key() -> Optional[str]:
     return None
 
 
+def _resolve_bearer() -> Optional[str]:
+    """The logged-in session — the credential that actually works from the host.
+    Read from ~/.aither/session-bearer; never printed."""
+    try:
+        b = (Path.home() / ".aither" / "session-bearer").read_text(encoding="utf-8").strip()
+        return b or None
+    except Exception:
+        return None
+
+
 def _headers() -> Dict[str, str]:
+    """Prefer the explicit admin key (in-network vault / elevation), else fall
+    back to the logged-in session bearer (genesis proxy on the host)."""
     key = _resolve_admin_key()
+    bearer = _resolve_bearer()
     h = {"Content-Type": "application/json"}
     if key:
         h["X-API-Key"] = key
+    elif bearer:
+        h["Authorization"] = f"Bearer {bearer}"
     return h
 
 
@@ -281,7 +304,7 @@ class Secret(SlashCommand):
             resp = await client.get(f"{url}/secrets", headers=_headers())
             resp.raise_for_status()
             data = resp.json()
-        names = data if isinstance(data, list) else data.get("secrets", data.get("names", []))
+        names = data if isinstance(data, list) else data.get("secrets", data.get("names", data.get("keys", [])))
         if not names:
             return "(no secrets stored)"
         # If list of dicts, extract names
