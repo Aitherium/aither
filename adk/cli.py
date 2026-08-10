@@ -1312,170 +1312,6 @@ def _autostart_up_argv(identity: str, port: int, provider: str, offline: bool) -
     return argv
 
 
-def cmd_sandbox(args) -> int:
-    """Self-host AitherSandbox and link it to your portal (optional safe-testing).
-
-    ``adk sandbox up`` deploys the aitheros-sandbox service container on THIS
-    machine, opens a Cloudflare quick-tunnel, and registers the sandbox with the
-    portal so aitherium.com can route "try it in your sandbox" to you. ``adk
-    sandbox down`` stops it; ``adk sandbox status`` shows the linked URL.
-
-    The sandbox is OPTIONAL and self-hosted by design — this machine keeps all
-    test/eval execution local; only the linked tunnel URL reaches the portal.
-    """
-    action = getattr(args, "sandbox_action", "status")
-    if action == "up":
-        return _cmd_sandbox_up(args)
-    if action == "down":
-        return _cmd_sandbox_down(args)
-    return _cmd_sandbox_status(args)
-
-
-def _sandbox_status_path() -> str:
-    return os.path.join(os.path.expanduser("~/.aither"), "adk-sandbox.json")
-
-
-def _cmd_sandbox_status(args) -> int:
-    import json as _json
-    import subprocess as _sp
-    st = {}
-    try:
-        with open(_sandbox_status_path(), encoding="utf-8") as f:
-            st = _json.load(f)
-    except Exception:
-        pass
-    if not st:
-        print("  [·] AitherSandbox is not deployed on this machine — 'adk sandbox up' to deploy")
-        return 0
-    try:
-        r = _sp.run(["docker", "inspect", "-f", "{{.State.Running}}", "aitheros-sandbox"],
-                    capture_output=True, text=True, timeout=15)
-        running = r.stdout.strip() == "true"
-    except Exception:
-        running = False
-    print(f"  [+] AitherSandbox: {'running' if running else 'stopped'}")
-    print(f"      local:  http://localhost:{st.get('port', 8131)}")
-    print(f"      public: {st.get('public_url') or '(none — tunnel down)'}")
-    print(f"      portal: {'registered' if st.get('registered') else 'not registered'}")
-    return 0
-
-
-def _cmd_sandbox_up(args) -> int:
-    import json as _json
-    import socket
-    import subprocess as _sp
-    import time as _time
-
-    import httpx
-
-    from adk import agent_daemon as daemon
-
-    non_interactive = bool(getattr(args, "yes", False)) or not sys.stdin.isatty()
-    offline = os.environ.get("AITHER_OFFLINE", "").lower() in ("1", "true", "yes")
-    port = getattr(args, "port", None) or 8131
-    image = os.environ.get("AITHER_SANDBOX_IMAGE", "aitheros-sandbox:latest")
-    portal = getattr(args, "portal", "https://veil.aitherium.com")
-    portal_token = getattr(args, "token", "") or os.environ.get("AITHER_PORTAL_TOKEN", "")
-    name = (getattr(args, "name", "") or "").strip() or re.sub(
-        r"[^a-z0-9_-]", "-", f"{socket.gethostname()}-sandbox".lower())
-
-    def _out(code: int, obj: dict) -> int:
-        if non_interactive:
-            print(json.dumps(obj))
-        return code
-
-    # 1) Deploy the sandbox container (idempotent: remove + recreate).
-    try:
-        _sp.run(["docker", "rm", "-f", "aitheros-sandbox"], capture_output=True, text=True, timeout=20)
-    except Exception:
-        pass
-    try:
-        r = _sp.run(
-            ["docker", "run", "-d", "--name", "aitheros-sandbox",
-             "--restart", "unless-stopped", "-p", f"{port}:8131", image],
-            capture_output=True, text=True, timeout=300,
-        )
-    except FileNotFoundError:
-        return _out(4, {"ok": False, "error": "docker_missing",
-                        "hint": "AitherSandbox self-hosting needs Docker on this machine"})
-    if r.returncode != 0:
-        return _out(4, {"ok": False, "error": "docker run failed",
-                        "detail": r.stderr.strip()[:400],
-                        "hint": "set AITHER_SANDBOX_IMAGE to a published aitheros-sandbox image"})
-
-    # 2) Tunnel (skip for offline / --no-register).
-    public_url = None
-    tunnel_pid = None
-    if not offline and not getattr(args, "no_register", False):
-        cf = _find_cloudflared() or _ensure_cloudflared()
-        if cf:
-            tunnel_log = os.path.join(os.path.expanduser("~/.aither"), "adk-sandbox-tunnel.log")
-            tunnel_pid = daemon.spawn_detached(
-                [cf, "tunnel", "--url", f"http://localhost:{port}", "--no-autoupdate"], tunnel_log)
-            public_url = daemon.tail_for_pattern(
-                tunnel_log, r"https://[a-z0-9-]+\.trycloudflare\.com", timeout=45)
-
-    # 3) Register the sandbox with the portal.
-    registered = False
-    if public_url and not offline:
-        try:
-            body = {"name": name, "invoke_url": public_url, "reach": "tunnel",
-                    "agent_type": "sandbox", "token": portal_token, "port": port}
-            hdrs = {"Content-Type": "application/json"}
-            if portal_token:
-                hdrs["Authorization"] = f"Bearer {portal_token}"
-            rr = httpx.post(f"{portal}/api/genesis/v1/agent/fleet/register",
-                            json=body, headers=hdrs, timeout=20)
-            registered = rr.status_code < 300
-        except (httpx.HTTPError, OSError):
-            registered = False
-
-    try:
-        with open(_sandbox_status_path(), "w", encoding="utf-8") as f:
-            _json.dump({"port": port, "public_url": public_url, "registered": registered,
-                        "tunnel_pid": tunnel_pid, "updated": _time.time()}, f)
-    except Exception:
-        pass
-
-    obj = {"ok": True, "port": port, "local_url": f"http://localhost:{port}",
-           "public_url": public_url, "registered": registered}
-    if non_interactive:
-        print(json.dumps(obj))
-    else:
-        print(f"  [+] AitherSandbox up on :{port}")
-        print(f"      local:  http://localhost:{port}")
-        if public_url:
-            print(f"      public: {public_url}")
-        if registered:
-            print("      portal: registered — aitherium.com can route try-it-in-sandbox to you")
-        else:
-            print("      portal: NOT registered (tunnel/portal unreachable) — sandbox is local-only")
-    return 0
-
-
-def _cmd_sandbox_down(args) -> int:
-    import json as _json
-    import subprocess as _sp
-    try:
-        _sp.run(["docker", "rm", "-f", "aitheros-sandbox"], capture_output=True, text=True, timeout=60)
-    except Exception:
-        pass
-    try:
-        with open(_sandbox_status_path(), encoding="utf-8") as f:
-            st = _json.load(f)
-        if st.get("tunnel_pid"):
-            from adk import agent_daemon as daemon
-            daemon.kill_pid(st["tunnel_pid"])
-    except Exception:
-        pass
-    try:
-        os.remove(_sandbox_status_path())
-    except Exception:
-        pass
-    print("  [x] AitherSandbox stopped (container removed, tunnel closed)")
-    return 0
-
-
 def cmd_bonsai_local(args) -> int:
     """One command: run Bonsai-27B locally on :8090, reachable as `--backend bonsai-local`.
 
@@ -11907,22 +11743,6 @@ def _register_commands(sub):
     bonsai_p.add_argument("--stop", action="store_true", help="Stop and remove the local Bonsai container")
 
     # adk down — stop the agent started by `adk up`
-    # adk sandbox — self-host AitherSandbox and link it to your portal (optional)
-    sb_p = sub.add_parser("sandbox",
-                          help="Self-host AitherSandbox + link it to your portal (optional safe-testing)")
-    sb_sub = sb_p.add_subparsers(dest="sandbox_action")
-    sb_up = sb_sub.add_parser("up", help="Deploy the sandbox container, open a tunnel, register with the portal")
-    sb_up.add_argument("--name", help="Portal label (default: <hostname>-sandbox)")
-    sb_up.add_argument("--port", type=int, default=8131, help="Local port (default: 8131)")
-    sb_up.add_argument("--yes", "--non-interactive", action="store_true", dest="yes",
-                       help="Non-interactive: machine-readable JSON")
-    sb_up.add_argument("--no-register", action="store_true",
-                       help="Local-only — no tunnel, no portal registration")
-    sb_up.add_argument("--token", help="Portal token for registration (else $AITHER_PORTAL_TOKEN)")
-    sb_up.add_argument("--portal", default="https://veil.aitherium.com", help="Control-plane base URL")
-    sb_sub.add_parser("down", help="Stop the sandbox container + tunnel")
-    sb_sub.add_parser("status", help="Show sandbox state + linked URL")
-
     down_p = sub.add_parser("down", help="Stop the agent + tunnel and remove its autostart")
     down_p.add_argument("--keep-autostart", action="store_true",
                         help="Stop now but leave the reboot-autostart entry in place")
@@ -12195,11 +12015,11 @@ def _register_commands(sub):
                            help="Don't save config")
 
     # aither setup
-    # adk setup-all — one command to install ALL client products (adk, shell, node, connect, +stack + ecosystem)
+    # adk setup-all — one command to install ALL client products (adk, shell, node, connect, +stack)
     setup_all_p = sub.add_parser(
-        "setup-all", help="Install/set up all AitherOS client products (adk + shell + node + connect + ecosystem)")
+        "setup-all", help="Install/set up all AitherOS client products (adk + shell + node + connect)")
     setup_all_p.add_argument("--only", default="",
-                             help="Comma list — install ONLY these (adk,shell,node,connect,aitherzero,awgit,aitherkvcache,aither-skills)")
+                             help="Comma list — install ONLY these (adk,shell,node,connect,aitherzero)")
     setup_all_p.add_argument("--skip", default="",
                              help="Comma list — skip these products")
     setup_all_p.add_argument("--with-stack", dest="with_stack", default="", metavar="PROFILE",
@@ -12511,6 +12331,12 @@ def _register_commands(sub):
     enroll_p.add_argument("--genesis", help="Genesis URL (default: localhost:8001)")
     enroll_p.add_argument("--no-heartbeat", action="store_true", help="Skip background heartbeat")
     enroll_p.add_argument("--force", action="store_true", help="Re-enroll even if already registered")
+
+    # adk pair <CODE> — node-initiated pairing (the no-login sibling of enroll: the
+    # 6-character code from the portal's "Add local node" flow IS the credential).
+    pair_p = sub.add_parser("pair", help="Pair this machine with the portal using a pairing code")
+    pair_p.add_argument("code", help="6-character code shown by the portal")
+    pair_p.add_argument("--portal", help="Portal URL (default: portal.aitherium.com)")
 
     # aither host — one command: serve a self-hosted agent + connect it to your fleet
     host_p = sub.add_parser(
@@ -14279,8 +14105,6 @@ def main():
         cmd_run(args)
     elif args.command == "up":
         sys.exit(cmd_up(args))
-    elif args.command == "sandbox":
-        sys.exit(cmd_sandbox(args))
     elif args.command == "bonsai-local":
         sys.exit(cmd_bonsai_local(args))
     elif args.command == "down":
@@ -14367,6 +14191,9 @@ def main():
         sys.exit(cmd_onboard(args))
     elif args.command == "enroll":
         sys.exit(cmd_enroll(args))
+    elif args.command == "pair":
+        from adk.node_pairing import cmd_pair
+        sys.exit(cmd_pair(args))
     elif args.command == "host":
         sys.exit(cmd_host(args))
     elif args.command == "integrate":

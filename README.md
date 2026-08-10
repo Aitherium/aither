@@ -91,7 +91,6 @@ If you only remember one thing: **`agent.chat()` is the agent.** Everything else
 | Understand the world-model layer | [docs/WORLD_MODEL.md](docs/WORLD_MODEL.md) |
 | Connect agents across machines (relay) | [docs/AITHERRELAY_GUIDE.md](docs/AITHERRELAY_GUIDE.md) |
 | Run a private, local-only companion | [PRIVATE_COMPANION.md](PRIVATE_COMPANION.md) |
-| Install the whole ecosystem (aitherzero · aitherkvcache · aither-skills · awgit) | **[docs/ECOSYSTEM.md](docs/ECOSYSTEM.md)** — one installer, five payloads |
 | See working code | [`examples/`](examples/) — five runnable scripts |
 | See what changed | [CHANGELOG.md](CHANGELOG.md) |
 | Browse rendered docs | [aitherium.github.io/aither-adk](https://aitherium.github.io/aither-adk/) |
