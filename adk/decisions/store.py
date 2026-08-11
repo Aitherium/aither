@@ -192,7 +192,7 @@ class DecisionCard:
     title: str
     summary: str = ""
     detail: str = ""
-    kind: str = "decision"          # decision | blocked | info
+    kind: str = "decision"          # decision | blocked | info | credential
     urgency: str = "normal"
     options: list[DecisionOption] = field(default_factory=list)
     default_key: str = ""
@@ -206,6 +206,12 @@ class DecisionCard:
     answer_note: Optional[str] = None
     answered_at: Optional[float] = None
     answered_via: Optional[str] = None
+    # Credential card fields (kind="credential" only)
+    secret_name: Optional[str] = None      # Vault key (e.g., "STRIPE_API_KEY")
+    credential_format: Optional[str] = None  # "password" | "api_key" | "totp_seed" | "custom"
+    credential_scope: Optional[str] = None   # "platform" | "workspace" | "user"
+    credential_description: Optional[str] = None  # Why we need it (displayed to owner)
+    credential_preset: Optional[str] = None  # e.g., "proton" for multi-field
 
     # ── derived helpers ────────────────────────────────────────────────────────
 
@@ -244,6 +250,40 @@ class DecisionCard:
         data["notes"] = [n.to_dict() for n in self.notes]
         return data
 
+    #: What a credential card's answer is allowed to say. The VALUE never travels
+    #: through a card — the card is the ask, the vault is the transport.
+    CREDENTIAL_ANSWER = "credential_provided"
+
+    def to_dict_safe(self) -> dict[str, Any]:
+        """Serialise for anywhere a secret must not go: a log, a wire, a UI.
+
+        `kind="credential"` cards ask the owner for an API key, token or password.
+        The value is meant to reach the vault directly and never touch the card —
+        but `answer` and `answer_note` are free text on a durable JSON file that
+        the daemon serves over HTTP, the popup renders, and the steering mailbox
+        copies into a session transcript. One agent writing the secret into the
+        answer would persist it to all four at once.
+
+        So this scrubs those two fields, plus any typed note, whenever the card is
+        a credential ask. Every other kind is returned unchanged: a normal
+        decision's answer is the whole point of reading it.
+
+        `to_dict()` stays verbatim on purpose — the store must round-trip a card
+        exactly, and a serialiser that silently dropped fields would corrupt the
+        file it just read. Use this at the BOUNDARY, not for persistence.
+        """
+        data = self.to_dict()
+        if (self.kind or "").strip().lower() != "credential":
+            return data
+        if data.get("answer"):
+            data["answer"] = self.CREDENTIAL_ANSWER
+        data["answer_note"] = ""
+        data["notes"] = [
+            {**note, "text": "[redacted — credential card]"}
+            for note in (data.get("notes") or [])
+        ]
+        return data
+
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "DecisionCard":
         return cls(
@@ -268,6 +308,11 @@ class DecisionCard:
                 float(raw["answered_at"]) if raw.get("answered_at") is not None else None
             ),
             answered_via=raw.get("answered_via"),
+            secret_name=raw.get("secret_name"),
+            credential_format=raw.get("credential_format"),
+            credential_scope=raw.get("credential_scope"),
+            credential_description=raw.get("credential_description"),
+            credential_preset=raw.get("credential_preset"),
         )
 
 
@@ -317,6 +362,38 @@ class DecisionStore:
             raise DecisionError("a card must have a title — that is the whole point")
         if card.urgency not in URGENCIES:
             raise DecisionError(f"urgency must be one of {URGENCIES}, got {card.urgency!r}")
+
+        # Credential-specific validation
+        if card.kind == "credential":
+            if card.options:
+                raise DecisionError(
+                    'kind="credential" must not have options; '
+                    'credential value is entered via secure_prompt.py, not from card options'
+                )
+            if card.default_key:
+                raise DecisionError(
+                    'kind="credential" must not have default_key; '
+                    'credentials are not optional answers'
+                )
+            if not card.secret_name:
+                raise DecisionError(
+                    'kind="credential" requires secret_name field '
+                    '(vault key like "STRIPE_API_KEY")'
+                )
+            if not card.credential_format:
+                raise DecisionError(
+                    'kind="credential" requires credential_format '
+                    '("password", "api_key", "totp_seed", or "custom")'
+                )
+            if not card.credential_description:
+                raise DecisionError(
+                    'kind="credential" requires credential_description '
+                    '(explain to owner why we need this credential)'
+                )
+            # Scope is validated against CallerContext at raise time, not here
+            return  # Skip the rest of validation for credential cards
+
+        # Decision/info/blocked card validation
         keys = [o.key.lower() for o in card.options]
         if len(keys) != len(set(keys)):
             raise DecisionError("two options share a key; the owner could not pick between them")
