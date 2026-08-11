@@ -170,10 +170,23 @@ class CardWindow:
         *,
         start_id: str = "",
         card: Optional[DecisionCard] = None,
+        headless: bool = False,
     ) -> None:
         import tkinter as tk
 
         self.tk = tk
+        #: Build the window without ever putting it on the owner's screen.
+        #: The self-test drives a REAL Tk window — that is the point, it is what
+        #: catches a widget option tkinter rejects — but it used to withdraw the
+        #: root only AFTER the constructor had rendered, lifted and (for a `high`
+        #: urgency card) called focus_force(). So every run flashed a window on
+        #: the desktop and ate the owner's keystrokes: reported live on
+        #: 2026-08-10 as "one popup then it completely disappeared immediately",
+        #: twice, while this file's own tests were running. That is the
+        #: focus-stealing class quality gate 1t (STW001) and DC007 exist to
+        #: stop, produced by the checker for the surface those rules protect —
+        #: and the skill tells people to run it, so it was everyone's desktop.
+        self._headless = headless
         self.store = store
         self.answered: Optional[str] = None
         self.handled = 0
@@ -202,6 +215,10 @@ class CardWindow:
 
         root = tk.Tk()
         self.root = root
+        if self._headless:
+            # BEFORE any render, lift or focus_force — withdrawing afterwards is
+            # what made the old self-test flash a window and take focus.
+            root.withdraw()
         root.title(f"AitherOS · {KIND_HEADER.get(self.card.kind, 'DECISION')}")
         root.configure(bg=BG)
         root.attributes("-topmost", True)
@@ -304,13 +321,14 @@ class CardWindow:
             self._drain_context()
 
         self.root.title(f"AitherOS · {KIND_HEADER.get(card.kind, 'DECISION')}")
-        self._place()
+        if not self._headless:
+            self._place()
 
-        if card.urgency in ("high", "critical"):
-            self.root.lift()
-            self.root.focus_force()
-        else:
-            self.root.lift()
+            if card.urgency in ("high", "critical"):
+                self.root.lift()
+                self.root.focus_force()
+            else:
+                self.root.lift()
 
         # Always poll, deadline or not. The first version only ticked when the
         # card had a deadline, so a card answered from the phone, the cockpit or
@@ -990,6 +1008,41 @@ class CardWindow:
             return
         self._advance()
 
+    def _rerender_preserving_reply(self) -> None:
+        """Re-render, and give the owner back the sentence they were typing.
+
+        ``_render()`` rebuilds the body, which reinstates the placeholder in the
+        reply box. Called from the tick — i.e. at an arbitrary moment the owner
+        did not choose — a plain re-render would eat a half-typed steer. Losing
+        the owner's words to absorb somebody else's card would trade one silent
+        loss for another.
+        """
+        text = ""
+        box = getattr(self, "reply", None)
+        if box is not None and not self._reply_empty:
+            try:
+                text = box.get("1.0", "end").strip()
+            except Exception:  # noqa: BLE001 - a dead widget must not kill the tick
+                text = ""
+        had_focus = self._reply_focused
+
+        self._render()
+
+        if not text:
+            return
+        box = getattr(self, "reply", None)
+        if box is None:
+            return
+        try:
+            box.delete("1.0", "end")
+            box.insert("1.0", text)
+            box.configure(fg=TEXT)
+            self._reply_empty = False
+            if had_focus:
+                box.focus_set()
+        except Exception:  # noqa: BLE001 - same
+            return
+
     def _advance(self) -> None:
         self.queue = self._refresh_queue()
         if not self.queue:
@@ -1058,6 +1111,44 @@ class CardWindow:
                 self.root.after_cancel(job)
             except (ValueError, RuntimeError):
                 self._tick_job = None
+
+        # Absorb cards raised by OTHER sessions while this window sits open.
+        #
+        # This is the fix for the defect that made the whole channel look
+        # single-session. ``show_queue`` takes a HARD lock, so a second session's
+        # raise prints "a decision window is already open; it will pick this up"
+        # and exits 0 — but the queue was only re-read on answer/steer/navigate,
+        # never on the tick. An idle window therefore SUPPRESSED every other
+        # session's card while reporting that it had them: measured 2026-08-10,
+        # the owner saw cards from one session at a time and concluded the
+        # feature only worked in one tab. That is the silent-no-op pattern of
+        # `.claude/rules/security-review-patterns.md` §5 living inside the
+        # surface whose entire job is to not lose an ask.
+        try:
+            fresh = self._refresh_queue()
+        except OSError:
+            fresh = []
+        if fresh and {c.id for c in fresh} != {c.id for c in self.queue}:
+            arrived = [c for c in fresh if c.id not in {q.id for q in self.queue}]
+            showing = self.card.id
+            self.queue = fresh
+            self.index = next(
+                (i for i, c in enumerate(fresh) if c.id == showing),
+                min(self.index, len(fresh) - 1),
+            )
+            if arrived:
+                # Say it rather than silently growing the counter: a card that
+                # arrived behind the one on screen is invisible otherwise.
+                plural = "s" if len(arrived) > 1 else ""
+                self._status = (
+                    f"+{len(arrived)} new card{plural} from another session"
+                    f" — Ctrl+→ to see {'them' if plural else 'it'}"
+                )
+                self._status_colour = GOLD
+            # _render() re-arms the tick, so return rather than scheduling a
+            # second chain (see the note at the top of this method).
+            self._rerender_preserving_reply()
+            return
 
         try:
             card = self.store.get(self.card.id) or self.card
@@ -1177,13 +1268,215 @@ def show(card_id: str, store: Optional[DecisionStore] = None) -> int:
     return show_queue(store, start_id=card_id)
 
 
+def _hold_window(card_id: str, seconds: float, report: str) -> int:
+    """Child half of ``--live-multisession``: BE session A's window, for real.
+
+    Takes the real lock, builds a real Tk window, runs a real mainloop so the
+    real ``after()`` tick fires on its own — none of which the in-process
+    self-test exercises, because it calls ``_tick()`` by hand in the same
+    interpreter. Headless so it never reaches the owner's screen; what is being
+    proved is the cross-PROCESS absorb, not the pixels.
+    """
+    import json
+    from pathlib import Path
+
+    store = DecisionStore()
+    out: dict = {"pid": os.getpid(), "seen": [], "held_lock": False}
+    if not acquire_window_lock(store):
+        out["error"] = "could not take the window lock"
+        Path(report).write_text(json.dumps(out), encoding="utf-8")
+        return 2
+    out["held_lock"] = True
+    try:
+        window = CardWindow(store, start_id=card_id, headless=True)
+    except Exception as exc:  # noqa: BLE001 - report it rather than dying mute
+        out["error"] = f"could not build the window: {exc}"
+        Path(report).write_text(json.dumps(out), encoding="utf-8")
+        release_window_lock(store)
+        return 2
+
+    seen: set[str] = set()
+    deadline = time.time() + seconds
+
+    def sample() -> None:
+        for entry in window.queue:
+            seen.add(entry.id)
+        if time.time() >= deadline:
+            window.root.destroy()
+            return
+        window.root.after(200, sample)
+
+    window.root.after(200, sample)
+    try:
+        window.root.mainloop()
+    finally:
+        release_window_lock(store)
+    out["seen"] = sorted(seen)
+    Path(report).write_text(json.dumps(out), encoding="utf-8")
+    return 0
+
+
+def _live_multisession() -> int:
+    """Two REAL processes: does session A's open window absorb session B's card?
+
+    The in-process self-test drives ``_tick()`` by hand, which proves the logic
+    and not the situation. This is the situation: process A holds the lock and
+    runs its own timer, process B raises through the real ``adk decide ask``
+    path, and the question is whether B's card ever reaches A's queue — because
+    when it does not, B's raise still exits 0 and says the card was picked up.
+    That combination is what made the owner believe cards only worked in one
+    terminal tab.
+
+    Windowless and safe to re-run. Exit 0 works, 1 does not, 2 could not judge.
+    """
+    import json
+    import subprocess
+    import tempfile
+    from pathlib import Path
+
+    from adk.decisions.store import DecisionOption, DecisionSource
+
+    root = Path(__file__).resolve().parents[2]
+    problems: list[str] = []
+    # CREATE_NO_WINDOW. Both spawns below are console programs, and this probe
+    # can itself be launched from the detached card path — where a child with no
+    # console gets a NEW one and flashes on the desktop (gate 1t / DC007). A
+    # check for focus-stealing windows that opened one would be self-defeating.
+    no_window = 0x08000000 if os.name == "nt" else 0
+
+    with tempfile.TemporaryDirectory() as tmp:
+        cards = Path(tmp) / "cards"
+        env = dict(os.environ)
+        env["AITHER_DECISIONS_DIR"] = str(cards)
+        env["AITHER_STEER_DIR"] = str(Path(tmp) / "steer")
+        env["PYTHONPATH"] = os.pathsep.join(
+            p for p in (str(root), env.get("PYTHONPATH", "")) if p
+        )
+        store = DecisionStore(cards)
+
+        first = store.create(DecisionCard(
+            id="", title="Session A is showing this one", kind="decision",
+            default_key="n",
+            options=[DecisionOption(key="y", label="Yes"),
+                     DecisionOption(key="n", label="No")],
+            source=DecisionSource(session_id="session-a"),
+        ))
+
+        report = Path(tmp) / "report.json"
+        # Spawned by IMPORT, not `-m`. `python -m adk.decisions.popup` executes a
+        # second copy of this file as `__main__`, so the child would run a
+        # different CardWindow class than the one every other caller imports —
+        # which also makes the probe untestable, because a patch applied to the
+        # importable module never reaches the process being measured.
+        child = subprocess.Popen(  # noqa: S603 - fixed argv, no shell
+            [sys.executable, "-c",
+             "import sys; from adk.decisions.popup import _hold_window; "
+             "sys.exit(_hold_window(sys.argv[1], float(sys.argv[2]), sys.argv[3]))",
+             first.id, "10", str(report)],
+            cwd=str(root), env=env, creationflags=no_window,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+
+        lock = cards / ".window.lock"
+        deadline = time.time() + 25
+        while time.time() < deadline:
+            try:
+                taken = (lock.exists()
+                         and lock.read_text(encoding="utf-8").strip() == str(child.pid))
+            except OSError:
+                # Mid-write by the child. Not a failure — look again next pass.
+                taken = False
+            if taken:
+                break
+            if child.poll() is not None:
+                break
+            time.sleep(0.2)
+        else:
+            child.kill()
+            print("FAIL session A never took the window lock — cannot judge")
+            return 2
+
+        if child.poll() is not None:
+            print(f"FAIL session A died before holding the window: {child.communicate()[1]}")
+            return 2
+
+        # With A holding the lock, B genuinely cannot open its own window. That
+        # is the half that makes a swallowed card unrecoverable rather than
+        # merely late, so assert it rather than assuming it.
+        if acquire_window_lock(store):
+            problems.append("session B could have opened a second window — the lock did not hold")
+
+        raise_proc = subprocess.run(  # noqa: S603 - fixed argv, no shell
+            [sys.executable, "-m", "adk.decisions.cli", "ask",
+             "Raised by session B while session A's window was up",
+             "--kind", "blocked", "--urgency", "high",
+             "--option", "y|Yes|it happens", "--option", "n|No|nothing changes",
+             "--default", "n", "--session", "session-b", "--quiet", "--json"],
+            cwd=str(root), env=env, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=90, creationflags=no_window,
+        )
+        try:
+            second_id = str(json.loads(raise_proc.stdout or "{}").get("id") or "")
+        except ValueError:
+            second_id = ""
+        if not second_id:
+            child.kill()
+            print(f"FAIL session B's raise produced no card id: "
+                  f"{raise_proc.stdout!r} {raise_proc.stderr!r}")
+            return 2
+        if raise_proc.returncode != 0:
+            problems.append(f"session B's raise exited {raise_proc.returncode}")
+
+        try:
+            child.wait(timeout=60)
+        except subprocess.TimeoutExpired:
+            child.kill()
+            print("FAIL session A's window never exited — cannot judge")
+            return 2
+
+        try:
+            data = json.loads(report.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            print(f"FAIL session A wrote no verdict ({exc}) — cannot judge")
+            return 2
+
+        if data.get("error"):
+            print(f"FAIL session A: {data['error']}")
+            return 2
+        if not data.get("held_lock"):
+            print("FAIL session A never held the lock — cannot judge")
+            return 2
+
+        seen = set(data.get("seen") or [])
+        if first.id not in seen:
+            problems.append("session A never saw its OWN card — the probe is not measuring")
+        if second_id not in seen:
+            problems.append(
+                f"session A's open window NEVER absorbed session B's card ({second_id}) — "
+                f"B's raise exited 0 and the ask was lost"
+            )
+
+    if problems:
+        for problem in problems:
+            print(f"FAIL {problem}")
+        return 1
+    print("live multi-session check passed - session A's open window absorbed the card "
+          "session B raised while A held the lock")
+    return 0
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     args = list(argv if argv is not None else sys.argv[1:])
     if not args or args[0] in ("-h", "--help"):
-        print("usage: python -m adk.decisions.popup <card-id> | --next | --self-test")
+        print("usage: python -m adk.decisions.popup <card-id> | --next | --self-test "
+              "| --live-multisession")
         return 0
     if args[0] == "--self-test":
         return _self_test()
+    if args[0] == "--live-multisession":
+        return _live_multisession()
+    if args[0] == "--_hold":  # internal: the child half of --live-multisession
+        return _hold_window(args[1], float(args[2]), args[3])
     store = DecisionStore()
     if args[0] == "--next":
         return show_queue(store)
@@ -1240,12 +1533,19 @@ def _self_test() -> int:
 
         problems: list[str] = []
         try:
-            window = CardWindow(store, start_id=card.id)
+            window = CardWindow(store, start_id=card.id, headless=True)
         except Exception as exc:  # noqa: BLE001
             print(f"FAIL could not build the window: {exc}")
             return 1
-        window.root.withdraw()
         window.root.update()
+
+        # The test must never reach the owner's screen. The card above is
+        # `urgency="high"`, which calls focus_force() on render — so before
+        # `headless` existed, every run of this self-test flashed a window and
+        # ate keystrokes. Assert it, because "I withdrew it afterwards" is what
+        # was believed to be true while it was happening.
+        if window.root.winfo_ismapped():
+            problems.append("the self-test put a real window on the owner's screen")
 
         if window.root.winfo_reqwidth() < 400:
             problems.append(f"window too narrow: {window.root.winfo_reqwidth()}")
@@ -1341,6 +1641,47 @@ def _self_test() -> int:
             problems.append("answering one card closed a window with another still queued")
         elif window.card.id != second.id:
             problems.append(f"did not advance to the next card (showing {window.card.id})")
+
+        # A card raised by ANOTHER SESSION while this window sits open must be
+        # absorbed by it. ``show_queue``'s lock makes this window the only one
+        # that can show anything, so a queue that only refreshed on answer/steer
+        # meant every other session's card was written to disk, reported as
+        # delivered, and never seen — the defect that made the owner believe
+        # cards only worked in one terminal tab. The tick is what must notice.
+        window.reply.event_generate("<FocusIn>")
+        window.root.update()
+        window.reply.delete("1.0", "end")
+        window.reply.insert("1.0", "half-typed steer that must survive")
+        window._reply_empty = False  # noqa: SLF001 - FocusIn already did this for a real user
+        third = store.create(DecisionCard(
+            id="", title="Raised by a DIFFERENT session while the window was up",
+            kind="blocked", urgency="high", default_key="n",
+            options=[DecisionOption(key="y", label="Yes"), DecisionOption(key="n", label="No")],
+            source=DecisionSource(session_id="another-session"),
+        ))
+        window._tick()  # noqa: SLF001 - the poll that must absorb it
+        window.root.update()
+        if not alive():
+            problems.append("absorbing another session's card destroyed the window")
+        else:
+            if third.id not in {c.id for c in window.queue}:
+                problems.append(
+                    "a card raised by another session was NOT absorbed — the window "
+                    "swallowed it while holding the lock that stops it opening its own"
+                )
+            if window.card.id != second.id:
+                problems.append(
+                    "absorbing a new card yanked the owner off the card they were reading"
+                )
+            if "another session" not in (window._status or ""):  # noqa: SLF001
+                problems.append("the new card arrived with nothing on screen saying so")
+            if window._reply_text() != "half-typed steer that must survive":  # noqa: SLF001
+                problems.append("absorbing a card ate the sentence the owner was typing")
+
+        # Put the queue back to one card so the close-on-answer check below is
+        # asserting what it says it is.
+        store.cancel(third.id, note="self-test")
+        window._tick()  # noqa: SLF001
 
         # A card answered on ANOTHER surface (phone, cockpit, another terminal)
         # must close this window rather than leaving buttons for a decision that
