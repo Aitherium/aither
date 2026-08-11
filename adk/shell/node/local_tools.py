@@ -426,3 +426,20 @@ TOOL_DEFINITIONS = [
         "fn": git_log,
     },
 ]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Cross-cutting invariants are applied HERE, at registration, so every consumer
+# inherits them — adk/node/server.py, adk/cli.py, and anything written later.
+# Guarding a dispatcher would guard one caller; this guards all of them.
+# Soft by construction: a guard that cannot run is skipped, so an ADK shipped to
+# a machine with no awgit and no repo behaves exactly as before.
+# See adk/tool_guards.py for why this is a path property and not a rule agents
+# are asked to remember.
+# ─────────────────────────────────────────────────────────────────────────────
+try:
+    from adk.tool_guards import guard_registry as _guard_registry
+
+    TOOL_DEFINITIONS = _guard_registry(TOOL_DEFINITIONS)
+except Exception:  # pragma: no cover - never break tool loading on our own helper
+    pass

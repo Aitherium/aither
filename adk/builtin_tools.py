@@ -1744,19 +1744,58 @@ async def escalate_to_human(
     except Exception:
         pass
 
-    # Standalone fallback: log and return guidance
-    logger.warning(
-        "[ESCALATION] %s | action=%s urgency=%s",
-        reason, action, urgency,
-    )
+    # Standalone: raise a DECISION CARD. This used to be a log line plus
+    # "status": "logged_locally", which is the silent-no-op pattern living in
+    # the one tool whose entire purpose is to reach a person — the agent
+    # reported an escalation, the owner was told nothing, and the run either
+    # stalled or guessed. A card is durable, raises a window the owner can
+    # click, and delivers the answer back to this session.
+    logger.warning("[ESCALATION] %s | action=%s urgency=%s", reason, action, urgency)
+    try:
+        from adk.decisions.agent_tools import raise_card
+
+        card = raise_card(
+            (action or "Approval needed")[:120],
+            summary=reason,
+            kind="blocked",
+            # This tool's vocabulary is low/medium/high/critical; the card's is
+            # low/normal/high/critical. Mapping it wrong would silently downgrade
+            # every "medium" escalation to the quietest tier.
+            urgency={"medium": "normal"}.get(urgency, urgency if urgency in
+                                             ("low", "normal", "high", "critical")
+                                             else "high"),
+            options=[
+                {"key": "approve", "label": "Approve — go ahead",
+                 "consequence": f"I perform: {action or reason}"},
+                {"key": "deny", "label": "Deny — do not do it",
+                 "consequence": "I stop and report what I was about to do."},
+            ],
+            recommend="deny",
+            default="deny",  # fail-closed: no answer must never mean approval
+        )
+    except Exception as exc:  # noqa: BLE001 - escalation must not kill the turn
+        return json.dumps({
+            "status": "escalation_failed",
+            "error": str(exc),
+            "reason": reason,
+            "action": action,
+            "guidance": (
+                "The escalation could NOT be raised to the owner. Do not treat "
+                "this as approval — stop and report that you could not ask."
+            ),
+        })
     return json.dumps({
-        "status": "logged_locally",
+        "status": "awaiting_human",
+        "card_id": card.id,
         "reason": reason,
         "action": action,
-        "urgency": urgency,
+        "urgency": card.urgency,
+        "default_if_unanswered": card.default_key,
         "guidance": (
-            "No AitherOS connection — escalation logged locally. "
-            "Proceed with caution or wait for human input."
+            f"Raised decision card {card.id} to the owner. Poll it with "
+            f"check_human('{card.id}'), or call ask_human(..., wait_seconds=N) "
+            f"next time if you need to block. If nobody answers, the declared "
+            f"default is '{card.default_key}' — which is DENY."
         ),
     })
 
@@ -2032,25 +2071,51 @@ TOOL_CATEGORIES: dict = {
     "formbridge": [],  # populated lazily by _init_formbridge_tools()
     "notebooks": [],  # populated lazily by _init_notebook_tools()
     "persona": [],  # populated lazily by _init_persona_tools()
+    "decisions": [],  # populated lazily by _init_decision_tools()
 }
 
 # Default categories for common identity profiles
 # Every identity gets "self" by default — self-introspection is universally safe and
 # directly addresses Reddit pain ("I asked the agent what it did and it lied").
 IDENTITY_DEFAULTS = {
-    "adk-daemon": ["file_io", "shell", "python", "web", "git", "code", "repowise", "swarm", "graph", "workspace", "notebooks", "safety", "self"],
-    "demiurge": ["file_io", "shell", "python", "web", "git", "code", "repowise", "swarm", "graph", "workspace", "notebooks", "safety", "self"],
-    "analyst": ["file_io", "web", "python", "code", "graph", "structured_ml", "workspace", "notebooks", "safety", "self"],
-    "atlas": ["file_io", "web", "secrets", "code", "graph", "workspace", "notebooks", "safety", "self"],
-    "aither": ["file_io", "shell", "web", "creative", "self"],
-    "lyra": ["file_io", "web", "graph", "workspace", "voice", "safety", "self"],
-    "hydra": ["file_io", "shell", "python", "git", "code", "repowise", "graph", "workspace", "safety", "self"],
-    "prometheus": ["file_io", "shell", "secrets", "git", "workspace", "safety", "self"],
-    "apollo": ["file_io", "shell", "python", "code", "repowise", "graph", "workspace", "safety", "self"],
-    "athena": ["file_io", "web", "secrets", "code", "graph", "workspace", "safety", "self"],
-    "scribe": ["file_io", "web", "code", "repowise", "graph", "workspace", "safety", "self"],
-    "iris": ["file_io", "web", "creative", "workspace", "voice", "safety", "self"],
-    "muse": ["file_io", "web", "creative", "workspace", "voice", "safety", "self"],
+    "adk-daemon": [
+        "file_io", "shell", "python", "web", "git", "code", "repowise", "swarm", "graph",
+        "workspace", "notebooks", "safety", "self", "decisions"
+    ],
+    "demiurge": [
+        "file_io", "shell", "python", "web", "git", "code", "repowise", "swarm", "graph",
+        "workspace", "notebooks", "safety", "self", "decisions"
+    ],
+    "analyst": [
+        "file_io", "web", "python", "code", "graph", "structured_ml", "workspace", "notebooks",
+        "safety", "self", "decisions"
+    ],
+    "atlas": [
+        "file_io", "web", "secrets", "code", "graph", "workspace", "notebooks", "safety",
+        "self", "decisions"
+    ],
+    "aither": ["file_io", "shell", "web", "creative", "self", "decisions"],
+    "lyra": ["file_io", "web", "graph", "workspace", "voice", "safety", "self", "decisions"],
+    "hydra": [
+        "file_io", "shell", "python", "git", "code", "repowise", "graph", "workspace", "safety",
+        "self", "decisions"
+    ],
+    "prometheus": [
+        "file_io", "shell", "secrets", "git", "workspace", "safety", "self", "decisions"
+    ],
+    "apollo": [
+        "file_io", "shell", "python", "code", "repowise", "graph", "workspace", "safety",
+        "self", "decisions"
+    ],
+    "athena": [
+        "file_io", "web", "secrets", "code", "graph", "workspace", "safety", "self", "decisions"
+    ],
+    "scribe": [
+        "file_io", "web", "code", "repowise", "graph", "workspace", "safety", "self",
+        "decisions"
+    ],
+    "iris": ["file_io", "web", "creative", "workspace", "voice", "safety", "self", "decisions"],
+    "muse": ["file_io", "web", "creative", "workspace", "voice", "safety", "self", "decisions"],
 }
 
 
@@ -2120,6 +2185,27 @@ def _init_notebook_tools():
         TOOL_CATEGORIES["notebooks"] = []
 
 
+def _init_decision_tools():
+    """Lazily populate the decisions category (ask the owner, structured).
+
+    This is the channel an ADK agent previously did not have. Standalone,
+    ``escalate_to_human`` wrote a log line and returned "logged_locally" — the
+    owner was never told anything. Cards are durable, they raise a window the
+    owner can click, and the answer is delivered back to the raising session.
+    """
+    if TOOL_CATEGORIES.get("decisions"):
+        return  # Already initialized
+    try:
+        from adk.decisions.agent_tools import DECISION_TOOLS
+        TOOL_CATEGORIES["decisions"] = list(DECISION_TOOLS)
+        for fn in DECISION_TOOLS:
+            TOOL_INTENT_CATEGORIES.setdefault(fn, [])
+        logger.info("Decision-card tools initialized (%d tools)", len(DECISION_TOOLS))
+    except ImportError:
+        logger.debug("Decision tools not available; decisions category remains empty")
+        TOOL_CATEGORIES["decisions"] = []
+
+
 def _init_persona_tools():
     """Lazily populate the persona category (desktop avatar bridge).
 
@@ -2162,12 +2248,16 @@ def register_builtin_tools(
     _init_formbridge_tools()  # lazily populate formbridge category
     _init_notebook_tools()  # lazily populate notebooks category
     _init_persona_tools()  # lazily populate persona category
+    _init_decision_tools()  # lazily populate decisions category
 
     if categories is None and auto:
         # Unknown identities get a minimal, fully-local default. "workspace"
         # tools call a workspace-intelligence service and aren't useful to an
         # unknown standalone agent, so they're opt-in per named identity only.
-        categories = IDENTITY_DEFAULTS.get(agent.name, ["file_io", "web"])
+        # "decisions" IS in the minimal set: an agent that cannot reach its owner
+        # has to guess, and a wrong guess is what the whole channel exists to
+        # prevent. It needs nothing but the filesystem.
+        categories = IDENTITY_DEFAULTS.get(agent.name, ["file_io", "web", "decisions"])
 
     if categories is None:
         categories = list(TOOL_CATEGORIES.keys())
