@@ -32,6 +32,7 @@ module is where it would hide.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -163,7 +164,46 @@ def console_input_enabled() -> bool:
     through typing, and the result is a corrupted command rather than an error.
     An opt-in makes that a decision somebody made once, on purpose.
     """
-    return os.getenv("AITHER_DECISIONS_CONSOLE_INPUT", "").strip().lower() in (
+    raw = os.getenv("AITHER_DECISIONS_CONSOLE_INPUT", "").strip().lower()
+    if raw:
+        # An explicit env value ALWAYS wins, including an explicit "0" — turning
+        # this off for one session must not require editing a file.
+        return raw in ("1", "true", "yes", "on")
+    return _persisted_console_input()
+
+
+def _persisted_console_input() -> bool:
+    """The setting as stored on disk, for processes that never inherited it.
+
+    Env-only was a hole, and it hid the feature's headline failure. A session
+    snapshots its environment at start, so arming this reaches NEW processes
+    only — every Claude Code tab already open (and every popup it spawns) keeps
+    reading "off". Measured 2026-08-11: three answered cards sat undelivered in
+    their mailboxes, the oldest for SEVENTEEN HOURS, while all three sessions
+    were still alive and reachable.
+
+    That combination is what "I answer the card and nothing happens" actually
+    is. The Stop hook holds a turn open for ~50s; measured answer lags that day
+    were 9s, 52s, 72s, 194s and 2097s, so four of five missed it. After the miss
+    the answer only reaches the agent through the mailbox, which is drained by
+    `UserPromptSubmit` — i.e. when the owner types in that terminal. The console
+    tier is the one path that reaches an IDLE session, and it was off.
+
+    Same shape as awgit's `enforcement_on()`, which falls back to the persisted
+    User-scope value for exactly this reason: a setting configured once must not
+    read as "off" to everything already running.
+    """
+    try:
+        raw = (Path.home() / ".aither" / "decisions.json").read_text(encoding="utf-8")
+    except OSError:
+        return False
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return False
+    if not isinstance(data, dict):
+        return False
+    return str(data.get("console_input", "")).strip().lower() in (
         "1", "true", "yes", "on",
     )
 
