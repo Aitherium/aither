@@ -1,4 +1,4 @@
-# Plan B Ledger — self-contained setup wizard (Windows)
+﻿# Plan B Ledger — self-contained setup wizard (Windows)
 # Run:  right-click > Run with PowerShell   (or:  powershell -ExecutionPolicy Bypass -File install.ps1)
 $ErrorActionPreference = "Stop"
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
