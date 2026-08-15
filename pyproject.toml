@@ -32,6 +32,18 @@ dependencies = [
     "jinja2>=3.1.0",
     "aiosqlite>=0.19.0",
     "qrcode>=7.4",
+    # A2A identity/signing. NOT optional despite a2a_client.py's "pip install
+    # cryptography" hint: `adk/cli.py` imports a2a_identity, and the endpoint
+    # REGISTRATION payload carries the agent's public key — so a plain
+    # `pip install aither-adk` produced a package whose registration path raised
+    # ModuleNotFoundError on a machine that happened not to have it.
+    #
+    # Undeclared here since before 3.0.6 and invisible the whole time, because
+    # every environment that ran the tests already had cryptography installed by
+    # something else. It surfaced only when the release gate moved to a venv, which
+    # is the point of testing the payload in a clean environment: an undeclared
+    # dependency is not a test failure, it is what a stranger gets.
+    "cryptography>=41.0.0",
 ]
 
 [project.optional-dependencies]

@@ -515,8 +515,15 @@ class TestRegistration:
         mock_agent._tools = MagicMock()
 
         count = bt.register_builtin_tools(mock_agent)
-        # Defaults to ["file_io", "web"] for unknown identities
-        expected = len(bt.TOOL_CATEGORIES["file_io"]) + len(bt.TOOL_CATEGORIES["web"])
+        # Defaults to ["file_io", "web", "decisions"] for unknown identities.
+        # "decisions" IS in the minimal set on purpose — an agent that cannot reach
+        # its owner has to guess, and a wrong guess is what that channel exists to
+        # prevent. This test still named the older two-category default and had been
+        # failing 11 == 7; derive the count from TOOL_CATEGORIES so adding a tool to
+        # an existing category cannot break it again.
+        expected = sum(
+            len(bt.TOOL_CATEGORIES[c]) for c in ("file_io", "web", "decisions")
+        )
         assert count == expected
 
     def test_register_builtin_tools_no_auto(self):

@@ -290,7 +290,24 @@ class Supervisor:
                 cmd = [cmd_str]
             elif cmd_str.startswith("python"):
                 # A literal command line, e.g. 'python -c "..."'.
-                cmd = cmd_str.split()
+                #
+                # Substitute THIS interpreter for the leading token rather than
+                # exec'ing whatever `python` happens to mean on PATH. On Debian and
+                # most modern distros there is no bare `python` at all, so spawning
+                # one dies with:
+                #   RuntimeError: Failed to start agent <n>: [Errno 2] No such file
+                #   or directory: 'python'
+                # — and it dies at RUN time, on the user's machine, long after any
+                # install check. Measured 2026-08-15 on the release gate, which runs
+                # the public payload on a Debian runner: 4 supervisor tests failed
+                # exactly this way. It passed for as long as CI ran on hosted Ubuntu,
+                # which ships the alias.
+                #
+                # sys.executable is also the RIGHT interpreter, not merely a present
+                # one: an agent spawned from inside a venv must inherit that venv, or
+                # it cannot import the packages the parent was installed with.
+                parts = cmd_str.split()
+                cmd = [sys.executable] + parts[1:]
             else:
                 # A module target, e.g. 'hermes.acp' -> python -m hermes.acp
                 cmd = [sys.executable, "-m"] + cmd_str.split()
