@@ -142,6 +142,13 @@ class TestLLMFitClientHealth:
         mock_httpx_client = AsyncMock()
         mock_httpx_client.get = AsyncMock(side_effect=ConnectionError("refused"))
         client._client = mock_httpx_client
+        # `is_available` has TWO paths: the REST probe above and a CLI-binary
+        # fallback (`_find_binary`). Mocking only the REST half left the verdict to
+        # whether an `llmfit` binary happens to be on the machine, so this asserted
+        # "unavailable" while testing the environment rather than the code — it
+        # passed on hosted runners only because neither the port nor the binary was
+        # there. Control both, or the test means nothing.
+        client._find_binary = lambda: None
 
         assert await client.is_available(force=True) is False
 
@@ -240,6 +247,10 @@ class TestLLMFitClientModels:
         mock_httpx_client = AsyncMock()
         mock_httpx_client.get = AsyncMock(side_effect=ConnectionError())
         client._client = mock_httpx_client
+        # See test_unavailable_on_error: the CLI-binary fallback is the other half of
+        # "unavailable", and without stubbing it this returned REAL models from a
+        # live llmfit on the runner.
+        client._find_binary = lambda: None
 
         models = await client.top_models()
         assert models == []
@@ -269,6 +280,9 @@ class TestLLMFitClientModels:
         mock_httpx_client = AsyncMock()
         mock_httpx_client.get = AsyncMock(side_effect=ConnectionError())
         client._client = mock_httpx_client
+        # See test_unavailable_on_error: without stubbing the CLI-binary fallback
+        # this returned a REAL ModelFit from a live llmfit on the runner.
+        client._find_binary = lambda: None
 
         best = await client.best_for_task()
         assert best is None
