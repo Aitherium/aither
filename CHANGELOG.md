@@ -2,6 +2,79 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [3.2.0] - 2026-08-15
+
+### Added — External thinking: a scratchpad for models whose reasoning was taken away
+
+Providers stopped returning raw chain-of-thought. The technique Can Bölük shipped
+in Oh My Pi (`externalThinking`, MIT) recovers it without any jailbreak: turn the
+model's NATIVE reasoning channel off, then hand it a tool whose only parameter is
+a string described as a private scratchpad. The model keeps reasoning — it writes
+into the tool call, and tool calls come back in plaintext. What returns is not a
+cleaned-up summary; it is the model's own shorthand.
+
+New pack `adk.packs.omp_thinking`:
+
+- `deep_think(thoughts)` — the scratchpad itself.
+- `deep_think_supported(...)` — the capability table, ported from upstream's
+  `supportsExternalThinking`. It is a REFUSAL list first: a model that cannot
+  suppress its native channel is refused, never attempted, because arming it
+  there yields two reasoning channels or a rejected request.
+- `deep_think_directive(effort)` — with the vendor's thinking channel off, its
+  effort dial is inert. The number that still steers the model is the one it can
+  read, so this writes it into the system prompt and aims it at the scratchpad.
+- `reconcile(registry, model, enabled=True)` — arms or disarms for the CURRENT
+  model. **Call it on every model swap.** Whether the scratchpad is legal is a
+  property of the model, not the session.
+
+> **Name note:** this `deep_think` is the scratchpad TOOL — somewhere to write
+> reasoning. A `deep_think`/`deep_thinking` *flag* meaning "escalate to a more
+> expensive search path" is a different thing. Same word, two planes.
+
+### Added — Oh My Pi interop (`adk.packs.omp_interop`)
+
+An omp session recorded with `externalThinking` on already holds raw reasoning in
+its `think` tool calls, which makes an omp history a corpus source that cost
+nothing to produce. `omp_session_import` reads it, `omp_tool_map` translates omp
+tool names to adk equivalents, `omp_locate` finds the databases.
+
+Session stores are opened READ-ONLY, and the schema is DISCOVERED rather than
+assumed: an unrecognised layout returns `ok=False, reason="unknown_schema"` with
+the tables it found. An importer that returns `[]` there is indistinguishable
+from one pointed at a database with no traces in it, and the two call for
+opposite responses.
+
+### Added — DeepSeek Coder (`adk.packs.deepseek_coder`)
+
+Two things the chat models cannot do:
+
+- **Fill-in-the-middle.** `dsc_infill(prefix, suffix)` writes the code BETWEEN
+  two fragments. Ask a chat model to fill a gap and it rewrites your surrounding
+  lines; that is a different operation.
+- **Repo-level packing.** `dsc_repo_context` concatenates a project
+  dependency-first with `#path` markers — the layout these models were
+  pre-trained on. It implements Algorithm 1 of the DeepSeek-Coder paper
+  (disconnected subgraphs, then `argmin(in_degree)`, which is what makes the sort
+  total on a cyclic import graph). Cycles are reported, never silently broken.
+  The dependency graph is returned alongside the packed string.
+
+`dsc_traps` lists the silent failure modes as data, because every way to
+misformat a prompt for this family yields a fluent, confident, wrong answer with
+nothing logged: the FIM sentinels are U+FF5C and U+2581 (not `|` and `_`), the
+suffix goes AFTER the hole marker, and an instruct model needs stop token 32014
+to do raw completion or it halts at the first turn boundary.
+
+### Added — `ToolRegistry.unregister(name)`
+
+Registration was one-way. That is fine for a capability that is present or absent
+for a whole process, and wrong for a tool whose legality depends on the current
+model — the scratchpad stayed armed after a model swap, with no way to remove it.
+
+### Note on 3.0.6 – 3.1.1
+
+Those releases shipped without changelog entries. They are not reconstructed here
+rather than guessed at; this entry covers 3.2.0 only.
+
 ## [3.0.5] - 2026-08-07
 
 ### Fixed — MCP Registry namespace is CASE-SENSITIVE

@@ -77,6 +77,23 @@ class ToolRegistry:
         self._tools[tool_name] = td
         return td
 
+    def unregister(self, name: str) -> bool:
+        """Remove a tool. Returns whether it was there.
+
+        Registration used to be one-way, which is fine for a capability that is
+        either present or absent for a whole process. It is NOT fine for a tool
+        whose legality depends on the CURRENT model — the external-thinking
+        scratchpad only works while the provider's native reasoning channel can
+        be switched off, and swapping models mid-session changes that answer.
+        Without this, such a tool stays armed after a swap and the model emits
+        on two reasoning channels at once, or the request is rejected outright.
+
+        Deliberately narrow: it removes the tool from the registry so it stops
+        being exported to the model, and does nothing else. A caller re-adds it
+        with :meth:`register`.
+        """
+        return self._tools.pop(name, None) is not None
+
     def get(self, name: str) -> ToolDef | None:
         return self._tools.get(name)
 
