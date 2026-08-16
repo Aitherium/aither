@@ -34,9 +34,9 @@ profiles:
 `config/` is bind-mounted, so a **restart** picks both up — no rebuild. Then:
 
 ```bash
-python AitherOS/dev/tools/check_claude_provider_profiles.py   # catches typos
-python AitherOS/dev/tools/claude_model_profile.py use my-model
-python AitherOS/dev/tools/claude_model_profile.py check
+adk claude-model check   # catches typos
+adk claude-model use my-model
+adk claude-model check
 ```
 
 The checker exists because two mistakes here are silent: a `model` that is not in
@@ -71,7 +71,7 @@ properly will still return prose — so the agent looks lazy rather than broken.
 Prove it with a tool-bearing request before trusting the provider:
 
 ```bash
-python AitherOS/dev/tools/claude_model_profile.py check
+adk claude-model check
 ```
 
 `check` sends a real tool definition and prints which content blocks came back.

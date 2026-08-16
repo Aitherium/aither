@@ -244,13 +244,24 @@ def _install_windows_task(up_argv: list[str], dry_run: bool) -> Optional[str]:
         f'@echo off\r\ncd /d "%~dp0"\r\n{cmd_line} 1>>"{log_out}" 2>&1\r\n',
         encoding="utf-8",
     )
+    # Route through the GUI-subsystem shim. An interactive-logon task pointed at a
+    # console payload makes Task Scheduler open a console ON THE DESKTOP that TAKES
+    # FOCUS, and the agent loop runs indefinitely — so this is a window that sits
+    # there eating keystrokes, not a flash. Imported from llamacpp_setup rather than
+    # re-implemented: this function used to say it "mirrors" that one, and mirroring
+    # is exactly how the defect got here.
+    from adk.llamacpp_setup import hidden_task_run, write_hidden_launch_shim
+
+    shim = write_hidden_launch_shim(AITHER_HOME)
+    task_run = hidden_task_run(shim, wrapper)
     if dry_run:
         print(f"  [DRY] would register scheduled task {WINDOWS_TASK_NAME} -> {wrapper}")
+        print(f"  [DRY]   /tr {task_run}")
         return f"windows-task:{WINDOWS_TASK_NAME}"
     rc = subprocess.run(
         ["schtasks", "/create", "/f", "/tn", WINDOWS_TASK_NAME,
-         "/tr", str(wrapper), "/sc", "onlogon", "/rl", "limited"],
-        capture_output=True, text=True,
+         "/tr", task_run, "/sc", "onlogon", "/rl", "limited"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     if rc.returncode != 0:
         # schtasks can require elevation on some machines ("Access is denied").
@@ -269,15 +280,26 @@ def _install_windows_task(up_argv: list[str], dry_run: bool) -> Optional[str]:
 
 
 def _install_hkcu_run(wrapper: Path) -> bool:
-    """Per-user logon autostart via the HKCU Run key (no admin required)."""
+    """Per-user logon autostart via the HKCU Run key (no admin required).
+
+    The Run key has the SAME console-window problem as the scheduled task, and it
+    is easier to miss because it is the fallback path — the one that runs on
+    machines where schtasks was denied, i.e. exactly the unattended ones nobody
+    is watching. It gets the same shim.
+    """
+    from adk.llamacpp_setup import write_hidden_launch_shim
+
     try:
         import winreg
+
+        shim = write_hidden_launch_shim(AITHER_HOME)
+        value = f'wscript.exe //B //Nologo "{shim}" "{wrapper}"'
         with winreg.OpenKey(
             winreg.HKEY_CURRENT_USER,
             r"Software\Microsoft\Windows\CurrentVersion\Run",
             0, winreg.KEY_SET_VALUE,
         ) as key:
-            winreg.SetValueEx(key, WINDOWS_TASK_NAME, 0, winreg.REG_SZ, f'"{wrapper}"')
+            winreg.SetValueEx(key, WINDOWS_TASK_NAME, 0, winreg.REG_SZ, value)
         return True
     except OSError:
         return False

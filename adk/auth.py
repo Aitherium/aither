@@ -568,7 +568,7 @@ async def autonomous_agent_login(
 ) -> Credentials:
     """Headless agent login — no browser, for TRUSTED FLEET-SERVICE contexts.
 
-    This is the sanctioned autonomous path so an agent (GargBot, a sovereign
+    This is the sanctioned autonomous path so an agent (a tenant bot, a sovereign
     worker, any adk node) can obtain its own edge Bearer WITHOUT a human: it runs
     the device-code flow and self-approves via AitherIdentity's
     ``/auth/device/authorize-internal``, which requires ``AITHER_INTERNAL_SECRET``

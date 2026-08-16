@@ -19,9 +19,9 @@ DeepSeek is OpenAI-shaped, so it needs AitherClaudeBridge to back a Claude Code
 session:
 
 ```bash
-python AitherOS/dev/tools/claude_model_profile.py bridge start
-python AitherOS/dev/tools/claude_model_profile.py use deepseek-pro   # or deepseek-flash
-python AitherOS/dev/tools/claude_model_profile.py check
+adk claude-model bridge start
+adk claude-model use deepseek-pro   # or deepseek-flash
+adk claude-model check
 ```
 
 The bridge resolves `DEEPSEEK_API_KEY` from env, then AitherSecrets. If

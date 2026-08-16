@@ -3,7 +3,7 @@
 Running the coding agent on your own GPUs — no per-token cost, nothing leaving
 the box.
 
-> **KNOWN UPSTREAM DEFECT (D-1731, 2026-07-31) — read before relying on this.**
+> **KNOWN UPSTREAM DEFECT (2026-07-31) — read before relying on this.**
 > A real `claude` session may fail with `API Error: 502 ... returned an EMPTY
 > answer`. **That error is the bridge working correctly.** Root cause is
 > upstream: MicroScheduler intermittently ignores the pinned model and serves
@@ -16,7 +16,7 @@ the box.
 > real context (32,000 -> 12,282 for gemma4-12b) and returns a 502 naming the
 > requested model, the served model and the usage. Before that fix it relayed
 > the empty answer as a successful 200 and Claude Code rendered a blank reply
-> with no error (D-1730). If you hit it, check
+> with no error. If you hit it, check
 > `curl -sk https://127.0.0.1:8150/llm/backend-health` and retry or pin another
 > profile.
 
@@ -35,9 +35,9 @@ Anthropic Messages API. **AitherClaudeBridge** (`:8151`) translates between them
 and is the only supported path.
 
 ```bash
-python AitherOS/dev/tools/claude_model_profile.py bridge start   # host-local
-python AitherOS/dev/tools/claude_model_profile.py use aither-best
-python AitherOS/dev/tools/claude_model_profile.py check
+adk claude-model bridge start   # host-local
+adk claude-model use aither-best
+adk claude-model check
 ```
 
 Or run it as a fleet service (`aither-claude-bridge`, profiles `gpu` / `chat-*`).

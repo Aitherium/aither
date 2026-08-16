@@ -110,12 +110,33 @@ def _detect_ram_gb() -> float:
             out = _run(["sysctl", "-n", "hw.memsize"])
             return int(out) / (1024 ** 3) if out else 0.0
         elif sys.platform == "win32":
-            out = _run(["wmic", "computersystem", "get", "TotalPhysicalMemory", "/value"])
-            if out:
-                m = re.search(r"=(\d+)", out)
-                if m:
-                    return int(m.group(1)) / (1024 ** 3)
-    except Exception:
+            # GlobalMemoryStatusEx via ctypes — NOT `wmic`, which Windows 11 has
+            # REMOVED. The wmic call returned nothing on a current Windows box and
+            # the failure was swallowed into the 0.0 below, which is not a visible
+            # error: it silently makes pick_quant() compute a pool of zero, so a
+            # CPU/Vulkan box picks the smallest quant no matter how much RAM it has.
+            # Measured 2026-08-13 on Windows 11 26200: detect_accel() reported
+            # ram_gb=0.0 on a machine with plenty.
+            import ctypes
+
+            class _MemStatus(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", ctypes.c_ulong),
+                    ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+                ]
+
+            status = _MemStatus()
+            status.dwLength = ctypes.sizeof(_MemStatus)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+                return status.ullTotalPhys / (1024 ** 3)
+    except Exception:  # noqa: BLE001 — best-effort probe; 0.0 is the documented miss
         pass
     return 0.0
 
@@ -367,8 +388,8 @@ def install_llamacpp(accel: AccelInfo, dry_run: bool = False) -> Optional[Path]:
 
     asset_url = _pick_release_asset(release.get("assets", []), accel)
     if not asset_url:
-        print(f"  ERROR: no matching llama.cpp build for {accel.os_family}/{accel.kind}/{accel.arch}",
-              file=sys.stderr)
+        print(f"  ERROR: no matching llama.cpp build for "
+              f"{accel.os_family}/{accel.kind}/{accel.arch}", file=sys.stderr)
         return None
 
     zip_path = LLAMACPP_DIR / "llama-cpp.zip"
@@ -385,9 +406,42 @@ def install_llamacpp(accel: AccelInfo, dry_run: bool = False) -> Optional[Path]:
         print(f"  ERROR: extract failed: {e}", file=sys.stderr)
         return None
 
+    # A Windows CUDA build ships WITHOUT the CUDA runtime — the release has a
+    # separate cudart-llama-bin-win-cuda-*.zip. Without it ggml-cuda.dll fails
+    # to load and llama-server SILENTLY runs CPU-only: measured 2026-08-09,
+    # Bonsai-27B at 3.85 tok/s on a 32GB-VRAM box, healthy and error-free.
+    if accel.os_family == "windows" and "cuda" in asset_url.lower():
+        import re as _re
+        want_ver = _re.search(r"cuda[-_]?([\d.]+)", asset_url.lower())
+        cudart_url = None
+        for a in release.get("assets", []):
+            name = a.get("name", "").lower()
+            if "cudart" not in name:
+                continue
+            cudart_url = cudart_url or a.get("browser_download_url")
+            if want_ver and want_ver.group(1) in name:
+                cudart_url = a.get("browser_download_url")  # exact toolkit match wins
+        if cudart_url:
+            cudart_zip = LLAMACPP_DIR / "cudart.zip"
+            if _download(cudart_url, cudart_zip, "CUDA runtime"):
+                try:
+                    import zipfile
+                    with zipfile.ZipFile(cudart_zip) as z:
+                        z.extractall(LLAMACPP_DIR)
+                    cudart_zip.unlink(missing_ok=True)
+                except Exception as e:
+                    print(f"  WARNING: cudart extract failed ({e}) — server will "
+                          "run CPU-only until cudart64*.dll is placed beside it",
+                          file=sys.stderr)
+        if not list(LLAMACPP_DIR.glob("cudart64*.dll")):
+            print("  WARNING: CUDA build without cudart64*.dll — llama-server "
+                  "will SILENTLY run CPU-only. Download the matching "
+                  "cudart-llama-bin-win-cuda zip from the same release into "
+                  f"{LLAMACPP_DIR}", file=sys.stderr)
+
     found = list(LLAMACPP_DIR.rglob(binary_name))
     if not found:
-        print(f"  ERROR: llama-server binary not found after extract", file=sys.stderr)
+        print("  ERROR: llama-server binary not found after extract", file=sys.stderr)
         return None
 
     # Mark executable on POSIX
@@ -605,36 +659,112 @@ def _install_launchd(cmd: list[str], dry_run: bool) -> bool:
     return True
 
 
+# A GUI-subsystem launcher: WScript.Shell.Run(cmd, 0, True) starts the payload with
+# window style 0 (hidden) and waits, so the payload's exit code still propagates.
+# `wscript.exe` is itself GUI-subsystem, so Task Scheduler allocates NO console for
+# it — which is the whole point (see _install_windows_task).
+_RUN_HIDDEN_VBS = (
+    "' Launch a console payload with no visible window.\r\n"
+    "' Generated by adk.llamacpp_setup — do not edit; it is rewritten on install.\r\n"
+    "Set sh = CreateObject(\"WScript.Shell\")\r\n"
+    "args = \"\"\r\n"
+    "For i = 0 To WScript.Arguments.Count - 1\r\n"
+    "  args = args & \"\"\"\" & WScript.Arguments(i) & \"\"\" \"\r\n"
+    "Next\r\n"
+    "WScript.Quit sh.Run(args, 0, True)\r\n"
+)
+
+
+# schtasks caps /tr at 261 characters and fails the whole create when it is
+# exceeded — measured, not documented. Routing through the shim roughly doubles
+# the length (two quoted paths instead of one), so a long user profile can push a
+# previously-fine task over the edge. Callers get a clear error rather than a
+# task that silently was never created.
+_SCHTASKS_TR_MAX = 261
+
+
+def write_hidden_launch_shim(directory: Path) -> Path:
+    """Write ``run-hidden.vbs`` into *directory* and return its path.
+
+    Public so the other installers in this package share ONE copy of the fix.
+    The console-window defect this shim exists to prevent propagated by
+    copy-paste — ``agent_daemon._install_windows_task``'s own docstring says it
+    "mirrors" the version here — so a fourth private copy is how it comes back.
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    shim = directory / "run-hidden.vbs"
+    shim.write_text(_RUN_HIDDEN_VBS)
+    return shim
+
+
+def hidden_task_run(shim: Path, payload: Path) -> str:
+    """The ``schtasks /tr`` value that launches *payload* with no visible window."""
+    value = f'wscript.exe //B //Nologo "{shim}" "{payload}"'
+    if len(value) > _SCHTASKS_TR_MAX:
+        raise ValueError(
+            f"schtasks /tr would be {len(value)} chars, over the {_SCHTASKS_TR_MAX} "
+            f"limit — schtasks would reject the create. Shorten the install path."
+        )
+    return value
+
+
 def _install_windows_task(cmd: list[str], dry_run: bool) -> bool:
     # Build a wrapper .cmd so we can capture logs cleanly
     wrapper = LLAMACPP_DIR / "aither-orchestrator.cmd"
+    shim = LLAMACPP_DIR / "run-hidden.vbs"
     log_out = LOG_DIR / "orchestrator.log"
     cmd_line = " ".join(f'"{c}"' if " " in c else c for c in cmd)
     wrapper_content = f"@echo off\r\ncd /d \"%~dp0\"\r\n{cmd_line} 1>>\"{log_out}\" 2>&1\r\n"
+
+    # Route the task through the GUI-subsystem shim rather than at the .cmd directly.
+    #
+    # A task with an INTERACTIVE logon trigger (`/sc onlogon` + `/rl limited`) that
+    # launches a console-subsystem program makes Task Scheduler open a real console
+    # on the logged-on desktop, and that console TAKES FOCUS — it eats keystrokes and
+    # clicks for as long as the program runs. llama-server runs FOREVER, so this is
+    # not a flash at logon: it is a permanent console window sitting on the user's
+    # desktop stealing input. On an unattended box that is merely ugly; on a shop
+    # counter or a kiosk it makes the machine unusable.
+    #
+    # It is invisible to every cheap check: schtasks reports the task created, the
+    # task runs on time, the server serves, and the log file fills up normally. The
+    # only signal is a human being interrupted.
+    #
+    # `-WindowStyle Hidden` is NOT a fix — the console is allocated before any shell
+    # can hide it, so it still appears. The shim works because wscript.exe is
+    # GUI-subsystem, so no console is ever allocated to begin with.
+    task_run = hidden_task_run(shim, wrapper)
+
     if dry_run:
         print(f"  [DRY] Would write wrapper: {wrapper}")
-        print(f"  [DRY] schtasks /create /tn AitherOrchestrator /sc onlogon ...")
+        print(f"  [DRY] Would write hidden-launch shim: {shim}")
+        print("  [DRY] schtasks /create /tn AitherOrchestrator /sc onlogon ...")
+        print(f"  [DRY]   /tr {task_run}")
         return True
     wrapper.write_text(wrapper_content)
+    write_hidden_launch_shim(LLAMACPP_DIR)
     print(f"  Wrote wrapper: {wrapper}")
+    print(f"  Wrote hidden-launch shim: {shim}")
     # Create scheduled task — runs at user logon, restart on failure
     rc = subprocess.run([
         "schtasks", "/create", "/f",
         "/tn", "AitherOrchestrator",
-        "/tr", str(wrapper),
+        "/tr", task_run,
         "/sc", "onlogon",
         "/rl", "limited",
-    ], capture_output=True, text=True)
+    ], capture_output=True, text=True, encoding="utf-8", errors="replace")
     if rc.returncode != 0:
         print(f"  WARN: schtasks failed: {rc.stderr}", file=sys.stderr)
-        print(f"  Falling back to inline launch — service will not restart on reboot.")
-        # Fire-and-forget start
-        subprocess.Popen([str(wrapper)], creationflags=0x00000008)  # DETACHED_PROCESS
+        print("  Falling back to inline launch — service will not restart on reboot.")
+        # Fire-and-forget start. CREATE_NO_WINDOW, not DETACHED_PROCESS: this path
+        # runs from whatever shell invoked the installer, and a console payload
+        # started without it pops a window here too.
+        subprocess.Popen([str(wrapper)], creationflags=0x08000000)  # CREATE_NO_WINDOW
         return True
-    print("  Task scheduled (runs at user logon)")
+    print("  Task scheduled (runs at user logon, no visible window)")
     # Start now too
     subprocess.run(["schtasks", "/run", "/tn", "AitherOrchestrator"],
-                   capture_output=True, text=True)
+                   capture_output=True, text=True, encoding="utf-8", errors="replace")
     return True
 
 

@@ -747,16 +747,30 @@ def install_guard(auto_restore: bool = True) -> str:
     # import whatever aither-adk pip has installed — possibly an older build
     # without this module.
     inner = f'"{sys.executable}" "{Path(__file__).resolve()}" --daemon{flag}'
-    # conhost --headless keeps the daemon window from flashing/persisting.
-    action = f"conhost --headless {inner}"
+    # Hide the daemon window with the GUI-subsystem shim, not `conhost --headless`.
+    # conhost.exe is itself a CONSOLE-subsystem binary, so an interactive-logon task
+    # pointed at it is the shape this repo's convention (shim, or S4U) exists to
+    # replace — and it is what the on-host checker flags. One mechanism everywhere
+    # beats three that each need their own argument.
+    #
+    # The payload goes in a wrapper .cmd so /TR stays under the 261-char cap that
+    # schtasks silently enforces by failing the whole create: `inner` already holds
+    # two absolute paths and the shim adds a third.
+    from adk.llamacpp_setup import hidden_task_run, write_hidden_launch_shim
+
+    home = Path.home() / ".aither"
+    shim = write_hidden_launch_shim(home)
+    wrapper = home / "aithershell-guard.cmd"
+    wrapper.write_text(f"@echo off\r\n{inner}\r\n", encoding="utf-8")
     cmd = [
         "schtasks", "/Create", "/F",
         "/TN", GUARD_TASK_NAME,
         "/SC", "ONLOGON",
-        "/TR", action,
+        "/TR", hidden_task_run(shim, wrapper),
         "/RL", "LIMITED",
     ]
-    res = subprocess.run(cmd, capture_output=True, text=True)
+    res = subprocess.run(cmd, capture_output=True, text=True,
+                         encoding="utf-8", errors="replace")
     if res.returncode != 0:
         raise RuntimeError(f"schtasks failed: {res.stderr.strip() or res.stdout.strip()}")
     # Fire it now so protection starts without a re-logon.

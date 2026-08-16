@@ -589,12 +589,12 @@ class LLMFitClient:
                             # the recipe, because fleet-repo overlay templates do
                             # not ship in the public wheel. Callers deploying
                             # from ODS's own compose tree can read them off
-                            # HostClass directly. See D-940.
+                            # HostClass directly.
                         },
                     }
 
                     # One resolve PER ROLE. Calling resolve() five times with the
-                    # same envelope returns the same model five times (D-916) —
+                    # same envelope returns the same model five times —
                     # upstream answers "one model for this box", not "one per
                     # role", so the role narrowing lives in resolve_role().
                     tier_failures = []

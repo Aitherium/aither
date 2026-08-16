@@ -344,8 +344,48 @@ async def web_search(query: str, limit: int = 5) -> str:
 
     query: Search query string
     limit: Maximum number of results (default 5)
+
+    Prefers the maintained `ddgs` client and falls back to scraping the HTML
+    endpoint. That order matters, and it was the wrong way round.
+
+    Measured 2026-08-16: the scrape path returned 3/3 results with an EMPTY
+    snippet while `ddgs` was installed and unused. DuckDuckGo changed their
+    markup, so `class="result__a"` still matched (titles and URLs survived) and
+    `class="result__snippet"` matched nothing. The tool kept answering, kept
+    looking healthy, and handed the model a list of links with no text — which
+    reads as "the web had nothing useful", not as a broken parser.
+
+    That is the standing hazard with a hand-rolled scraper: it does not fail, it
+    THINS. A maintained client tracks the markup so we do not have to, and
+    `ddgs` returns {title, href, body} with real content for the same queries.
     """
     try:
+        # `ddgs` (and its former name) are optional: absent, we still scrape.
+        for _mod in ("ddgs", "duckduckgo_search"):
+            try:
+                _m = __import__(_mod, fromlist=["DDGS"])
+                rows = list(_m.DDGS().text(query, max_results=limit))
+            except Exception:
+                continue
+            hits = [
+                {
+                    "title": (r.get("title") or "").strip(),
+                    "url": (r.get("href") or r.get("url") or "").strip(),
+                    # `body` is ddgs's name for the snippet. Reading only
+                    # "snippet" here is what produced empty bodies.
+                    "snippet": (r.get("body") or r.get("snippet") or "").strip()[:300],
+                }
+                for r in rows
+            ]
+            hits = [h for h in hits if h["title"] and h["url"]]
+            if hits:
+                return json.dumps({"query": query, "results": hits,
+                                   "provider": _mod, "count": len(hits)})
+            # No rows: fall through to the scrape rather than reporting empty,
+            # since "the client returned nothing" and "the client is broken"
+            # are not distinguishable from here.
+            break
+
         import httpx
         async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
             resp = await client.get(

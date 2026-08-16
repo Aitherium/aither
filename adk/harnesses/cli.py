@@ -73,6 +73,7 @@ def cmd_shell(args: Any) -> int:
         "send": _cmd_send,
         "attach": _cmd_attach,
         "kill": _cmd_kill,
+        "wrap": _cmd_wrap,
     }.get(command)
     if handler is None:
         print(f"Unknown subcommand: {command}", file=sys.stderr)
@@ -168,6 +169,33 @@ def _cmd_kill(args: Any) -> int:
     _die_if_down(status, payload)
     print(f"stopped {args.session_id} (exit {payload.get('exit_code')})")
     return 0
+
+
+def _cmd_wrap(args: Any) -> int:
+    """Bridge this terminal's stdin/stdout to a daemon session.
+
+    The parser has advertised ``wrap`` since the subcommand was added, but it was
+    never registered in the dispatch table below — so it answered "Unknown
+    subcommand: wrap" and exited 2 while `--help` listed it as available. The
+    bridge itself (:class:`DaemonPtyBridge`) was complete the whole time.
+    """
+    from urllib.parse import urlsplit
+
+    from adk.harnesses.wrap import DaemonPtyBridge
+
+    parts = urlsplit(_base_url(args))
+    bridge = DaemonPtyBridge(
+        host=parts.hostname or DEFAULT_HOST,
+        port=parts.port or DEFAULT_PORT,
+        token=getattr(args, "token", "") or "",
+    )
+    return bridge.run(
+        harness=getattr(args, "harness", "") or "claude",
+        cwd=getattr(args, "cwd", "") or "",
+        model=getattr(args, "model", "") or "",
+        resume_session_id=getattr(args, "resume", "") or "",
+        title=getattr(args, "title", "") or "",
+    )
 
 
 def _cmd_attach(args: Any) -> int:

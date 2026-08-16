@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "aither-adk"
-version = "3.2.0"
+version = "3.3.0"
 description = "Build AI agents with real memory + faculties on any backend, local or cloud. Open-core: free local runtime with typed memory, knowledge graph, code graph and ReAct; paid tiers (portal.aitherium.com) unlock fleets, channels, reasoning and marketplace packs."
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -32,6 +32,16 @@ dependencies = [
     "jinja2>=3.1.0",
     "aiosqlite>=0.19.0",
     "qrcode>=7.4",
+    # Keyless web search for the builtin `web_search` tool. Declared, not
+    # optional, for the same reason cryptography is below: without it the tool
+    # silently falls back to scraping DuckDuckGo HTML, and that scraper has
+    # already gone stale — measured 2026-08-16 it returned 3/3 results with an
+    # EMPTY snippet because the markup changed. Titles and URLs still came
+    # back, so nothing errored; the model just got links with no text and no
+    # way to tell that from "the web had nothing useful". A silent quality
+    # loss is worse than the ModuleNotFoundError the note below describes,
+    # because nobody files a bug for it.
+    "ddgs>=9.0",
     # A2A identity/signing. NOT optional despite a2a_client.py's "pip install
     # cryptography" hint: `adk/cli.py` imports a2a_identity, and the endpoint
     # REGISTRATION payload carries the agent's public key — so a plain

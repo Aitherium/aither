@@ -1,4 +1,4 @@
-"""Test suite for brain sync client (D-878 architectural decision).
+"""Test suite for brain sync client (platform-home architectural decision).
 
 Tests verify:
 1. Client points to AitherBrain service (platform-home, not app-scoped)
@@ -330,7 +330,7 @@ class TestAitherBrainIntegration:
     async def test_brain_service_routing(self):
         """Test that client correctly routes to /brain/sync on AitherBrain.
 
-        This test documents the architectural decision D-878: brain sync is
+        This test documents the architectural decision: brain sync is
         PLATFORM-HOME (not app-scoped). The client POST to AitherBrain:8271/brain/sync.
         """
         client = BrainSyncClient(

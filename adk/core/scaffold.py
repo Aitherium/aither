@@ -14,6 +14,7 @@ Everything is plain text — no Jinja2 dependency, just str.format.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 _AGENT_YAML = """\
@@ -122,6 +123,114 @@ __pycache__/
 .venv/
 """
 
+_AGENT_PY_OO = '''\
+"""{name} — an object-oriented agent. The class IS the agent."""
+
+from pydantic import BaseModel
+
+from adk.core import OOAgent
+
+
+class Answer(BaseModel):
+    """Typed contract for the agentic method below."""
+
+    summary: str
+    confidence: float
+
+
+class {class_name}(OOAgent):
+    """You are {name}. {description}"""
+
+    # Fields are state. Plain methods are deterministic capabilities the
+    # model can call as tools.
+    greeting: str = "hello"
+
+    def hello(self, who: str = "world") -> str:
+        """Say hello to someone."""
+        return f"{{self.greeting}} {{who}}"
+
+    # An async method whose body is `...` is agentic: calling it dispatches
+    # to the LLM. The docstring is the prompt; the return annotation is a
+    # validated typed contract (retried on mismatch).
+    async def answer(self, question: str) -> Answer:
+        """Answer the question clearly, with a confidence in [0, 1]."""
+        ...
+'''
+
+_MAIN_PY_OO = '''\
+"""Entry point for {name}. Run: python main.py "your question"."""
+
+import asyncio
+import sys
+
+from adk.core import auto_backend
+
+from agent import {class_name}
+
+
+async def amain() -> None:
+    agent = {class_name}(model=auto_backend())
+    question = " ".join(sys.argv[1:]) or "Hello!"
+    answer = await agent.answer(question)
+    print(f"{{answer.summary}}  (confidence: {{answer.confidence}})")
+
+
+if __name__ == "__main__":
+    asyncio.run(amain())
+'''
+
+_README_OO = """\
+# {name}
+
+{description}
+
+An **object-oriented agent**: the class in `agent.py` IS the agent.
+Its docstring is the instructions, plain methods are tools, and async
+methods with `...` bodies are handed to the LLM with typed, validated
+return contracts.
+
+## Run
+
+```bash
+python main.py "your question"
+```
+
+## Configure model
+
+Set one of the following env vars and re-run:
+
+  - `OPENAI_API_KEY`     -> OpenAI
+  - `ANTHROPIC_API_KEY`  -> Anthropic
+  - `DEEPSEEK_API_KEY`   -> DeepSeek
+  - `AITHER_VLLM_URL`    -> self-hosted vLLM
+  - `OLLAMA_HOST`        -> local Ollama
+
+## Grow the agent
+
+- Add state as typed fields; add deterministic capabilities as methods.
+- Add agentic capabilities as async `...` methods with pydantic returns.
+- Route a method to an iterative strategy:
+
+```python
+from adk.ellipsis import strategy
+from adk import CodeActLoop
+
+class MyAgent(OOAgent):
+    @strategy(loop=CodeActLoop(max_steps=8))
+    async def solve(self, problem: str) -> str:
+        \"\"\"Solve it by writing and running Python.\"\"\"
+        ...
+```
+"""
+
+
+def _class_name(name: str) -> str:
+    """``my-bot`` -> ``MyBot``; must be a valid Python identifier."""
+    cleaned = "".join(part.capitalize() for part in re.split(r"[^0-9A-Za-z]+", name) if part)
+    if not cleaned or cleaned[0].isdigit():
+        cleaned = f"Agent{cleaned}"
+    return cleaned
+
 
 def scaffold_agent(
     target_dir: str | Path,
@@ -130,11 +239,19 @@ def scaffold_agent(
     description: str = "A new AitherADK agent.",
     pkg: str = "tools",
     overwrite: bool = False,
+    style: str = "oo",
 ) -> Path:
     """Create a new agent project at ``target_dir/name``.
 
+    ``style="oo"`` (default) scaffolds an object-oriented agent — a Python
+    class where async ``...`` methods dispatch to the LLM with typed return
+    contracts. ``style="yaml"`` scaffolds the declarative agent.yaml +
+    loader layout.
+
     Returns the absolute path to the created directory.
     """
+    if style not in ("oo", "yaml"):
+        raise ValueError(f'style must be "oo" or "yaml", got {style!r}')
     root = Path(target_dir).resolve() / name
     if root.exists() and any(root.iterdir()) and not overwrite:
         raise FileExistsError(
@@ -142,13 +259,24 @@ def scaffold_agent(
         )
     root.mkdir(parents=True, exist_ok=True)
 
-    files = {
-        "agent.yaml": _AGENT_YAML.format(name=name, description=description, pkg=pkg),
-        "main.py": _MAIN_PY.format(name=name),
-        "tools.py": _TOOLS_PY.format(name=name),
-        "README.md": _README.format(name=name, description=description),
-        ".gitignore": _GITIGNORE,
-    }
+    if style == "oo":
+        class_name = _class_name(name)
+        files = {
+            "agent.py": _AGENT_PY_OO.format(
+                name=name, description=description, class_name=class_name
+            ),
+            "main.py": _MAIN_PY_OO.format(name=name, class_name=class_name),
+            "README.md": _README_OO.format(name=name, description=description),
+            ".gitignore": _GITIGNORE,
+        }
+    else:
+        files = {
+            "agent.yaml": _AGENT_YAML.format(name=name, description=description, pkg=pkg),
+            "main.py": _MAIN_PY.format(name=name),
+            "tools.py": _TOOLS_PY.format(name=name),
+            "README.md": _README.format(name=name, description=description),
+            ".gitignore": _GITIGNORE,
+        }
     for filename, content in files.items():
         (root / filename).write_text(content, encoding="utf-8")
     return root

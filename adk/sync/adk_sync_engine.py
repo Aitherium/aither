@@ -56,7 +56,13 @@ def _get_reconcile():
     global _RECONCILE
     if _RECONCILE is None:
         _ensure_aitheros_path()
-        from lib.sync.drive_sync_core import reconcile
+        try:
+            from lib.sync.drive_sync_core import reconcile
+        except ImportError as exc:
+            raise RuntimeError(
+                "adk sync requires the AitherOS host environment "
+                "(drive_sync_core is not shipped in the PyPI package): "
+                f"{exc}") from exc
         _RECONCILE = reconcile
     return _RECONCILE
 
@@ -66,7 +72,13 @@ def _get_filestate():
     global _FILESTATE
     if _FILESTATE is None:
         _ensure_aitheros_path()
-        from lib.sync.drive_sync_core import FileState
+        try:
+            from lib.sync.drive_sync_core import FileState
+        except ImportError as exc:
+            raise RuntimeError(
+                "adk sync requires the AitherOS host environment "
+                "(drive_sync_core is not shipped in the PyPI package): "
+                f"{exc}") from exc
         _FILESTATE = FileState
     return _FILESTATE
 
@@ -76,7 +88,13 @@ def _get_syncaction():
     global _SYNCACTION
     if _SYNCACTION is None:
         _ensure_aitheros_path()
-        from lib.sync.drive_sync_core import SyncAction
+        try:
+            from lib.sync.drive_sync_core import SyncAction
+        except ImportError as exc:
+            raise RuntimeError(
+                "adk sync requires the AitherOS host environment "
+                "(drive_sync_core is not shipped in the PyPI package): "
+                f"{exc}") from exc
         _SYNCACTION = SyncAction
     return _SYNCACTION
 
@@ -86,7 +104,13 @@ def _get_actionkind():
     global _ACTIONKIND
     if _ACTIONKIND is None:
         _ensure_aitheros_path()
-        from lib.sync.drive_sync_core import ActionKind
+        try:
+            from lib.sync.drive_sync_core import ActionKind
+        except ImportError as exc:
+            raise RuntimeError(
+                "adk sync requires the AitherOS host environment "
+                "(drive_sync_core is not shipped in the PyPI package): "
+                f"{exc}") from exc
         _ACTIONKIND = ActionKind
     return _ACTIONKIND
 

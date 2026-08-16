@@ -105,7 +105,7 @@ def check_orphan_modules():
         if f.name != "__init__.py"
     }
     # Also orphan-check cohesive subpackages whose every module should be
-    # reachable (D-372). adk/sync/ is a curated domain package — before the
+    # reachable. adk/sync/ is a curated domain package — before the
     # 2.24.0 move, a dead root-level *_sync.py was caught here, but a dead
     # adk/sync/<x>.py would have been invisible (this scan was top-level only).
     # Keyed "sync/<name>" so the error prints the real path.
@@ -138,7 +138,7 @@ def check_orphan_modules():
                 parts = node.module.split(".")
                 if len(parts) >= 2 and parts[0] == "adk":
                     imported.add(parts[1])
-                    # subpackage submodule reachability (D-372):
+                    # subpackage submodule reachability:
                     #   from adk.sync.secrets import X  -> "sync/secrets"
                     #   from adk.sync import secrets, X -> "sync/secrets", "sync/X"
                     if parts[1] == "sync":

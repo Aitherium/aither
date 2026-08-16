@@ -30,9 +30,11 @@ import asyncio
 import hmac
 import json
 import os
+import re
 import secrets
 import stat
 import sys
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -44,7 +46,32 @@ from adk.harnesses.spool import default_tailer
 from adk.harnesses.transcript_bridge import default_bridge
 from adk.harnesses.well import default_well
 
+#: Bind address. Loopback-only was correct while the fleet ran on Docker Desktop, which
+#: gave containers `host.docker.internal` straight to the Windows loopback. After the
+#: podman cutover that path is GONE: genesis now runs in a podman container inside the
+#: WSL2 distro, and a Windows-loopback socket is unreachable from there. Measured
+#: 2026-08-11 from inside `aitheros-genesis` — `host.docker.internal`,
+#: `host.containers.internal`, `gateway.containers.internal` and `10.0.2.2` ALL returned
+#: 000, while the daemon answered 401 (i.e. alive) on the host's own 127.0.0.1. Genesis
+#: therefore served `/api/v1/decisions/*` as a 503 "daemon unreachable" — the card
+#: channel was mounted and inert.
+#:
+#: `0.0.0.0` is the fleet-reachable default rather than a specific interface because the
+#: WSL2 gateway address is DHCP-assigned and changes across reboots, so pinning it would
+#: break silently every restart. Exposure is bounded by the daemon's own bearer auth —
+#: every route depends on `auth`, and an unauthenticated request gets 401, which is what
+#: the 401 above actually demonstrates. Set AITHER_HARNESS_HOST=127.0.0.1 to restore
+#: loopback-only on a machine that runs no containers.
 DEFAULT_HOST = os.environ.get("AITHER_HARNESS_HOST", "127.0.0.1")
+
+#: What the SERVER binds to — deliberately separate from DEFAULT_HOST, which is what
+#: CLIENTS connect to (`cli.py:_base_url` builds `http://{DEFAULT_HOST}:{PORT}`). Setting
+#: one value to `0.0.0.0` would point every local client at a bind-all address, which is
+#: not connectable. `daemon_endpoint.py` already draws this distinction the same way
+#: (`advertised_host = DEFAULT_HOST if host in ("0.0.0.0", "::", "")`).
+DEFAULT_BIND_HOST = os.environ.get(
+    "AITHER_HARNESS_BIND_HOST", os.environ.get("AITHER_HARNESS_HOST", "0.0.0.0"),
+)  # noqa: S104
 DEFAULT_PORT = int(os.environ.get("AITHER_HARNESS_PORT", "8362"))
 TOKEN_PATH = Path.home() / ".aither" / "harness_token"
 
@@ -134,6 +161,42 @@ except ImportError:  # The daemon needs fastapi+pydantic; the rest of the
     Field = None  # type: ignore[assignment]
 
 
+class DeviceFlowState:
+    """In-memory tracker for device flow approvals (short-lived, cleaned up regularly)."""
+
+    def __init__(self):
+        self._state: dict[str, dict[str, Any]] = {}
+
+    def get(self, device_code: str) -> Optional[dict[str, Any]]:
+        """Get current state of a device code. Returns None if expired/unknown."""
+        entry = self._state.get(device_code)
+        if entry is None:
+            return None
+        if time.time() > entry.get("expires_at", 0):
+            del self._state[device_code]
+            return None
+        return entry
+
+    def set(self, device_code: str, status: str, expires_at: float) -> None:
+        """Update state for a device code."""
+        self._state[device_code] = {
+            "status": status,
+            "expires_at": expires_at,
+            "updated_at": time.time(),
+        }
+
+    def cleanup(self) -> None:
+        """Remove expired entries. Called periodically."""
+        now = time.time()
+        expired = [k for k, v in self._state.items() if now > v.get("expires_at", 0)]
+        for k in expired:
+            del self._state[k]
+
+
+# Global device flow state (short-lived, renewed on each daemon restart).
+_device_flow_state = DeviceFlowState()
+
+
 if BaseModel is not None:
 
     class CreateSession(BaseModel):  # type: ignore[misc]
@@ -190,6 +253,66 @@ if BaseModel is not None:
     class CancelDecision(BaseModel):  # type: ignore[misc]
         note: str = ""
 
+    class RaiseOption(BaseModel):  # type: ignore[misc]
+        key: str
+        label: str
+        consequence: str = ""
+
+    class RaiseDecision(BaseModel):  # type: ignore[misc]
+        """Body for POST /decisions — raising a card from off-box.
+
+        Module level for the same reason as ``AnswerDecision``: with
+        ``from __future__ import annotations`` a model defined inside ``create_app``
+        is invisible to FastAPI's resolver, which downgrades it to a query parameter
+        and answers every POST with a 422 that reads like a client bug.
+
+        No credential VALUE field exists here, and none may ever be added. A
+        credential card names WHICH secret is wanted and WHY; the value goes
+        owner -> masked field -> vault and is verified by read-back length only.
+        """
+
+        title: str
+        kind: str = "decision"
+        urgency: str = "normal"
+        summary: str = ""
+        facts: list[str] = Field(default_factory=list)
+        options: list[RaiseOption] = Field(default_factory=list)
+        default: str = ""
+        secret_name: str = ""
+        credential_format: str = "password"
+        credential_scope: str = "platform"
+        credential_description: str = ""
+        # provenance — set by the caller that authenticated the raiser
+        raised_by: str = ""
+        agent: str = ""
+        session_id: str = ""
+        cwd: str = ""
+        via: str = "api"
+
+    class SteerDecision(BaseModel):  # type: ignore[misc]
+        text: str
+        via: str = "api"
+
+    class ChatReply(BaseModel):  # type: ignore[misc]
+        """Body for POST /decisions/chat-reply — a raw chat message from a DM bridge.
+
+        The caller (the fleet's Discord service, a Telegram bot, ...) forwards the
+        owner's message VERBATIM plus the sender identity it observed; this daemon
+        re-authorizes against ~/.aither/decisions/channels.json via the tested
+        fail-closed bridge, so a compromised or miswired forwarder cannot answer
+        cards for a sender the owner never bound. ``is_direct_message`` has no
+        default for the same reason ``DecisionChannelBridge.on_message`` gives it
+        none: a forwarder that cannot prove DM-ness must say False and be denied.
+        """
+
+        platform: str
+        user_id: str
+        text: str
+        is_direct_message: bool
+        # The card the FORWARDER last showed the owner, so a bare "2" from the
+        # phone resolves to the card they are looking at, not a guess.
+        last_sent_card: str = ""
+
     class CreateRoom(BaseModel):  # type: ignore[misc]
         id: str = DEFAULT_ROOM
         title: str = ""
@@ -218,12 +341,31 @@ if BaseModel is not None:
         v: int = 0
         id: str = ""
 
+    class LinkDeviceCodeResponse(BaseModel):  # type: ignore[misc]
+        """Response from POST /auth/link — initiates device flow.
+
+        The daemon does NOT mint credentials; it only relays portal's device-flow
+        endpoints and tracks approval status. The browser must navigate to
+        verification_uri for the user to enter the code and approve.
+        """
+
+        user_code: str
+        device_code: str
+        verification_uri: str
+        expires_in: int
+
+    class LinkStatusResponse(BaseModel):  # type: ignore[misc]
+        """Response from GET /auth/link/status/{device_code}."""
+
+        status: str  # "pending" | "approved" | "denied" | "expired"
+        expires_at: float  # Unix timestamp
+
 
 def create_app(manager: Optional[SessionManager] = None, token: str = ""):
     """Build the FastAPI app. Raises if no token can be resolved (fail-closed)."""
     if BaseModel is None:
         raise RuntimeError("fastapi and pydantic are required: pip install fastapi uvicorn")
-    from fastapi import Depends, FastAPI, Header, HTTPException, Query
+    from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import StreamingResponse
 
@@ -517,6 +659,145 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
             "oldest_age_seconds": round(oldest, 1),
         }
 
+    # Shared across requests so the bridge's last-sent disambiguation survives
+    # between two messages of one conversation. Lazy: the daemon must come up
+    # even when adk.decisions.channels cannot import.
+    _chat_bridge: dict[str, Any] = {}
+
+    @app.post("/decisions/chat-reply", dependencies=[Depends(auth)])
+    async def chat_reply(body: ChatReply) -> dict[str, Any]:
+        """One inbound chat message from a DM bridge (Discord/Telegram/Slack).
+
+        Registered BEFORE the `/decisions/{card_id}` family on purpose — the
+        same route-order rule as `/decisions/count`. Authorization is the tested
+        fail-closed path in ``adk.decisions.channels`` (bound owner, DM-only),
+        driven by ``~/.aither/decisions/channels.json`` — the daemon bearer only
+        proves the FORWARDER is ours, never that the SENDER may answer.
+        """
+        from adk.decisions.channels import DecisionChannelBridge
+
+        bridge = _chat_bridge.get("bridge")
+        if bridge is None:
+            bridge = DecisionChannelBridge()
+            _chat_bridge["bridge"] = bridge
+        if body.last_sent_card:
+            bridge.note_sent(body.platform, body.last_sent_card.strip().lower())
+
+        text = (body.text or "").strip()
+        # `steer` prefix (optionally after a card id) sends free text WITHOUT
+        # closing the card — the chat bridge itself only answers.
+        steer_match = re.match(
+            r"^(?:(d-[a-z0-9]{4,12})\s+)?steer\s+(.+)$", text, re.IGNORECASE | re.DOTALL,
+        )
+        if steer_match:
+            from adk.decisions.store import DecisionError
+
+            card, problem = bridge.resolve_target(
+                body.platform, steer_match.group(1) or "",
+            )
+            if card is None:
+                return {"reply": problem or "no card to steer"}
+            cfg = bridge.configs.get(body.platform)
+            from adk.decisions.channels import authorize
+
+            verdict = authorize(
+                cfg, user_id=body.user_id, is_direct_message=body.is_direct_message,
+            )
+            if not verdict.allowed:
+                return {"reply": "Not authorized."}
+            try:
+                bridge.store.steer(card.id, steer_match.group(2).strip(),
+                                   via=body.platform)
+            except DecisionError as exc:
+                return {"reply": str(exc)}
+            return {"reply": f"↪️ steered {card.id} — card stays open."}
+
+        reply = await bridge.on_message(
+            body.platform,
+            "",  # channel id is not used by the bridge
+            body.user_id,
+            text,
+            is_direct_message=body.is_direct_message,
+        )
+        return {"reply": reply or ""}
+
+    @app.post("/decisions", dependencies=[Depends(auth)])
+    def raise_decision(body: RaiseDecision) -> dict[str, Any]:
+        """RAISE a card from off-box.
+
+        Until this existed the daemon could list, read, answer and cancel cards but not
+        create one — the raise path was `adk decide ask` on the owner's own machine.
+        Every other surface (AitherShell, the portal, AitherConnect, Relay, Room, and
+        genesis's `/api/v1/decisions` proxy) could therefore SHOW a card and none could
+        raise one, so "an agent anywhere reaches its owner" was not expressible. The
+        genesis proxy was already written against this route; without it that proxy
+        returns the daemon's 404 as "Decision not found", which reads as a missing card
+        rather than a missing endpoint.
+        """
+        from adk.decisions.store import (
+            DecisionCard,
+            DecisionError,
+            DecisionOption,
+            DecisionSource,
+            get_store,
+        )
+
+        card = DecisionCard(
+            id="",
+            title=(body.title or "").strip(),
+            summary=(body.summary or "").strip(),
+            kind=body.kind,
+            urgency=body.urgency,
+            options=[DecisionOption(key=o.key, label=o.label,
+                                    consequence=o.consequence)
+                     for o in (body.options or [])],
+            default_key=(body.default or "").strip(),
+            facts=[f for f in (body.facts or []) if f.strip()],
+            source=DecisionSource(
+                session_id=(body.session_id or "").strip(),
+                agent=(body.raised_by or body.agent or "api").strip(),
+                cwd=(body.cwd or "").strip(),
+            ),
+            secret_name=(body.secret_name or "").strip(),
+            credential_format=body.credential_format,
+            credential_scope=body.credential_scope,
+            credential_description=(body.credential_description or "").strip(),
+        )
+        try:
+            created = get_store().create(card)
+        except DecisionError as exc:
+            # 400, not 500: the store's validation IS the contract (a decision needs a
+            # default, a credential card needs a secret_name and no options), and a
+            # caller that violates it has sent a bad request, not hit a broken daemon.
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        # Raise the window/toast exactly as a local `adk decide ask` would. Without
+        # this a remotely-raised card lands in the store and the owner is never told —
+        # the silent no-op this whole channel exists to prevent.
+        try:
+            from adk.decisions.notify import notify
+
+            notify(created)
+        except Exception as exc:  # noqa: BLE001
+            # The card IS stored; failing the request now would make the caller retry
+            # and duplicate it. Report the degradation in the response instead of
+            # swallowing it, so "raised but nobody was told" is visible.
+            return {**created.to_dict(), "notify_error": f"{type(exc).__name__}: {exc}"}
+        return created.to_dict()
+
+    @app.post("/decisions/{card_id}/steer", dependencies=[Depends(auth)])
+    def steer_decision(card_id: str, body: SteerDecision) -> dict[str, Any]:
+        """Free text to the raising session. Does NOT close the card."""
+        from adk.decisions.store import DecisionError, get_store
+
+        try:
+            card = get_store().steer(card_id, body.text, via=body.via or "api")
+        except DecisionError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if card is None:
+            raise HTTPException(status_code=404, detail=f"no such card: {card_id}")
+        return card.to_dict()
+
     @app.get("/decisions/{card_id}", dependencies=[Depends(auth)])
     def get_decision(card_id: str) -> dict[str, Any]:
         from adk.decisions.store import DecisionError, get_store
@@ -715,6 +996,169 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"ok": True, "seq": stamped["seq"], "pillar": stamped["pillar"]}
 
+    # ── local auth: browser sign-in via device flow ──────────────────────────────
+    # The daemon is a loopback service reachable ONLY from the local machine.
+    # Browser can initiate device-code flow here, and daemon relays to portal.
+    # Portal mints the session after the user approves; daemon never mints anything.
+    #
+    # 🚨 The PEER ADDRESS is the gate here, not the Host header.
+    #
+    # This daemon binds 0.0.0.0 on purpose (DEFAULT_BIND_HOST above: genesis reaches
+    # the harness across the WSL2 podman network), so these routes are exposed to
+    # every host on that network, over plaintext HTTP. A Host-header check does NOT
+    # contain them: `curl -H "Host: 127.0.0.1:8362" http://<lan-ip>:8362/auth/link`
+    # satisfies it trivially. Only a BROWSER is bound by Host/Origin; an attacker
+    # with a socket is not. That left the bearer -- sent in cleartext on that same
+    # network -- as the sole protection, which is one sniffed request away from an
+    # attacker initiating a device flow the user then unknowingly approves.
+    #
+    # A TCP source address cannot be forged the way a header can (a spoofed SYN
+    # never completes the handshake), so the connection's peer is the real signal.
+    # Host stays as a second, cheaper check: defence-in-depth, never the decision.
+    _loopback_peers = frozenset({"127.0.0.1", "::1", "::ffff:127.0.0.1"})
+
+    def _validate_localhost_origin(request: Request, host: str = Header(default="")) -> None:
+        """Reject anything whose TCP peer is not this machine's loopback."""
+        peer = getattr(getattr(request, "client", None), "host", None)
+        # Fail CLOSED: an unknown peer (no client info) is refused, never allowed.
+        if peer not in _loopback_peers:
+            raise HTTPException(
+                status_code=403,
+                detail="this endpoint is reachable from loopback only",
+            )
+        if not host:
+            raise HTTPException(status_code=400, detail="missing Host header")
+        # Accept both 127.0.0.1:PORT and localhost:PORT
+        allowed_hosts = (f"127.0.0.1:{DEFAULT_PORT}", f"localhost:{DEFAULT_PORT}")
+        if host not in allowed_hosts:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Host header {host} not allowed. "
+                f"This endpoint is only reachable from localhost.",
+            )
+
+    @app.post("/auth/link", dependencies=[Depends(auth), Depends(_validate_localhost_origin)])
+    async def link_device_code(host: str = Header(default="")) -> LinkDeviceCodeResponse:
+        """Initiate device-code flow by calling portal's /auth/device/code.
+
+        The daemon does NOT mint credentials. It only relays portal's response
+        and tracks the device_code in memory for the /auth/link/status polling endpoint.
+        """
+        try:
+            import httpx
+        except ImportError:
+            raise HTTPException(
+                status_code=503,
+                detail="httpx required for device flow (pip install httpx)",
+            ) from None
+
+        portal_url = "https://portal.aitherium.com"
+        portal_endpoint = f"{portal_url}/auth/device/code"
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                res = await client.post(portal_endpoint)
+                if not res.is_success:
+                    raise HTTPException(
+                        status_code=503,
+                        detail=f"portal device flow failed: {res.status_code}",
+                    )
+                data = res.json()
+        except httpx.RequestError as exc:
+            raise HTTPException(
+                status_code=503, detail=f"portal unreachable: {exc}"
+            ) from exc
+
+        device_code = data.get("device_code", "")
+        expires_in = data.get("expires_in", 600)
+
+        if not device_code:
+            raise HTTPException(
+                status_code=503, detail="portal returned no device_code"
+            )
+
+        # Track this device code in memory with expiration.
+        expires_at = time.time() + expires_in
+        _device_flow_state.set(device_code, "pending", expires_at)
+
+        return LinkDeviceCodeResponse(
+            user_code=data.get("user_code", ""),
+            device_code=device_code,
+            verification_uri=data.get("verification_uri", ""),
+            expires_in=expires_in,
+        )
+
+    @app.get(
+        "/auth/link/status/{device_code}",
+        dependencies=[Depends(auth), Depends(_validate_localhost_origin)],
+    )
+    async def link_status(
+        device_code: str, host: str = Header(default="")
+    ) -> LinkStatusResponse:
+        """Poll device-code approval status.
+
+        Returns current state from memory (updated asynchronously by background polling).
+        If status is 'pending', browser should retry after a short delay.
+        """
+        try:
+            import httpx
+        except ImportError:
+            raise HTTPException(
+                status_code=503,
+                detail="httpx required for device flow (pip install httpx)",
+            ) from None
+
+        # Check cached state first
+        cached = _device_flow_state.get(device_code)
+        if cached and cached["status"] != "pending":
+            return LinkStatusResponse(
+                status=cached["status"], expires_at=cached["expires_at"]
+            )
+
+        # Poll portal for current status (may have changed since last check)
+        portal_url = "https://portal.aitherium.com"
+        portal_endpoint = f"{portal_url}/auth/device/token"
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                res = await client.post(
+                    portal_endpoint,
+                    json={"device_code": device_code},
+                )
+                if res.status_code == 200:
+                    # Approved
+                    _device_flow_state.set(device_code, "approved", time.time() + 600)
+                    return LinkStatusResponse(
+                        status="approved", expires_at=time.time() + 600
+                    )
+                elif res.status_code == 400:
+                    # Check the error to determine if expired/denied
+                    error_data = res.json() if res.text else {}
+                    error_code = error_data.get("error", "")
+                    if error_code == "expired_token":
+                        _device_flow_state.set(device_code, "expired", time.time())
+                        return LinkStatusResponse(status="expired", expires_at=time.time())
+                    elif error_code == "access_denied":
+                        _device_flow_state.set(device_code, "denied", time.time())
+                        return LinkStatusResponse(status="denied", expires_at=time.time())
+                    else:
+                        # Still pending
+                        return LinkStatusResponse(
+                            status="pending", expires_at=time.time() + 600
+                        )
+                else:
+                    # Unexpected response; return as pending
+                    return LinkStatusResponse(
+                        status="pending", expires_at=time.time() + 600
+                    )
+        except httpx.RequestError:
+            # Portal unreachable; return current cached state or pending
+            if cached:
+                return LinkStatusResponse(
+                    status=cached["status"], expires_at=cached["expires_at"]
+                )
+            return LinkStatusResponse(status="pending", expires_at=time.time() + 600)
+
     @app.get("/rooms/{room_id}/events", dependencies=[Depends(auth)])
     def room_events(
         room_id: str,
@@ -789,7 +1233,7 @@ def serve(host: str = "", port: int = 0, token: str = "") -> int:
         sys.stderr.write("uvicorn is required: pip install uvicorn fastapi\n")
         return 2
 
-    bind_host = host or DEFAULT_HOST
+    bind_host = host or DEFAULT_BIND_HOST
     bind_port = port or DEFAULT_PORT
     app = create_app(token=token)
     sys.stderr.write(

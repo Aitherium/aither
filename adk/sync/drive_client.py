@@ -37,8 +37,14 @@ def _get_filestate():
             aitheros_dir = adk_dir.parent / "AitherOS"
             if aitheros_dir.is_dir():
                 sys.path.insert(0, str(aitheros_dir))
-            from lib.sync.drive_sync_core import FileState as FS
-            _FILESTATE = FS
+            try:
+                from lib.sync.drive_sync_core import FileState as _filestate_cls
+            except ImportError as exc:
+                raise RuntimeError(
+                    "adk sync requires the AitherOS host environment "
+                    "(drive_sync_core is not shipped in the PyPI package): "
+                    f"{exc}") from exc
+            _FILESTATE = _filestate_cls
     return _FILESTATE
 
 

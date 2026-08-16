@@ -126,7 +126,7 @@ def planb_sync(api_url: str = "", token: str = "", force: bool = False) -> dict:
     if not url:
         return {"error": "no API URL",
                 "fix": "pass api_url=... or set PLANB_API_URL "
-                       "(e.g. https://garg.aitherium.com)"}
+                       "(e.g. https://your-workspace.example.com)"}
     if not tok:
         return {"error": "no API token",
                 "fix": "pass token=... or set PLANB_API_TOKEN with a session "

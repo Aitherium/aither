@@ -44,6 +44,12 @@ from typing import Any, Dict, Optional, Sequence, Tuple
 
 logger = logging.getLogger("arc_world_pack")
 
+# Import smart policy for coordinate selection
+try:
+    from . import smart_policy
+except ImportError:
+    smart_policy = None  # type: ignore
+
 _TERMINAL_STATES = ("WIN", "GAME_OVER")
 _VOCAB_FALLBACK = [1, 2, 3, 4, 5, 6, 7]  # legal non-RESET actions (0 = RESET)
 
@@ -132,6 +138,10 @@ class ArcGatewayAdapter:
         self._pre_raw = self._current_grid_raw()
         self._submitted = 0
         self._accepted = 0
+        # Initialize smart policy tracker if available
+        self._policy_tracker = (
+            smart_policy.SmartPolicyTracker() if smart_policy else None
+        )
         logger.info("arc adapter: enrolled game '%s' (state=%s, transitions "
                     "submit=%s)", self._game, self._state, self._submit and bool(self._tok))
 
@@ -164,7 +174,17 @@ class ArcGatewayAdapter:
         aid = int(action)
         x = y = None
         if aid == 6:  # ACTION6 = click at (x, y) — the only complex action
-            x, y = random.randint(0, 63), random.randint(0, 63)
+            # Use smart policy for coordinate selection if available
+            if self._policy_tracker and smart_policy:
+                grid = self._current_grid_raw()
+                x, y = smart_policy.select_smart_coordinates(
+                    grid,
+                    width=64,
+                    height=64,
+                    recent_actions=self._policy_tracker.recent_actions,
+                )
+            else:
+                x, y = random.randint(0, 63), random.randint(0, 63)
         # Coords ride in the BODY, never the path: the ARC API is /api/cmd/ACTION6
         # with x/y as body keys (the vendored player does exactly this). The
         # coords-annotated string is for the GATEWAY submission only.
@@ -208,6 +228,12 @@ class ArcGatewayAdapter:
             except Exception as exc:  # noqa: BLE001 — contribution must never break play
                 logger.debug("arc adapter: submit failed (%s) — continuing local", exc)
 
+        # Track action results with policy tracker
+        if self._policy_tracker and x is not None and y is not None:
+            grid_after = self._grid_str(post_raw)
+            grid_before = self._grid_str(pre_raw)
+            self._policy_tracker.add_action(x, y, grid_before, grid_after)
+
         self._pre_raw = post_raw
         reward = 1.0 if self._state == "WIN" else 0.0
         done = self._state in _TERMINAL_STATES
@@ -237,5 +263,5 @@ class ArcGatewayAdapter:
         try:
             if self._http is not None:
                 self._http.close()
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("arc adapter: close failed: %s", exc)

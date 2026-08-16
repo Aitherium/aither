@@ -122,6 +122,42 @@ def _find_local_packs() -> list[dict]:
     return packs
 
 
+#: The bundled pack used as the default when nothing else is selected. Kept as a
+#: named constant so the enumeration below and the fallbacks in
+#: ``discover_brain_pack``/``discover_pack_dir`` cannot drift apart.
+DEFAULT_BUNDLED_PACK = "aither"
+
+
+def _find_bundled_packs() -> list[dict]:
+    """Scan the packs shipped INSIDE the adk wheel (``adk/packs/``).
+
+    Without this, every pack we ship is invisible to anyone who installed adk
+    normally: the other scans resolve only in the monorepo (``Library/packs``),
+    in a container, from a separately pip-installed pack (entry points), or from
+    a directory the user populated themselves (``~/.aither/packs``). A plain
+    ``pip install aither-adk`` matches none of those, so ``list_available_packs``
+    returned nothing for the packs the wheel had just placed on disk — the files
+    were there and there was no way to find out.
+
+    Enumeration only. Which pack is the DEFAULT is decided by
+    ``DEFAULT_BUNDLED_PACK``, never by this scan's ordering: picking the first
+    directory alphabetically would silently hand new installs a different agent
+    than the one they got before.
+    """
+    packs = []
+    packs_dir = Path(__file__).resolve().parent / "packs"
+    if not packs_dir.is_dir():
+        return packs
+    for candidate in sorted(packs_dir.iterdir()):
+        if candidate.is_dir() and (candidate / "brain_pack.yaml").exists():
+            packs.append({
+                "name": candidate.name,
+                "dir": candidate,
+                "source": "bundled",
+            })
+    return packs
+
+
 def discover_brain_pack() -> Optional[Path]:
     """Find the best brain pack YAML to use.
 
@@ -172,7 +208,9 @@ def discover_brain_pack() -> Optional[Path]:
             return bp
 
     # 6. Bundled aither pack (shipped with ADK) — default fallback
-    aither_pack = Path(__file__).resolve().parent / "packs" / "aither" / "brain_pack.yaml"
+    aither_pack = (
+        Path(__file__).resolve().parent / "packs" / DEFAULT_BUNDLED_PACK / "brain_pack.yaml"
+    )
     if aither_pack.exists():
         logger.info("Brain pack from bundled aither pack: %s", aither_pack)
         return aither_pack
@@ -256,12 +294,25 @@ def discover_pack_dir() -> Optional[Path]:
     if (Path.cwd() / "brain_pack.yaml").exists():
         return Path.cwd()
 
+    # Bundled default, so a plain `pip install aither-adk` resolves a pack dir
+    # instead of None. Pinned by name to agree with discover_brain_pack.
+    for p in _find_bundled_packs():
+        if p["name"] == DEFAULT_BUNDLED_PACK:
+            return p["dir"]
+
     return None
 
 
 def list_available_packs() -> list[dict]:
     """List all discoverable packs (for CLI/UI display)."""
-    packs = _find_library_packs() + _find_entrypoint_packs() + _find_local_packs()
+    # Bundled LAST: dedup keeps the first of each name, so a pack the user
+    # installed or wrote themselves still wins over the copy in our wheel.
+    packs = (
+        _find_library_packs()
+        + _find_entrypoint_packs()
+        + _find_local_packs()
+        + _find_bundled_packs()
+    )
 
     # Deduplicate by name
     seen = set()

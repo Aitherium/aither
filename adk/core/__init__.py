@@ -23,6 +23,7 @@ from adk.core.logging import get_logger
 from adk.core.mcp import MCPClient, MCPError, MCPTool, mcp_tools
 from adk.core.memory import InMemoryStore, Memory, MemoryRecord
 from adk.core.model import Message, ModelBackend, auto_backend
+from adk.core.oo import AgenticReturnError, OOAgent
 from adk.core.otel import OTelNotInstalled, OTelTracer, try_build_otel_tracer
 from adk.core.persistence import FileStore
 from adk.core.sandbox import (
@@ -130,6 +131,8 @@ __all__ = [
     "NoOpTracer",
     "OTelNotInstalled",
     "OTelTracer",
+    "AgenticReturnError",
+    "OOAgent",
     "PredictLoop",
     "ReActLoop",
     "Strategy",

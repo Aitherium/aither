@@ -23,7 +23,7 @@ adk init my-agent && cd my-agent && python agent.py
 | You have… | Run this | You get |
 |---|---|---|
 | **Nothing — not even Python** | one-line installer (below) | isolated env + first-run wizard |
-| **No GPU, no API key** | `adk setup --tier bonsai` | [Bonsai](#bonsai-an-agent-on-literally-anything) running **free, offline, on CPU** — even a phone or Pi |
+| **No GPU, no API key** | `adk bonsai-local` | [Bonsai](#bonsai-an-agent-on-literally-anything) running **free, offline, on CPU** — pulls ~300MB image, serves on :8090 |
 | **A GPU (6 GB+)** | `adk quickstart` | auto-detected vLLM/Ollama, models pulled, ready to chat |
 | **Just an API key** | `adk quickstart --cloud` | cloud inference (Anthropic / OpenAI / DeepSeek) |
 | **A whole LAN of machines** | `adk deploy grid` | [multi-machine effort-routed inference](#grid-inference-across-multiple-machines) |
@@ -54,8 +54,10 @@ adk doctor         # something wrong? this names it
 
 - [New here? The five concepts](#new-here-the-five-concepts)
 - [Documentation map](#documentation-map) — every guide, linked
+- [Subagents — drive Claude Code, Codex, and eight more](#subagents--drive-claude-code-codex-and-eight-more) — real binaries, scoped, torn down
 - [Quick Start](#quick-start)
 - [Bonsai: an agent on literally anything](#bonsai-an-agent-on-literally-anything)
+- [Reasoning capture & code intelligence](#reasoning-capture--code-intelligence) — external thinking, omp interop, DeepSeek Coder
 - [Setting Up Inference](#setting-up-inference)
 - [Building Agents](#building-agents)
 - [Agent Fleets](#agent-fleets)
@@ -94,6 +96,152 @@ If you only remember one thing: **`agent.chat()` is the agent.** Everything else
 | See working code | [`examples/`](examples/) — five runnable scripts |
 | See what changed | [CHANGELOG.md](CHANGELOG.md) |
 | Browse rendered docs | [aitherium.github.io/aither-adk](https://aitherium.github.io/aither-adk/) |
+
+## Interoperability
+
+Aither agents speak three protocols for seamless integration with external systems:
+
+### 1. **ACP (Agent Client Protocol)** — IDE Integration
+Connect your agent to JetBrains, Zed, VS Code, or any ACP-compatible editor over JSON-RPC 2.0 stdio.
+
+```bash
+adk acp serve                          # Serve your agent to an editor
+```
+
+- **Harness ID**: `acp` (registered in `adk.harnesses.registry`)
+- **Transport**: STRUCTURED_BIDI (JSON-RPC 2.0)
+- **Usage**: Agents appear as room participants in AitherShell, driven by editors that speak ACP v2
+
+### 2. **A2A (Agent-to-Agent)** — Remote Agent Integration
+Map remote A2A agents (Google A2A v0.3.0 compatible) as room participants with full task lifecycle visibility.
+
+```python
+from adk.a2a_adapter import A2AAdapter
+
+adapter = A2AAdapter(room_id="main", remote_agent_id="foo")
+adapter.on_task_submitted("task_001", "what is AI?")
+adapter.on_task_working("task_001", "thinking...")
+adapter.on_task_completed("task_001", "AI is...")
+```
+
+- **Module**: `adk.a2a_adapter.A2AAdapter`
+- **Events**: Task lifecycle maps to AitherEvents (orchestration + cognition pillars)
+- **Flux codes**: `a2a.s` (submit), `a2a.u` (update), `a2a.d` (done)
+- **Actor kind**: `a2a` — remote agents appear with their own identity in rooms
+
+### 3. **MCP-UI** — Render Blocks as Resources
+Serve agent-generated RenderBlocks (server-driven UI: tables, forms, charts, approval gates) via the MCP resource protocol using `ui://` URIs.
+
+```python
+from adk.mcp_ui_resources import RenderBlocksMCPServer, create_table_block, create_scores_block
+
+server = RenderBlocksMCPServer()
+blocks = [
+    create_table_block(columns=["Issue", "Severity"], rows=[[...], [...]]),
+    create_scores_block({"security": 0.92, "style": 0.78}),
+]
+uri = server.from_agent_response("reviewer", "task_123", blocks)
+# uri -> "ui://agent/reviewer/task_123"
+```
+
+- **Module**: `adk.mcp_ui_resources.RenderBlocksMCPServer`
+- **Block types**: 24 primitives (markdown, header, table, code, form, approve, slider, file_upload, etc.)
+- **Schema validation**: parity with the platform's RenderBlocks schema, asserted
+  in CI so a block type cannot exist on one side of the boundary only
+- **MIME type**: `application/vnd.aitheros.renderblocks+json`
+- **Integration**: Mount into FastAPI, use in MCP clients that understand `ui://`
+
+---
+
+## Subagents — drive Claude Code, Codex, and eight more
+
+Your agent can delegate a task to **another coding agent's real product** — not a
+reimplementation of it against the raw API.
+
+That distinction is the whole design. Rebuilding Claude Code's behaviour yourself
+means inheriting none of its skills, hooks or account handling, and then chasing
+a product that ships faster than you can track it. So the ADK resolves the real
+binary on `PATH` (honouring `PATHEXT`, so the Windows `.cmd` shim works), runs it
+headless with an explicit tool scope, feeds the prompt over **stdin — never argv,
+which is visible in the process table** — gives each run its own config dir so
+concurrent subagents can't corrupt one another's state, and tears down the
+process tree on timeout.
+
+```bash
+adk shell harnesses          # what can this machine drive, and how to get the rest
+adk shell new --harness claude
+adk shell send  <id> "refactor the retry logic in billing/"
+adk shell attach <id>        # watch it work
+adk shell kill  <id>         # teardown
+```
+
+`adk shell harnesses` on a typical box:
+
+```
+ID           INSTALLED  TRANSPORT         DESCRIPTION
+claude       yes        structured-bidi   Anthropic Claude Code — bidirectional stream-json, full tool use
+gemini       yes        oneshot-per-turn  Google Gemini CLI — one process per turn, stream-json output
+terminal     yes        pty-stream        A real shell on this host behind a pseudo-terminal (pwsh/bash)
+sandbox      NO         pty-stream        A real Linux TTY inside a dev-workspace container
+                                          -> Install Docker Desktop
+acp          yes        structured-bidi   JSON-RPC 2.0 stdio harness for JetBrains/Zed/VS Code editors
+codex        NO         oneshot-per-turn  OpenAI Codex CLI — one process per turn (codex exec --json)
+                                          -> npm i -g @openai/codex
+aider        NO         oneshot-per-turn  Aider — pair-programming CLI (one process per turn)
+                                          -> pip install aider-install && aider-install
+opencode     NO         oneshot-per-turn  OpenCode — open-source coding agent (one process per turn)
+                                          -> npm i -g opencode-ai
+```
+
+Ten harnesses are declared; the ones you haven't installed say so and tell you
+the command. **It never silently pretends the world is Claude-only** — a harness
+you don't have is a missing install, not a missing feature, and the difference is
+printed rather than guessed at.
+
+### Harnesses are data, not drivers
+
+A per-agent runner does not scale — you end up with `claude_runner.py`,
+`codex_runner.py`, `gemini_runner.py`, each drifting. So a harness is a row:
+
+```python
+HarnessSpec(
+    id            = "codex",
+    label         = "OpenAI Codex CLI",
+    transport     = Transport.ONESHOT_PER_TURN,
+    binary        = "codex",
+    version_argv  = ["--version"],
+    install_hint  = "npm i -g @openai/codex",
+    json_lines    = True,
+    build_argv    = lambda spec, launch: [spec.binary, "exec", "--json", launch.prompt],
+)
+```
+
+Four transports cover every agent CLI shipping today: `structured-bidi` (a
+persistent bidirectional stream-json session), `oneshot-per-turn` (a fresh
+process per turn), `pty-stream` (a real TTY behind a pseudo-terminal), and
+`http-stream` (a remote agent over SSE). Adding an eleventh harness is a table
+entry, not a new module.
+
+### Scoped by construction
+
+A subagent is launched with an explicit allow-list, and the runner **re-validates
+it fail-closed** rather than trusting the caller:
+
+```python
+from adk.claude_runner import ClaudeRunner, RunScope
+
+runner = ClaudeRunner()
+scope  = RunScope(allowed_tools=["Read", "Grep", "Glob"])      # read-only
+rec    = runner.submit(task="audit error handling in ./api", scope=scope)
+
+rec = runner.get(rec.run_id)          # queued | running | completed | failed | cancelled
+print(rec.result_text)                # one task out, one answer back
+runner.kill(rec.run_id)               # teardown, whole process tree
+```
+
+The scope becomes `--allowedTools` on the real CLI, so a subagent asked to audit
+code cannot write to your disk — enforced by the product you delegated to, not by
+a prompt asking it nicely.
 
 ---
 
@@ -173,8 +321,6 @@ adk-serve --fleet fleet.yaml --port 8080
 Bonsai is Aitherium's family of ultra-compact models built to make agents *sovereign by default* — they run on hardware everyone already owns. The 1-bit Bonsai-27B runs on a plain CPU with 4 GB of RAM; Bonsai-4B runs in 2 GB (Android via Termux, Raspberry Pi Zero). Agents on Bonsai get the **full harness** — tool calling, memory, safety, fleets — not a demo mode.
 
 ```bash
-adk setup --tier bonsai         # Bonsai-27B Q1_0 — CPU, phone, Pi, 4GB RAM
-adk setup --tier bonsai-4b      # ultra-minimal — 2GB RAM
 adk bonsai-local                # one command: Docker pulls the image + serves Bonsai-27B on :8090
 adk --backend bonsai-local      # point your agents at it
 ```
@@ -187,6 +333,92 @@ Why this matters, concretely:
 - **A floor, not a ceiling** — start on Bonsai today, add a GPU tier or a cloud reasoning backend later; your agent code does not change.
 
 When you outgrow it, effort routing lets you keep Bonsai for the cheap calls and send only the hard ones somewhere bigger — see [hybrid profiles](#hardware-profiles).
+
+---
+
+## Reasoning capture & code intelligence
+
+Three packs added in 3.2.0. Each exists because of something the platform's chat
+models structurally cannot do.
+
+### External thinking — get the chain of thought back
+
+Providers stopped returning raw reasoning. The recovery, from Oh My Pi's
+`externalThinking` (MIT), needs no jailbreak: **turn the model's native reasoning
+channel off, then give it a tool whose only parameter is a string described as a
+private scratchpad.** It keeps reasoning — into the tool call, which the API
+returns in plaintext. What comes back is the model's own shorthand, not a
+written-for-an-audience summary.
+
+```python
+from adk.packs.omp_thinking import reconcile, deep_think_directive
+
+model = {"api": "anthropic-messages", "reasoning": True,
+         "thinking_requires_effort": True, "thinking_suppress_when_off": True}
+
+reconcile(agent._tools, model)          # arms `deep_think` only if the model can take it
+print(deep_think_directive(8)["directive"])   # the effort number, aimed at the scratchpad
+```
+
+Two things this pack refuses to do, both deliberate:
+
+- **It refuses unknown and incapable models.** A model that cannot suppress its
+  native channel gets both channels or a rejected request, so it is refused and
+  *counted*, never probed hopefully.
+- **It disarms on model swap.** Whether the scratchpad is legal is a property of
+  the model, not the session, so `reconcile()` must run on every swap. Arming it
+  once at startup is correct right up until someone changes models.
+
+> `deep_think` here is the scratchpad TOOL — a place to write reasoning. If your
+> stack also has a `deep_think`/`deep_thinking` *flag* meaning "escalate to a more
+> expensive search path", they are different things. Same word, two planes.
+
+**Security, stated plainly:** everything the model thinks becomes a tool
+parameter, so it flows into your logs, traces and whatever observability stack
+you run. If the context held a credential, the reasoning about it lands in all of
+them. Do not arm this on a surface whose tool calls you would not read aloud.
+
+### Oh My Pi interop
+
+An omp session recorded with external thinking on already contains raw reasoning
+in its `think` tool calls — a corpus that cost nothing to produce.
+
+```python
+from adk.packs.omp_interop import omp_session_import, omp_tool_map
+
+omp_session_import()          # auto-locates ~/.omp, opens READ-ONLY
+omp_tool_map("bash")          # -> {"mapped": "shell_exec"}
+```
+
+The schema is discovered, not assumed. An unrecognised layout returns
+`ok=False, reason="unknown_schema"` with the tables it found — because an
+importer that returns `[]` there is indistinguishable from one pointed at a
+database with no traces in it, and those call for opposite responses.
+
+### DeepSeek Coder — fill-in-the-middle and repo packing
+
+```python
+from adk.packs.deepseek_coder import dsc_infill, dsc_repo_context, dsc_traps
+
+await dsc_infill(prefix="def quicksort(arr):\n    ", suffix="\n    return arr")
+dsc_repo_context(root="./src")     # dependency-first, with #path markers
+dsc_traps()                        # read this before driving the model directly
+```
+
+`dsc_infill` writes the code *between* two fragments. Ask a chat model to fill a
+gap and it rewrites your surrounding lines — a different operation, and the
+reason inline completion never worked well with one.
+
+`dsc_repo_context` implements Algorithm 1 of the DeepSeek-Coder paper: partition
+the dependency graph into disconnected subgraphs, then take `argmin(in_degree)` —
+which is what makes the ordering total on a cyclic import graph rather than
+stalling. Cycles are reported, never silently broken.
+
+Call `dsc_traps()` first. Every way to misformat a prompt for this family
+produces a fluent, confident, wrong answer with nothing logged: the FIM sentinels
+are U+FF5C and U+2581 (**not** `|` and `_`), the suffix goes *after* the hole
+marker, and an instruct model needs stop token 32014 for raw completion or it
+halts at the first turn boundary and reads as a weak model.
 
 ---
 
@@ -211,7 +443,7 @@ report = await auto_setup()    # detects GPU, starts vLLM, ready to go
 ### Pick a tier for your VRAM
 
 ```bash
-adk setup --tier bonsai        # no GPU   — Bonsai-27B 1-bit on CPU
+adk bonsai-local               # no GPU   — Bonsai-27B 1-bit on CPU (Docker pull + local serve)
 adk setup --tier nano          # 6–8 GB   — Nemotron-8B TQ4 (4-bit)
 adk setup --tier standard-tq4  # 12–16 GB — orchestrator + reasoning, both 4-bit
 adk setup --tier full          # 24 GB+   — orchestrator + reasoning + embeddings

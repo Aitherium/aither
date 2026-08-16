@@ -9,7 +9,7 @@ Usage::
     client = FederationLiteClient(
         hub_url="https://portal.aitherium.com",
         api_key="...",
-        node_id="garg-a3f8b2c1-7x9k",
+        node_id="node-a3f8b2c1-7x9k",
         key_dir=Path(".aither/keys"),
     )
     await client.upsert_agents([{...}])

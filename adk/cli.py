@@ -2328,8 +2328,31 @@ def cmd_login(args) -> int:
     return 0
 
 
+def _local_license_tier() -> str:
+    """Entitlement tier from the saved account license, or "" if none.
+
+    Reads the same `~/.aither/license.json` that `adk login` writes via
+    `_save_account_license`, so `whoami` reports the tier the pack gates
+    actually use rather than a second, differently-derived answer.
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    path = _Path.home() / ".aither" / "license.json"
+    if not path.exists():
+        return ""
+    try:
+        env = _json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    payload = env.get("payload") if isinstance(env, dict) else None
+    if not isinstance(payload, dict):
+        return ""
+    return str(payload.get("tier") or payload.get("plan_tier") or "").strip()
+
+
 def cmd_whoami(args) -> int:
-    """Show current auth status."""
+    """Show current auth status and entitlement tier."""
     saved = load_saved_config()
     api_key = saved.get("api_key", "")
     username = saved.get("username", "")
@@ -2337,6 +2360,34 @@ def cmd_whoami(args) -> int:
     tenant_id = saved.get("tenant_id", "")
     backend = saved.get("setup_backend", saved.get("default_backend", ""))
     inference_url = saved.get("inference_url", "")
+
+    # NOTE on the absent --refresh: the portal advertised
+    # `aither entitlement --refresh --json`, and a refresh cannot be honoured —
+    # the signed license is minted ONLY inside the device-flow token exchange
+    # (`/auth/device/token`), and AitherIdentity exposes no license endpoint to
+    # re-fetch from. Shipping a `--refresh` that quietly did nothing would be
+    # the silent-no-op pattern: a user who just paid would run it, see the old
+    # tier, and conclude the purchase failed. Until such an endpoint exists,
+    # `adk login` is the way to pick up a new plan, and this says so below.
+    tier = _local_license_tier()
+
+    if getattr(args, "json", False):
+        import json as _json
+        out = {
+            "logged_in": bool(api_key or backend),
+            "username": username,
+            "email": email,
+            "tenant_id": tenant_id,
+            "tier": tier,
+            "entitled": bool(tier) and tier.lower() not in ("", "free", "community"),
+            "backend": backend,
+            "inference_url": inference_url,
+            "api_key_present": bool(api_key),
+        }
+        print(_json.dumps(out, indent=2))
+        # Exit code carries the answer too, so a script can gate on it without
+        # parsing: 0 = authenticated, 1 = not.
+        return 0 if (api_key or backend) else 1
 
     if not api_key and not backend:
         print("  Not logged in. Run: adk login")
@@ -2361,6 +2412,9 @@ def cmd_whoami(args) -> int:
         print(f"  Backend:   {backend}")
     if inference_url:
         print(f"  Inference: {inference_url}")
+    print(f"  Tier:      {tier or 'free (no paid entitlement)'}")
+    if not tier:
+        print("  (bought a plan? run `adk login` again to pick up the new tier)")
     print()
     return 0
 
@@ -3078,6 +3132,195 @@ def cmd_agents(args) -> int:
     print("  invoke: adk invoke <name> <skill> [--arg k=v]")
     print("  add an endpoint: ~/.aither/agents.json (name, invoke_url, model, provider_hint)")
     return 0
+
+
+def cmd_agent(args) -> int:
+    """Run and manage host-tier agent loops."""
+    import subprocess
+    import json
+    from pathlib import Path
+
+    agent_cmd = getattr(args, "agent_command", None)
+
+    if agent_cmd == "run":
+        agent_name = getattr(args, "name", None)
+        if not agent_name:
+            print("usage: adk agent run <name>")
+            return 1
+
+        daemon_url = getattr(args, "daemon_url", "http://127.0.0.1:8362")
+        token = getattr(args, "token", "") or os.environ.get("AITHER_HARNESS_TOKEN", "")
+        room = getattr(args, "room", "main")
+        interval = getattr(args, "interval", 5.0)
+        foreground = getattr(args, "foreground", False)
+
+        # Build the command
+        argv = [
+            sys.executable, "-m", "adk.agent_loop_cmd",
+            agent_name,
+            "--daemon-url", daemon_url,
+            "--room", room,
+            "--interval", str(interval),
+        ]
+        if token:
+            argv.extend(["--token", token])
+
+        if foreground:
+            # Run in foreground
+            env = dict(os.environ)
+            return subprocess.call(argv, env=env)
+        else:
+            # Detach as a background process
+            from adk.agent_daemon import spawn_detached
+            log_path = Path.home() / ".aither" / "logs" / f"agent-{agent_name}.log"
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            pid = spawn_detached(argv, log_path)
+            print(f"[+] Agent '{agent_name}' started (pid={pid})")
+            print(f"    Log: {log_path}")
+            print(f"    Check status: adk agent status {agent_name}")
+            return 0
+
+    elif agent_cmd == "list":
+        aither_home = Path.home() / ".aither"
+        status_path = aither_home / "adk-up.json"
+
+        if not status_path.exists():
+            print("No agents running.")
+            return 0
+
+        try:
+            data = json.loads(status_path.read_text(encoding="utf-8"))
+            agents = data.get("agents", {})
+            if not agents:
+                print("No agents running.")
+                return 0
+
+            print("\n  Running Agent Loops")
+            print("  " + "=" * 80)
+            print(f"  {'NAME':<20}{'PID':<10}{'STATUS':<15}{'ROOM':<10}{'STARTED'}")
+            print("  " + "-" * 80)
+
+            import time
+            for name, agent_info in agents.items():
+                pid = agent_info.get("pid")
+                room = agent_info.get("room", "?")
+                started_at = agent_info.get("started_at", 0)
+                started_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(started_at))
+
+                # Check if process is alive
+                from adk.agent_daemon import pid_alive
+                alive = pid_alive(pid)
+                status = "alive" if alive else "dead"
+
+                print(f"  {name:<20}{pid:<10}{status:<15}{room:<10}{started_str}")
+
+            print("  " + "-" * 80)
+            return 0
+        except Exception as exc:
+            print(f"Error reading status: {exc}", file=sys.stderr)
+            return 1
+
+    elif agent_cmd == "status":
+        agent_name = getattr(args, "name", None)
+        if not agent_name:
+            print("usage: adk agent status <name>")
+            return 1
+
+        aither_home = Path.home() / ".aither"
+        status_path = aither_home / "adk-up.json"
+
+        if not status_path.exists():
+            print(f"Agent '{agent_name}' is not running.")
+            return 1
+
+        try:
+            data = json.loads(status_path.read_text(encoding="utf-8"))
+            agents = data.get("agents", {})
+            agent_info = agents.get(agent_name)
+
+            if not agent_info:
+                print(f"Agent '{agent_name}' is not running.")
+                return 1
+
+            pid = agent_info.get("pid")
+            from adk.agent_daemon import pid_alive
+            alive = pid_alive(pid)
+
+            print(f"\n  Agent: {agent_name}")
+            print(f"  Status: {'alive' if alive else 'dead'}")
+            print(f"  PID: {pid}")
+            print(f"  Room: {agent_info.get('room', '?')}")
+            print(f"  Session: {agent_info.get('session_id', '?')}")
+            print(f"  Actor ID: {agent_info.get('actor_id', '?')}")
+
+            import time
+            started_at = agent_info.get("started_at", 0)
+            started_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(started_at))
+            print(f"  Started: {started_str}")
+
+            if alive:
+                print(f"\n  → See status file: {status_path}")
+                print(f"  → Kill: adk agent stop {agent_name}")
+            print()
+            return 0
+        except Exception as exc:
+            print(f"Error reading status: {exc}", file=sys.stderr)
+            return 1
+
+    elif agent_cmd == "stop":
+        agent_name = getattr(args, "name", None)
+        if not agent_name:
+            print("usage: adk agent stop <name>")
+            return 1
+
+        aither_home = Path.home() / ".aither"
+        status_path = aither_home / "adk-up.json"
+
+        if not status_path.exists():
+            print(f"Agent '{agent_name}' is not running.")
+            return 1
+
+        try:
+            data = json.loads(status_path.read_text(encoding="utf-8"))
+            agents = data.get("agents", {})
+            agent_info = agents.get(agent_name)
+
+            if not agent_info:
+                print(f"Agent '{agent_name}' is not running.")
+                return 1
+
+            pid = agent_info.get("pid")
+            from adk.agent_daemon import pid_alive, kill_pid
+
+            if not pid_alive(pid):
+                print(f"Agent '{agent_name}' (pid={pid}) is already dead.")
+                # Clean up status
+                del agents[agent_name]
+                status_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+                return 0
+
+            print(f"Stopping agent '{agent_name}' (pid={pid})...")
+            if kill_pid(pid):
+                print(f"[+] Agent stopped.")
+                # Clean up status
+                del agents[agent_name]
+                status_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+                return 0
+            else:
+                print(f"[-] Failed to stop agent.", file=sys.stderr)
+                return 1
+        except Exception as exc:
+            print(f"Error stopping agent: {exc}", file=sys.stderr)
+            return 1
+
+    else:
+        print("usage: adk agent [run|list|status|stop]")
+        print()
+        print("  run <name>      Start a host-tier agent loop")
+        print("  list            List running agent loops")
+        print("  status <name>   Show status of an agent")
+        print("  stop <name>     Stop a running agent")
+        return 1
 
 
 def cmd_chat(args) -> int:
@@ -7732,7 +7975,19 @@ def cmd_grid(args) -> int:
             print(f"  {data}")
             return 1
         tok = data.get("enroll_token", "")
-        install = data.get("install") or f'AITHER_NODE_TOKEN={tok} sh -c "$(curl -fsSL https://cluster.aitherium.com/install.sh)"'
+        # The server's own `install` string wins. The FALLBACK used to name a
+        # retired cluster host whose installer returns 503 "Origin
+        # unavailable" — its origin (aitheros-gateway:8777) was never migrated to
+        # podman, so the tunnel resolves and then finds nothing behind it. This
+        # line ships to PyPI, so the fallback was handing strangers a command
+        # that cannot work. Point it at the maintained bootstrap instead — the
+        # same command `POST /nodes/enroll-command` emits.
+        base = (getattr(args, "url", "") or "https://portal.aitherium.com").rstrip("/")
+        install = data.get("install") or (
+            f'curl -fsSL {base}/bootstrap/join.sh | '
+            f'AITHER_NODE_NAME=$(hostname) AITHER_ENROLL_TOKEN={tok} '
+            f'AITHER_ENROLL_URL={base} bash'
+        )
         tslug = getattr(args, "tenant", "")
         print()
         print(f"  Enrollment token minted (expires in {ttl // 60} min, single-use)"
@@ -11973,7 +12228,19 @@ def _register_commands(sub):
                          help="Portal/Identity URL (default: portal.aitherium.com)")
 
     # adk whoami
-    sub.add_parser("whoami", help="Show current auth status and config")
+    _whoami = sub.add_parser(
+        "whoami", help="Show current auth status, config and entitlement tier")
+    # The portal's quickstart advertises a "verify auth + entitlement" step. It
+    # advertised `aither entitlement --refresh --json`, which was wrong twice
+    # over: there is no `aither` console script (the wheel declares adk, adk-py,
+    # aither-adk, adk-serve, adk-workspace, adk-bug, adk-shell) and no
+    # `entitlement` subcommand. Rather than downgrade the docs to a command that
+    # does not answer the question, whoami now answers it.
+    _whoami.add_argument("--json", action="store_true",
+                         help="machine-readable output (exit 0 = authenticated)")
+    # Deliberately no --refresh: see cmd_whoami. There is no endpoint to
+    # refresh from, and a flag that silently does nothing is worse than its
+    # absence for the one user who runs it right after paying.
 
     # adk logout
     sub.add_parser("logout", help="Clear saved auth tokens")
@@ -12081,6 +12348,13 @@ def _register_commands(sub):
 
     sh_kill = shell_sub.add_parser("kill", help="Stop a session")
     sh_kill.add_argument("session_id")
+
+    sh_wrap = shell_sub.add_parser("wrap", help="Terminal-resident daemon session (bridge stdin/stdout to daemon)")
+    sh_wrap.add_argument("--harness", default="claude", help="Harness type (default: claude)")
+    sh_wrap.add_argument("--cwd", default="", help="Working directory")
+    sh_wrap.add_argument("--model", default="", help="Model profile or id")
+    sh_wrap.add_argument("--resume", default="", help="Resume a previous session by id")
+    sh_wrap.add_argument("--title", default="", help="Session title in daemon")
 
     # adk claude-model — switch Claude Code backend (DeepSeek/Kimi/local/Anthropic)
     claude_model_p = sub.add_parser(
@@ -12275,6 +12549,33 @@ def _register_commands(sub):
     agents_ls = agents_sub.add_parser("ls", help="List every agent in the mesh + its inference backend")
     agents_ls.add_argument("--format", choices=["table", "json"], default="table")
 
+    # adk agent — run/manage host-tier agent loops
+    agent_p = sub.add_parser("agent", help="Run/manage host-tier agent loops (run, list, status, stop)")
+    agent_sub = agent_p.add_subparsers(dest="agent_command")
+
+    # adk agent run <name>
+    agent_run_p = agent_sub.add_parser("run", help="Start a host-tier agent loop")
+    agent_run_p.add_argument("name", help="Agent name (e.g. watch, monitor)")
+    agent_run_p.add_argument("--daemon-url", default="http://127.0.0.1:8362",
+                             help="Harness daemon URL (default: http://127.0.0.1:8362)")
+    agent_run_p.add_argument("--token", help="Bearer token for daemon (or $AITHER_HARNESS_TOKEN)")
+    agent_run_p.add_argument("--room", default="main", help="Room name (default: main)")
+    agent_run_p.add_argument("--interval", type=float, default=5.0,
+                             help="Loop interval in seconds (default: 5.0)")
+    agent_run_p.add_argument("--foreground", action="store_true",
+                             help="Block terminal (default: detach)")
+
+    # adk agent list
+    agent_sub.add_parser("list", help="List running agent loops")
+
+    # adk agent status
+    agent_status_p = agent_sub.add_parser("status", help="Show status of an agent loop")
+    agent_status_p.add_argument("name", help="Agent name")
+
+    # adk agent stop
+    agent_stop_p = agent_sub.add_parser("stop", help="Stop a running agent loop")
+    agent_stop_p.add_argument("name", help="Agent name")
+
     # aither chat — chat with a mesh agent by name (responds on its own inference)
     chat_p = sub.add_parser("chat", help="Chat with a mesh agent by name (adk chat <agent> [msg])")
     chat_p.add_argument("agent", help="Agent name from `adk agents ls`")
@@ -12437,7 +12738,7 @@ def _register_commands(sub):
                           default="gateway", help="Deploy target (default: gateway)")
     d_agent.add_argument("--strategy", choices=["rolling", "blue-green", "canary", "recreate"],
                           default="rolling", help="Deployment strategy (for container targets)")
-    d_agent.add_argument("--tenant", help="Tenant slug — triggers download+run mode (e.g. garg-consulting)")
+    d_agent.add_argument("--tenant", help="Tenant slug — triggers download+run mode (e.g. acme-consulting)")
     d_agent.add_argument("--inference", choices=["local", "cloud", "hybrid"],
                           help="Inference mode for this endpoint")
     d_agent.add_argument("--from", dest="from_url", help="Direct download URL for the agent package")
@@ -13228,6 +13529,16 @@ def _register_commands(sub):
     # adk doctor — system health checks
     sub.add_parser("doctor", help="Check system health (Python, GPU, LLM backends, API keys)")
 
+    # adk gobbonet — run the GobboNet UI with keyless search, in one command
+    gobbo_p = sub.add_parser(
+        "gobbonet",
+        help="Run GobboNet with keyless web search (clones the UI if needed)",
+    )
+    gobbo_p.add_argument("--ui", help="existing GobboNet checkout (default: find or clone)")
+    gobbo_p.add_argument("--port", type=int, default=11434)
+    gobbo_p.add_argument("--host", default="127.0.0.1")
+    gobbo_p.add_argument("--no-open", action="store_true", help="do not open a browser")
+
     # adk gateway — multi-channel agent gateway
     gateway_p = sub.add_parser("gateway", help="Run agent across messaging platforms")
     gateway_p.add_argument("-a", "--agent", default="assistant", help="Agent identity (default: assistant)")
@@ -13443,6 +13754,46 @@ def _register_commands(sub):
     mcp_node_p.add_argument("-p", "--port", type=int, default=8182, help="Port (default: 8182)")
     # adk mcp status — check gateway connectivity
     mcp_sub.add_parser("status", help="Check MCP gateway connectivity and tier")
+
+    # adk eval — MCP evaluation harness. Test tools and packs against a gateway.
+    eval_p = sub.add_parser(
+        "eval",
+        help="Evaluate MCP tools and packs on a connected gateway",
+    )
+    eval_sub = eval_p.add_subparsers(dest="eval_command")
+    eval_tools_p = eval_sub.add_parser(
+        "tools", help="Evaluate all available tools"
+    )
+    eval_tools_p.add_argument(
+        "--gateway", default="", help="MCP gateway URL (default: mcp.aitherium.com)"
+    )
+    eval_tools_p.add_argument(
+        "--api-key", default="", help="API key (or set AITHER_API_KEY env var)"
+    )
+    eval_tools_p.add_argument(
+        "--json", action="store_true", help="Output as JSON instead of human-readable"
+    )
+    eval_tools_p.add_argument(
+        "--invoke", action="store_true", help="Smoke-invoke safe tools (slow)"
+    )
+    eval_pack_p = eval_sub.add_parser(
+        "pack", help="Evaluate a specific pack's declared tools"
+    )
+    eval_pack_p.add_argument(
+        "pack", help="Pack name or path"
+    )
+    eval_pack_p.add_argument(
+        "--gateway", default="", help="MCP gateway URL"
+    )
+    eval_pack_p.add_argument(
+        "--api-key", default="", help="API key"
+    )
+    eval_pack_p.add_argument(
+        "--json", action="store_true", help="Output as JSON"
+    )
+    eval_self_p = eval_sub.add_parser(
+        "self-test", help="Run offline self-test (proves the harness can fail)"
+    )
 
     # adk acp — Agent Client Protocol. Two directions:
     #   serve    — expose an AitherOS agent to ACP editors (JetBrains/Zed/...).
@@ -14366,6 +14717,8 @@ def main():
         sys.exit(cmd_ui(args))
     elif args.command == "agents":
         sys.exit(cmd_agents(args))
+    elif args.command == "agent":
+        sys.exit(cmd_agent(args))
     elif args.command == "chat":
         sys.exit(cmd_chat(args))
     elif args.command == "invoke":
@@ -14448,6 +14801,9 @@ def main():
     elif args.command == "doctor":
         from adk.doctor import cmd_doctor
         sys.exit(cmd_doctor(args))
+    elif args.command == "gobbonet":
+        from adk.packs.gobbonet.launch import cmd_gobbonet
+        sys.exit(cmd_gobbonet(args))
     elif args.command == "gateway":
         from adk.gateway_process import cmd_gateway
         sys.exit(cmd_gateway(args))
@@ -14494,6 +14850,25 @@ def main():
             print("  setup    Generate IDE config for MCP gateway (OAuth-first)")
             print("  node     Start lightweight local MCP server")
             print("  status   Check MCP gateway connectivity and tier")
+            sys.exit(1)
+    elif args.command == "eval":
+        import asyncio
+        eval_cmd = getattr(args, "eval_command", None)
+        if eval_cmd == "tools":
+            from adk.evalharness.cli import cmd_eval_tools
+            sys.exit(asyncio.run(cmd_eval_tools(args)))
+        elif eval_cmd == "pack":
+            from adk.evalharness.cli import cmd_eval_pack
+            sys.exit(asyncio.run(cmd_eval_pack(args)))
+        elif eval_cmd == "self-test":
+            from adk.evalharness.cli import cmd_eval_self_test
+            sys.exit(asyncio.run(cmd_eval_self_test(args)))
+        else:
+            print("Usage: adk eval [tools|pack|self-test]")
+            print()
+            print("  tools      Evaluate all available tools on a gateway")
+            print("  pack       Evaluate a specific pack's declared tools")
+            print("  self-test  Run offline self-test (proves it can fail)")
             sys.exit(1)
     elif args.command == "acp":
         acp_cmd = getattr(args, "acp_command", None)

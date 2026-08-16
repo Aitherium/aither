@@ -26,8 +26,8 @@ limits.
 ## 1. Claude Code
 
 ```bash
-python AitherOS/dev/tools/claude_model_profile.py use kimi-k3
-python AitherOS/dev/tools/claude_model_profile.py check
+adk claude-model use kimi-k3
+adk claude-model check
 ```
 
 The profile resolves your key from `MOONSHOT_API_KEY` (env, then the vault) and

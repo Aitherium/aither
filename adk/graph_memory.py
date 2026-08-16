@@ -364,7 +364,7 @@ class GraphMemory:
         # never mix. Enable by setting AITHER_FLEET_MEMORY_URL (auto) or
         # AITHER_FLEET_SYNC=true.
         # Explicit args override env — REQUIRED for a multi-tenant host process
-        # (e.g. hosted garg) where AITHER_TENANT_ID can't be a process-wide env;
+        # (e.g. a hosted workspace) where AITHER_TENANT_ID can't be a process-wide env;
         # the caller passes the per-request tenant. Sovereign single-tenant
         # runtimes just set the env and pass nothing.
         self._tenant_id = (

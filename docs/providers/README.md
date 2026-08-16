@@ -57,10 +57,10 @@ written".
 So use the switcher, which writes the complete set atomically or writes nothing:
 
 ```bash
-python AitherOS/dev/tools/claude_model_profile.py list
-python AitherOS/dev/tools/claude_model_profile.py use kimi-k3
-python AitherOS/dev/tools/claude_model_profile.py check     # proves a real turn
-python AitherOS/dev/tools/claude_model_profile.py use anthropic   # restore
+adk claude-model list
+adk claude-model use kimi-k3
+adk claude-model check     # proves a real turn
+adk claude-model use anthropic   # restore
 ```
 
 `check` is the important one. `/status` showing your base URL proves

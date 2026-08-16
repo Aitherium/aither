@@ -312,6 +312,7 @@ def _docker_login_ghcr(api_key: str) -> bool:
             input=api_key,
             capture_output=True,
             text=True,
+            encoding="utf-8", errors="replace",
             timeout=15,
         )
         return result.returncode == 0
@@ -340,7 +341,8 @@ def _require_ghcr_login(api_key: str, dry_run: bool = False) -> bool:
 def _run(cmd: list[str], timeout: int = 30) -> Optional[str]:
     """Run a command and return stdout on success, None on failure."""
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(cmd, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=timeout)
         return r.stdout.strip() if r.returncode == 0 else None
     except Exception:
         return None
@@ -2069,7 +2071,7 @@ def deploy_sovereign(
     Args:
         dry_run: Show what would happen without executing.
         tag: Docker image tag (default: latest).
-        app_template: Workspace app template (e.g., 'garg').
+        app_template: Workspace app template (e.g., 'assistant').
         gpu: Enable GPU-accelerated vLLM backend.
         sync: Enable platform sync daemon (updates, telemetry, license).
         no_memory: Skip memory stack (Spirit, Graph) for cheaper deployments.
@@ -3004,7 +3006,8 @@ def cmd_deploy_tenant_agent(args) -> int:
         try:
             result = subprocess.run(
                 ["docker", "compose", "-f", str(compose_file), "up", "-d"],
-                cwd=str(deploy_dir), capture_output=True, text=True, timeout=120,
+                cwd=str(deploy_dir), capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=120,
             )
             if result.returncode == 0:
                 info(f"Agent started via Docker Compose")
@@ -3094,39 +3097,47 @@ def cmd_deploy_tenant_agent(args) -> int:
 
 
 # ===========================================================================
-# GargBot deployment
+# Tenant app deployment
 # ===========================================================================
 
-def deploy_gargbot(
+def deploy_tenant_app(
+    app: str,
     dry_run: bool = False,
     tier: Optional[str] = None,
     no_pull: bool = False,
     start: bool = True,
     api_key_arg: Optional[str] = None,
 ) -> int:
-    """Deploy GargBot sovereign package — single command for the full flow.
+    """Deploy a tenant's sovereign package — single command for the full flow.
 
-    Wraps setup-gargbot.py: hardware detect -> tier select -> .env generation ->
-    docker compose up -> health check -> print access info.
+    Wraps the app's setup wizard: hardware detect -> tier select -> .env
+    generation -> docker compose up -> health check -> print access info.
+
+    `app` names the wizard (scripts/setup-<app>.py). It is a PARAMETER rather
+    than a hardcoded name for two reasons. It generalises to any tenant, and the
+    previous form embedded a specific customer's name in a package that is
+    published to PyPI -- no secret scanner fires on a customer name, but
+    `pip download` turns one into a client list.
+
+    Note this path only works from a monorepo checkout: the wizard it invokes is
+    not part of the published wheel.
     """
     import shutil
 
     print()
-    print(bold("  GargBot Sovereign Deployment"))
+    print(bold(f"  {app} Sovereign Deployment"))
     print()
 
     # Locate the setup script (works from repo root or adk package)
+    rel = Path("AitherOS") / "scripts" / f"setup-{app}.py"
     setup_script = None
-    for candidate in [
-        Path("AitherOS/scripts/setup-gargbot.py"),
-        Path(__file__).parent.parent.parent / "AitherOS" / "scripts" / "setup-gargbot.py",
-    ]:
+    for candidate in [Path(*rel.parts), Path(__file__).parent.parent.parent / rel]:
         if candidate.exists():
             setup_script = candidate
             break
 
     if not setup_script:
-        warn("Cannot find AitherOS/scripts/setup-gargbot.py — run from repo root")
+        warn(f"Cannot find {rel.as_posix()} — run from a repo checkout")
         return 1
 
     # Build the command
@@ -3576,7 +3587,7 @@ def cmd_deploy_component(args) -> int:
         print()
         print(f"  Examples:")
         print(f"    {dim('aither deploy sovereign')}")
-        print(f"    {dim('aither deploy sovereign --app garg --gpu')}")
+        print(f"    {dim('aither deploy sovereign --app assistant --gpu')}")
         print(f"    {dim('aither deploy ollama')}")
         print(f"    {dim('aither deploy ollama --models qwen3:8b,phi4')}")
         print(f"    {dim('aither deploy grid --mac-host 192.168.1.100')}")
@@ -3634,13 +3645,17 @@ def cmd_deploy_component(args) -> int:
             admin_email=admin_email,
         )
 
-    elif component == "gargbot":
+    elif component == "tenant-app":
         tier = getattr(args, "tier", None)
         no_pull = getattr(args, "no_pull", False)
         no_start = getattr(args, "no_start", False)
         api_key = getattr(args, "api_key", None)
-        return deploy_gargbot(
-            dry_run=dry_run, tier=tier, no_pull=no_pull,
+        app_name = getattr(args, "app", None) or getattr(args, "app_template", None)
+        if not app_name:
+            warn("deploy tenant-app needs --app <name> (the setup wizard to run)")
+            return 1
+        return deploy_tenant_app(
+            app_name, dry_run=dry_run, tier=tier, no_pull=no_pull,
             start=not no_start, api_key_arg=api_key,
         )
 

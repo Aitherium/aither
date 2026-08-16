@@ -4,7 +4,7 @@ Posts embedding deltas to POST /brain/sync on the platform AitherBrain service
 (port 8271 local, or AITHER_BRAIN_URL env var), with tenant/workspace context,
 tracks watermarks for incremental sync, and handles transient failures gracefully.
 
-Architecture (D-878):
+Architecture:
   PLATFORM-HOME decision — brain sync is a platform capability, not app-scoped.
   Client resolves AitherBrain service URL and POSTs to /brain/sync with proper
   tenant context. AitherBrain validates tenant isolation server-side.
@@ -197,7 +197,7 @@ class BrainSyncClient:
         if not tenant_id:
             raise ValueError("tenant_id required")
 
-        # Resolve brain_url with fallbacks (D-878: platform-home architecture)
+        # Resolve brain_url with fallbacks (platform-home architecture)
         self.brain_url = (
             brain_url
             or os.environ.get("AITHER_BRAIN_URL", "")

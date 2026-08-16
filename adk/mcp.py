@@ -451,21 +451,78 @@ class MCPBridge:
         self._timeout = timeout
         self._tools_cache: list[MCPTool] | None = None
         self._request_id = 0
+        self._session_id: str | None = None
 
     def _next_id(self) -> int:
         self._request_id += 1
         return self._request_id
 
     def _headers(self) -> dict[str, str]:
-        h: dict[str, str] = {"Content-Type": "application/json"}
+        # MCP StreamableHTTP REQUIRES both media types in Accept. The cloud
+        # worker tolerates its absence; a spec-strict gateway answers 406 — so
+        # this bridge worked against mcp.aitherium.com and failed against the
+        # local gateway, which reads as "gateway broken" rather than a missing
+        # header.
+        h: dict[str, str] = {
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+        }
         if self._auth and self._auth.authenticated:
             h.update(self._auth.headers)
         elif self.api_key:
             h["Authorization"] = f"Bearer {self.api_key}"
+        if self._session_id:
+            h["Mcp-Session-Id"] = self._session_id
         return h
 
     def _client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(timeout=self._timeout, headers=self._headers())
+
+    @staticmethod
+    def _parse_rpc(resp: httpx.Response) -> dict:
+        """Parse a StreamableHTTP response — plain JSON or an SSE event stream."""
+        ctype = resp.headers.get("content-type", "")
+        if ctype.startswith("text/event-stream"):
+            payload = None
+            for line in resp.text.splitlines():
+                if line.startswith("data:"):
+                    payload = line[5:].strip()
+            if payload is None:
+                raise MCPError("SSE response carried no data event")
+            return json.loads(payload)
+        return resp.json()
+
+    async def _ensure_session(self, client: httpx.AsyncClient) -> None:
+        """Perform the MCP initialize handshake once per bridge.
+
+        Spec-strict gateways reject bare tools/list with "Missing session ID";
+        the session id arrives in the Mcp-Session-Id response header.
+        """
+        if self._session_id:
+            return
+        resp = await client.post(
+            f"{self.mcp_url}/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": {},
+                    "clientInfo": {"name": "aither-adk", "version": "3.x"},
+                },
+                "id": self._next_id(),
+            },
+        )
+        sid = resp.headers.get("mcp-session-id")
+        if sid:
+            self._session_id = sid
+            # Per-request client: session header must reach THIS client too.
+            client.headers["Mcp-Session-Id"] = sid
+            await client.post(
+                f"{self.mcp_url}/mcp",
+                json={"jsonrpc": "2.0",
+                      "method": "notifications/initialized"},
+            )
 
     async def list_tools(self, refresh: bool = False) -> list[MCPTool]:
         """List available tools from the MCP gateway.
@@ -479,6 +536,7 @@ class MCPBridge:
             return self._tools_cache
 
         async with self._client() as client:
+            await self._ensure_session(client)
             resp = await client.post(
                 f"{self.mcp_url}/mcp",
                 json={
@@ -495,7 +553,7 @@ class MCPBridge:
             if resp.status_code == 403:
                 raise MCPAuthError("Access denied — insufficient permissions")
             resp.raise_for_status()
-            data = resp.json()
+            data = self._parse_rpc(resp)
 
         # Check for JSON-RPC error
         if "error" in data:
@@ -536,7 +594,7 @@ class MCPBridge:
             raise MCPAuthError(f"Tool '{name}' not allowed for your tier")
         resp.raise_for_status()
 
-        data = resp.json()
+        data = self._parse_rpc(resp)
 
         # Check JSON-RPC error
         if "error" in data:
@@ -563,6 +621,7 @@ class MCPBridge:
     async def _do_call(self, name: str, arguments: dict | None) -> httpx.Response:
         """Execute a JSON-RPC tool call, returning the raw response."""
         async with self._client() as client:
+            await self._ensure_session(client)
             return await client.post(
                 f"{self.mcp_url}/mcp",
                 json={

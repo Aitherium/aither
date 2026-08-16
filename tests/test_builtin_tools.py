@@ -340,15 +340,39 @@ class TestWebSearch:
 
     @pytest.mark.asyncio
     async def test_web_search_handles_error(self):
+        # EVERY provider must fail before this reports an error. Patching only
+        # httpx used to be enough; since `ddgs` became the preferred provider it
+        # is not, and this test silently stopped testing the error path — it made
+        # a REAL network call, got real results, and passed for the wrong reason.
         mock_client = AsyncMock()
         mock_client.get = AsyncMock(side_effect=Exception("Connection failed"))
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("httpx.AsyncClient", return_value=mock_client):
+        with patch("ddgs.DDGS", side_effect=Exception("ddgs down")), \
+             patch("httpx.AsyncClient", return_value=mock_client):
             result = await bt.web_search("test")
             data = json.loads(result)
             assert "error" in data
+
+    @pytest.mark.asyncio
+    async def test_web_search_prefers_ddgs_and_maps_body_to_snippet(self):
+        """The positive half: a passing error-path test cannot see a dead provider.
+
+        `ddgs` names the snippet `body`. Reading only `snippet` is what produced
+        3/3 results with empty text while every assertion still passed — the tool
+        answered, looked healthy, and handed back links with no content.
+        """
+        class _FakeDDGS:
+            def text(self, query, max_results=5):
+                return [{"title": "T", "href": "https://e.com", "body": "real text"}]
+
+        with patch("ddgs.DDGS", _FakeDDGS):
+            data = json.loads(await bt.web_search("q"))
+
+        assert data["provider"] == "ddgs", "scraper used while ddgs was available"
+        assert data["results"][0]["snippet"] == "real text", "body -> snippet mapping lost"
+        assert data["results"][0]["url"] == "https://e.com"
 
 
 class TestWebFetch:

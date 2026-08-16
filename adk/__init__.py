@@ -5,7 +5,7 @@ from importlib.metadata import PackageNotFoundError, version as _pkg_version
 try:  # single source of truth = the installed package metadata (pyproject version)
     __version__ = _pkg_version("aither-adk")
 except PackageNotFoundError:  # running from a source checkout without install
-    __version__ = "3.2.0"  # kept in sync by packaging/sync_versions.py
+    __version__ = "3.3.0"  # kept in sync by packaging/sync_versions.py
 
 from adk.agent import AitherAgent
 from adk.dispatch import MultiAgentDispatcher, DispatchSpec, DispatchResult
@@ -162,6 +162,9 @@ __all__ = [
     "has_ellipsis_body",
     "strategy",
     "get_strategy_meta",
+    # OO agents: subclass API where `...` methods dispatch to the LLM.
+    "OOAgent",
+    "AgenticReturnError",
 ]
 
 
@@ -455,4 +458,7 @@ def __getattr__(name):
     if name in ("has_ellipsis_body", "strategy", "get_strategy_meta"):
         import adk.ellipsis as _e
         return getattr(_e, name)
+    if name in ("OOAgent", "AgenticReturnError"):
+        import adk.core.oo as _oo
+        return getattr(_oo, name)
     raise AttributeError(f"module 'adk' has no attribute {name!r}")

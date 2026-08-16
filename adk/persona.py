@@ -4,7 +4,7 @@ This module provides tools for self-hosted ADK agents to drive a Persona avatar
 running on the local machine at http://127.0.0.1:47831.
 
 Persona is loopback-only — containerized agents cannot reach it without a host relay
-(tunneling support is an owner-gated item, D-1542). A HOST-run adk agent can use
+(tunneling support is an owner-gated roadmap item). A HOST-run adk agent can use
 these tools directly.
 
 Tools register automatically if ADK_PERSONA=1 (default). Set ADK_PERSONA=0 to disable.
