@@ -298,7 +298,7 @@ a:focus-visible, .jump a:focus-visible {
 <span class="o">installed aither -&gt; ~\.aither\packs\aither</span>
 <span class="o">verified: adk discovers &#x27;aither&#x27;</span>
 <span class="p">$</span> <span class="caret"></span></pre></div></div></div>
-  <dl class="spec"><div><dt>Version</dt><dd>3.4.0</dd></div><div><dt>Size</dt><dd>4 KB</dd></div><div><dt>Licence</dt><dd>—</dd></div><div><dt>sha256</dt><dd>cc2b4362493400bd…</dd></div></dl>
+  <dl class="spec"><div><dt>Version</dt><dd>3.4.0</dd></div><div><dt>Size</dt><dd>4 KB</dd></div><div><dt>Licence</dt><dd>—</dd></div><div><dt>sha256</dt><dd>d65822dbea24f0b5…</dd></div></dl>
 
   <section>
     <h2>What the pack adds</h2>
@@ -313,12 +313,12 @@ decision-making. Bundles GraphRAG memory for persistent knowledge retention.</p>
 
   <section>
     <h2>Verify</h2>
-    <p class="sub">sha256 <code>cc2b4362493400bdc44a93d2df4cea92e0a1738b167968f124ded7d12dfcde87</code></p>
+    <p class="sub">sha256 <code>d65822dbea24f0b5f5ef180c0bebc4fe215d949a2cfe3c33a57a4601b4277031</code></p>
     <div class="lanes"><div class="lane"><span class="lane-tag">macOS / Linux</span><div class="term"><div class="term-bar"><span class="dot live"></span><span class="dot"></span><span class="dot"></span><span class="term-name">verify</span></div><pre class="term-body"><span class="c"># every artifact ships a checksum; check it before you trust it</span>
 <span class="p">$</span> sha256sum -c aither-3.4.0.sha256
 <span class="o">aither-3.4.0.tar.gz: OK</span>
 <span class="p">$</span> <span class="caret"></span></pre></div></div><div class="lane"><span class="lane-tag">Windows</span><div class="term"><div class="term-bar"><span class="dot live"></span><span class="dot"></span><span class="dot"></span><span class="term-name">verify</span></div><pre class="term-body"><span class="c"># there is no sha256sum on Windows; Get-FileHash is the equivalent</span>
-<span class="p">$</span> $want = &#x27;CC2B4362493400BDC44A93D2DF4CEA92E0A1738B167968F124DED7D12DFCDE87&#x27;
+<span class="p">$</span> $want = &#x27;D65822DBEA24F0B5F5EF180C0BEBC4FE215D949A2CFE3C33A57A4601B4277031&#x27;
 <span class="p">$</span> (Get-FileHash aither-3.4.0.tar.gz -Algorithm SHA256).Hash -eq $want
 <span class="o">True</span>
 <span class="p">$</span> <span class="caret"></span></pre></div></div></div>
