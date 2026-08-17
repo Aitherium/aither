@@ -94,6 +94,55 @@ a truncated GGUF otherwise fails at load time with an error far from the cause.
 
 ---
 
+## What the pack adds behind the chat box
+
+GobboNet speaks the OpenAI-compatible chat API, which is the seam: the pack
+answers `/v1/chat/completions` by running adk's ReAct loop and streaming the
+result back as ordinary assistant tokens. **The UI needs no changes** — it just
+gets a much more capable model.
+
+Behind it: 20 tool categories (code, file_io, git, graph, notebooks, persona,
+python, secrets, shell, swarm, voice, web, workspace, …), graph-RAG retrieval,
+agent notebooks, aeon, Strata, Lockbox, AitherShell, and the node/MCP surface.
+
+```bash
+adk gobbonet --setup-model    # install llama.cpp + a model sized to your machine
+adk gobbonet --backend URL    # or point at ollama / vLLM / LM Studio
+adk gobbonet --plain          # raw model, no tool loop
+```
+
+Backends are discovered, not configured — llama.cpp, ollama, vLLM and LM Studio
+all speak the same API.
+
+### Its own knowledge ledger
+
+The pack keeps an awgit oplog of what it learns and merges it into a prime log.
+Git's model applied to knowledge: every agent works locally, publishes, and
+merges, so `contributors(node)` can say **which agent** decided something —
+a question a single shared log cannot answer. Conflicts are reported, never
+auto-resolved.
+
+Because awgit keys changes on stable symbol identity, moving a function does not
+erase what the graph knew about it. A file-based indexer sees one file shrink
+and another grow, discards the old node, and loses its history at the exact
+moment that is most confusing.
+
+### Optional: linking to an account
+
+Everything above runs with no account. If you *want* secrets on two machines,
+session sync, or the AitherConnect browser extension, that plane exists and is
+strictly opt-in:
+
+```bash
+adk login              # browser device flow
+adk secret sync        # bidirectional, vault-backed
+adk deploy connect     # AitherConnect browser extension
+```
+
+Nothing is initiated for you and nothing leaves the machine until you run one of
+these. GobboNet's promise is that it runs on your machine; a pack that quietly
+started syncing would take away the reason to use it.
+
 ## Wiring your own model and tools
 
 The server takes an `Engine`. Every method may raise `NotConfigured`, which becomes a 503
@@ -115,8 +164,9 @@ class MyEngine(Engine):
 serve(Path("./GobboNet"), MyEngine(), port=11434).serve_forever()
 ```
 
-Only `web_search` is wired by default. Anything you do not implement refuses honestly —
-nothing is faked, and nothing silently falls back to a guess.
+A custom `Engine` replaces the built-in one entirely, so anything you do not implement
+refuses honestly — nothing is faked, and nothing silently falls back to a guess. Use this
+when you want your own runtime; use `adk gobbonet` when you want the agent loop above.
 
 ---
 

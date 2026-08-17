@@ -68,6 +68,55 @@ def _clone(dest: Path) -> Path:
     return dest
 
 
+def setup_model() -> int:
+    """Install a local model server sized to THIS machine.
+
+    Self-service means the tool works out what fits rather than making the user
+    guess a quant. adk already knows how: `detect_accel()` reads the actual
+    accelerator and RAM, `pick_quant()` turns that into a quantisation, and
+    `install()` fetches llama.cpp and the weights.
+
+    Reused rather than reimplemented — a second copy of the hardware logic would
+    drift from the one the rest of adk uses, and the failure would be a model
+    that does not fit, which reads as "this machine is too small" rather than
+    "two code paths disagree".
+    """
+    try:
+        from adk import llamacpp_setup as lc
+    except ImportError as e:
+        print(f"could not load the llama.cpp installer: {e}")
+        return 1
+
+    accel = lc.detect_accel()
+    print(f"hardware: {accel.kind}, {accel.vram_gb:.1f} GB VRAM, {accel.ram_gb:.1f} GB RAM")
+    quant = lc.pick_quant(accel.vram_gb, accel.ram_gb, accel.kind)
+    print(f"selected quantisation: {quant}")
+    print("installing llama.cpp and a model that fits (this downloads several GB)…\n")
+
+    rc = lc.install(accel=accel) if _accepts_accel(lc.install) else lc.install()
+    if rc not in (0, None, True):
+        print(f"\nsetup did not complete (rc={rc}).")
+        return 1
+
+    # VERIFY. An installer that copies files and prints "done" is exactly how a
+    # broken setup reads as a working one.
+    if lc.smoke_test(lc.DEFAULT_PORT):
+        print(f"\nverified: a model is answering on port {lc.DEFAULT_PORT}")
+        return 0
+    print(f"\ninstalled, but nothing answered on port {lc.DEFAULT_PORT} yet.")
+    print("It may still be loading — re-run `adk gobbonet` in a moment.")
+    return 0
+
+
+def _accepts_accel(fn) -> bool:
+    import inspect
+
+    try:
+        return "accel" in inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+
+
 def cmd_gobbonet(args) -> int:
     ui = _find_existing(getattr(args, "ui", None))
 
@@ -83,14 +132,29 @@ def cmd_gobbonet(args) -> int:
     requested = int(getattr(args, "port", None) or DEFAULT_PORT)
     host = getattr(args, "host", None) or "127.0.0.1"
 
-    from adk.packs.gobbonet.server import _DefaultEngine, serve
+    if getattr(args, "setup_model", False):
+        rc = setup_model()
+        if rc != 0:
+            return rc
+
+    from adk.packs.gobbonet.server import AgenticEngine, LocalEngine, serve
 
     # BIND FIRST, then print. The requested port is not necessarily the bound
     # one — serve() falls back to an OS-assigned port when the requested one is
     # inside a Windows reserved block — so printing a SEARCH_URL beforehand
     # hands the user a URL nothing is listening on, which is a worse failure
     # than the bind error it was hiding.
-    httpd = serve(ui, _DefaultEngine(), host=host, port=requested)
+    # exclude_port stops the server proxying chat to ITSELF: this pack serves on
+    # GobboNet's default 11434, which is also ollama's, and forwarding to our own
+    # port is an infinite loop that presents as a hang rather than an error.
+    # Agentic by DEFAULT — that is the whole reason to install a pack rather
+    # than point GobboNet at a model directly. `--plain` is the escape hatch for
+    # anyone who wants the raw model with no tool loop.
+    if getattr(args, "plain", False):
+        engine = LocalEngine(backend=getattr(args, "backend", None), exclude_port=requested)
+    else:
+        engine = AgenticEngine(backend=getattr(args, "backend", None), exclude_port=requested)
+    httpd = serve(ui, engine, host=host, port=requested)
     port = httpd.server_address[1]
 
     search_url = f"http://{host}:{port}/web_search"
@@ -134,6 +198,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--port", type=int, default=DEFAULT_PORT)
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--no-open", action="store_true", help="do not open a browser")
+    ap.add_argument("--setup-model", action="store_true",
+                    help="install llama.cpp + a model sized to this machine")
+    ap.add_argument("--backend", help="pin an OpenAI-compatible server URL")
+    ap.add_argument("--plain", action="store_true",
+                    help="passthrough chat instead of the adk agent loop")
     return cmd_gobbonet(ap.parse_args(argv if argv is not None else sys.argv[1:]))
 
 

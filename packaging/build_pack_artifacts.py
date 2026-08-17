@@ -163,7 +163,26 @@ def pack_meta(pack: Path, fallback_version: str) -> dict:
         "readme": ((pack / "README.md").read_text(encoding="utf-8", errors="replace")
                    if (pack / "README.md").is_file() else ""),
         "overview": header_block(text),
+        # Who actually wrote the app this pack serves. Parsed as real YAML
+        # rather than by regex: it is a nested block, and a flat scalar scan
+        # would silently pick up the wrong keys — producing a page that credits
+        # the wrong people, which is worse than a page with no credit.
+        "upstream": _upstream(text),
     }
+
+
+def _upstream(text: str) -> dict:
+    """The `upstream:` block, or {} when the pack wraps nothing external."""
+    try:
+        import yaml
+    except ImportError:
+        return {}
+    try:
+        data = yaml.safe_load(text) or {}
+    except Exception:  # noqa: BLE001 - a pack we cannot parse simply has no credit block
+        return {}
+    up = data.get("upstream")
+    return up if isinstance(up, dict) else {}
 
 
 def header_block(text: str) -> str:

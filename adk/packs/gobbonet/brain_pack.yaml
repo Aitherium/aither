@@ -28,6 +28,22 @@
 # separate from app_name, which is what the companion calls itself in the
 # chat window, and from the directory name, which is the discovery identity.
 pack_title: GobboPack
+
+# The project this pack serves. A pack that wraps somebody else's work has an
+# obligation to say whose work it is, prominently and with working links —
+# the generated page is built from THIS block, so credit cannot drift out of
+# the page or be quietly dropped in a redesign.
+upstream:
+  name: GobboNet
+  author: Elodine
+  org: GoblinCorps
+  repo: https://github.com/ElodineOfficial/GobboNet
+  site: https://goblincorps.com/gobbonet
+  license: MIT
+  tagline: A local-first AI chat client. No account, no sign-up, no email.
+  # Their palette, so the page reads as THEIRS rather than as ours.
+  accent: "#6aa84f"
+  accent_dark: "#8fce6f"
 app_name: GobboNet Companion
 company_name: Aitherium
 identity: gobbonet

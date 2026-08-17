@@ -53,6 +53,9 @@ from typing import Any, Callable, Iterator, Optional
 # importable (and testable) without one, and so a host can substitute its own.
 
 
+from adk.packs.gobbonet.agentic import AgenticEngineMixin  # noqa: E402
+
+
 class Engine:
     """What the UI needs from whatever is driving it.
 
@@ -377,6 +380,87 @@ def serve(ui_root: Path, engine: Engine, port: int = 11434,
         httpd = ThreadingHTTPServer((host, 0), handler)
     httpd.verbose = verbose  # type: ignore[attr-defined]
     return httpd
+
+
+class AgenticEngine(AgenticEngineMixin, Engine):
+    """The full lift: adk's ReAct loop, tools and memory behind GobboNet's chat.
+
+    This is what makes the pack worth installing rather than a config change.
+    GobboNet keeps its UI, its character cards and its local-first promise; the
+    chat box is answered by an agent with the tool registry, memory and packs
+    behind it. The UI needs no changes because the seam is the
+    OpenAI-compatible API it already speaks.
+
+    Search and state come from the plain engine below, unchanged.
+    """
+
+    agent_identity = "gobbonet"
+
+    def __init__(self, backend: Optional[str] = None, exclude_port: Optional[int] = None):
+        # The agent brings its own LLM routing, but embeddings still come from
+        # whatever local server is running — GobboNet's retriever needs them and
+        # degrades SILENTLY without them.
+        self._local = LocalEngine(backend=backend, exclude_port=exclude_port)
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        return self._local.embed(texts)
+
+    def web_search(self, query: str, max_results: int = 5) -> list[dict]:
+        return _DefaultEngine().web_search(query, max_results)
+
+
+class LocalEngine(Engine):
+    """Keyless search AND chat, against whatever local model server you have.
+
+    A chat client with no model behind it is a strange thing to hand someone,
+    and that is what this pack was before: it served the UI, answered search,
+    and refused to chat. Everything needed already shipped in adk — it just was
+    not wired up.
+
+    The backend is DISCOVERED, not configured: llama.cpp, ollama, vLLM and LM
+    Studio all speak the OpenAI-compatible API that GobboNet itself speaks, so
+    finding one is a port scan rather than an integration. Pass `backend=` to
+    pin a specific URL instead.
+
+    Discovery is lazy on purpose. Probing at construction time would make
+    `serve()` fail on a machine where the model server starts a few seconds
+    later — a common ordering, and an unnecessary reason to refuse.
+    """
+
+    def __init__(self, backend: Optional[str] = None, exclude_port: Optional[int] = None):
+        self._pinned = backend
+        self._exclude_port = exclude_port
+        self._found = None
+
+    def _backend(self):
+        from adk.packs.gobbonet import backend as be
+
+        if self._pinned:
+            # A pinned URL is still probed — pointing at a dead port and
+            # discovering it one turn later, mid-conversation, is worse than
+            # refusing now with the reason.
+            found = be._probe(int(self._pinned.rsplit(":", 1)[-1].strip("/")), "pinned")
+            if not found:
+                raise NotConfigured(f"nothing usable at {self._pinned}\n\n{be.setup_hint()}")
+            return found
+        if self._found is None:
+            self._found = be.discover(exclude_port=self._exclude_port)
+        if self._found is None:
+            raise NotConfigured(be.setup_hint())
+        return self._found
+
+    def stream_chat(self, messages: list[dict], **opts: Any) -> Iterator[str]:
+        from adk.packs.gobbonet import backend as be
+
+        yield from be.stream_completion(self._backend(), messages, **opts)
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        from adk.packs.gobbonet import backend as be
+
+        return be.embed(self._backend(), texts)
+
+    def web_search(self, query: str, max_results: int = 5) -> list[dict]:
+        return _DefaultEngine().web_search(query, max_results)
 
 
 class _DefaultEngine(Engine):

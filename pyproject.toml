@@ -42,6 +42,22 @@ dependencies = [
     # loss is worse than the ModuleNotFoundError the note below describes,
     # because nobody files a bug for it.
     "ddgs>=9.0",
+    # awgit — the git plane: micro-commits, semantic diff, an operation log and
+    # path leases. FIVE adk modules already import it (decisions/context,
+    # decisions/terminal, harnesses/well, node/local_tools, and the tool guards)
+    # behind soft ImportError guards, so today the behaviour depends on whether
+    # the user happens to have it: present on a monorepo checkout, absent for
+    # everyone who ran `pip install aither-adk`.
+    #
+    # That is the worst shape for a capability. The guards mean nothing errors —
+    # the features are simply skipped, and a user comparing notes with a
+    # developer sees a different product with no message explaining why.
+    # Declaring it makes the guarded paths reachable for everyone; the guards
+    # stay, because they are also what keeps adk working in a non-git directory.
+    # >=1.0 rather than >=1.1: the monorepo tree declares 1.0.0 and PyPI is at
+    # 1.1.1, so a tighter pin would force pip to replace a developer's editable
+    # checkout with the published wheel — the copy they are actively editing.
+    "awgit>=1.0",
     # A2A identity/signing. NOT optional despite a2a_client.py's "pip install
     # cryptography" hint: `adk/cli.py` imports a2a_identity, and the endpoint
     # REGISTRATION payload carries the agent's public key — so a plain

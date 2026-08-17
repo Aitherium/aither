@@ -13538,6 +13538,12 @@ def _register_commands(sub):
     gobbo_p.add_argument("--port", type=int, default=11434)
     gobbo_p.add_argument("--host", default="127.0.0.1")
     gobbo_p.add_argument("--no-open", action="store_true", help="do not open a browser")
+    gobbo_p.add_argument("--setup-model", action="store_true",
+                         help="install llama.cpp + a model sized to this machine")
+    gobbo_p.add_argument("--backend",
+                         help="pin an OpenAI-compatible server (e.g. http://127.0.0.1:8000)")
+    gobbo_p.add_argument("--plain", action="store_true",
+                         help="passthrough chat instead of the adk agent loop")
 
     # adk gateway — multi-channel agent gateway
     gateway_p = sub.add_parser("gateway", help="Run agent across messaging platforms")

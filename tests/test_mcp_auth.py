@@ -128,6 +128,7 @@ class TestACTAAuth:
 
         mock_resp = MagicMock()
         mock_resp.status_code = 200
+        mock_resp.headers = {"content-type": "application/json"}
         mock_resp.json.return_value = {
             "user_id": "user_acta_1",
             "tokens": 5000,
@@ -157,6 +158,7 @@ class TestACTAAuth:
 
         mock_resp = MagicMock()
         mock_resp.status_code = 401
+        mock_resp.headers = {"content-type": "application/json"}
 
         mock_client = AsyncMock()
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
@@ -175,6 +177,7 @@ class TestACTAAuth:
 
         mock_resp = MagicMock()
         mock_resp.status_code = 402
+        mock_resp.headers = {"content-type": "application/json"}
         mock_resp.json.return_value = {
             "user_id": "user_broke",
             "plan": "explorer",
@@ -224,6 +227,7 @@ class TestACTAAuth:
             auth._load_cached_context = lambda: None
             mock_resp = MagicMock()
             mock_resp.status_code = 200
+            mock_resp.headers = {"content-type": "application/json"}
             mock_resp.json.return_value = {
                 "user_id": "u1",
                 "tokens": 100,
@@ -250,6 +254,7 @@ class TestIdentityAuth:
 
         mock_resp = MagicMock()
         mock_resp.status_code = 200
+        mock_resp.headers = {"content-type": "application/json"}
         mock_resp.json.return_value = {
             "id": "user123",
             "username": "admin1",
@@ -278,6 +283,7 @@ class TestIdentityAuth:
 
         mock_resp = MagicMock()
         mock_resp.status_code = 401
+        mock_resp.headers = {"content-type": "application/json"}
 
         mock_client = AsyncMock()
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
@@ -307,6 +313,7 @@ class TestIdentityAuth:
             auth._load_cached_context = lambda: None
             mock_resp = MagicMock()
             mock_resp.status_code = 200
+            mock_resp.headers = {"content-type": "application/json"}
             mock_resp.json.return_value = {
                 "id": "u1",
                 "roles": roles,
@@ -332,6 +339,7 @@ class TestExtAgentAuth:
 
         mock_resp = MagicMock()
         mock_resp.status_code = 200
+        mock_resp.headers = {"content-type": "application/json"}
         mock_resp.json.return_value = {
             "agent_id": "mybot",
             "owner_tenant_id": "tenant_ext",
@@ -359,6 +367,7 @@ class TestExtAgentAuth:
 
         mock_resp = MagicMock()
         mock_resp.status_code = 403
+        mock_resp.headers = {"content-type": "application/json"}
 
         mock_client = AsyncMock()
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
@@ -413,6 +422,7 @@ class TestTokenCaching:
                 auth = MCPAuth(api_key="aither_sk_live_disk", gateway_url="http://test")
                 mock_resp = MagicMock()
                 mock_resp.status_code = 200
+                mock_resp.headers = {"content-type": "application/json"}
                 mock_resp.json.return_value = {
                     "user_id": "disk_user",
                     "tokens": 3000,
@@ -456,6 +466,7 @@ class TestTokenCaching:
 
         mock_resp = MagicMock()
         mock_resp.status_code = 200
+        mock_resp.headers = {"content-type": "application/json"}
         mock_resp.json.return_value = {
             "user_id": "refreshed",
             "tokens": 9000,
@@ -510,6 +521,7 @@ class TestMCPBridgeAuth:
 
         mock_resp = MagicMock()
         mock_resp.status_code = 401
+        mock_resp.headers = {"content-type": "application/json"}
         mock_client = AsyncMock()
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
@@ -528,6 +540,7 @@ class TestMCPBridgeAuth:
 
         mock_resp = MagicMock()
         mock_resp.status_code = 402
+        mock_resp.headers = {"content-type": "application/json"}
         mock_client = AsyncMock()
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
@@ -548,9 +561,11 @@ class TestMCPBridgeAuth:
         # First call returns 401, refresh succeeds, second call succeeds
         resp_401 = MagicMock()
         resp_401.status_code = 401
+        resp_401.headers = {"content-type": "application/json"}
 
         resp_ok = MagicMock()
         resp_ok.status_code = 200
+        resp_ok.headers = {"content-type": "application/json"}
         resp_ok.json.return_value = {
             "result": {"content": [{"type": "text", "text": "success"}]},
         }
@@ -579,6 +594,7 @@ class TestMCPBridgeAuth:
 
         mock_resp = MagicMock()
         mock_resp.status_code = 200
+        mock_resp.headers = {"content-type": "application/json"}
         mock_resp.json.return_value = {
             "error": {"code": -32600, "message": "Invalid Request"},
         }
@@ -598,6 +614,7 @@ class TestMCPBridgeAuth:
 
         mock_resp = MagicMock()
         mock_resp.status_code = 200
+        mock_resp.headers = {"content-type": "application/json"}
         mock_resp.json.return_value = {
             "error": {"code": -32001, "message": "Tool not found"},
         }
@@ -617,6 +634,7 @@ class TestMCPBridgeAuth:
 
         mock_resp = MagicMock()
         mock_resp.status_code = 200
+        mock_resp.headers = {"content-type": "application/json"}
         mock_resp.json.return_value = {
             "result": {
                 "tools": [
@@ -673,6 +691,7 @@ class TestMCPBridgeAuth:
 
         mock_resp = MagicMock()
         mock_resp.status_code = 200
+        mock_resp.headers = {"content-type": "application/json"}
         mock_client = AsyncMock()
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
@@ -751,6 +770,7 @@ class TestConnectMCP:
         # Mock auth.authenticate and bridge.health
         mock_acta_resp = MagicMock()
         mock_acta_resp.status_code = 200
+        mock_acta_resp.headers = {"content-type": "application/json"}
         mock_acta_resp.json.return_value = {
             "user_id": "connect_user",
             "tokens": 1000,
@@ -759,6 +779,7 @@ class TestConnectMCP:
 
         mock_health_resp = MagicMock()
         mock_health_resp.status_code = 200
+        mock_health_resp.headers = {"content-type": "application/json"}
 
         mock_client = AsyncMock()
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
@@ -786,6 +807,7 @@ class TestConnectMCP:
 
         mock_resp = MagicMock()
         mock_resp.status_code = 200
+        mock_resp.headers = {"content-type": "application/json"}
 
         mock_client = AsyncMock()
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
@@ -845,3 +867,78 @@ class TestMCPExports:
         assert len(h1) == 16
         # Same key = same hash
         assert _hash_key("test_key_1") == h1
+
+
+class TestParseRpcTransports:
+    """`_parse_rpc` handles both StreamableHTTP shapes.
+
+    Written after 4 tests in this file failed with
+    "SSE response carried no data event" while intending to test plain JSON.
+    Their mock responses carried no `headers`, so
+    `resp.headers.get("content-type", "")` returned a MagicMock whose
+    `.startswith(...)` is TRUTHY — the parser took the SSE branch, and
+    `.text.splitlines()` on a MagicMock iterates as empty.
+
+    The mocks were fixed to carry headers, which left the SSE branch with no
+    coverage at all: it had only ever been reached by accident. These tests
+    exercise it on purpose.
+    """
+
+    @staticmethod
+    def _resp(ctype, text=None, payload=None):
+        from unittest.mock import MagicMock
+
+        r = MagicMock()
+        r.headers = {"content-type": ctype}
+        if text is not None:
+            r.text = text
+        if payload is not None:
+            r.json.return_value = payload
+        return r
+
+    def test_plain_json_is_parsed(self):
+        from adk.mcp import MCPBridge
+
+        r = self._resp("application/json", payload={"result": {"ok": True}})
+        assert MCPBridge._parse_rpc(r) == {"result": {"ok": True}}
+
+    def test_sse_data_event_is_parsed(self):
+        from adk.mcp import MCPBridge
+
+        nl = chr(10)
+        body = nl.join(["event: message", 'data: {"result": {"ok": 1}}', ""])
+        r = self._resp("text/event-stream", text=body)
+        assert MCPBridge._parse_rpc(r) == {"result": {"ok": 1}}
+
+    def test_sse_uses_the_last_data_event(self):
+        """A stream can carry several frames; the final one is the answer."""
+        from adk.mcp import MCPBridge
+
+        nl = chr(10)
+        body = nl.join([
+            'data: {"result": "first"}',
+            'data: {"result": "last"}',
+            "",
+        ])
+        assert MCPBridge._parse_rpc(self._resp("text/event-stream", text=body)) == {
+            "result": "last"
+        }
+
+    def test_sse_with_no_data_event_raises(self):
+        """The error that started this: reported, never silently empty."""
+        import pytest
+        from adk.mcp import MCPBridge, MCPError
+
+        nl = chr(10)
+        body = nl.join([": keep-alive comment", "event: ping", ""])
+        with pytest.raises(MCPError, match="no data event"):
+            MCPBridge._parse_rpc(self._resp("text/event-stream", text=body))
+
+    def test_a_charset_suffix_still_counts_as_sse(self):
+        """Servers send `text/event-stream; charset=utf-8`."""
+        from adk.mcp import MCPBridge
+
+        nl = chr(10)
+        body = nl.join(['data: {"result": 2}', ""])
+        r = self._resp("text/event-stream; charset=utf-8", text=body)
+        assert MCPBridge._parse_rpc(r) == {"result": 2}
