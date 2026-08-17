@@ -245,24 +245,53 @@ class TestAutoNeuronFire:
 
     @pytest.mark.asyncio
     async def test_gather_context_caching(self):
+        """A repeated query is served from cache rather than re-fired.
+
+        The pool is INJECTED rather than exercised. Driving the real pipeline
+        made this assertion depend on a 10s `asyncio.wait_for` and two
+        `except Exception` handlers that return an empty NeuronResult — and
+        `gather_context` does not cache an empty result, so the second call
+        re-fires. It passed alone and failed in the full 4,113-test run,
+        reporting a caching bug that was really a timing accident.
+        """
+        from adk.neurons import NeuronResult
+
         agent = MagicMock()
         agent._graph = MagicMock()
-        node = MagicMock()
-        node.label = "Test"
-        node.content = "Cached content"
-        agent._graph.search = AsyncMock(return_value=[node])
-        agent.memory = MagicMock()
-        agent.memory.search = AsyncMock(return_value=[])
 
-        auto = AutoNeuronFire(agent=agent)
-        # First call
+        pool = MagicMock()
+        pool.fire = AsyncMock(return_value=[
+            NeuronResult(neuron="graph", content="Cached content", relevance=0.9),
+        ])
+
+        auto = AutoNeuronFire(agent=agent, pool=pool)
         ctx1 = await auto.gather_context("what is related to test?")
-        # Second call should hit cache
         ctx2 = await auto.gather_context("what is related to test?")
-        assert ctx1 == ctx2
-        # graph.search called only once (cached)
-        assert agent._graph.search.call_count == 1
 
+        assert ctx1 == ctx2
+        assert "Cached content" in ctx1
+        # The whole point: the second call never reached the pool.
+        assert pool.fire.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_empty_result_is_not_cached(self):
+        """An empty result is recomputed, not remembered.
+
+        Documented because it is the behaviour that made the test above
+        fragile: a neuron that returns nothing leaves the cache untouched, so
+        the next identical query fires again. Asserting it means a future
+        change to that policy is a visible decision rather than a surprise.
+        """
+        agent = MagicMock()
+        agent._graph = MagicMock()
+
+        pool = MagicMock()
+        pool.fire = AsyncMock(return_value=[])
+
+        auto = AutoNeuronFire(agent=agent, pool=pool)
+        assert await auto.gather_context("same question") == ""
+        assert await auto.gather_context("same question") == ""
+        assert pool.fire.call_count == 2
 
 # ─── Agent Integration ────────────────────────────────────────────────────────
 

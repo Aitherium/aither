@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>bead-space — aither-adk pack</title>
+<meta name="description" content="An interactive D3 work graph rendered as a tiny space universe">
+<style>
+:root {
+  --bg: #ffffff; --fg: #1a1a1a; --muted: #5b6470; --line: #e3e6ea;
+  --card: #f7f8fa; --accent: #7b5cff; --code-bg: #f2f4f7;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1216; --fg: #e8eaed; --muted: #9aa4b2; --line: #232935;
+    --card: #161b22; --accent: #7b5cff; --code-bg: #11151b;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f1216; --fg: #e8eaed; --muted: #9aa4b2; --line: #232935;
+  --card: #161b22; --accent: #7b5cff; --code-bg: #11151b;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--fg);
+  font: 16px/1.65 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+.wrap { max-width: 860px; margin: 0 auto; padding: 0 20px; }
+header.hero { border-bottom: 1px solid var(--line); padding: 56px 0 40px; }
+.eyebrow {
+  color: var(--muted); font-size: 13px; letter-spacing: .08em;
+  text-transform: uppercase; margin: 0 0 10px;
+}
+h1 { margin: 0 0 8px; font-size: 40px; line-height: 1.15; letter-spacing: -.02em; }
+.tagline { margin: 0 0 22px; color: var(--muted); font-size: 18px; }
+.links a {
+  display: inline-block; margin: 0 14px 8px 0; color: var(--accent);
+  text-decoration: none; font-weight: 600;
+}
+.links a:hover { text-decoration: underline; }
+.byline {
+  margin: 22px 0 0; padding: 14px 16px; border-left: 3px solid var(--accent);
+  background: var(--card); border-radius: 0 8px 8px 0; color: var(--muted);
+}
+.byline strong { color: var(--fg); }
+h2 { margin: 40px 0 12px; font-size: 24px; letter-spacing: -.01em; }
+h3 { margin: 26px 0 8px; font-size: 17px; }
+p { margin: 0 0 14px; }
+ul { margin: 0 0 14px; padding-left: 22px; }
+li { margin: 4px 0; }
+pre {
+  background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px;
+  padding: 14px 16px; overflow-x: auto; margin: 0 0 16px;
+}
+code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13.5px; }
+p code, li code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+.dl {
+  display: inline-block; background: var(--accent); color: #fff; padding: 11px 20px;
+  border-radius: 8px; text-decoration: none; font-weight: 650; margin: 4px 10px 4px 0;
+}
+.meta { color: var(--muted); font-size: 14px; }
+.grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+.tile {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 14px 16px;
+}
+.tile h4 { margin: 0 0 4px; font-size: 15px; }
+.tile p { margin: 0; color: var(--muted); font-size: 14px; }
+footer {
+  border-top: 1px solid var(--line);
+  margin-top: 56px;
+  padding: 28px 0 60px;
+  color: var(--muted);
+  font-size: 14px;
+}
+footer a { color: var(--accent); }
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0 0 16px;
+  display: block;
+  overflow-x: auto;
+}
+th, td {
+  border-bottom: 1px solid var(--line);
+  padding: 9px 10px;
+  text-align: left;
+  font-size: 14.5px;
+}
+th { color: var(--muted); font-weight: 600; }
+</style>
+</head><body>
+
+<header class="hero"><div class="wrap">
+  <p class="eyebrow">An aither-adk agent pack for</p>
+  <h1>bead-space</h1>
+  <p class="tagline">An interactive D3 work graph rendered as a tiny space universe</p>
+  <p class="links"><a href="https://pages.bernting.se/bead-space/">Project site →</a> <a href="https://github.com/wbern/bead-space">Source repository →</a></p>
+  <p class="byline"><strong>bead-space</strong> is created by <strong>wbern</strong>. Licensed MIT. This pack is an engine that runs behind it — their application is not modified, not redistributed, and not affiliated with us. If you like what you see here, the credit belongs upstream.</p>
+</div></header>
+
+<main class="wrap">
+  <h2>Install the pack</h2>
+  <p><a class="dl" href="https://github.com/Aitherium/aither-adk/releases/download/v3.3.0/bead-space-3.3.0.tar.gz">Download bead-space-3.3.0.tar.gz</a>
+     <span class="meta">1.5 KB · <a href="https://github.com/Aitherium/aither-adk/releases/download/v3.3.0/bead-space-3.3.0.sha256">checksum</a></span></p>
+<pre><code>curl -LO https://github.com/Aitherium/aither-adk/releases/download/v3.3.0/bead-space-3.3.0.tar.gz
+tar xzf bead-space-3.3.0.tar.gz
+python bead-space/install.py</code></pre>
+  <p>That installs to <code>~/.aither/packs/bead-space/</code>, which adk discovers with
+     no configuration, then <strong>verifies</strong> the pack is discoverable rather than
+     assuming it. adk itself is <code>pip install aither-adk</code>.</p>
+
+  <h2>What this pack adds</h2>
+  <div class="grid"><div class="tile"><h4>Keyless web search</h4><p>DuckDuckGo through a maintained client. No account, no API key.</p></div><div class="tile"><h4>Agent loop</h4><p>Tools, memory and skills behind the chat box — the UI needs no changes.</p></div><div class="tile"><h4>Local models</h4><p>llama.cpp, ollama, vLLM or LM Studio, discovered automatically.</p></div><div class="tile"><h4>Model weights</h4><p>Fetched without a HuggingFace account, resumable and size-verified.</p></div></div>
+  
+
+  <h2>Verify the download</h2>
+<pre><code>sha256sum -c bead-space-3.3.0.sha256</code></pre>
+  <p class="meta">sha256 <code>f1dcd572fd15dcb4f5c6b1d0627d6c884853660f554600526ae67148047177cc</code></p>
+</main>
+
+<footer><div class="wrap">
+  <p>Built from <code>v3.3.0</code> (adk 3.3.0) ·
+     <a href="../packs.html">All packs</a> ·
+     <a href="https://github.com/Aitherium/aither-adk">aither-adk</a></p>
+  <p>bead-space is an independent project. This page links to it; it does not speak for it.</p>
+</div></footer>
+
+</body></html>
