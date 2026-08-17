@@ -51,9 +51,8 @@ from typing import Any, Callable, Iterator, Optional
 # Everything the engine can do arrives through this object. It is a plain
 # protocol rather than an import of the agent runtime so that this module stays
 # importable (and testable) without one, and so a host can substitute its own.
-
-
 from adk.packs.gobbonet.agentic import AgenticEngineMixin  # noqa: E402
+from adk.packs.gobbonet.models import ModelManager  # noqa: E402
 
 
 class Engine:
@@ -128,6 +127,10 @@ def _sse(payload: dict) -> bytes:
 class Handler(BaseHTTPRequestHandler):
     engine: Engine
     ui_root: Path
+    #: Serves the four endpoints their `fileserver.ps1` owns. Optional so a
+    #: caller can run the chat surface alone; the routes then 503 with a reason
+    #: instead of 404ing, because "not found" reads as a version mismatch.
+    models_mgr: Optional[ModelManager] = None
 
     server_version = "adk-gobbonet"
 
@@ -199,7 +202,38 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": "no manifest"}, 404)
             return
 
+        # ── the model picker, which upstream serves from fileserver.ps1 ──
+        # Answering these is what makes the UI whole on macOS and Linux. The
+        # response shapes are theirs (js/02-model.js), not ours.
+        if path == "/models-list.json":
+            mgr = self._models()
+            self._json(mgr.models_list() if mgr else {"models": []})
+            return
+
+        if path == "/active-model.json":
+            mgr = self._models()
+            if mgr is None:
+                # Their UI renders this string. "Unknown" is true and harmless;
+                # a fabricated model name would be neither.
+                self._json({"id": "custom", "name": "Unknown", "ggufFile": "",
+                            "thinkingFormat": "none"})
+                return
+            self._json(mgr.active_model())
+            return
+
+        if path == "/swap-status":
+            mgr = self._models()
+            if mgr is None:
+                self._json({"phase": "error",
+                            "message": "model management is not enabled"})
+                return
+            self._json(mgr.swap_status())
+            return
+
         self._serve_static(path)
+
+    def _models(self) -> Optional[ModelManager]:
+        return getattr(self, "models_mgr", None)
 
     def do_POST(self) -> None:  # noqa: N802
         path = self.path.split("?", 1)[0]
@@ -250,6 +284,17 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": str(exc)}, 503)
                 return
             self._json({"ok": True})
+            return
+
+        if path == "/swap-model":
+            mgr = self._models()
+            if mgr is None:
+                self._json({"message": "model management is not enabled"}, 503)
+                return
+            ok, message = mgr.swap(str(body.get("file") or ""))
+            # `message` is the field their error path reads. A refusal that
+            # answers 200 would be polled as a swap that never completes.
+            self._json({"ok": ok, "message": message}, 200 if ok else 400)
             return
 
         self._json({"error": "not found"}, 404)
@@ -356,12 +401,20 @@ class _StateBackedEngine(Engine):
 
 def serve(ui_root: Path, engine: Engine, port: int = 11434,
           host: str = "127.0.0.1", verbose: bool = False,
-          state: Optional[Path] = None) -> ThreadingHTTPServer:
+          state: Optional[Path] = None,
+          models: Optional[ModelManager] = None) -> ThreadingHTTPServer:
     """Start the server. Binds loopback by default — local-first is the point."""
     store = FileState(state or (ui_root / ".gobbonet-state.json"))
     bound = _StateBackedEngine(engine, store)
     handler: Callable[..., BaseHTTPRequestHandler] = type(
-        "BoundHandler", (Handler,), {"engine": bound, "ui_root": ui_root})
+        "BoundHandler", (Handler,), {
+            "engine": bound,
+            "ui_root": ui_root,
+            # Default it ON: the picker is part of the app, and a user who
+            # installed the pack to run GobboNet off Windows wants the whole
+            # app, not the chat box with a dead dropdown above it.
+            "models_mgr": models if models is not None else ModelManager(),
+        })
     try:
         httpd = ThreadingHTTPServer((host, port), handler)
     except (PermissionError, OSError) as e:

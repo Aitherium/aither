@@ -97,6 +97,32 @@ def _terminal(lines: list[tuple[str, str]], title: str) -> str:
     )
 
 
+def _lanes(posix: list[tuple[str, str]], win: list[tuple[str, str]],
+           title: str) -> str:
+    """Both shells, side by side, neither one the footnote.
+
+    The page shipped POSIX only. That is not a cosmetic gap: `sha256sum` does
+    not exist on Windows, so the verification step — the one a security-minded
+    reader is most likely to actually run — failed with `command not found` and
+    taught them the instructions were written for somebody else. And the pack's
+    own upstream is a WINDOWS application, so Windows is not the minority
+    audience here; it is the majority.
+
+    Two static blocks rather than JS tabs: a tab hides half the answer behind a
+    click, and the half it hides is whichever one the reader needs. Rendering
+    both also means the truth check can assert both are present, which a
+    scripted tab cannot be checked for without a browser.
+    """
+    return (
+        '<div class="lanes">'
+        f'<div class="lane"><span class="lane-tag">macOS / Linux</span>'
+        f'{_terminal(posix, title)}</div>'
+        f'<div class="lane"><span class="lane-tag">Windows</span>'
+        f'{_terminal(win, title)}</div>'
+        "</div>"
+    )
+
+
 def _spec(rows: list[tuple[str, str]]) -> str:
     cells = "".join(f"<div><dt>{_e(k)}</dt><dd>{_e(v)}</dd></div>" for k, v in rows if v)
     return f'<dl class="spec">{cells}</dl>'
@@ -194,12 +220,22 @@ def render_pack_page(p: dict, index: dict, repo: str, tag: str) -> str:
         jump.append(f'<a href="{_e(up["repo"])}">Source</a>')
     jump.append(f'<a href="{_e(art)}">Download</a>')
 
-    term = _terminal([
+    term = _lanes([
         ("comment", "one command each; nothing else to configure"),
         ("cmd", f"curl -LO {art}"),
         ("cmd", f"tar xzf {p['artifact']}"),
         ("cmd", f"python {p['name']}/install.py"),
         ("out", f"installed {p['name']} -> ~/.aither/packs/{p['name']}"),
+        ("out", f"verified: adk discovers '{p['name']}'"),
+    ], [
+        ("comment", "PowerShell. curl.exe and tar ship with Windows 10 1803+"),
+        # curl.exe, not curl: in PowerShell 5.1 `curl` is an alias for
+        # Invoke-WebRequest, which does not understand -LO and fails with an
+        # error about a missing parameter rather than about the alias.
+        ("cmd", f"curl.exe -LO {art}"),
+        ("cmd", f"tar -xzf {p['artifact']}"),
+        ("cmd", f"python {p['name']}\\install.py"),
+        ("out", f"installed {p['name']} -> ~\\.aither\\packs\\{p['name']}"),
         ("out", f"verified: adk discovers '{p['name']}'"),
     ], f"{p['name']} — install")
 
@@ -240,10 +276,21 @@ def render_pack_page(p: dict, index: dict, repo: str, tag: str) -> str:
             "</p></div>"
         )
 
-    verify = _terminal([
+    verify = _lanes([
         ("comment", "every artifact ships a checksum; check it before you trust it"),
         ("cmd", f"sha256sum -c {sha_file}"),
         ("out", f"{p['artifact']}: OK"),
+    ], [
+        ("comment", "there is no sha256sum on Windows; Get-FileHash is the equivalent"),
+        # The FULL digest, and compared rather than printed. Two reasons, both
+        # learned the hard way elsewhere in this repo: a 64-character hex string
+        # compared by eye is a check people believe they performed, and a
+        # TRUNCATED digest in the comparison makes it print False on a perfectly
+        # good download — a verification step that always fails is uninstallable
+        # advice, and gets ignored rather than fixed.
+        ("cmd", f"$want = '{p['sha256'].upper()}'"),
+        ("cmd", f"(Get-FileHash {p['artifact']} -Algorithm SHA256).Hash -eq $want"),
+        ("out", "True"),
     ], "verify")
 
     indie = ""
@@ -441,6 +488,26 @@ def self_test() -> int:
     check("non-affiliation stated", "not affiliated" in page)
     check("install command present", "install.py" in page)
     check("checksum verification present", "sha256sum -c" in page)
+
+    # Both shells, asserted separately. The page shipped POSIX-only, and the
+    # gap was invisible to every check above: the page rendered, the commands
+    # were correct, and they simply did not run on the platform the pack's own
+    # upstream targets. A reader on Windows hit `sha256sum: command not found`
+    # on the verification step and learned the page was not written for them.
+    check("Windows install lane present",
+          "curl.exe -LO" in page and "tar -xzf" in page)
+    check("Windows verification lane present", "Get-FileHash" in page)
+    check("both lanes are labelled", "macOS / Linux" in page and ">Windows<" in page)
+    # `curl` in PowerShell 5.1 is an alias for Invoke-WebRequest, which does not
+    # understand -LO. The .exe suffix is what makes the command work at all.
+    check("Windows fetch uses curl.exe, not the PowerShell alias",
+          "curl.exe -LO" in page)
+    # A truncated digest in the comparison prints False on a good download —
+    # a verification step that always fails is advice people learn to skip.
+    # Escaped, because that is what actually reaches the reader — asserting the
+    # unescaped form tests a string this page never contains.
+    check("Windows digest comparison uses the FULL sha256",
+          html.escape("$want = '" + "A" * 64 + "'", quote=True) in page)
 
     # Theme correctness — the classic unreadable-page bug is a colour whose only
     # definition sits behind a media query or a [data-theme] stamp.

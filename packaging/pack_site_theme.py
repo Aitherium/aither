@@ -122,6 +122,30 @@ h1 {{
 }}
 .jump a:hover {{ color: var(--accent); }}
 
+/* ── two shells, equal weight ─────────────────────────────────────────── */
+/* Side by side above 900px, stacked below. Neither lane is a footnote: the
+   pack's own upstream is a Windows application, so demoting Windows to a
+   parenthetical would be demoting the majority of the readership. */
+.lanes {{
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 22px;
+  margin: 44px 0 0;
+}}
+@media (min-width: 900px) {{
+  .lanes {{ grid-template-columns: 1fr 1fr; gap: 18px; }}
+}}
+.lane {{ display: flex; flex-direction: column; gap: 9px; min-width: 0; }}
+.lane-tag {{
+  font: 600 11px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+  color: var(--muted);
+}}
+/* The terminal carries the lane's top margin when it stands alone; inside a
+   lane the grid gap already provides it, and both would double up. */
+.lane .term {{ margin: 0; }}
+
 /* ── the terminal: the hero ───────────────────────────────────────────── */
 .term {{
   margin: 44px 0 0;

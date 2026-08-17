@@ -1,12 +1,12 @@
 # GobboPack
 
-`gobbonet` · version `3.3.0` · 23.4 KB
+`gobbonet` · version `3.4.0` · 29.1 KB
 
-**[Download gobbonet-3.3.0.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.3.0/gobbonet-3.3.0.tar.gz)** · [checksum](https://github.com/Aitherium/aither-adk/releases/download/v3.3.0/gobbonet-3.3.0.sha256)
+**[Download gobbonet-3.4.0.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.4.0/gobbonet-3.4.0.tar.gz)** · [checksum](https://github.com/Aitherium/aither-adk/releases/download/v3.4.0/gobbonet-3.4.0.sha256)
 
 ```bash
-curl -LO https://github.com/Aitherium/aither-adk/releases/download/v3.3.0/gobbonet-3.3.0.tar.gz
-tar xzf gobbonet-3.3.0.tar.gz
+curl -LO https://github.com/Aitherium/aither-adk/releases/download/v3.4.0/gobbonet-3.4.0.tar.gz
+tar xzf gobbonet-3.4.0.tar.gz
 python gobbonet/install.py
 ```
 
@@ -52,6 +52,7 @@ agentic.py
 backend.py
 brain_pack.yaml
 launch.py
+models.py
 server.py
 ```
 
@@ -65,6 +66,13 @@ weights without a HuggingFace account — entirely on your own machine.
 
 **GobboNet is not modified and not redistributed.** You clone it yourself. This pack is the
 engine; their UI, character cards and extension seams stay exactly as they are.
+
+**It also runs on macOS and Linux.** GobboNet ships `launch.bat`, `fileserver.ps1` and
+three more PowerShell scripts, so the app is Windows-bound today — not because the UI is,
+but because five scripts are. This pack replaces them: `server.py` covers the launcher and
+the file server, and `models.py` serves the four endpoints behind the model picker
+(`/models-list.json`, `/active-model.json`, `/swap-model`, `/swap-status`). The UI is
+unchanged and does not know the difference.
 
 ---
 
@@ -150,6 +158,27 @@ Tells you what your machine can actually run in plain language, then pulls it: r
 (a 46 GB download that restarts from zero on a dropped connection is not usable),
 rate-capped by default so it cannot saturate a home link, and size-verified on completion —
 a truncated GGUF otherwise fails at load time with an error far from the cause.
+
+### The model picker, off Windows
+
+The dropdown at the top of GobboNet's UI is served by `fileserver.ps1` upstream. This pack
+serves the same four endpoints from `models.py`, so the picker works on any OS:
+
+```bash
+adk gobbonet --setup-model          # installs llama.cpp + a GGUF that fits this machine
+python -m adk.packs.gobbonet.server --ui ./GobboNet
+```
+
+GGUFs in `~/.aither/models` appear in the dropdown. Selecting one restarts llama.cpp on it
+and the UI polls until it is ready.
+
+Two details worth knowing, because both are how this class of thing usually breaks:
+
+- **Ready means answering, not started.** A loading model accepts the socket long before it
+  can answer a prompt. The swap reports `ready` only once a real request succeeds, so your
+  first message does not hang with no explanation.
+- **Sharded weights appear once.** `…-00001-of-00003.gguf` is listed; the other shards are
+  not, because selecting one would load a fragment.
 
 ---
 
@@ -271,5 +300,5 @@ Then `pip install aither-adk aither-pack-myapp` and the pack is discovered autom
 
 ---
 
-sha256 `c52121b18888bcae2f187774550e652f55e9823a8116ec563713289fbc4e2881`  
-Built from `v3.3.0` (adk 3.3.0). [All packs](../packs.md)
+sha256 `bff9cbdb3da0c0401a8ef49a394fb1528d65d70bb403c5a103ae7cbe4fe6654c`  
+Built from `v3.4.0` (adk 3.4.0). [All packs](../packs.md)
