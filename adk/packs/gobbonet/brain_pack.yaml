@@ -24,6 +24,10 @@
 # cannot be local is marked optional and degrades to a clear message rather
 # than a broken feature.
 
+# The release name: what the packs page and a shared link call this. Kept
+# separate from app_name, which is what the companion calls itself in the
+# chat window, and from the directory name, which is the discovery identity.
+pack_title: GobboPack
 app_name: GobboNet Companion
 company_name: Aitherium
 identity: gobbonet

@@ -165,12 +165,38 @@ def sync_brew(version: str, check: bool) -> bool:
     path = Path(__file__).parent / "brew" / "aither-adk.rb"
     text = path.read_text(encoding="utf-8")
 
-    old_url = re.search(r'url "https://files\.pythonhosted\.org/.*?aither_adk-([^"]+)\.tar\.gz"', text)
+    old_url = re.search(
+        r'url "https://files\.pythonhosted\.org/.*?aither_adk-([^"]+)\.tar\.gz"', text
+    )
     old_ver = old_url.group(1) if old_url else None
+
+    # The formula's own `test do` block asserts a version too, and nothing kept it
+    # in step with the url. Measured 2026-08-16: url said 3.3.0 while the test
+    # asserted 3.0.4 — three releases stale — so `brew test` fails on a formula
+    # that installs perfectly.
+    #
+    # It is checked BEFORE the "already at this version" short-circuit below,
+    # because that early return is precisely what hid it: once the url matched,
+    # sync_brew declared success without looking at anything else. A check that
+    # stops at the first agreeing field cannot see a second field disagreeing.
+    ok_assert = True
+    m_assert = re.search(r'assert_match "([^"]+)", shell_output\("#\{bin\}/adk --version"\)', text)
+    if m_assert and m_assert.group(1) != version:
+        if check:
+            print(f"  brew test assertion: {m_assert.group(1)} -> {version} (needs update)")
+            ok_assert = False
+        else:
+            text = text.replace(
+                f'assert_match "{m_assert.group(1)}", shell_output("#{{bin}}/adk --version")',
+                f'assert_match "{version}", shell_output("#{{bin}}/adk --version")',
+                1,
+            )
+            path.write_text(text, encoding="utf-8", newline="")
+            print(f"  brew test assertion: {m_assert.group(1)} -> {version}")
 
     if old_ver == version:
         print(f"  brew: already {version}")
-        return True
+        return ok_assert
     if check:
         print(f"  brew: {old_ver} -> {version} (needs update)")
         return False

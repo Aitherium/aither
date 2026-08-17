@@ -166,7 +166,7 @@ class AitherAdk < Formula
     # adk-workspace, adk-bug, adk-shell), so `brew test` could only ever fail.
     # Same class as the onboarding-funnel rule: never advertise a command the
     # package does not ship.
-    assert_match "3.0.4", shell_output("#{bin}/adk --version")
+    assert_match "3.3.0", shell_output("#{bin}/adk --version")
     # The uvx/registry entrypoint must exist too — `uvx aither-adk` and the ACP
     # registry listing both invoke it by that exact name.
     assert_predicate bin/"aither-adk", :exist?
