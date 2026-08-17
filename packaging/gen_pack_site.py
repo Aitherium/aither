@@ -1,26 +1,28 @@
 #!/usr/bin/env python3
-"""Render a designed page per pack, in the UPSTREAM project's branding.
+"""Render a page per pack, in the UPSTREAM project's branding.
 
 A pack that wraps somebody else's application is, first, an advertisement for
-their work. So the page leads with THEIR name, THEIR tagline, THEIR links and
-THEIR accent colour, and only then explains what this pack adds. Our own
-branding is deliberately the smaller half.
+their work. The page leads with THEIR name, THEIR tagline, THEIR links and
+THEIR accent, and only then explains what the pack adds.
 
-That is not politeness for its own sake. A page that presents a wrapper as the
-product is how a community concludes you are strip-mining their project, and it
-is also just inaccurate — GobboNet is the reason the GobboPack page is worth
-visiting.
+That is not politeness. A page presenting a wrapper as the product is how a
+community concludes you are strip-mining their project — and it is also just
+inaccurate: GobboNet is the reason the GobboPack page is worth visiting.
 
-Every credited field comes from the pack's `upstream:` block, which means credit
-cannot drift out of the page in a redesign: remove the block and the generator
-reports the pack as uncredited rather than quietly rendering it as ours.
+Every credited field comes from the pack's `upstream:` block, so credit cannot
+drift out in a redesign: remove the block and the generator REPORTS the pack as
+uncredited rather than quietly rendering it as ours.
 
     python packaging/gen_pack_site.py --index dist/packs/index.json \\
         --out docs --repo Aitherium/aither-adk --tag v3.3.0
 
-Self-contained HTML: no CDN, no webfont, no tracker. These pages are published
-for other people's communities, and a page that phones somewhere on load would
-contradict the local-first thing every one of these packs is about.
+Self-contained: no CDN, no webfont, no tracker. These pages are published for
+other people's communities, and a page that phones somewhere on load would
+contradict the local-first property every one of these packs protects.
+
+The visual identity lives in `pack_site_theme.py`, so the design can be judged
+as a design and a change to it cannot quietly become a change to what the page
+CLAIMS.
 """
 
 from __future__ import annotations
@@ -31,109 +33,140 @@ import json
 import sys
 from pathlib import Path
 
-#: Our accent, used only for the "what the pack adds" half. The upstream's own
-#: colour wins everywhere above it.
-ADK_ACCENT = "#5b8def"
-ADK_ACCENT_DARK = "#7ea6f5"
+try:  # imported as part of a package
+    from .pack_site_theme import css
+except ImportError as _rel_exc:  # run as a script from anywhere
+    # Scoped to this import rather than a module-level sys.path mutation, which
+    # would leak into whatever else imports this module.
+    #
+    # The original error is CHAINED, not swallowed: if the relative import fails
+    # for a reason INSIDE the theme module, the fallback fails too and the
+    # operator would otherwise be told "No module named 'pack_site_theme'" —
+    # a module that was never supposed to exist — while the real cause is gone.
+    import importlib.util
 
+    _path_ = Path(__file__).resolve().parent / "pack_site_theme.py"
+    _spec_ = importlib.util.spec_from_file_location("pack_site_theme", _path_)
+    if _spec_ is None or _spec_.loader is None:
+        raise ImportError(f"cannot load the theme from {_path_}") from _rel_exc
+    _mod_ = importlib.util.module_from_spec(_spec_)
+    try:
+        _spec_.loader.exec_module(_mod_)
+    except Exception as _exc_:
+        raise ImportError(f"the theme at {_path_} failed to load") from _exc_
+    css = _mod_.css
 
-def _css(accent: str, accent_dark: str) -> str:
-    """Theme-aware CSS.
+ADK_ACCENT = "#4f7cf7"
+ADK_ACCENT_DARK = "#8aa9fb"
 
-    Light values live on bare `:root`; dark redefines ONLY the tokens, guarded
-    so an explicit light choice still wins. A colour whose only definition is
-    inside a media query breaks the moment someone toggles the theme.
-    """
-    return f"""
-:root {{
-  --bg: #ffffff; --fg: #1a1a1a; --muted: #5b6470; --line: #e3e6ea;
-  --card: #f7f8fa; --accent: {accent}; --code-bg: #f2f4f7;
-}}
-@media (prefers-color-scheme: dark) {{
-  :root:not([data-theme="light"]) {{
-    --bg: #0f1216; --fg: #e8eaed; --muted: #9aa4b2; --line: #232935;
-    --card: #161b22; --accent: {accent_dark}; --code-bg: #11151b;
-  }}
-}}
-:root[data-theme="dark"] {{
-  --bg: #0f1216; --fg: #e8eaed; --muted: #9aa4b2; --line: #232935;
-  --card: #161b22; --accent: {accent_dark}; --code-bg: #11151b;
-}}
-* {{ box-sizing: border-box; }}
-body {{
-  margin: 0; background: var(--bg); color: var(--fg);
-  font: 16px/1.65 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-}}
-.wrap {{ max-width: 860px; margin: 0 auto; padding: 0 20px; }}
-header.hero {{ border-bottom: 1px solid var(--line); padding: 56px 0 40px; }}
-.eyebrow {{
-  color: var(--muted); font-size: 13px; letter-spacing: .08em;
-  text-transform: uppercase; margin: 0 0 10px;
-}}
-h1 {{ margin: 0 0 8px; font-size: 40px; line-height: 1.15; letter-spacing: -.02em; }}
-.tagline {{ margin: 0 0 22px; color: var(--muted); font-size: 18px; }}
-.links a {{
-  display: inline-block; margin: 0 14px 8px 0; color: var(--accent);
-  text-decoration: none; font-weight: 600;
-}}
-.links a:hover {{ text-decoration: underline; }}
-.byline {{
-  margin: 22px 0 0; padding: 14px 16px; border-left: 3px solid var(--accent);
-  background: var(--card); border-radius: 0 8px 8px 0; color: var(--muted);
-}}
-.byline strong {{ color: var(--fg); }}
-h2 {{ margin: 40px 0 12px; font-size: 24px; letter-spacing: -.01em; }}
-h3 {{ margin: 26px 0 8px; font-size: 17px; }}
-p {{ margin: 0 0 14px; }}
-ul {{ margin: 0 0 14px; padding-left: 22px; }}
-li {{ margin: 4px 0; }}
-pre {{
-  background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px;
-  padding: 14px 16px; overflow-x: auto; margin: 0 0 16px;
-}}
-code {{ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13.5px; }}
-p code, li code {{ background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }}
-.dl {{
-  display: inline-block; background: var(--accent); color: #fff; padding: 11px 20px;
-  border-radius: 8px; text-decoration: none; font-weight: 650; margin: 4px 10px 4px 0;
-}}
-.meta {{ color: var(--muted); font-size: 14px; }}
-.grid {{ display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }}
-.tile {{
-  background: var(--card);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 14px 16px;
-}}
-.tile h4 {{ margin: 0 0 4px; font-size: 15px; }}
-.tile p {{ margin: 0; color: var(--muted); font-size: 14px; }}
-footer {{
-  border-top: 1px solid var(--line);
-  margin-top: 56px;
-  padding: 28px 0 60px;
-  color: var(--muted);
-  font-size: 14px;
-}}
-footer a {{ color: var(--accent); }}
-table {{
-  border-collapse: collapse;
-  width: 100%;
-  margin: 0 0 16px;
-  display: block;
-  overflow-x: auto;
-}}
-th, td {{
-  border-bottom: 1px solid var(--line);
-  padding: 9px 10px;
-  text-align: left;
-  font-size: 14.5px;
-}}
-th {{ color: var(--muted); font-weight: 600; }}
-"""
+NL = chr(10)
 
 
 def _e(s) -> str:
     return html.escape(str(s or ""))
+
+
+def _human(n: int) -> str:
+    return f"{n / 1024:.0f} KB" if n < 1024 * 1024 else f"{n / 1024 / 1024:.1f} MB"
+
+
+def _terminal(lines: list[tuple[str, str]], title: str) -> str:
+    """The hero. `lines` is [(kind, text)] with kind in cmd | out | comment.
+
+    One `white-space: pre` block rather than a div per line, so a reader can
+    select and copy the commands the way they would from a real terminal — the
+    single thing this page exists to make them do.
+    """
+    body = []
+    for kind, text in lines:
+        if kind == "cmd":
+            body.append(f'<span class="p">$</span> {_e(text)}')
+        elif kind == "comment":
+            body.append(f'<span class="c"># {_e(text)}</span>')
+        else:
+            body.append(f'<span class="o">{_e(text)}</span>')
+    body.append('<span class="p">$</span> <span class="caret"></span>')
+    return (
+        '<div class="term">'
+        '<div class="term-bar">'
+        '<span class="dot live"></span><span class="dot"></span><span class="dot"></span>'
+        f'<span class="term-name">{_e(title)}</span>'
+        "</div>"
+        f'<pre class="term-body">{NL.join(body)}</pre>'
+        "</div>"
+    )
+
+
+def _spec(rows: list[tuple[str, str]]) -> str:
+    cells = "".join(f"<div><dt>{_e(k)}</dt><dd>{_e(v)}</dd></div>" for k, v in rows if v)
+    return f'<dl class="spec">{cells}</dl>'
+
+
+FEATURES = [
+    ("Web search, no account",
+     "DuckDuckGo through a maintained client. No key, no sign-up, nothing hosted."),
+    ("An agent behind the chat box",
+     "Tools, memory and skills answer on the API the app already speaks, so its "
+     "interface needs no changes."),
+    ("Your own model",
+     "llama.cpp, ollama, vLLM and LM Studio are discovered automatically; "
+     "<code>--setup-model</code> installs one sized to the machine."),
+    ("Weights without an account",
+     "Resumable, rate-capped and size-verified, so a dropped connection costs "
+     "minutes rather than the whole download."),
+]
+
+
+#: Elements that never take a closing tag. Anything else that opens must close.
+_VOID = {
+    "area", "base", "br", "col", "embed", "hr", "img", "input",
+    "link", "meta", "param", "source", "track", "wbr",
+}
+
+
+def wellformed_errors(page: str) -> list[str]:
+    """Structural problems in generated HTML: [] when the page is sound.
+
+    Every other assertion in the self-test asks whether a STRING is present,
+    so none of them can see an unclosed tag or a stray closer — the page
+    would ship broken with a green test. This walks the tag stack instead.
+    """
+    from html.parser import HTMLParser
+
+    class _P(HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=True)
+            self.stack = []
+            self.errors = []
+
+        def handle_starttag(self, tag, attrs):
+            if tag not in _VOID:
+                self.stack.append(tag)
+
+        def handle_endtag(self, tag):
+            if tag in _VOID:
+                return
+            if not self.stack:
+                self.errors.append(f'stray </{tag}> with nothing open')
+                return
+            if self.stack[-1] != tag:
+                # Report the mismatch rather than trying to recover: a
+                # guessed recovery turns one real error into a cascade of
+                # invented ones.
+                self.errors.append(
+                    f'</{tag}> closes <{self.stack[-1]}>')
+                if tag in self.stack:
+                    while self.stack and self.stack.pop() != tag:
+                        pass
+                return
+            self.stack.pop()
+
+    parser = _P()
+    parser.feed(page)
+    parser.close()
+    if parser.stack:
+        parser.errors.append('never closed: ' + ', '.join(parser.stack))
+    return parser.errors
 
 
 def render_pack_page(p: dict, index: dict, repo: str, tag: str) -> str:
@@ -143,106 +176,129 @@ def render_pack_page(p: dict, index: dict, repo: str, tag: str) -> str:
 
     base = f"https://github.com/{repo}/releases/download/{tag}"
     art = f"{base}/{p['artifact']}"
-    sha = f"{base}/{p['name']}-{p['version']}.sha256"
+    sha_file = f"{p['name']}-{p['version']}.sha256"
 
-    # The upstream's identity leads. Ours is the second half of the page.
     if up:
-        title = _e(up.get("name") or p["display_name"])
-        eyebrow = "An aither-adk agent pack for"
-        tagline = _e(up.get("tagline") or "")
+        title = up.get("name") or p["display_name"]
+        eyebrow = f"An agent pack for <b>{_e(title)}</b>"
+        lede = up.get("tagline") or ""
     else:
-        title = _e(p["display_name"])
+        title = p["display_name"]
         eyebrow = "aither-adk agent pack"
-        tagline = _e(p.get("description") or "")
+        lede = p.get("description") or ""
 
-    links = []
+    jump = []
     if up.get("site"):
-        links.append(f'<a href="{_e(up["site"])}">Project site →</a>')
+        jump.append(f'<a href="{_e(up["site"])}">Project site</a>')
     if up.get("repo"):
-        links.append(f'<a href="{_e(up["repo"])}">Source repository →</a>')
+        jump.append(f'<a href="{_e(up["repo"])}">Source</a>')
+    jump.append(f'<a href="{_e(art)}">Download</a>')
 
-    byline = ""
-    if up:
-        who = " / ".join(x for x in (up.get("author"), up.get("org")) if x)
-        lic = f" Licensed {_e(up['license'])}." if up.get("license") else ""
-        byline = (
-            f'<p class="byline"><strong>{_e(up.get("name"))}</strong> is created by '
-            f'<strong>{_e(who)}</strong>.{lic} This pack is an engine that runs behind it — '
-            f'their application is not modified, not redistributed, and not affiliated with '
-            f'us. If you like what you see here, the credit belongs upstream.</p>'
-        )
+    term = _terminal([
+        ("comment", "one command each; nothing else to configure"),
+        ("cmd", f"curl -LO {art}"),
+        ("cmd", f"tar xzf {p['artifact']}"),
+        ("cmd", f"python {p['name']}/install.py"),
+        ("out", f"installed {p['name']} -> ~/.aither/packs/{p['name']}"),
+        ("out", f"verified: adk discovers '{p['name']}'"),
+    ], f"{p['name']} — install")
 
-    caps = "".join(
-        f'<div class="tile"><h4>{_e(t)}</h4><p>{_e(d)}</p></div>'
-        for t, d in [
-            ("Keyless web search",
-             "DuckDuckGo through a maintained client. No account, no API key."),
-            ("Agent loop",
-             "Tools, memory and skills behind the chat box — the UI needs no changes."),
-            ("Local models", "llama.cpp, ollama, vLLM or LM Studio, discovered automatically."),
-            ("Model weights",
-             "Fetched without a HuggingFace account, resumable and size-verified."),
-        ]
-    )
+    spec = _spec([
+        ("Version", p["version"]),
+        ("Size", _human(p["bytes"])),
+        ("Licence", up.get("license") or "—"),
+        ("sha256", p["sha256"][:16] + "…"),
+    ])
+
+    feats = "".join(f"<div><dt>{t}</dt><dd>{d}</dd></div>" for t, d in FEATURES)
 
     skills = ""
     if p.get("skills"):
-        skills = ("<h3>Skills</h3><ul>"
-                  + "".join(f"<li><code>{_e(s)}</code></li>" for s in p["skills"])
-                  + "</ul>")
+        items = "".join(f"<div><dt><code>{_e(s)}</code></dt><dd></dd></div>"
+                        for s in p["skills"])
+        skills = ('<section><h2>Skills</h2>'
+                  '<p class="sub">Included in the download.</p>'
+                  f'<dl class="feat">{items}</dl></section>')
 
-    # Stated in the footer as well as the byline: a reader who lands mid-page
-    # should still not come away thinking we speak for their project.
+    about = ""
+    if p.get("overview"):
+        paras = "".join(f"<p>{_e(b.strip())}</p>"
+                        for b in p["overview"].split(NL + NL) if b.strip())
+        about = f'<section><h2>About</h2><div class="prose">{paras}</div></section>'
+
+    colophon = ""
+    if up:
+        who = " / ".join(x for x in (up.get("author"), up.get("org")) if x)
+        lic = f" Licensed {_e(up['license'])}." if up.get("license") else ""
+        link = f'<a href="{_e(up.get("repo") or up.get("site"))}">{_e(up.get("name"))}</a>'
+        colophon = (
+            '<div class="colophon"><p>'
+            f"{link} is created by <strong>{_e(who)}</strong>.{lic} "
+            "This pack is an engine that runs behind it — their application is not "
+            "modified, not redistributed here, and not affiliated with us. "
+            "If you like what you see, the credit belongs upstream."
+            "</p></div>"
+        )
+
+    verify = _terminal([
+        ("comment", "every artifact ships a checksum; check it before you trust it"),
+        ("cmd", f"sha256sum -c {sha_file}"),
+        ("out", f"{p['artifact']}: OK"),
+    ], "verify")
+
     indie = ""
     if up:
-        indie = (f"<p>{_e(up.get('name'))} is an independent project. "
-                 f"This page links to it; it does not speak for it.</p>")
+        indie = ("<br>" + _e(up.get("name")) + " is an independent project. "
+                 "This page links to it; it does not speak for it.")
 
     return f"""<!doctype html>
-<html lang="en"><head>
+<html lang="en">
+<head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{title} — aither-adk pack</title>
-<meta name="description" content="{tagline}">
-<style>{_css(accent, accent_dark)}</style>
-</head><body>
+<title>{_e(title)} pack</title>
+<meta name="description" content="{_e(lede)}">
+<style>{css(accent, accent_dark)}</style>
+</head>
+<body>
+<main class="shell">
 
-<header class="hero"><div class="wrap">
-  <p class="eyebrow">{eyebrow}</p>
-  <h1>{title}</h1>
-  <p class="tagline">{tagline}</p>
-  <p class="links">{" ".join(links)}</p>
-  {byline}
-</div></header>
+  <header class="mast">
+    <p class="eyebrow">{eyebrow}</p>
+    <h1>{_e(title)}</h1>
+    <p class="lede">{_e(lede)}</p>
+    <nav class="jump">{"".join(jump)}</nav>
+  </header>
 
-<main class="wrap">
-  <h2>Install the pack</h2>
-  <p><a class="dl" href="{_e(art)}">Download {_e(p['artifact'])}</a>
-     <span class="meta">{p['bytes'] / 1024:.1f} KB · <a href="{_e(sha)}">checksum</a></span></p>
-<pre><code>curl -LO {_e(art)}
-tar xzf {_e(p['artifact'])}
-python {_e(p['name'])}/install.py</code></pre>
-  <p>That installs to <code>~/.aither/packs/{_e(p['name'])}/</code>, which adk discovers with
-     no configuration, then <strong>verifies</strong> the pack is discoverable rather than
-     assuming it. adk itself is <code>pip install aither-adk</code>.</p>
+  {term}
+  {spec}
 
-  <h2>What this pack adds</h2>
-  <div class="grid">{caps}</div>
+  <section>
+    <h2>What the pack adds</h2>
+    <p class="sub">The app keeps its own interface. This runs underneath it.</p>
+    <dl class="feat">{feats}</dl>
+  </section>
+
   {skills}
+  {about}
 
-  <h2>Verify the download</h2>
-<pre><code>sha256sum -c {_e(p['name'])}-{_e(p['version'])}.sha256</code></pre>
-  <p class="meta">sha256 <code>{_e(p['sha256'])}</code></p>
+  <section>
+    <h2>Verify</h2>
+    <p class="sub">sha256 <code>{_e(p["sha256"])}</code></p>
+    {verify}
+  </section>
+
+  {colophon}
+
+  <footer>
+    Built from <code>{_e(tag)}</code> · adk {_e(index.get("adk_version", "?"))} ·
+    <a href="../packs.html">All packs</a> ·
+    <a href="https://github.com/{_e(repo)}">aither-adk</a>{indie}
+  </footer>
+
 </main>
-
-<footer><div class="wrap">
-  <p>Built from <code>{_e(tag)}</code> (adk {_e(index.get('adk_version', '?'))}) ·
-     <a href="../packs.html">All packs</a> ·
-     <a href="https://github.com/{_e(repo)}">aither-adk</a></p>
-  {indie}
-</div></footer>
-
-</body></html>
+</body>
+</html>
 """
 
 
@@ -255,37 +311,59 @@ def render_index(index: dict, repo: str, tag: str) -> str:
     for p in packs:
         up = p.get("upstream") or {}
         who = " / ".join(x for x in (up.get("author"), up.get("org")) if x)
-        credit = f'<br><span class="meta">by {_e(who)}</span>' if who else ""
+        by = f'<span class="by">by {_e(who)}</span>' if who else ""
         rows += (
-            f'<tr><td><a href="packs/{_e(p["name"])}.html">'
-            f'<strong>{_e(p["display_name"])}</strong></a>'
-            f"{credit}</td>"
-            f'<td><code>{_e(p["version"])}</code></td>'
-            f'<td>{_e((p.get("description") or "")[:110])}</td></tr>'
+            f'<a href="packs/{_e(p["name"])}.html">'
+            f'<span><span class="nm">{_e(p["display_name"])}</span> {by}</span>'
+            f'<span class="vs">{_e(p["version"])}</span>'
+            f'<span class="ds">{_e((p.get("description") or "").strip())}</span>'
+            "</a>"
         )
 
+    term = _terminal([
+        ("comment", "any pack, same three lines"),
+        ("cmd", "tar xzf <pack>-<version>.tar.gz"),
+        ("cmd", "python <pack>/install.py"),
+        ("out", "installed -> ~/.aither/packs/<pack>"),
+    ], "install any pack")
+
     return f"""<!doctype html>
-<html lang="en"><head>
+<html lang="en">
+<head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Agent packs — aither-adk</title>
-<style>{_css(ADK_ACCENT, ADK_ACCENT_DARK)}</style>
-</head><body>
-<header class="hero"><div class="wrap">
-  <p class="eyebrow">aither-adk</p>
-  <h1>Agent packs</h1>
-  <p class="tagline">Each pack is a standalone download. Take one, run its installer,
-     and adk finds it — you do not need the rest of the framework to try a single pack.</p>
-</div></header>
-<main class="wrap">
-  <table><thead><tr><th>Pack</th><th>Version</th><th>What it is</th></tr></thead>
-  <tbody>{rows}</tbody></table>
-  <p class="meta">Packs that wrap an independent project credit and link to it on their
-     own page. Those projects are not affiliated with us.</p>
+<title>Agent packs</title>
+<meta name="description"
+      content="Standalone agent packs for aither-adk. Take one, run its installer.">
+<style>{css(ADK_ACCENT, ADK_ACCENT_DARK)}</style>
+</head>
+<body>
+<main class="shell">
+
+  <header class="mast">
+    <p class="eyebrow">aither-adk</p>
+    <h1>Agent packs</h1>
+    <p class="lede">Each pack is a standalone download. Take one, run its installer,
+      and adk finds it — you do not need the rest of the framework to try a single pack.</p>
+  </header>
+
+  {term}
+
+  <section>
+    <h2>Available</h2>
+    <p class="sub">Packs that wrap an independent project credit and link to it on
+      their own page. Those projects are not affiliated with us.</p>
+    <div class="packs">{rows}</div>
+  </section>
+
+  <footer>
+    Built from <code>{_e(tag)}</code> ·
+    <a href="https://github.com/{_e(repo)}">aither-adk</a>
+  </footer>
+
 </main>
-<footer><div class="wrap"><p>Built from <code>{_e(tag)}</code> ·
-  <a href="https://github.com/{_e(repo)}">aither-adk</a></p></div></footer>
-</body></html>
+</body>
+</html>
 """
 
 
@@ -327,9 +405,7 @@ def main() -> int:
             uncredited.append(p["name"])
 
     if uncredited:
-        # Printed, never silent. A pack that wraps an external project and
-        # declares no `upstream:` renders as though the work were ours.
-        print(f"\nno upstream credit declared: {', '.join(uncredited)}")
+        print(f"{NL}no upstream credit declared: {', '.join(uncredited)}")
         print("  (fine for packs that wrap nothing external — check that is true)")
     return 0
 
@@ -337,9 +413,9 @@ def main() -> int:
 def self_test() -> int:
     ok = True
 
-    def check(label, got, want=True):
+    def check(label, cond):
         nonlocal ok
-        if got != want:
+        if not cond:
             print(f"  FAIL  {label}")
             ok = False
         else:
@@ -348,7 +424,7 @@ def self_test() -> int:
     idx = {"adk_version": "1.0", "packs": [{
         "name": "demo", "display_name": "DemoPack", "version": "1.0",
         "artifact": "demo-1.0.tar.gz", "sha256": "a" * 64, "bytes": 2048,
-        "description": "d", "skills": ["s1"], "files": [],
+        "description": "d", "skills": ["s1"], "files": [], "overview": "Para one.",
         "upstream": {"name": "TheirApp", "author": "Ada", "org": "Their Co",
                      "repo": "https://github.com/x/y", "site": "https://their.site",
                      "license": "MIT", "tagline": "Their tagline",
@@ -357,33 +433,49 @@ def self_test() -> int:
     page = render_pack_page(idx["packs"][0], idx, "Org/repo", "v1")
 
     check("upstream name is the H1, not ours", "<h1>TheirApp</h1>" in page)
-    check("their tagline is used", "Their tagline" in page)
+    check("their tagline leads", "Their tagline" in page)
     check("author credited", "Ada" in page and "Their Co" in page)
-    check("links to their site and repo", "https://their.site" in page and "github.com/x/y" in page)
+    check("links to their site and source", "their.site" in page and "github.com/x/y" in page)
     check("their accent drives the theme", "#123456" in page and "#654321" in page)
     check("licence stated", "Licensed MIT" in page)
     check("non-affiliation stated", "not affiliated" in page)
-    check("download + checksum present", "demo-1.0.tar.gz" in page and "sha256sum -c" in page)
-    check("dark tokens are not media-query-only",
-          ':root[data-theme="dark"]' in page and ":root:not([data-theme=\"light\"])" in page)
-    check("self-contained: no external fetch",
-          "http://" not in page.replace("http://www.w3.org", "") or True)
-    check("no CDN or webfont", "cdn." not in page and "fonts.googleapis" not in page)
+    check("install command present", "install.py" in page)
+    check("checksum verification present", "sha256sum -c" in page)
 
-    # An escaping failure on a field we do not control is an injected page.
+    # Theme correctness — the classic unreadable-page bug is a colour whose only
+    # definition sits behind a media query or a [data-theme] stamp.
+    check("dark tokens defined for stamped AND unstamped states",
+          ':root[data-theme="dark"]' in page and ':root:not([data-theme="light"])' in page)
+    check("body paints an explicit background token", "background: var(--ground)" in page)
+    check("reduced motion respected", "prefers-reduced-motion" in page)
+    check("focus is visible", "focus-visible" in page)
+    check("self-contained: no CDN, webfont or import",
+          "cdn." not in page and "fonts.googleapis" not in page and "@import" not in page)
+
     evil = json.loads(json.dumps(idx["packs"][0]))
-    evil["upstream"]["author"] = '<script>alert(1)</script>'
+    evil["upstream"]["author"] = "<script>alert(1)</script>"
     check("upstream fields are escaped",
           "<script>alert(1)</script>" not in render_pack_page(evil, idx, "o/r", "v1"))
 
-    # A pack with no upstream must still render, as ours.
     plain = json.loads(json.dumps(idx["packs"][0]))
     plain.pop("upstream")
     p2 = render_pack_page(plain, idx, "o/r", "v1")
     check("uncredited pack renders under its own name", "<h1>DemoPack</h1>" in p2)
     check("uncredited pack claims no byline", "not affiliated" not in p2)
 
-    check("index links each pack page", 'href="packs/demo.html"' in render_index(idx, "o/r", "v1"))
+    check("index links each pack page",
+          'href="packs/demo.html"' in render_index(idx, "o/r", "v1"))
+
+    # Structure, not just content. Nothing above would notice an unclosed tag.
+    for label, doc in (("pack page", page),
+                       ("uncredited page", p2),
+                       ("index", render_index(idx, "o/r", "v1"))):
+        errs = wellformed_errors(doc)
+        check(f"{label} is well-formed HTML" + (f" ({errs})" if errs else ""), not errs)
+
+    # And prove THAT check can fail, or it is decoration.
+    check("the well-formedness check can fail",
+          bool(wellformed_errors("<main><div><p>x</p></main>")))
 
     try:
         render_index({"packs": []}, "o/r", "v1")

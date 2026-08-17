@@ -20,7 +20,7 @@ class AitherAdk < Formula
   desc "Agent Development Kit for AitherOS — build AI agent fleets with any LLM"
   homepage "https://aitherium.com"
   url "https://files.pythonhosted.org/packages/source/a/aither-adk/aither_adk-3.3.0.tar.gz"
-  sha256 "PLACEHOLDER_SHA256"
+  sha256 "a00b45e3eb0cfb68a1f04b629283e52646ef92fce3a022c42547b731ee4a6d2c"
   # SPDX. "Proprietary" is not an SPDX identifier and `brew audit` rejects it;
   # the LICENSE file is Business Source License 1.1.
   license "BUSL-1.1"
