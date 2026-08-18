@@ -24,6 +24,7 @@
   var HOST = "https://aitherium.github.io/";
   var REPOS = [
     { id: "awgit",         label: "awgit",         blurb: "semantic VCS — code nodes, not lines" },
+    { id: "awgraph",       label: "awgraph",       blurb: "code knowledge graph for agents" },
     { id: "AitherZero",    label: "AitherZero",    blurb: "infrastructure automation" },
     { id: "aither-adk",    label: "aither-adk",    blurb: "agent development kit" },
     { id: "aitherkvcache", label: "aitherkvcache", blurb: "KV cache + weight mirror" },
