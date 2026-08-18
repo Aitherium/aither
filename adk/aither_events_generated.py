@@ -49,6 +49,7 @@ SHELL_EVENT_PILLARS: Dict[str, str] = {
     'context_summary': 'context',
     'neuron_fire': 'context',
     'ooda_observe': 'context',
+    'user_activity': 'context',
     'think_start': 'reasoning',
     'thinking': 'reasoning',
     'thinking_end': 'reasoning',

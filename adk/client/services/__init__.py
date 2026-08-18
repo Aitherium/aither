@@ -7,6 +7,7 @@ from adk.client.services.data_plane import DataPlaneClient
 from adk.client.services.expeditions import ExpeditionClient
 from adk.client.services.voice import VoiceClient
 from adk.client.services.conversations import ConversationClient
+from adk.client.services.capabilities import CapabilitiesClient
 
 __all__ = [
     "ContextClient",
@@ -16,4 +17,5 @@ __all__ = [
     "ExpeditionClient",
     "VoiceClient",
     "ConversationClient",
+    "CapabilitiesClient",
 ]

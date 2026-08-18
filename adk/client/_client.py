@@ -25,6 +25,7 @@ from adk.client._models import (
 
 if TYPE_CHECKING:
     from adk.client.services.a2a import A2AClient
+    from adk.client.services.capabilities import CapabilitiesClient
     from adk.client.services.context import ContextClient
     from adk.client.services.conversations import ConversationClient
     from adk.client.services.data_plane import DataPlaneClient
@@ -140,6 +141,7 @@ class AitherClient:
         self._context: Optional["ContextClient"] = None
         self._a2a: Optional["A2AClient"] = None
         self._strata: Optional["StrataClient"] = None
+        self._capabilities: Optional["CapabilitiesClient"] = None
         self._data_plane: Optional["DataPlaneClient"] = None
         self._expeditions: Optional["ExpeditionClient"] = None
         self._voice: Optional["VoiceClient"] = None
@@ -512,6 +514,21 @@ class AitherClient:
             from adk.client.services.a2a import A2AClient
             self._a2a = A2AClient(self._a2a_url, self._get_client)
         return self._a2a
+
+    @property
+    def capabilities(self) -> "CapabilitiesClient":
+        """Effective-capability resolver — what an agent may do for THIS user.
+
+        Mounted on `self.url` (Genesis) rather than a service of its own: the
+        answer joins the capability tokens with the caller's RBAC role, and must
+        be computed where a verified session exists. Deriving it locally would
+        give a second, drifting answer — and could not work anyway, since
+        neither store exists outside the fleet.
+        """
+        if self._capabilities is None:
+            from adk.client.services.capabilities import CapabilitiesClient
+            self._capabilities = CapabilitiesClient(self.url, self._get_client)
+        return self._capabilities
 
     @property
     def strata(self) -> "StrataClient":

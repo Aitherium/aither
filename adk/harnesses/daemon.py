@@ -742,7 +742,7 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
             get_store,
         )
 
-        card = DecisionCard(
+        kwargs: dict[str, Any] = dict(
             id="",
             title=(body.title or "").strip(),
             summary=(body.summary or "").strip(),
@@ -758,11 +758,54 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
                 agent=(body.raised_by or body.agent or "api").strip(),
                 cwd=(body.cwd or "").strip(),
             ),
-            secret_name=(body.secret_name or "").strip(),
-            credential_format=body.credential_format,
-            credential_scope=body.credential_scope,
-            credential_description=(body.credential_description or "").strip(),
         )
+
+        # CREDENTIAL FIELDS ARE OPTIONAL AT THE STORE, AND THIS ROUTE MUST NOT DIE
+        # WHEN THEY ARE ABSENT.
+        #
+        # Measured 2026-08-17: this handler passed secret_name / credential_format /
+        # credential_scope / credential_description unconditionally, and the store's
+        # DecisionCard in this tree declares NONE of them (zero occurrences of
+        # "credential" in store.py). So every POST /decisions died with
+        #
+        #     TypeError: DecisionCard.__init__() got an unexpected keyword
+        #                argument 'secret_name'
+        #
+        # before reaching the store — a hard 500 on the ONLY route that can create a
+        # card. Every other surface could list, read, answer and cancel; none could
+        # raise. "An agent anywhere reaches its owner" was not expressible, and the
+        # failure looked like a broken daemon rather than a two-file version skew
+        # (the credential feature lives in another worktree and never landed here).
+        #
+        # Feature-detected rather than assumed, and FAIL-CLOSED on the credential
+        # path: an ordinary card raises fine, while a card that actually asks for a
+        # secret is REFUSED with a clear 400 instead of being quietly stripped of the
+        # field that says which secret it wants.
+        _card_fields = set(getattr(DecisionCard, "__dataclass_fields__", {}) or {})
+        _cred = {
+            "secret_name": (body.secret_name or "").strip(),
+            "credential_format": body.credential_format,
+            "credential_scope": body.credential_scope,
+            "credential_description": (body.credential_description or "").strip(),
+        }
+        _missing = [k for k in _cred if k not in _card_fields]
+        if _missing and _cred["secret_name"]:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "credential cards are not supported by this store build "
+                    f"(DecisionCard is missing {', '.join(sorted(_missing))}). "
+                    "Raise a normal card, or land the credential fields in "
+                    "adk/decisions/store.py first — silently dropping secret_name "
+                    "would produce a card that asks for 'a secret' without saying "
+                    "which one."
+                ),
+            )
+        for _k, _v in _cred.items():
+            if _k in _card_fields:
+                kwargs[_k] = _v
+
+        card = DecisionCard(**kwargs)
         try:
             created = get_store().create(card)
         except DecisionError as exc:
