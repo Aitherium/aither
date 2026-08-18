@@ -274,6 +274,37 @@ class AddonManager:
         self._persist()
         return results
 
+    def addon_env(self) -> Dict[str, str]:
+        """Environment an agent should adopt because addons run LOCALLY here.
+
+        The last mile of self-hosting. A pack resolves its endpoint from an env
+        var first (AitherBrowser's session.py: AITHER_BROWSER_URL ->
+        get_service_url -> the fleet default), and this manager already knows the
+        local endpoint the moment an addon is enabled. Nothing carried one to the
+        other, so a node could run its own browser and its agent would still
+        drive the platform's — the exact thing self-hosting exists to stop, and
+        invisible because driving the fleet's browser WORKS.
+
+        Only RUNNING addons contribute: a declared-but-stopped addon pointing an
+        agent at a dead port would turn "self-hosted" into "broken", which is
+        worse than falling back to the platform.
+        """
+        env: Dict[str, str] = {}
+        for addon_id, state in self._state.items():
+            if (state or {}).get("status") != "running":
+                continue
+            manifest = load_addon_manifest(addon_id) or {}
+            provides = manifest.get("provides_env")
+            if not isinstance(provides, dict):
+                continue
+            port = manifest.get("default_port", "")
+            endpoint = (state or {}).get("endpoint", "")
+            for key, template in provides.items():
+                if not isinstance(key, str) or not isinstance(template, str):
+                    continue
+                env[key] = template.format(port=port, endpoint=endpoint)
+        return env
+
     def get_inventory(self) -> List[Dict[str, Any]]:
         """Return addon inventory for federation heartbeat."""
         inventory = []
