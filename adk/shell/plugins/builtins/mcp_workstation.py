@@ -69,7 +69,7 @@ class MCPWorkstationPlugin(SlashCommand):
         if not aithernode:
             return (
                 "ERROR: 'aithernode' not found. Install with:\n"
-                "  pip install aithernode\n"
+                "  pip install awnode\n"
                 "or\n"
                 "  adk install aithernode"
             )
