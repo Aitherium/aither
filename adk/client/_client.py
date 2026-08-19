@@ -2,7 +2,7 @@
 AitherClient — The canonical Python client for AitherOS.
 
 This is the ONE client that all AitherOS tools should use.
-AitherShell, AitherDesktop, AitherConnect, ADK — all import from here.
+AitherShell, AitherDesktop, Awconnect, ADK — all import from here.
 """
 
 import json

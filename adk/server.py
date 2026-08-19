@@ -562,7 +562,7 @@ def create_app(
     # `{"status":"healthy","agent":"adk-daemon","version":"2.25.1"}`, and the page still
     # said "no node", because the default list below was localhost-dev only, so the browser
     # discarded the response for want of an Access-Control-Allow-Origin. Nothing logged on
-    # either side. The AitherConnect EXTENSION saw the same daemon fine (extensions bypass
+    # either side. The Awconnect EXTENSION saw the same daemon fine (extensions bypass
     # CORS with host permissions) and displayed "node online" a few pixels away from the
     # page's "no node" — which reads as the page being broken rather than as a CORS policy.
     #
@@ -844,7 +844,7 @@ def create_app(
     async def x_session_import(request: Request):
         """Seed the autonomous X poster's session from a browser that holds it.
 
-        The AitherConnect extension POSTs THIS browser's logged-in x.com cookies
+        The Awconnect extension POSTs THIS browser's logged-in x.com cookies
         here. Loopback is already trusted by the auth middleware (no token), and
         the daemon runs as the owner — so we forward the cookies to the fleet's
         verify-and-store endpoint with the owner's own credentials. No download,
@@ -895,11 +895,11 @@ def create_app(
         return JSONResponse(status_code=502, content={
             "ok": False, "error": f"no fleet endpoint reachable: {last}"})
 
-    # ─── Onboarding status endpoints (AitherConnect extension) ───
+    # ─── Onboarding status endpoints (Awconnect extension) ───
 
     @app.get("/onboard/status")
     async def onboard_status():
-        """Report onboarding status for the AitherConnect extension.
+        """Report onboarding status for the Awconnect extension.
 
         Returns: {logged_in, username, tenant, vault_secrets, enrolled, node_id, agents, hub_url}
         Never errors (treats missing files as logged_out/not_enrolled/0-secrets).

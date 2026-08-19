@@ -514,7 +514,7 @@ def cmd_workspace(args):
             "veil": "AitherVeil + all packages",
             "portal": "AitherVeil + portal-kit + desktop-core",
             "node": "AitherNode (standalone + monorepo)",
-            "connect": "AitherConnect",
+            "connect": "Awconnect",
             "shell": "AitherShell (standalone + monorepo)",
             "adk": "aither-adk (this package)",
             "desktop": "AitherDesktop + Veil + packages",
@@ -2643,11 +2643,11 @@ def cmd_x_session(args) -> int:
     stored in the fleet's local vault. This never handles a password: it takes an
     ALREADY logged-in session — exported from a browser you are signed into — and
     hands it to the fleet's verify-and-store endpoint, which proves it is live
-    before persisting it. The AitherConnect extension does the same thing with a
+    before persisting it. The Awconnect extension does the same thing with a
     single click; this is the headless/operator path.
 
     Export a state file with any of:
-      * the AitherConnect sidepanel "Sync X session" (no file needed — it POSTs
+      * the Awconnect sidepanel "Sync X session" (no file needed — it POSTs
         directly), or
       * `playwright open --save-storage=x_state.json x.com` after logging in, or
       * any tool that writes a Playwright storage_state JSON.
@@ -4224,7 +4224,7 @@ def cmd_onboard(args):
         print("  pip install aither-adk          # CLI + SDK (this package)")
         print("  winget install Aitherium.Desktop # Native desktop app (Windows)")
         print("  brew install --cask aither-desktop  # Desktop (macOS)")
-        print("  Chrome Web Store: AitherConnect  # Browser extension")
+        print("  Chrome Web Store: Awconnect  # Browser extension")
         print()
 
         if openclaw_detected and not aither_integrated:
@@ -12699,7 +12699,7 @@ def _register_commands(sub):
     d_addons.add_argument("--tenant", help="Tenant slug for federation registration")
 
     # aither deploy connect
-    d_connect = deploy_sub.add_parser("connect", help="AitherConnect browser extension")
+    d_connect = deploy_sub.add_parser("connect", help="Awconnect browser extension")
     d_connect.add_argument("--api-key", help="AITHER_API_KEY (or set env var)")
     d_connect.add_argument("--dry-run", action="store_true", help="Show what would happen")
 
@@ -13096,7 +13096,7 @@ def _register_commands(sub):
     grid_rm_mesh_p.add_argument("node_id", help="Node id or name to deregister")
 
     # adk approvals — decide the permission cards blocking federated agents.
-    # Same cards as the portal tray and the AitherConnect popup; approving here
+    # Same cards as the portal tray and the Awconnect popup; approving here
     # clears them there.
     appr_p = sub.add_parser(
         "approvals",

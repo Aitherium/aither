@@ -218,13 +218,13 @@ moment that is most confusing.
 ### Optional: linking to an account
 
 Everything above runs with no account. If you *want* secrets on two machines,
-session sync, or the AitherConnect browser extension, that plane exists and is
+session sync, or the Awconnect browser extension, that plane exists and is
 strictly opt-in:
 
 ```bash
 adk login              # browser device flow
 adk secret sync        # bidirectional, vault-backed
-adk deploy connect     # AitherConnect browser extension
+adk deploy connect     # Awconnect browser extension
 ```
 
 Nothing is initiated for you and nothing leaves the machine until you run one of
@@ -300,5 +300,5 @@ Then `pip install aither-adk aither-pack-myapp` and the pack is discovered autom
 
 ---
 
-sha256 `4e7b54e7a9f15a64d63c8207dc866b0bb94a452b0e4f59db367f870fa4075110`  
+sha256 `62e4954140907392bc4d7679b454650b58da9fc9bd201f8fae2794bdc75d1c77`  
 Built from `v3.5.0` (adk 3.5.0). [All packs](../packs.md)

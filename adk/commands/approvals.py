@@ -6,7 +6,7 @@ The card sits pending until a human decides, and approval mints a one-time
 bearer (``a2ag_…``) that the requester replays as ``X-A2A-Grant``.
 
 This is the terminal surface for that decision, alongside the portal tray and
-the AitherConnect popup. All three resolve the SAME cards from the same store,
+the Awconnect popup. All three resolve the SAME cards from the same store,
 so a card approved here disappears from the others.
 
 Target resolution (``--url`` > ``$AITHER_A2A_URL`` > ``https://127.0.0.1:8766``).

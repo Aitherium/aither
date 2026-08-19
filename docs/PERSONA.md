@@ -136,7 +136,7 @@ result = await agent.tool("persona_mute_output", {"muted": false})
 # Returns: {sent: true/false, muted: false}
 ```
 
-## Integration with AitherConnect (Self-Hosted)
+## Integration with Awconnect (Self-Hosted)
 
 When running a self-hosted agent pack on your machine:
 

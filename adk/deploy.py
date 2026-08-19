@@ -1,7 +1,7 @@
 """aither deploy — Component deployment for the AitherOS ecosystem.
 
 Deploy individual components (Ollama, vLLM, AitherNode, core stack, full stack)
-or companion apps (AitherConnect, AitherDesktop) from public GitHub releases.
+or companion apps (Awconnect, AitherDesktop) from public GitHub releases.
 
 Usage (via CLI):
     aither deploy ollama                   # Install + pull models for your GPU
@@ -12,7 +12,7 @@ Usage (via CLI):
     aither deploy core                     # Core services (Node, Pulse, Watch, Genesis)
     aither deploy full                     # Full AitherOS stack (~55 containers)
     aither deploy full --profile chat-full # Specific chat profile
-    aither deploy connect                  # AitherConnect browser extension
+    aither deploy connect                  # Awconnect browser extension
     aither deploy desktop                  # AitherDesktop native app
     aither deploy stop node                # Stop a running deployment
 
@@ -2502,14 +2502,14 @@ def deploy_sovereign(
 
 
 # ===========================================================================
-# Component: AitherConnect (browser extension)
+# Component: Awconnect (browser extension)
 # ===========================================================================
 
 def deploy_connect(dry_run: bool = False, api_key_arg: Optional[str] = None) -> int:
-    """Download and extract the AitherConnect browser extension.
+    """Download and extract the Awconnect browser extension.
 
     The extension is downloaded from the latest GitHub release and extracted
-    to ~/.aither/AitherConnect/. Requires a valid Aitherium API key.
+    to ~/.aither/awconnect/. Requires a valid Aitherium API key.
 
     Args:
         dry_run: If True, show what would happen without executing.
@@ -2519,7 +2519,7 @@ def deploy_connect(dry_run: bool = False, api_key_arg: Optional[str] = None) -> 
         Exit code (0 = success, 1 = failure).
     """
     print()
-    print(bold("  AitherConnect Browser Extension"))
+    print(bold("  Awconnect Browser Extension"))
     print(dim("  Chrome extension for AitherOS integration"))
     print()
 
@@ -2531,14 +2531,14 @@ def deploy_connect(dry_run: bool = False, api_key_arg: Optional[str] = None) -> 
         print(f"  {yellow('DRY RUN -- no changes will be made')}\n")
 
     total_steps = 3
-    connect_url = f"{GITHUB_RELEASES}/AitherConnect.zip"
-    dest_dir = AITHER_DIR / "AitherConnect"
+    connect_url = f"{GITHUB_RELEASES}/Awconnect.zip"
+    dest_dir = AITHER_DIR / "Awconnect"
 
     # -- Step 1: Verify release asset exists ----------------------------------
     step(1, total_steps, "Checking release asset")
 
     if not dry_run and not _url_exists(connect_url):
-        err("AitherConnect.zip not found in the latest GitHub release")
+        err("Awconnect.zip not found in the latest GitHub release")
         print()
         print(f"  This usually means a release hasn't been cut yet.")
         print(f"  Check releases: {cyan('https://github.com/Aitherium/AitherOS/releases')}")
@@ -2547,7 +2547,7 @@ def deploy_connect(dry_run: bool = False, api_key_arg: Optional[str] = None) -> 
         info(f"Would verify: {connect_url}")
 
     # -- Step 2: Download + extract -------------------------------------------
-    step(2, total_steps, "Downloading AitherConnect")
+    step(2, total_steps, "Downloading Awconnect")
 
     if dry_run:
         info(f"Would download: {connect_url}")
@@ -2555,7 +2555,7 @@ def deploy_connect(dry_run: bool = False, api_key_arg: Optional[str] = None) -> 
     else:
         data = _download_bytes(connect_url)
         if data is None:
-            err("Failed to download AitherConnect")
+            err("Failed to download Awconnect")
             print()
             print(f"  Check releases: {cyan('https://github.com/Aitherium/AitherOS/releases')}")
             return 1
@@ -2595,7 +2595,7 @@ def deploy_connect(dry_run: bool = False, api_key_arg: Optional[str] = None) -> 
     print(f"  For Edge: use {cyan('edge://extensions')} (same steps)")
     print()
     if not dry_run:
-        info(f"{green(bold('AitherConnect downloaded!'))}")
+        info(f"{green(bold('Awconnect downloaded!'))}")
     return 0
 
 
@@ -3581,7 +3581,7 @@ def cmd_deploy_component(args) -> int:
         print(f"    {bold('fleet-refresh')} Rebuild all lib-baking Python images + safe rolling recreate")
         print(f"    {bold('addons')}     Self-hosted addon services (Qdrant, RAG, etc.)")
         print(f"    {bold('grid')}    Grid distributed (GPU + Mac + cluster)")
-        print(f"    {bold('connect')}    AitherConnect browser extension")
+        print(f"    {bold('connect')}    Awconnect browser extension")
         print(f"    {bold('desktop')}    AitherDesktop native application")
         print(f"    {bold('stop')}       Stop a running deployment")
         print()

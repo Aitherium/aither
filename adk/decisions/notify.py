@@ -252,14 +252,14 @@ def open_card_window(card_id: str) -> Optional[str]:
     return None
 
 
-# ── webhook fan-out (AitherConnect / Relay / portal) ────────────────────────────
+# ── webhook fan-out (Awconnect / Relay / portal) ────────────────────────────
 
 
 def _webhook_post(card: DecisionCard, open_count: int) -> Optional[str]:
     """Best-effort POST to a local fan-out endpoint.
 
     Points at the harness daemon by default, which is what AitherShell, the portal
-    app and AitherConnect all read. A failure here is normal (the daemon is often
+    app and Awconnect all read. A failure here is normal (the daemon is often
     down) and must be reported as skipped rather than treated as an outage.
     """
     url = os.getenv("AITHER_DECISIONS_WEBHOOK", "").strip()

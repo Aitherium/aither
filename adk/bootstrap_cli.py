@@ -5,7 +5,7 @@ Installs, in dependency order, whichever of the five client products are request
   1. aither-adk[shell,platform,node]  — this SDK + extras (pip; also brings AitherNode)
   2. AitherShell CLI                  — npm ``@aitherium/shell-cli`` (if Node present)
   3. AitherNode                       — MCP gateway (verified; ships via the [node] extra)
-  4. AitherConnect                    — federation bundle (setup hint / wizard)
+  4. Awconnect                    — federation bundle (setup hint / wizard)
   5. AitherZero public stack          — heavy; opt-in via ``--with-stack`` (delegates to
                                         ``adk setup --stack``)
 
@@ -129,7 +129,7 @@ def _step_node(ctx: _Ctx) -> StepResult:
 
 
 def _step_connect(ctx: _Ctx) -> StepResult:
-    # AitherConnect is a federation bundle set up via the shell install wizard (device-flow
+    # Awconnect is a federation bundle set up via the shell install wizard (device-flow
     # auth + endpoint register). That flow is interactive, so we do NOT run it unattended —
     # verify the entry point exists and hand the user the exact command.
     if ctx.dry_run:

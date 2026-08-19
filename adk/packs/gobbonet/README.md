@@ -158,13 +158,13 @@ moment that is most confusing.
 ### Optional: linking to an account
 
 Everything above runs with no account. If you *want* secrets on two machines,
-session sync, or the AitherConnect browser extension, that plane exists and is
+session sync, or the Awconnect browser extension, that plane exists and is
 strictly opt-in:
 
 ```bash
 adk login              # browser device flow
 adk secret sync        # bidirectional, vault-backed
-adk deploy connect     # AitherConnect browser extension
+adk deploy connect     # Awconnect browser extension
 ```
 
 Nothing is initiated for you and nothing leaves the machine until you run one of

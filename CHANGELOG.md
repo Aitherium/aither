@@ -790,7 +790,7 @@ All new capabilities are exported lazily from the top-level `adk` namespace.
 
 ## [2.17.0] - 2026-07-05
 
-### Added — Headscale mesh transport + local Qdrant + AitherConnect onboarding
+### Added — Headscale mesh transport + local Qdrant + Awconnect onboarding
 
 - **Headscale NAT-friendly mesh transport.** When raw WireGuard UDP:51820 is not
   viable (customer boxes behind NAT, corporate firewalls, CGNAT), `adk mesh join
@@ -812,7 +812,7 @@ All new capabilities are exported lazily from the top-level `adk` namespace.
 ### Documentation
 
 - **Self-hosting runbook.** New `docs/SELF_HOSTING.md` covers deploying AitherOS
-  on customer infrastructure with Qdrant + mesh + AitherConnect onboarding.
+  on customer infrastructure with Qdrant + mesh + Awconnect onboarding.
 - **Mesh transport constraints documented.** Raw WireGuard requires public
   UDP:51820 endpoint (cloud instances, dedicated hardware); Headscale for
   NAT'd networks. Noted in CLI help and module docstrings.
@@ -1746,7 +1746,7 @@ tools); paid tiers unlock the *scale* capabilities via portal.aitherium.com.
 - Streaming inference -- SSE passthrough for /v1/chat/completions with stream=true
 - Auth proxy routes -- /v1/auth/register, /v1/auth/login, /v1/auth/me
 - Billing proxy -- /v1/billing/balance through gateway
-- AitherConnect Elysium fallback -- cloud inference when local Genesis is down
+- Awconnect Elysium fallback -- cloud inference when local Genesis is down
 - AitherDesktop Elysium fallback -- third-tier chat fallback after Node
 
 ### Infrastructure

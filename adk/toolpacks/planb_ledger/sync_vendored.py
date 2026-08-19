@@ -7,7 +7,7 @@ and asserted by ``test_planb_vendored_in_sync``.
 
 Why a generator plus an assertion, rather than trusting a one-time copy: an
 artifact with no build step and no drift check is how a mirror silently rots
-(the AitherConnect bonsai-worker case). Copies made by hand diverge; copies
+(the Awconnect bonsai-worker case). Copies made by hand diverge; copies
 made by a script that nothing re-runs diverge more quietly.
 
 Run: python adk/toolpacks/planb_ledger/sync_vendored.py [--check]

@@ -196,7 +196,7 @@ class SetupPlugin(SlashCommand):
 | `/setup desktop` | Install AitherDesktop (system tray + hotkeys) |
 | `/setup node` | Start AitherNode (MCP/tooling hub) via Docker |
 | `/setup zero` | Bootstrap AitherZero PowerShell automation |
-| `/setup connect` | Install AitherConnect (SDK + `aither` shell + MCP) |
+| `/setup connect` | Install Awconnect (SDK + `aither` shell + MCP) |
 | `/setup connect --remote` | Cloud thin client — auth + route API/MCP/inference to the cloud (laptop) |
 | `/setup vllm` | Deploy vLLM + KVCache for local inference |
 | `/setup aitherium` | Full platform bootstrap (all of the above) |
@@ -577,7 +577,7 @@ class SetupPlugin(SlashCommand):
     # ─── Connect ──────────────────────────────────────────────────────────
 
     async def _setup_connect(self, args: List[str], ctx: Dict[str, Any]) -> str:
-        """Install AitherConnect: the SDK + the `aither` shell + MCP wiring.
+        """Install Awconnect: the SDK + the `aither` shell + MCP wiring.
 
         With ``--remote`` (or ``--cloud``) this configures a thin client that
         authenticates to the Aitherium cloud and routes inference + API + MCP
@@ -588,7 +588,7 @@ class SetupPlugin(SlashCommand):
             /setup connect --no-node    # skip the optional local Docker node
         """
         remote = "--remote" in args or "--cloud" in args
-        lines = ["🔧 **Installing AitherConnect**" + (" (cloud)" if remote else "") + "\n"]
+        lines = ["🔧 **Installing Awconnect**" + (" (cloud)" if remote else "") + "\n"]
 
         repo = _find_repo_root()
         pip = shutil.which("pip") or shutil.which("pip3")
@@ -653,7 +653,7 @@ class SetupPlugin(SlashCommand):
 
         # ── 5. Next steps ──
         lines.append("\n---")
-        lines.append("🚀 **AitherConnect ready!** Next:")
+        lines.append("🚀 **Awconnect ready!** Next:")
         if remote:
             lines.append(f"  1. `aither login`                       — authorize this device at {CLOUD_PORTAL_URL}")
             lines.append("  2. `aither mcp setup --mode remote`     — wire Claude Code/Cursor to your workspace")
@@ -760,7 +760,7 @@ class SetupPlugin(SlashCommand):
         lines.append(result)
 
         # Phase 2: Shell + SDK
-        lines.append("\n━━━ Phase 2: AitherConnect (SDK + Shell) ━━━")
+        lines.append("\n━━━ Phase 2: Awconnect (SDK + Shell) ━━━")
         result = await self._setup_connect(args, ctx)
         lines.append(result)
 

@@ -626,7 +626,7 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
 
     # ── decision cards ────────────────────────────────────────────────────────
     # The card store is on local disk, but the DAEMON is what makes it reachable
-    # from anywhere: aitherium.com, AitherConnect, a phone through the tunnel and
+    # from anywhere: aitherium.com, Awconnect, a phone through the tunnel and
     # the CLI all read this one endpoint, so a card raised by a background agent
     # is answerable from whichever surface the owner happens to be looking at.
     #
@@ -727,7 +727,7 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
 
         Until this existed the daemon could list, read, answer and cancel cards but not
         create one — the raise path was `adk decide ask` on the owner's own machine.
-        Every other surface (AitherShell, the portal, AitherConnect, Relay, Room, and
+        Every other surface (AitherShell, the portal, Awconnect, Relay, Room, and
         genesis's `/api/v1/decisions` proxy) could therefore SHOW a card and none could
         raise one, so "an agent anywhere reaches its owner" was not expressible. The
         genesis proxy was already written against this route; without it that proxy

@@ -179,7 +179,7 @@ def describe_capabilities() -> dict:
 
 
 def account_surface() -> dict:
-    """The OPTIONAL account plane: secrets, lockbox, sync, AitherConnect.
+    """The OPTIONAL account plane: secrets, lockbox, sync, Awconnect.
 
     Everything here is opt-in and stays off until the user runs `adk login`.
     That is not a limitation to work around — GobboNet's whole promise is that
@@ -193,7 +193,7 @@ def account_surface() -> dict:
 
         adk login              browser device flow (portal.aitherium.com)
         adk secret sync        bidirectional secrets, vault-backed
-        adk deploy connect     the AitherConnect browser extension
+        adk deploy connect     the Awconnect browser extension
         adk onboard            interactive: detect, configure, integrate
     """
     import importlib

@@ -4,7 +4,7 @@ Sibling of :mod:`adk.session_sync`. Where session-sync pushes conversation
 history, settings-sync keeps the agent's *configuration* (LLM backend choice,
 enabled packs, safe config prefs, external MCP servers) in step with the user's
 profile on portal.aitherium.com — so the same settings follow the user across
-devices and into the AitherConnect browser extension.
+devices and into the Awconnect browser extension.
 
 Decision (locked with the owner): **the portal profile is the source of truth.**
 
