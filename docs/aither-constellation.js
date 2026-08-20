@@ -23,11 +23,25 @@
 
   var HOST = "https://aitherium.github.io/";
   var REPOS = [
-    { id: "awgit",         label: "awgit",         blurb: "semantic VCS — code nodes, not lines" },
-    { id: "AitherZero",    label: "AitherZero",    blurb: "infrastructure automation" },
-    { id: "aither-adk",    label: "aither-adk",    blurb: "agent development kit" },
-    { id: "aitherkvcache", label: "aitherkvcache", blurb: "KV cache + weight mirror" },
-    { id: "aither-skills", label: "aither-skills", blurb: "portable agent skills" }
+    { id: "awdk", label: "awdk", blurb: "Build AI agent fleets — 3 lines, any backend,..." },
+    { id: "awskills", label: "awskills", blurb: "Portable agent skills — self-contained..." },
+    { id: "awm", label: "awm", blurb: "A portable, scoped agent memory" },
+    { id: "awnode", label: "awnode", blurb: "A lightweight local gateway — bridges your..." },
+    { id: "awgraph", label: "awgraph", blurb: "A semantic code graph for agents — AST +..." },
+    { id: "awgit", label: "awgit", blurb: "Semantic version control on top of git —..." },
+    { id: "awseal", label: "awseal", blurb: "Sign an artifact so a stranger can verify it" },
+    { id: "awshare", label: "awshare", blurb: "Publish an artifact and fetch it back verified" },
+    { id: "awnest", label: "awnest", blurb: "Prove there is a human before you let them..." },
+    { id: "awnboard", label: "awnboard", blurb: "A front gate you can put in front of..." },
+    { id: "awnix", label: "awnix", blurb: "A Linux you can hand to an agent — immutable..." },
+    { id: "awrecover", label: "awrecover", blurb: "Labelled snapshots with an all-or-nothing..." },
+    { id: "awrelay", label: "awrelay", blurb: "Portable agent messaging — findings, alerts,..." },
+    { id: "awmail", label: "awmail", blurb: "Give an agent an email address — send, and..." },
+    { id: "awfind", label: "awfind", blurb: "A portable search client — query, results,..." },
+    { id: "awbrowse", label: "awbrowse", blurb: "A portable browser client — navigate,..." },
+    { id: "aitherkvcache", label: "aitherkvcache", blurb: "Near-optimal KV cache quantization for LLM..." },
+    { id: "AitherZero", label: "AitherZero", blurb: "PowerShell 7+ automation framework —..." },
+    { id: "AitherConnect", label: "AitherConnect", blurb: "Browser extension — federated AI search, page..." }
   ];
 
   var CSS = [
