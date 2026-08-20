@@ -27,6 +27,7 @@
     { id: "awskills", label: "awskills", blurb: "Portable agent skills — self-contained..." },
     { id: "awm", label: "awm", blurb: "A portable, scoped agent memory" },
     { id: "awnode", label: "awnode", blurb: "A lightweight local gateway — bridges your..." },
+    { id: "awrun", label: "awrun", blurb: "A priority-aware queue and dispatcher for..." },
     { id: "awgraph", label: "awgraph", blurb: "A semantic code graph for agents — AST +..." },
     { id: "awgit", label: "awgit", blurb: "Semantic version control on top of git —..." },
     { id: "awseal", label: "awseal", blurb: "Sign an artifact so a stranger can verify it" },
