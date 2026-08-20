@@ -907,7 +907,7 @@ This repo is one piece of a connected set. All public, MIT/BSL-licensed:
 Built by [Aitherium](https://aitherium.com).
 <!-- aitherium-ecosystem:end -->
 
-<!-- aither-ecosystem:start GENERATED from AitherOS/config/ecosystem.yaml by AitherOS/dev/tools/publish_ecosystem_surfaces.py. Edits here are overwritten; change the registry instead. -->
+<!-- aither-ecosystem:start GENERATED from the ecosystem registry. Edits here are overwritten; change the registry instead. -->
 
 ## The aw family
 
