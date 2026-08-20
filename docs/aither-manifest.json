@@ -1,22 +1,17 @@
 {
   "schemaVersion": "1",
-  "name": "aither-adk",
-  "description": "Agent Development Kit \u2014 build, run and ship agents against the Aitherium platform or your own models.",
-  "url": "https://aitherium.github.io/aither-adk/",
-  "repository": "https://github.com/Aitherium/aither-adk",
-  "kind": "sdk",
-  "language": "Python",
-  "license": "Apache-2.0",
-  "metrics": {
-    "modules": {
-      "value": 521,
-      "as_of": "2026-08-10T08:33:23Z"
-    },
-    "tests": {
-      "value": 211,
-      "as_of": "2026-08-10T08:33:23Z"
-    }
-  },
-  "generated_at": "2026-08-10T08:33:23Z",
-  "version": "v3.1.0"
+  "name": "awdk",
+  "description": "Build AI agent fleets — 3 lines, any backend, local or cloud.",
+  "url": "https://aitherium.github.io/awdk/",
+  "repository": "https://github.com/Aitherium/awdk",
+  "kind": "runtime",
+  "status": "public",
+  "adopt": "Point it at a backend you already pay for and run one agent loop.",
+  "pairs_with": [
+    "awskills",
+    "awm",
+    "awnode",
+    "awrun"
+  ],
+  "includes": []
 }
