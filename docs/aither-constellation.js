@@ -36,13 +36,19 @@
     { id: "awnboard", label: "awnboard", blurb: "A front gate you can put in front of..." },
     { id: "awnix", label: "awnix", blurb: "A Linux you can hand to an agent — immutable..." },
     { id: "awrecover", label: "awrecover", blurb: "Labelled snapshots with an all-or-nothing..." },
+    { id: "awkno", label: "awkno", blurb: "The man page for the Aither World — every..." },
     { id: "awrelay", label: "awrelay", blurb: "Portable agent messaging — findings, alerts,..." },
     { id: "awmail", label: "awmail", blurb: "Give an agent an email address — send, and..." },
     { id: "awfind", label: "awfind", blurb: "A portable search client — query, results,..." },
     { id: "awbrowse", label: "awbrowse", blurb: "A portable browser client — navigate,..." },
     { id: "aitherkvcache", label: "aitherkvcache", blurb: "Near-optimal KV cache quantization for LLM..." },
     { id: "AitherZero", label: "AitherZero", blurb: "PowerShell 7+ automation framework —..." },
-    { id: "AitherConnect", label: "AitherConnect", blurb: "Browser extension — federated AI search, page..." }
+    { id: "AitherConnect", label: "AitherConnect", blurb: "Browser extension — federated AI search, page..." },
+    { id: "awreason", label: "awreason", blurb: "A portable reasoning client — sessions,..." },
+    { id: "awrecurse", label: "awrecurse", blurb: "Answer a question over a context far larger..." },
+    { id: "awprism", label: "awprism", blurb: "Turn a failure into ranked hypotheses — and..." },
+    { id: "awrepl", label: "awrepl", blurb: "A REPL an agent can actually use — state that..." },
+    { id: "awresearch", label: "awresearch", blurb: "Ask a research question, get a cited report..." }
   ];
 
   var CSS = [
