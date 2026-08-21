@@ -72,7 +72,7 @@ class ProfileError(RuntimeError):
 def _repo_root_candidates() -> list[Path]:
     here = Path(__file__).resolve()
     candidates = [
-        # .../<repo>/aither-adk/adk/harnesses/models.py -> parents[3] == repo root
+        # .../<repo>/awdk/adk/harnesses/models.py -> parents[3] == repo root
         here.parents[3],
         here.parents[2],
         Path.cwd(),

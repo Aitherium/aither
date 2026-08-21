@@ -1,6 +1,6 @@
 """AitherRoom binary launcher — download and run the compiled Room service.
 
-The binary is published as a GitHub Release asset on Aitherium/aither-adk
+The binary is published as a GitHub Release asset on Aitherium/awdk
 (tag: room-cli-v*). `adk up` downloads the platform-appropriate
 binary on first use, verifies its SHA256 checksum, caches it in ~/.aither/bin/,
 and supervises it as a native process.
@@ -18,7 +18,7 @@ import stat
 import sys
 from pathlib import Path
 
-_REPO = "Aitherium/aither-adk"
+_REPO = "Aitherium/awdk"
 _CACHE_DIR = Path.home() / ".aither" / "bin"
 
 _PLATFORM_BINARY = {

@@ -1346,7 +1346,7 @@ def _find_repo_root() -> str:
         return any(os.path.isfile(os.path.join(path, m)) for m in markers)
 
     # Check common locations. Drive roots are DISCOVERED rather than hardcoded —
-    # this list used to end with a literal "D:/AitherOS-Fresh", one developer's
+    # this list used to end with a literal absolute drive path, one developer's
     # drive layout shipped to every pip install.
     from adk.shell._repo_roots import candidate_repo_roots
 
@@ -1878,7 +1878,7 @@ def _agents_proxy(args):
     """Invoke `adk agent <args>` resiliently.
 
     Resolution order:
-      1. `adk` on PATH (installed via `pip install aither-platform` or `aither-adk`)
+      1. `adk` on PATH (installed via `pip install aither-platform` or `awdk`)
       2. `python -m aither_adk.cli agent ...` (internal package)
       3. `python -m adk.cli agent ...` (legacy top-level package)
     Returns the subprocess exit code via SystemExit so click sees the right code.
@@ -2608,7 +2608,7 @@ def scope(tier, ide, project_dir):
 @click.option("--port", type=int, default=8182,
               help="HTTP port for the MCP server (default: 8182)")
 def node(mode, port):
-    """Start a local AitherNode MCP server.
+    """Start a local awnode MCP server.
 
     proxy mode: Forwards tool calls to mcp.aitherium.com (needs aither login).
     standalone mode: Basic local dev tools only (no account needed).
@@ -2724,13 +2724,13 @@ def mcp_remove(name):
 def doctor(emit_json: bool, timeout: float):
     """End-to-end health check (license, portal, backends).
 
-    Delegates to ``aithernode doctor`` when available; otherwise runs an
+    Delegates to ``awnode doctor`` when available; otherwise runs an
     in-process version. Use this whenever paid features misbehave to find
     out which surface is degraded.
     """
-    # Try aithernode first — it has the canonical implementation
+    # Try awnode first — it has the canonical implementation
     try:
-        from aithernode.cli import _doctor as _node_doctor
+        from awnode.cli import _doctor as _node_doctor
         sys.exit(asyncio.run(_node_doctor(emit_json=emit_json, timeout=timeout)))
     except ImportError:
         pass
@@ -2757,15 +2757,15 @@ def doctor(emit_json: bool, timeout: float):
 
     if emit_json:
         print(json.dumps({"checks": {k: {"status": v[0], "detail": v[1]} for k, v in checks.items()},
-                           "note": "aithernode not installed — fallback mode"}, indent=2))
+                           "note": "awnode not installed — fallback mode"}, indent=2))
     else:
-        print("AitherShell Doctor (fallback — install aithernode for full checks)")
+        print("AitherShell Doctor (fallback — install awnode for full checks)")
         print("=" * 60)
         glyph = {"ok": "[OK]  ", "warn": "[WARN]", "fail": "[FAIL]"}
         for name, (status, detail) in checks.items():
             print(f"  {glyph.get(status, '[?]   ')} {name:<16} {detail}")
 
-    # ─── Phase 2: AitherNode /mcp/tools (catches standalone vs full mode + tool count)
+    # ─── Phase 2: awnode /mcp/tools (catches standalone vs full mode + tool count)
     node_url = os.environ.get("AITHER_NODE_URL", "http://localhost:8090")
     try:
         with httpx.Client(timeout=timeout) as c:
@@ -2773,13 +2773,13 @@ def doctor(emit_json: bool, timeout: float):
         if mt.status_code == 200:
             data = mt.json()
             label = f"{data.get('mode','?')} mode, {data.get('available_modules','?')}/{data.get('total_modules','?')} tools"
-            checks["aithernode_mcp"] = ("ok", label)
+            checks["awnode_mcp"] = ("ok", label)
         elif mt.status_code == 503:
-            checks["aithernode_mcp"] = ("warn", "tool registry degraded")
+            checks["awnode_mcp"] = ("warn", "tool registry degraded")
         else:
-            checks["aithernode_mcp"] = ("warn", f"HTTP {mt.status_code}")
+            checks["awnode_mcp"] = ("warn", f"HTTP {mt.status_code}")
     except Exception as exc:
-        checks["aithernode_mcp"] = ("warn", f"unreachable: {type(exc).__name__}")
+        checks["awnode_mcp"] = ("warn", f"unreachable: {type(exc).__name__}")
 
     # ─── Phase 3: model recipe state
     from pathlib import Path
@@ -2790,7 +2790,7 @@ def doctor(emit_json: bool, timeout: float):
     )
 
     if not emit_json:
-        for name in ("aithernode_mcp", "model_recipe"):
+        for name in ("awnode_mcp", "model_recipe"):
             status, detail = checks[name]
             print(f"  {glyph.get(status, '[?]   ')} {name:<16} {detail}")
 

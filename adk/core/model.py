@@ -85,7 +85,7 @@ _PRIORITY_ENV_KEYS = (
 def auto_backend(model: str | None = None) -> ModelBackend:
     """Pick the best available backend in priority order.
 
-    Order (same as :mod:`aithernode`):
+    Order (same as :mod:`awnode`):
 
     1. ``AITHER_BACKEND`` env override
     2. Genesis (``AITHER_URL`` set and reachable) — slice B will probe
@@ -96,7 +96,7 @@ def auto_backend(model: str | None = None) -> ModelBackend:
     7. Ollama (``OLLAMA_HOST`` set, default ``http://localhost:11434``)
 
     This call **does not** make network probes. It only inspects env vars.
-    A real reachability probe lands in :mod:`aithernode` in slice B.
+    A real reachability probe lands in :mod:`awnode` in slice B.
 
     Raises :class:`RuntimeError` if nothing is configured.
     """

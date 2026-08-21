@@ -1,6 +1,6 @@
 """MCP bridge — connect ADK agents to AitherOS tools via mcp.aitherium.com.
 
-LAYER: Enterprise client bridge for AitherOS MCP gateway and AitherNode.
+LAYER: Enterprise client bridge for AitherOS MCP gateway and awnode.
 ROLE: Provides full authentication (ACTA billing, Identity tokens, external
        agent keys), token balance tracking, and tool discovery/invocation.
        NOT a generic MCP adapter — specific to AitherOS platform.
@@ -26,7 +26,7 @@ Auth flow for external developers:
     tools = await bridge.list_tools()  # filtered by tier
     result = await bridge.call_tool("explore_code", {"query": "..."})
 
-Auth flow for local AitherNode:
+Auth flow for local awnode:
     bridge = MCPBridge(mcp_url="http://localhost:8080")
     # No auth needed for local — tools available directly
 """
@@ -426,7 +426,7 @@ class MCPBridge:
         tools = await bridge.list_tools()
         result = await bridge.call_tool("explore_code", {"query": "agent dispatch"})
 
-        # Simple mode (local AitherNode, no auth needed)
+        # Simple mode (local awnode, no auth needed)
         bridge = MCPBridge(mcp_url="http://localhost:8080")
         tools = await bridge.list_tools()
 
@@ -508,7 +508,7 @@ class MCPBridge:
                 "params": {
                     "protocolVersion": "2025-03-26",
                     "capabilities": {},
-                    "clientInfo": {"name": "aither-adk", "version": "3.x"},
+                    "clientInfo": {"name": "awdk", "version": "3.x"},
                 },
                 "id": self._next_id(),
             },

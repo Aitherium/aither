@@ -8,7 +8,7 @@ Commands:
 ReleaseDate: "2026-08-07"
 Installers:
 - Architecture: x64
-  InstallerUrl: https://github.com/Aitherium/aither-adk/releases/download/shell-v1.16.0/aither-shell-win64.exe
+  InstallerUrl: https://github.com/Aitherium/awdk/releases/download/shell-v1.16.0/aither-shell-win64.exe
   InstallerSha256: DD000FC290DA8C5A58629973EAF810EC391E04048ADD0DCA7DF56DC765FBBE3F
 ManifestType: installer
 ManifestVersion: 1.12.0

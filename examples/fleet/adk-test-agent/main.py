@@ -9,7 +9,7 @@ a debugging/development aid for ADK developers. Run it to verify:
 4. Federation connects to a running AitherOS instance (optional)
 
 Usage:
-    cd aither-adk/examples/fleet/adk-test-agent
+    cd awdk/examples/fleet/adk-test-agent
     python main.py
 
     # Verify:

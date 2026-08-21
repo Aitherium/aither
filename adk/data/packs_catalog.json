@@ -398,7 +398,7 @@
       "name": "Deep Research",
       "type": "service_pack",
       "version": "1.0.0",
-      "description": "Cited multi-source research analyst \u2014 multi-engine web search, scholarly (arXiv/PubMed/Crossref/SemanticScholar), SEC/GitHub/Wikidata, Wayback recovery, a compounding knowledge graph, and exported cited reports (MD/PDF/DOCX). Built on aither-adk; runs managed or BYO-key. Also an MCP server.",
+      "description": "Cited multi-source research analyst \u2014 multi-engine web search, scholarly (arXiv/PubMed/Crossref/SemanticScholar), SEC/GitHub/Wikidata, Wayback recovery, a compounding knowledge graph, and exported cited reports (MD/PDF/DOCX). Built on awdk; runs managed or BYO-key. Also an MCP server.",
       "tier": "enterprise",
       "category": "agents",
       "tags": [

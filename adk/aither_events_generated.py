@@ -3,7 +3,7 @@
 Source of truth: AitherOS/lib/core/AitherEventSpine.py
 Regenerate:      python AitherOS/dev/tools/gen_event_protocol_ts.py
 
-aither-adk ships to PyPI and cannot import the AitherOS monorepo, so the pillar
+awdk ships to PyPI and cannot import the AitherOS monorepo, so the pillar
 vocabulary is mirrored here instead. check_event_protocol_parity.py (AE004) re-runs
 the generator and fails if this file drifts.
 """

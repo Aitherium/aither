@@ -7,10 +7,10 @@ WebStorm, …) over the **Agent Client Protocol (ACP v2)** and **A2A**.
 
 | Surface | How |
 |---|---|
-| **ACP (chat with an agent)** | Spawns `adk acp serve --name <agent>` (the aither-adk ACP server, stdio JSON-RPC v2) and drives the full session lifecycle: `initialize`, `session/new`, `session/prompt`, `session/resume` (the human-in-the-loop approval gate), `session/cancel`, `session/close`, `session/list`. |
-| **A2A (message a remote agent)** | Sends a signed `message/send` over HTTP to a remote agent's `/a2a` endpoint, using the caller agent's Ed25519 keypair (`~/.aither/agent_key.<name>.pem`) — the same wire aither-adk's Python `a2a_client` produces, so the mesh trusts it. |
+| **ACP (chat with an agent)** | Spawns `adk acp serve --name <agent>` (the awdk ACP server, stdio JSON-RPC v2) and drives the full session lifecycle: `initialize`, `session/new`, `session/prompt`, `session/resume` (the human-in-the-loop approval gate), `session/cancel`, `session/close`, `session/list`. |
+| **A2A (message a remote agent)** | Sends a signed `message/send` over HTTP to a remote agent's `/a2a` endpoint, using the caller agent's Ed25519 keypair (`~/.aither/agent_key.<name>.pem`) — the same wire awdk's Python `a2a_client` produces, so the mesh trusts it. |
 
-Requires the `aither-adk` CLI on PATH (`adk acp serve`).
+Requires the `awdk` CLI on PATH (`adk acp serve`).
 
 ## Build
 
@@ -41,7 +41,7 @@ Install the built `build/libs/*.zip` via *Settings → Plugins → ⚙ → Insta
   → `session/new` → `session/list` all succeed; server log lines interleaved in
   the stdio stream are skipped, not misread as protocol errors.
 - `Ed25519Public` (RFC 8032 public derivation) matches the canonical test
-  vector and aither-adk's cryptography-based derivation.
+  vector and awdk's cryptography-based derivation.
 
 The IntelliJ UI shell (`ui/`, `OpenAitherAction`) compiles against the IntelliJ
 Platform SDK — run the Gradle build above to compile it.

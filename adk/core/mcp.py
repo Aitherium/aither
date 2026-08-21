@@ -2,12 +2,12 @@
 
 LAYER: Minimal generic JSON-RPC adapter for any MCP server.
 ROLE: Bridges ANY MCP server's tools into ADK's Tool/Capability system.
-      NOT platform-specific — works with AitherNode, external MCP servers, etc.
+      NOT platform-specific — works with awnode, external MCP servers, etc.
       No authentication/billing/caching — pure protocol translation.
 
 See also: adk.mcp — enterprise client for AitherOS MCP gateway with auth/billing.
 
-Lets any agent call tools hosted by an MCP server (AitherNode, an external
+Lets any agent call tools hosted by an MCP server (awnode, an external
 MCP server, or anything else that speaks the Model Context Protocol over
 HTTP JSON-RPC).
 
@@ -24,7 +24,7 @@ The bridge issues two JSON-RPC calls at construction:
 Each remote tool becomes a :class:`Tool` instance whose ``schema()`` mirrors
 the MCP advertisement and whose ``call()`` proxies via HTTP.
 
-Requires the optional ``httpx`` extra (``pip install 'aither-adk[full]'``).
+Requires the optional ``httpx`` extra (``pip install 'awdk[full]'``).
 """
 
 from __future__ import annotations
@@ -58,7 +58,7 @@ class MCPClient:
             import httpx
         except ImportError as e:  # pragma: no cover - optional dep
             raise MCPError(
-                "MCP bridge requires httpx. Install with: pip install 'aither-adk[full]'"
+                "MCP bridge requires httpx. Install with: pip install 'awdk[full]'"
             ) from e
         payload = {
             "jsonrpc": "2.0",

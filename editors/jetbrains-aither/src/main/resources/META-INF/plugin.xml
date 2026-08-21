@@ -7,13 +7,13 @@
     Full <b>A2A</b> + <b>ACP</b> integration from JetBrains.
     <ul>
       <li><b>ACP (Agent Client Protocol v2)</b> — spawns <code>adk acp serve --agent &lt;name&gt;</code>
-          (the aither-adk ACP server) and drives the agent over stdio JSON-RPC: chat prompts,
+          (the awdk ACP server) and drives the agent over stdio JSON-RPC: chat prompts,
           session list/resume/close, and the <code>session/request_permission</code> human-in-the-loop
           approval gate.</li>
       <li><b>A2A (Agent-to-Agent)</b> — send signed messages to any other AitherOS agent
           (<code>send_message</code> / <code>invoke_skill</code>) over the mesh.</li>
     </ul>
-    Requires the <code>aither-adk</code> CLI on PATH (<code>adk acp serve</code>).
+    Requires the <code>awdk</code> CLI on PATH (<code>adk acp serve</code>).
     ]]></description>
 
     <depends>com.intellij.modules.platform</depends>

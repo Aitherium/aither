@@ -1,7 +1,7 @@
 # ============================================================================
 # ARC Brain — installable agent spec (build_agent_from_spec)
 # ============================================================================
-# Consumed by aither-adk adk.bootstrap.generic_agent.build_agent_from_spec:
+# Consumed by awdk adk.bootstrap.generic_agent.build_agent_from_spec:
 #   name            -> agent name
 #   identity        -> load_identity(name) (optional; bare-persona fallback ok)
 #   prompts         -> PromptBridge.resolve (inline text or .md/.txt refs, base

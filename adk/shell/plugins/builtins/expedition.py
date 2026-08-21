@@ -22,6 +22,7 @@ Aliases: /exp, /expeditions
 Layer 6 of the .EXPEDITIONS 10-layer surface (owner: atlas).
 """
 
+import asyncio
 import os
 from typing import Any, Dict, List, Optional
 
@@ -95,6 +96,17 @@ class ExpeditionPlugin(SlashCommand):
     )
     category: str = "orchestration"
 
+    def __init__(self) -> None:
+        # Explicit, because the dataclass base assigns
+        # `self.name = ""` and shadows the class attribute above —
+        # the instance then registers under the empty string and is
+        # overwritten by the next plugin to do the same.
+        super().__init__(
+            name='expedition',
+            description='Project orchestration — plan, execute, gate, steer, and ratchet',
+            aliases=['exp', 'expeditions'],
+        )
+
     async def run(self, args: List[str], ctx: Dict[str, Any]) -> Optional[str]:
         if not args:
             return self.get_help()
@@ -112,6 +124,8 @@ class ExpeditionPlugin(SlashCommand):
             "steer": self._steer,
             "cancel": self._cancel,
             "harnesses": self._harnesses,
+            "watch": self._watch,
+            "open": self._open,
             "ratchet": self._ratchet,
             "help": lambda a, c: self.get_help(),
         }
@@ -155,6 +169,51 @@ class ExpeditionPlugin(SlashCommand):
             if key in r:
                 lines.append(f"  {key}: {r[key]}")
         return "\n".join(lines)
+
+    async def _watch(self, args: List[str], ctx: Dict[str, Any]) -> str:
+        """Poll status until the expedition leaves a running state.
+
+        Ported from `expedition_status.py`, which offered this and `open` and
+        could never run: it imported `ShellContext` from `adk.shell`, a name
+        that exists nowhere in the package, so the module raised at import and
+        the loader swallowed it at DEBUG. Everything else that file did was
+        already here, which is why only these two came across.
+        """
+        if not args:
+            return "Usage: /expedition watch <id> [poll-seconds]"
+        exp_id = args[0]
+        try:
+            interval = max(2, int(args[1])) if len(args) > 1 else 10
+        except ValueError:
+            return f"poll-seconds must be a number, got {args[1]!r}"
+        # Bounded. An unbounded watch inside a shell is a command you cannot
+        # get out of, and the caller can always run it again.
+        polls = 60
+        seen: List[str] = []
+        for _ in range(polls):
+            try:
+                r = await _api_get(f"/expedition/{exp_id}/status")
+            except Exception as e:  # noqa: BLE001
+                seen.append(f"Cannot reach Genesis: {e}")
+                return "\n".join(seen)
+            state = r.get("status", "?")
+            line = (f"{state}  tasks {r.get('tasks_complete', '?')}/"
+                    f"{r.get('tasks_total', '?')}  gates {r.get('open_gates', '?')}")
+            if not seen or seen[-1] != line:
+                seen.append(line)
+            if state in ("complete", "completed", "failed", "cancelled"):
+                seen.append(f"finished: {state}")
+                return "\n".join(seen)
+            await asyncio.sleep(interval)
+        seen.append(f"still running after {polls} polls — run "
+                    f"`/expedition status {exp_id}` to check again")
+        return "\n".join(seen)
+
+    async def _open(self, args: List[str], ctx: Dict[str, Any]) -> str:
+        """The portal URL for an expedition."""
+        if not args:
+            return "Usage: /expedition open <id>"
+        return f"https://portal.aitherium.com/workspace/expeditions/{args[0]}"
 
     async def _tasks(self, args: List[str], ctx: Dict[str, Any]) -> str:
         if not args:

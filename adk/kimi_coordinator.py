@@ -3,7 +3,7 @@ Kimi-K3 Mesh RPC Coordinator Planner
 ====================================
 
 Pure planning functions for deploying Kimi-K3 across AitherNet mesh nodes via
-llama.cpp RPC backend. Stage S2 of the aither-adk split_inference toolpack.
+llama.cpp RPC backend. Stage S2 of the awdk split_inference toolpack.
 
 Public API:
     NodeBudget: dataclass for node resource budget

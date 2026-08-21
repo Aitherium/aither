@@ -5,7 +5,7 @@
 ## Install
 
 ```
-pip install aither-adk
+pip install awdk
 ```
 
 ## Quick Start — Local Agent
@@ -86,7 +86,7 @@ agents = await ely.discover_agents(capability="code")
 
 ## Links
 
-- PyPI: https://pypi.org/project/aither-adk/
+- PyPI: https://pypi.org/project/awdk/
 - GitHub: https://github.com/Aitherium/aither
 - Full docs: https://demo.aitherium.com/llms-full.txt
 - MCP tools: https://demo.aitherium.com/llms.txt

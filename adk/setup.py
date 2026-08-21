@@ -166,6 +166,25 @@ async def _detect_gpu() -> GPUInfo:
                 nums = re.findall(r"(\d+)", line)
                 if nums:
                     gpu.vram_mb = int(nums[-1]) // (1024 * 1024) if int(nums[-1]) > 1_000_000 else int(nums[-1])
+        # The product NAME matters as much as the capacity: the model resolver
+        # matches a known device by name first and only falls back to a
+        # vendor+capacity heuristic. Leaving it empty cost an RX 7900 XTX its
+        # exact device record (bandwidth, overlays) while still reporting a
+        # plausible tier -- a quieter wrong answer than no answer.
+        rc_n, out_n, _ = await _run(["rocm-smi", "--showproductname", "--csv"])
+        if rc_n == 0 and out_n.strip():
+            for line in out_n.splitlines():
+                if "card" not in line.lower():
+                    continue
+                parts = [c.strip() for c in line.split(",")]
+                cand = next(
+                    (c for c in reversed(parts)
+                     if c and not c.lower().startswith("card") and c.lower() != "n/a"),
+                    "",
+                )
+                if cand:
+                    gpu.name = cand
+                    break
         return gpu
 
     # Apple Silicon
@@ -291,8 +310,18 @@ def _select_profile(gpu: GPUInfo, ram_gb: float) -> str:
         return "cpu_only"
     if gpu.vendor == "apple":
         return "apple_silicon"
+    # AMD tiers. This used to `return "amd"` unconditionally, ABOVE the capacity
+    # ladder, so a 24GB RX 7900 XTX and a 6GB RX 580 resolved to one profile --
+    # whose static model list is the same two entries `cpu_only` gets. The ODS
+    # resolver runs first and is VRAM-aware, so the wrong answer only surfaced
+    # when ODS was unavailable: a silent downgrade on the fallback path, which is
+    # where nobody looks.
     if gpu.vendor == "amd":
-        return "amd"
+        if gpu.vram_mb >= 20000:
+            return "amd_high"
+        if gpu.vram_mb >= 12000:
+            return "amd"
+        return "amd_low"
     # NVIDIA tiers
     if gpu.vram_mb >= 48000:
         return "nvidia_ultra"
@@ -319,7 +348,12 @@ def _recommended_models(profile: str) -> list[str]:
         "nvidia_high": ["nemotron-orchestrator-8b", "deepseek-r1:14b", "nomic-embed-text", "gemma4:27b"],
         "nvidia_ultra": ["nemotron-orchestrator-8b", "deepseek-r1:32b", "nomic-embed-text", "gemma4:27b"],
         "apple_silicon": ["gemma4:4b", "deepseek-r1:8b", "nomic-embed-text"],
-        "amd": ["gemma4:4b", "nomic-embed-text"],
+        "amd_low": ["gemma4:4b", "nomic-embed-text"],
+        "amd": ["nemotron-orchestrator-8b", "deepseek-r1:8b", "nomic-embed-text"],
+        "amd_high": [
+            "nemotron-orchestrator-8b", "deepseek-r1:14b",
+            "nomic-embed-text", "gemma4:27b",
+        ],
         "standard": ["nemotron-orchestrator-8b", "deepseek-r1:14b", "nomic-embed-text", "gemma4:27b"],
         "workstation": ["nemotron-orchestrator-8b", "deepseek-r1:32b", "nomic-embed-text", "gemma4:27b"],
         "server": ["nemotron-orchestrator-8b", "deepseek-r1:32b", "nomic-embed-text", "gemma4:27b"],

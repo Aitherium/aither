@@ -22,6 +22,7 @@ tags: [github, actions, ci, runners, self-hosted, devops, free]
 
 mcp_tools:
   - "runners_*"
+  - "relay_*"
 
 # Empty -> the loader file-loads this pack's __init__.py by path and calls
 # register(). No monorepo dotted path; the pack ships standalone in the wheel.

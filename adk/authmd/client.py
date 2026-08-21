@@ -517,7 +517,7 @@ class AuthMdClient:
         """One call: discover -> pick a method -> register -> [ceremony] -> access_token.
 
         This is the method every CONSUMER actually wants (AitherBrowser's 401 handler,
-        AitherNode's tool dispatch). The step-by-step methods above remain for callers
+        awnode's tool dispatch). The step-by-step methods above remain for callers
         that need to drive the ceremony themselves.
 
         Scopes are NOT passed in. They come from the target service's PRM

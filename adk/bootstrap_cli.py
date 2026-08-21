@@ -2,8 +2,10 @@
 
 Installs, in dependency order, whichever of the five client products are requested:
 
-  1. aither-adk[shell,platform,node]  — this SDK + extras (pip; also brings AitherNode)
+  1. awdk[shell,platform,node]  — this SDK + extras (pip; also brings awnode)
   2. AitherShell CLI                  — npm ``@aitherium/shell-cli`` (if Node present)
+  3. awnode                       — MCP gateway (verified; ships via the [node] extra)
+  4. AitherConnect                    — federation bundle (setup hint / wizard)
   3. AitherNode                       — MCP gateway (verified; ships via the [node] extra)
   4. Awconnect                    — federation bundle (setup hint / wizard)
   5. AitherZero public stack          — heavy; opt-in via ``--with-stack`` (delegates to
@@ -74,9 +76,9 @@ def _run(ctx: _Ctx, cmd: list, product: str, what: str) -> StepResult:
 
 
 def _repo_root():
-    """The aither-adk source root if we're running from a checkout, else None."""
+    """The awdk source root if we're running from a checkout, else None."""
     from pathlib import Path
-    here = Path(__file__).resolve().parent.parent  # adk/ -> aither-adk/
+    here = Path(__file__).resolve().parent.parent  # adk/ -> awdk/
     return here if (here / "pyproject.toml").exists() else None
 
 
@@ -99,8 +101,8 @@ def _step_adk(ctx: _Ctx) -> StepResult:
             return StepResult("adk", "failed", tail[-1] if tail else f"exit {proc.returncode}")
         except Exception as exc:  # noqa: BLE001
             return StepResult("adk", "failed", str(exc))
-    cmd = [sys.executable, "-m", "pip", "install", "-U", f"aither-adk[{_ADK_EXTRAS}]"]
-    return _run(ctx, cmd, "adk", f"pip install aither-adk[{_ADK_EXTRAS}]")
+    cmd = [sys.executable, "-m", "pip", "install", "-U", f"awdk[{_ADK_EXTRAS}]"]
+    return _run(ctx, cmd, "adk", f"pip install awdk[{_ADK_EXTRAS}]")
 
 
 def _step_shell(ctx: _Ctx) -> StepResult:
@@ -115,16 +117,16 @@ def _step_shell(ctx: _Ctx) -> StepResult:
 
 
 def _step_node(ctx: _Ctx) -> StepResult:
-    # AitherNode ships with the [node] extra (installed in _step_adk); verify it imports.
+    # awnode ships with the [node] extra (installed in _step_adk); verify it imports.
     if ctx.dry_run:
         print("  [dry-run] node: would verify `import mcp` (installed via [node] extra)")
         return StepResult("node", "planned", "verify mcp import")
     code = "import mcp, starlette; print(getattr(mcp,'__version__','?'))"
-    res = _run(ctx, [sys.executable, "-c", code], "node", "verify AitherNode (mcp/starlette)")
+    res = _run(ctx, [sys.executable, "-c", code], "node", "verify awnode (mcp/starlette)")
     if res.status == "failed":
         # try to repair by installing the extra explicitly
-        return _run(ctx, [sys.executable, "-m", "pip", "install", "aither-adk[node]"],
-                    "node", "install aither-adk[node]")
+        return _run(ctx, [sys.executable, "-m", "pip", "install", "awdk[node]"],
+                    "node", "install awdk[node]")
     return res
 
 

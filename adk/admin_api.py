@@ -1,4 +1,4 @@
-"""Admin/settings API for the built-in aither-adk web console.
+"""Admin/settings API for the built-in awdk web console.
 
 Every route lives under ``/admin/*`` and is registered on the same FastAPI app
 that ``adk/server.py`` builds. ``/admin`` is deliberately NOT in the server's

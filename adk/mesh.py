@@ -2,7 +2,7 @@
 
 A fresh node joins the overlay network via a proven bootstrap flow —
 now as a first-class, cross-platform SDK capability so `adk mesh join` works
-anywhere aither-adk runs:
+anywhere awdk runs:
 
   1. generate a WireGuard keypair
   2. POST /v1/mesh/onboard to the Conductor → receive an ``overlay_ip``

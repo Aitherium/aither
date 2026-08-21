@@ -34,6 +34,8 @@ Python Plugin Format:
 """
 
 import importlib.util
+import sys
+
 import yaml
 from pathlib import Path
 from typing import Dict, List, Optional, Any
@@ -185,7 +187,22 @@ class PluginRegistry:
             if not spec or not spec.loader:
                 return
             module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
+            # Register BEFORE executing. `@dataclass` resolves its own field
+            # types through `sys.modules.get(cls.__module__).__dict__`, so a
+            # plugin module that is executed without being registered raises
+            # `AttributeError: 'NoneType' object has no attribute '__dict__'`
+            # from inside dataclasses — a traceback that names neither the
+            # plugin nor the real cause, and which the `except` below then
+            # swallowed at DEBUG. Any plugin defining a dataclass was
+            # unloadable; bundle.py was the one that did.
+            sys.modules[spec.name] = module
+            try:
+                spec.loader.exec_module(module)
+            except BaseException:
+                # Do not leave a half-executed module behind for the next
+                # importer to find and believe.
+                sys.modules.pop(spec.name, None)
+                raise
 
             # Find all SlashCommand subclasses in the module
             for attr_name in dir(module):

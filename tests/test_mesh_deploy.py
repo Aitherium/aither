@@ -137,7 +137,7 @@ class TestAgentBindingSelfHostedMesh:
         """_mesh_ip_candidate extracts overlay IP from invoke_url."""
         import sys
         import os
-        # Add AitherOS to path if running from aither-adk
+        # Add AitherOS to path if running from awdk
         aitheros_path = os.path.abspath(os.path.join(
             os.path.dirname(__file__), "..", "..", "AitherOS"))
         if aitheros_path not in sys.path:
@@ -162,7 +162,7 @@ class TestAgentBindingSelfHostedMesh:
         """self_hosted without reach=mesh rejects private IPs."""
         import sys
         import os
-        # Add AitherOS to path if running from aither-adk
+        # Add AitherOS to path if running from awdk
         aitheros_path = os.path.abspath(os.path.join(
             os.path.dirname(__file__), "..", "..", "AitherOS"))
         if aitheros_path not in sys.path:

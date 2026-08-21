@@ -42,6 +42,7 @@ from __future__ import annotations
 import functools
 import logging
 import os
+import sys
 from typing import Any, Callable, List, Tuple
 
 logger = logging.getLogger(__name__)
@@ -117,6 +118,21 @@ def guard_registry(tools: list) -> list:
 # Guard: take the awgit lease BEFORE the write, not at commit time.
 # ─────────────────────────────────────────────────────────────────────────────
 
+_WARNED: set[str] = set()
+
+
+def _warn_once(message: str) -> None:
+    """Say a thing once per process.
+
+    Once, not every call: a write-tool guard fires on every edit, and a warning that
+    repeats a hundred times is scrolled past exactly like one that never prints.
+    """
+    if message in _WARNED:
+        return
+    _WARNED.add(message)
+    print(f"[adk] WARNING: {message}", file=sys.stderr, flush=True)
+
+
 WRITE_TOOLS = {"write_file", "edit_file", "patch_file", "apply_patch", "create_file"}
 
 
@@ -142,7 +158,18 @@ def _awgit_lease_guard(tool_name: str, kwargs: dict) -> None:
     try:
         from awgit.leases import LeaseConflictError, LeaseRegistry, is_guarded
     except Exception:
-        return  # no awgit here (a customer machine) — nothing to enforce
+        # awgit is a DECLARED dependency now, so absence means something is wrong with
+        # the install rather than "this is a customer machine". Still degrade rather
+        # than refuse — a guard that blocks the agent teaches it to route around the
+        # tool — but SAY SO, once, because the silent version is the dangerous one:
+        # with no lease registry this guard becomes a no-op and concurrent edits get
+        # destroyed with no error, no log line, and nothing to notice.
+        _warn_once(
+            "awgit is not importable, so the write-lease guard is INERT. Concurrent "
+            "edits to the same file will overwrite each other silently. "
+            "Fix with: pip install awgit"
+        )
+        return
 
     from pathlib import Path
 

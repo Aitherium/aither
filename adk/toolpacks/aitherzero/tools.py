@@ -2,7 +2,7 @@
 
 The AitherZero surface is: a config.psd1 + bootstrap.ps1 that can provision bare-metal,
 on-prem, cloud, or hybrid infrastructure by driving a library of numbered PowerShell
-automation-scripts and playbooks. This pack lets an aither-adk agent MANAGE that surface:
+automation-scripts and playbooks. This pack lets an awdk agent MANAGE that surface:
 
   * Inventory   — az_inventory / az_describe_script read the script+playbook catalogue
                   (from the generated config-schema.json, itself AST-extracted from every
@@ -53,7 +53,7 @@ def _az_root(explicit: Optional[str] = None) -> Optional[Path]:
     if env:
         cands.append(Path(env))
     here = Path(__file__).resolve()
-    # This pack lives at <repo>/aither-adk/adk/toolpacks/aitherzero/tools.py.
+    # This pack lives at <repo>/awdk/adk/toolpacks/aitherzero/tools.py.
     for parent in list(here.parents):
         cands.append(parent / ".PRODUCTS" / ".AITHERZERO")
     for start in (Path.cwd(), here):

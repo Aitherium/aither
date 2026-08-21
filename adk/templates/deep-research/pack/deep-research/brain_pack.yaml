@@ -1,7 +1,7 @@
 # ============================================================================
 # Deep Research Agent — Brain Pack
 # ============================================================================
-# Applied by aither-adk (adk.pack_discovery). Turns a base AitherAgent into a
+# Applied by awdk (adk.pack_discovery). Turns a base AitherAgent into a
 # senior research analyst: plan -> search -> read -> cross-check -> synthesize
 # -> cite -> write report. Runs sign-in-free with the operator's own LLM key
 # (Anthropic / OpenAI / Codex-OAuth / local Ollama). Real-time memory +

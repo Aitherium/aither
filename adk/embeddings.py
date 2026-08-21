@@ -1,4 +1,4 @@
-"""Canonical, self-deploying embeddings provider for aither-adk.
+"""Canonical, self-deploying embeddings provider for awdk.
 
 ONE embedding provider for the whole SDK — every agent, fleet, and company brain
 that needs vectors resolves through here, so vectors are PORTABLE across scopes

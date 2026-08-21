@@ -2,7 +2,7 @@
 
 ## How we work here
 
-**Aither ADK** — the Python agent runtime the packs are built for — is one of several open repositories cut from the same
+**awdk** — the Python agent runtime the packs are built for — is one of several open repositories cut from the same
 system. They share one set of engineering rules, and those rules are published:
 
 ### 📖 [The Developer Codex](https://aitherium.github.io/aither-skills/codex.html) — read this first
@@ -53,9 +53,9 @@ something breaks
 
 - **[aitherium.com](https://aitherium.com)** — the system these repos are cut from
 - **[The Codex](https://aitherium.github.io/aither-skills/codex.html)** — the doctrine, in full
-- **[aither-skills](https://aitherium.github.io/aither-skills/)** — procedures
+- **[awskills](https://aitherium.github.io/awskills/)** — procedures
   an agent can load and run
-- **[Aither ADK](https://aitherium.github.io/aither-adk/)** — the Python agent runtime
+- **[awdk](https://aitherium.github.io/awdk/)** — the Python agent runtime
 - **[AitherZero](https://aitherium.github.io/AitherZero/)** — PowerShell automation
 - **[aither-kvcache](https://aitherium.github.io/aitherkvcache/)** — KV cache compression
 - **[The Blog](https://blog.aitherium.com)** — what we measured, and what it cost

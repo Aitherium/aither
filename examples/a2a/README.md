@@ -1,6 +1,6 @@
 # Build sick agents that speak **standard A2A**
 
-An `aither-adk` agent is a standard [A2A (Agent2Agent)](https://a2a-protocol.org)
+An `awdk` agent is a standard [A2A (Agent2Agent)](https://a2a-protocol.org)
 server out of the box. That means an agent you build here **drops straight into any
 A2A infrastructure** — Google's A2A, LangGraph/CrewAI A2A bridges, or a plain
 `curl` — with no Aitherium account, portal, or API key required. The Aitherium

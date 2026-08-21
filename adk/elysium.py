@@ -55,7 +55,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("adk.elysium")
 
-# Elysium endpoints — both route to AitherNode MCP Gateway
+# Elysium endpoints — both route to awnode MCP Gateway
 # gateway.aitherium.com = auth + billing + inference (unified)
 # mcp.aitherium.com = legacy inference-only path (still works)
 _GATEWAY_URL = "https://gateway.aitherium.com"

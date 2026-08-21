@@ -1,4 +1,4 @@
-"""Built-in tools — core capabilities that work WITHOUT AitherOS/AitherNode.
+"""Built-in tools — core capabilities that work WITHOUT AitherOS/awnode.
 
 These give agents real autonomy in standalone mode:
   - File I/O (read, write, edit, list, search)
@@ -7,7 +7,7 @@ These give agents real autonomy in standalone mode:
   - Web search/fetch (via DuckDuckGo + httpx)
   - Secrets store (local encrypted keyring, no AitherSecrets needed)
 
-When AitherNode is available, these are SUPPLEMENTED (not replaced) by the
+When awnode is available, these are SUPPLEMENTED (not replaced) by the
 449 MCP tools. Built-in tools always work offline.
 
 Usage:
@@ -1472,6 +1472,117 @@ def _init_graph_tools():
     """Lazily populate the graph category."""
     if not TOOL_CATEGORIES.get("graph"):
         TOOL_CATEGORIES["graph"] = _GRAPH_TOOLS
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Relay tools — the third of the aw family.
+#
+#   awgraph  what the code IS and what depends on what   (graph tools above)
+#   awgit    what CHANGED and who is editing it          (tool_guards lease guard)
+#   awrelay  who FOUND what and who still needs to hear it  (here)
+#
+# WHY THESE ARE BUILTINS RATHER THAN A PACK. An agent that finds something and
+# cannot tell anyone has done half a job. escalate_to_human already covers "I need
+# a DECISION"; this covers the far more common "here is what I found" — a different
+# act with a different audience, and until now adk had no way to perform it.
+#
+# The names match the MCP tool names exactly (relay_send / relay_history /
+# relay_channels) on purpose: an agent should not have to learn two vocabularies
+# for one system depending on whether it is running in-fleet or standalone.
+#
+# AUTH: the caller's own token, never a platform credential. awrelay ships publicly,
+# so an internal key would either fail for external callers or work for anyone who
+# reads the source. Same rule as the IRC gateway.
+# ─────────────────────────────────────────────────────────────────────────
+
+def _relay_client(nick: str | None = None):
+    """A RelayClient for this agent, or None when relay is not configured.
+
+    Imported lazily: adk declares awrelay, but an agent whose task never touches
+    messaging should not pay the import, and a missing package must degrade rather
+    than take every tool listing down with it.
+    """
+    try:
+        from awrelay.client import RelayClient
+    except Exception:
+        return None
+    base = os.getenv("AITHERRELAY_URL", "https://relay.aitherium.com/api/relay")
+    token = os.getenv("AITHER_RELAY_TOKEN") or os.getenv("AITHER_SESSION_BEARER")
+    return RelayClient(base, token=token, nick=nick or os.getenv("AITHER_AGENT_NAME"))
+
+
+def relay_channels() -> str:
+    """List the relay channels this agent can see.
+
+    Call before posting: joining a room that exists beats inventing one.
+    """
+    client = _relay_client()
+    if client is None:
+        return json.dumps({"error": "awrelay not available", "fix": "pip install awrelay"})
+    try:
+        return json.dumps(client.channels(), default=str)
+    except Exception as exc:
+        return json.dumps({"error": str(exc)})
+
+
+def relay_send(channel: str, text: str, kind: str = "FINDING",
+               payload: dict | None = None, correlation_id: str = "") -> str:
+    """Post a structured message to a relay channel, where humans can read it too.
+
+    Args:
+        channel: e.g. "#ops". Must exist — see relay_channels.
+        text: the human-readable summary. REQUIRED and not decoration: humans share
+            these rooms, and a message only a machine can read defeats the point.
+        kind: FINDING (a concrete result, self-contained enough to act on without
+            reading your session) | ALERT (something is WRONG) | MESSAGE | REQUEST
+            (ask another agent to act; pair with correlation_id) | STEER | ACK.
+        payload: structured data other agents can act on.
+        correlation_id: ties a REQUEST to its ACK, or a follow-up FINDING to the
+            original ask. Without it a reply cannot be matched to its question.
+    """
+    client = _relay_client()
+    if client is None:
+        return json.dumps({"error": "awrelay not available", "fix": "pip install awrelay"})
+    try:
+        from awrelay.envelope import Kind
+        try:
+            resolved = Kind[kind.upper()]
+        except KeyError:
+            # Name the valid set so the agent can retry, rather than silently
+            # downgrading its FINDING to an ordinary chat line.
+            return json.dumps({"error": f"unknown kind {kind!r}",
+                               "valid": [k.name for k in Kind]})
+        return json.dumps(client.send_text(
+            channel=channel, text=text, kind=resolved,
+            payload=payload or {}, correlation_id=correlation_id or None,
+        ), default=str)
+    except Exception as exc:
+        return json.dumps({"error": str(exc)})
+
+
+def relay_history(channel: str, limit: int = 30, envelopes_only: bool = False) -> str:
+    """Read recent messages from a channel.
+
+    envelopes_only=True returns just the structured envelopes, skipping human
+    chatter — useful when you want findings rather than conversation.
+    """
+    client = _relay_client()
+    if client is None:
+        return json.dumps({"error": "awrelay not available", "fix": "pip install awrelay"})
+    try:
+        return json.dumps(client.history(channel=channel, limit=limit,
+                                         envelopes_only=envelopes_only), default=str)
+    except Exception as exc:
+        return json.dumps({"error": str(exc)})
+
+
+_RELAY_TOOLS = [relay_channels, relay_send, relay_history]
+
+
+def _init_relay_tools():
+    """Lazily populate the relay category."""
+    if not TOOL_CATEGORIES.get("relay"):
+        TOOL_CATEGORIES["relay"] = _RELAY_TOOLS
 
 
 # ─────────────────────────────────────────────────────────────────────────

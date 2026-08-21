@@ -1,7 +1,7 @@
 """ADK Sync Engine — orchestrates three-way reconciliation for ~/.aither data.
 
 This engine syncs adk's own local memory/graph/session data with the cloud
-using the same three-way reconcile algorithm as AitherNode (drive_sync_core).
+using the same three-way reconcile algorithm as awnode (drive_sync_core).
 
 Adk's data directories:
   - ~/.aither/memory/* — persistent memory store (JSONL files)
@@ -45,7 +45,7 @@ _ACTIONKIND = None
 
 def _ensure_aitheros_path():
     """Inject AitherOS into sys.path if needed."""
-    adk_dir = Path(__file__).parent.parent.parent  # aither-adk/
+    adk_dir = Path(__file__).parent.parent.parent  # awdk/
     aitheros_dir = adk_dir.parent / "AitherOS"
     if aitheros_dir.is_dir() and str(aitheros_dir) not in sys.path:
         sys.path.insert(0, str(aitheros_dir))

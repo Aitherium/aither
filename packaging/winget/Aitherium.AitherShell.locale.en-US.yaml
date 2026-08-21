@@ -5,12 +5,12 @@ PackageVersion: 1.16.0
 PackageLocale: en-US
 Publisher: Aitherium
 PublisherUrl: https://aitherium.com
-PublisherSupportUrl: https://github.com/Aitherium/aither-adk/issues
+PublisherSupportUrl: https://github.com/Aitherium/awdk/issues
 Author: Aitherium
 PackageName: AitherShell
-PackageUrl: https://github.com/Aitherium/aither-adk
+PackageUrl: https://github.com/Aitherium/awdk
 License: BUSL-1.1
-LicenseUrl: https://github.com/Aitherium/aither-adk/blob/main/LICENSE
+LicenseUrl: https://github.com/Aitherium/awdk/blob/main/LICENSE
 Copyright: Copyright (c) Aitherium
 ShortDescription: Interactive terminal for AitherOS — chat with AI agents from your shell
 Description: |-
@@ -25,6 +25,6 @@ Tags:
 - cli
 - llm
 - terminal
-ReleaseNotesUrl: https://github.com/Aitherium/aither-adk/releases/tag/shell-v1.16.0
+ReleaseNotesUrl: https://github.com/Aitherium/awdk/releases/tag/shell-v1.16.0
 ManifestType: defaultLocale
 ManifestVersion: 1.12.0

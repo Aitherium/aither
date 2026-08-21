@@ -1,6 +1,6 @@
 """Offline tests for the pluggable voice engine (adk/voice.py).
 
-    cd aither-adk && python -m pytest tests/test_voice_backends.py -q
+    cd awdk && python -m pytest tests/test_voice_backends.py -q
 
 No network, no models, no keys — exercises the backend factory, the mock
 backend, and the VoiceClient facade.

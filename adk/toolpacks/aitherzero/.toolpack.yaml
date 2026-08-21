@@ -2,7 +2,7 @@ id: aitherzero
 name: AitherZero — Inventory, Config Generation & Automation Authoring
 version: 1.0.0
 description: >-
-  Self-service infrastructure provisioning surface for AitherZero. Lets an aither-adk agent
+  Self-service infrastructure provisioning surface for AitherZero. Lets an awdk agent
   inventory the numbered automation-scripts and playbooks, regenerate the config schema from
   any inventory (public OR a customer's private scripts), generate and validate a
   config.local.psd1, plan a playbook into ordered steps, and scaffold a new automation-script
@@ -29,7 +29,7 @@ mcp_server:
   tools: az_*
 
 skills:
-  - aitherzero   # aither-skills/skills/aitherzero.md — set up + use the config/provisioning surface
+  - aitherzero   # awskills/skills/aitherzero.md — set up + use the config/provisioning surface
 
 persona_fragments:
   - "AitherZero: you have az_* tools to manage the AitherZero self-service provisioning surface — a config.psd1 + bootstrap.ps1 that provisions bare-metal/on-prem/cloud/hybrid by driving numbered PowerShell automation-scripts and playbooks. The config is GENERATED from the script inventory (every param() block), so anyone who writes a pwsh automation-script extends AitherZero automatically. All tools return dicts (never raise); missing paths => {error, fix}, never anonymous fallback."

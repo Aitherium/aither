@@ -2,7 +2,7 @@
 """AitherADK Installer — cross-platform, auto-detecting setup for the Agent Development Kit.
 
 Detects OS, GPU hardware, VRAM, and CUDA version to select the best hardware profile.
-Installs aither-adk, checks for Ollama, and pulls recommended models.
+Installs awdk, checks for Ollama, and pulls recommended models.
 
 Usage:
     python install.py
@@ -759,12 +759,12 @@ def ollama_pull_model(model: str, dry_run: bool = False) -> bool:
 # ---------------------------------------------------------------------------
 
 def install_adk(dry_run: bool = False) -> bool:
-    """Install aither-adk via pip."""
+    """Install awdk via pip."""
     # Check if already installed
     try:
-        output = _run_cmd([sys.executable, "-m", "pip", "show", "aither-adk"])
-        if output and "Name: aither-adk" in output:
-            info("aither-adk is already installed")
+        output = _run_cmd([sys.executable, "-m", "pip", "show", "awdk"])
+        if output and "Name: awdk" in output:
+            info("awdk is already installed")
             return True
     except Exception:
         pass
@@ -777,19 +777,19 @@ def install_adk(dry_run: bool = False) -> bool:
         cmd = [sys.executable, "-m", "pip", "install", "-e", str(install_dir)]
         source = f"local ({install_dir})"
     else:
-        cmd = [sys.executable, "-m", "pip", "install", "aither-adk"]
+        cmd = [sys.executable, "-m", "pip", "install", "awdk"]
         source = "PyPI"
 
     if dry_run:
-        info(f"Would install aither-adk from {source}")
+        info(f"Would install awdk from {source}")
         detail(" ".join(cmd))
         return True
 
-    info(f"Installing aither-adk from {source} ...")
+    info(f"Installing awdk from {source} ...")
     try:
         result = subprocess.run(cmd, timeout=120)
         if result.returncode == 0:
-            info(green("aither-adk installed successfully"))
+            info(green("awdk installed successfully"))
             return True
         else:
             error("pip install failed")
@@ -1035,10 +1035,10 @@ def main() -> int:
         error("Install Python 3.10+ from https://python.org")
         return 1
 
-    # --- Step 5: Install aither-adk ---
-    step(5, TOTAL_STEPS, "Installing aither-adk")
+    # --- Step 5: Install awdk ---
+    step(5, TOTAL_STEPS, "Installing awdk")
     if not install_adk(dry_run=dry_run):
-        error("Failed to install aither-adk")
+        error("Failed to install awdk")
         return 1
 
     # --- Step 6: Check Ollama ---

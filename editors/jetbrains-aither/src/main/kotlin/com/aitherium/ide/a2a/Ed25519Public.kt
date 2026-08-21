@@ -11,7 +11,7 @@ import java.security.spec.PKCS8EncodedKeySpec
  * standard KeyFactory API). We derive it from the 32-byte seed with the standard
  * base-point scalar multiplication on the twisted Edwards curve (a = -1).
  *
- * Verified against aither-adk's cryptography-based derivation on 2026-08-08:
+ * Verified against awdk's cryptography-based derivation on 2026-08-08:
  * the derived 64-char public hex matches `private_key.public_key().public_bytes(
  * Encoding.Raw, PublicFormat.Raw).hex()`.
  */

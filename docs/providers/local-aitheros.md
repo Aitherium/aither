@@ -85,7 +85,7 @@ inert. You wait for the turn, then it appears quickly. Set
 `AITHER_BRIDGE_UPSTREAM_STREAM=1` to stream genuinely incremental text for
 tool-free requests only.
 
-## aither-adk
+## awdk
 
 Point ADK's router at MicroScheduler's OpenAI endpoint directly — ADK is
 OpenAI-shaped natively, so it needs no bridge:

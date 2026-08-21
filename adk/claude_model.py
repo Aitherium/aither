@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 _REPO_ROOT_CANDIDATES = [
-    Path(__file__).resolve().parents[1],               # aither-adk/ is one level up
+    Path(__file__).resolve().parents[1],               # awdk/ is one level up
     Path(__file__).resolve().parents[2],               # repo root if adk/ is nested
     Path(os.environ.get("AITHEROS_ROOT", "")).resolve() if os.environ.get("AITHEROS_ROOT") else None,
     Path.cwd(),                                         # fallback to cwd

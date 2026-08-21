@@ -1,6 +1,6 @@
 """Shared ACP v2 wire primitives: JSON-RPC 2.0 framing, update builders, enums.
 
-Both ACP directions in aither-adk speak the same JSON-RPC 2.0 wire over
+Both ACP directions in awdk speak the same JSON-RPC 2.0 wire over
 newline-delimited stdio (see :mod:`adk.stdio_compat` for the Windows-safe
 streams): :mod:`adk.acp` drives external ACP agents (client role) and
 :mod:`adk.acp_server` exposes an adk agent to editors (server role). This

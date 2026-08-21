@@ -306,7 +306,7 @@ class TestConversationIngestion:
     async def test_ingest_conversation(self, graph):
         count = await graph.ingest_conversation("sess1", [
             {"role": "user", "content": "How does the ServiceBridge work?"},
-            {"role": "assistant", "content": "ServiceBridge connects to AitherNode for auto-discovery."},
+            {"role": "assistant", "content": "ServiceBridge connects to awnode for auto-discovery."},
         ])
         assert count >= 1
 
@@ -454,7 +454,7 @@ class TestAgentGraphIntegration:
         from adk.graph_memory import GraphMemory
 
         resp = MagicMock()
-        resp.content = "The ServiceBridge connects to AitherNode for discovery."
+        resp.content = "The ServiceBridge connects to awnode for discovery."
         resp.model = "test"
         resp.tokens_used = 10
         resp.latency_ms = 50.0

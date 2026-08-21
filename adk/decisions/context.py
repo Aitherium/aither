@@ -307,7 +307,7 @@ def harvest_session(card: DecisionCard) -> ContextSource:
 
 def _gateway_url() -> str:
     # 127.0.0.1, never localhost: measured on this box, ::1 refuses after
-    # 2120 ms while IPv4 connects in 3 ms (CLAUDE.md, gate 1w / MCP001).
+    # 2120 ms while IPv4 connects in 3 ms.
     return os.getenv("AITHER_MCP_GATEWAY", "http://127.0.0.1:8182").rstrip("/")
 
 
@@ -443,7 +443,7 @@ def _self_test() -> int:
         transcript = Path(tmp) / "t.jsonl"
         transcript.write_text(json.dumps({"message": {"role": "assistant", "content": [
             {"type": "tool_use", "name": "Edit",
-             "input": {"file_path": "C:/AitherOS-Fresh/thing.py"}}]}}) + "\n",
+             "input": {"file_path": "C:/Projects/Example/thing.py"}}]}}) + "\n",
             encoding="utf-8")
         real = DecisionCard(id="d-test", title="t", source=DecisionSource(
             cwd=tmp, transcript=str(transcript)))

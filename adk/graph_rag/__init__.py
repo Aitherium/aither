@@ -1,4 +1,4 @@
-"""Graph-based RAG service-pack for aither-adk.
+"""Graph-based RAG service-pack for awdk.
 
 Ingest a corpus (Markdown / SQL / TypeScript) into an embedded knowledge graph,
 retrieve a *bounded subgraph* (facts + relations) instead of flat top-k, and

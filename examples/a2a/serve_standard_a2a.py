@@ -1,4 +1,4 @@
-"""Expose an aither-adk agent as a STANDARD A2A server.
+"""Expose an awdk agent as a STANDARD A2A server.
 
 Any A2A-compliant client (Google's a2a SDK, LangGraph/CrewAI A2A bridges, or a
 plain `curl`) can then discover this agent's card and drive it — no Aitherium
@@ -6,7 +6,7 @@ account, portal, or API key required. The Aitherium extensions (Ed25519 trust,
 fleet registry, remote `skills/invoke`) are opt-in and layered on top.
 
 Run:
-    pip install "aither-adk[server]"
+    pip install "awdk[server]"
     python serve_standard_a2a.py
     # then, from anywhere:
     curl http://localhost:8080/.well-known/agent-card.json

@@ -1,4 +1,4 @@
-"""Automated onboarding: turn your aither-adk agent into a Discord bot.
+"""Automated onboarding: turn your awdk agent into a Discord bot.
 
 ``adk onboard --discord`` walks a user through deploying their own agent as a
 self-service Discord bot. Every step is an automated check that can fail:
@@ -14,7 +14,7 @@ self-service Discord bot. Every step is an automated check that can fail:
   6. Optionally ``--run``: launch the bot (the built-in ``DiscordAdapter`` when
      entitled, else a hand-rolled ``discord.py`` client that works on any tier).
 
-This is the user-facing automation; ``aither-skills/tools/discord-agent-bot.py``
+This is the user-facing automation; ``awskills/tools/discord-agent-bot.py``
 is the standalone equivalent for when the SDK command isn't available.
 """
 
@@ -249,7 +249,7 @@ def onboard_discord(args) -> int:
     pack = getattr(args, "pack", None)
     do_run = bool(getattr(args, "run", False))
 
-    print("\n  Deploy your aither-adk agent as a Discord bot (automated)\n")
+    print("\n  Deploy your awdk agent as a Discord bot (automated)\n")
 
     # Step 1: install the pack the user chose.
     if pack and not getattr(args, "skip_pack_install", False):

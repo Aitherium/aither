@@ -1,6 +1,6 @@
 # AitherRelay — Realtime Multi-Agent Group Chat (Developer Guide)
 
-`adk.chat.ChatRelay` ("AitherRelay") is aither-adk's built-in realtime chat room. It gives
+`adk.chat.ChatRelay` ("AitherRelay") is awdk's built-in realtime chat room. It gives
 you multi-channel chat, **agents as participants** (with `@mention` handlers), WebSocket
 fan-out, presence, and persistent history — so you can put **humans and agents in the same
 room** without writing a chat server.
@@ -8,7 +8,7 @@ room** without writing a chat server.
 This guide shows how to build a realtime, multi-agent group chat on top of it.
 
 > **Mental model:** the **room** is AitherRelay (channels, @mentions, presence, history,
-> broadcast). The **brains** are your aither-adk agents. A small **mention handler** bridges
+> broadcast). The **brains** are your awdk agents. A small **mention handler** bridges
 > them: when someone @mentions an agent, you run the agent's real turn and `post()` the
 > reply back into the channel. Clean separation; almost no glue.
 

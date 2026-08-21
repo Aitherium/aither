@@ -1627,7 +1627,7 @@ self.addEventListener("message", async (e) => {
   function load() { status = "loading"; progress = 0; err = ""; ensureWorker().postMessage({ type: "load" }); render(); }
   function send(text) {
     text = text.trim(); if (!text || status === "generating") return;
-    const convo = [{ role: "system", content: "You are the aither-adk on-device helper. Be concise." }, ...msgs, { role: "user", content: text }];
+    const convo = [{ role: "system", content: "You are the awdk on-device helper. Be concise." }, ...msgs, { role: "user", content: text }];
     msgs.push({ role: "user", content: text }); streaming = ""; status = "generating";
     ensureWorker().postMessage({ type: "generate", messages: convo }); render();
   }

@@ -8,19 +8,19 @@ Do NOT deviate from these instructions -- they encode solutions to real failure 
 ## Critical Facts
 
 - The CLI command is `adk`, NOT `aither`. The `aither` command is a separate REPL.
-- The pip package is `aither-adk`. Install: `pip install aither-adk`
+- The pip package is `awdk`. Install: `pip install awdk`
 - Auto-detection works. `LLMRouter()` with no args finds vLLM, Ollama, or cloud backends.
 - All config lives in `~/.aither/` -- never set env vars manually unless told to.
 
 ## Step 1: Install
 
 ```bash
-pip install "aither-adk"
+pip install "awdk"
 adk --help
 ```
 
 Verify `adk --help` shows subcommands: init, setup, login, connect, run, status, whoami.
-If `adk` is not found, check `pip show aither-adk` and ensure your PATH includes pip scripts.
+If `adk` is not found, check `pip show awdk` and ensure your PATH includes pip scripts.
 
 ## Step 2: Check existing infrastructure
 
@@ -221,7 +221,7 @@ Check federation status: `adk connect`
 
 | I want to...              | Command / Code                                    |
 |---------------------------|---------------------------------------------------|
-| Install                   | `pip install aither-adk`                          |
+| Install                   | `pip install awdk`                          |
 | Check system              | `adk status`                                      |
 | Set up GPU inference      | `adk setup`                                       |
 | Login                     | `adk login`                                       |

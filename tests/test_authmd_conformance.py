@@ -32,7 +32,7 @@ import httpx
 import pytest
 
 # Add adk to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "aither-adk"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "awdk"))
 
 from adk.authmd.client import AuthMdClient, DiscoveredMetadata, Registration
 from adk.authmd.consent import ConsentRequiredError, ConsentHandler

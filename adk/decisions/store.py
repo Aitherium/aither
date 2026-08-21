@@ -184,6 +184,58 @@ class DecisionNote:
         )
 
 
+# ── decidability (DC008) ──────────────────────────────────────────────────────
+# A card exists to make an ask DECIDABLE. Two shapes defeat that, and both used to
+# be storable:
+#
+#   1. options that are STATUS, not choices ("both are running", "waiting on it").
+#      The owner reads them and has nothing to pick — the card pages a human to
+#      tell them a fact.
+#   2. a card labelled kind='info' that carries options anyway. `kind` only selects
+#      the popup HEADER (KIND_HEADER.get in popup.py) — the buttons render either
+#      way — while every rule below used to be guarded by kind == "decision". So
+#      the label alone bought a rendered chooser with no default_key and no status
+#      check: a decidability bypass that looked like a quieter card.
+#
+# So the rules key on CARRYING OPTIONS, never on the label. If the owner is shown
+# buttons, they are being asked to choose, whatever the card calls itself.
+
+_STATUS_ONLY = (
+    r"\b(?:is|are)\s+(?:both\s+|still\s+|currently\s+)?running\b",
+    r"\bthe only open items?\b",
+    r"\beverything else is\b",
+    r"\bevery other item\b",
+    r"\b(?:is|are)\s+(?:an?\s+)?in[- ]progress\b",
+    r"\bwaiting (?:on|for) (?:it|them|that|the run|completion)\b",
+    r"\b(?:watched\s+)?background run\b",
+)
+
+# Anchored to the START on purpose. An unanchored search exempted labels like
+# "I'll finish the merge, restart the worker, and report" — that is the AGENT's
+# future work described in passing, not an action the OWNER is being offered.
+_ACTION_VERB = re.compile(
+    r"^\s*(?:cancel|stop|kill|abort|retry|rerun|re-run|restart|merge|revert|roll ?back|"
+    r"deploy|publish|tag|delete|remove|approve|reject|skip|proceed|wait for|escalate|"
+    r"pause|resume|force|override|rebuild|redeploy)\b",
+    re.IGNORECASE,
+)
+_START_WITH = re.compile(r"^\s*start with:\s*", re.IGNORECASE)
+
+
+def _status_only_phrase(label: str) -> str | None:
+    """Return the status phrase making `label` undecidable, or None if it is a choice."""
+    text = _START_WITH.sub("", label or "")
+    if not text.strip():
+        return None
+    if _ACTION_VERB.search(text):
+        return None
+    for pattern in _STATUS_ONLY:
+        found = re.search(pattern, text, re.IGNORECASE)
+        if found:
+            return found.group(0)
+    return None
+
+
 @dataclass
 class DecisionCard:
     """A single thing an agent needs a human to decide, know, or unblock."""
@@ -399,16 +451,29 @@ class DecisionStore:
             raise DecisionError("two options share a key; the owner could not pick between them")
         if card.kind == "decision" and not card.options:
             raise DecisionError("a decision card with no options is prose — use kind='info'")
+        if card.kind == "info" and card.options:
+            raise DecisionError(
+                "an info card with options is a decision — the popup renders those buttons "
+                "regardless of kind, so use kind='decision' and satisfy its rules"
+            )
+        for opt in card.options:
+            phrase = _status_only_phrase(opt.label)
+            if phrase:
+                raise DecisionError(
+                    f"option {opt.key!r} states status, not a choice ({phrase!r}). A card "
+                    f"whose options the owner cannot pick between is a notification — "
+                    f"use kind='info' with no options"
+                )
         if card.default_key and not card.option(card.default_key):
             raise DecisionError(
                 f"default_key {card.default_key!r} is not one of the options "
                 f"({', '.join(o.key for o in card.options) or 'none'})"
             )
-        if card.kind == "decision" and not card.default_key:
+        if card.options and not card.default_key:
             # The default is what makes a card safe to ignore. Refusing to store a
             # card without one is what keeps that property true in practice.
             raise DecisionError(
-                "a decision card must declare default_key — 'what happens if the owner "
+                "a card offering options must declare default_key — 'what happens if the owner "
                 "never answers' is the field that makes the card safe to ignore"
             )
 

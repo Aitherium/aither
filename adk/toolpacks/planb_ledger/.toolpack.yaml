@@ -16,6 +16,7 @@ tags: [ledger, budgeting, offline-first, continuity, discord, bonsai, llamacpp, 
 
 mcp_tools:
   - "planb_*"
+  - "relay_*"
 
 # Empty -> the loader file-loads this pack's __init__.py by path and calls
 # register(). The pack ships standalone (relative imports only) — the same

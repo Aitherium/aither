@@ -89,6 +89,17 @@ class KnowledgePlugin(SlashCommand):
     description: str = "Knowledge RAG — document ingestion, querying, auditing, and auto-update"
     category: str = "data"
 
+    def __init__(self) -> None:
+        # Explicit, because the dataclass base assigns
+        # `self.name = ""` and shadows the class attribute above —
+        # the instance then registers under the empty string and is
+        # overwritten by the next plugin to do the same.
+        super().__init__(
+            name='knowledge',
+            description='Knowledge RAG — document ingestion, querying, auditing, and auto-update',
+            aliases=['kb', 'rag'],
+        )
+
     async def run(self, args: List[str], ctx: Dict[str, Any]) -> Optional[str]:
         if not args:
             return self.get_help()

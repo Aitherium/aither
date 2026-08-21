@@ -7,7 +7,7 @@ Exposes your agents at localhost:8080 with:
   - MCP tool server (other agents can call your tools)
 
 Setup:
-    pip install aither-adk
+    pip install awdk
     export AITHER_API_KEY=aither_sk_live_...
 
     # Single agent:

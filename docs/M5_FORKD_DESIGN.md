@@ -679,7 +679,7 @@ await ManagedAgentEndpointStore.for_tenant(tenant_id).register(
 ## File Structure
 
 ```
-aither-adk/
+awdk/
 ├── adk/
 │   ├── forkd_client.py          # ForkdClient, ChildSpec, ForkResult, ChildState
 │   ├── forkd_executor.py        # ForkdExecutor (strategy pattern)
@@ -813,7 +813,7 @@ class ForkResult:
 
 Run:
 ```bash
-cd aither-adk
+cd awdk
 python -m pytest tests/test_forkd_offline.py -v
 ```
 

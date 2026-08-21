@@ -11,7 +11,7 @@ import time
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Any, Callable
 
 from adk import coherence
 from adk.config import Config
@@ -465,7 +465,28 @@ class AitherAgent:
         self._context_mgr = None
         try:
             from adk.context import ContextManager
-            max_tokens = self.config.max_context or 8000
+            # `max_context: 0` is documented "let model decide" — so ASK the
+            # model instead of substituting 8000. Every OpenAI-compatible
+            # backend advertises its window (vLLM /v1/models max_model_len,
+            # llama.cpp /props n_ctx), and an agent that guesses is wrong in
+            # both directions silently: too small truncates context it was
+            # allowed to keep, too large makes the BACKEND truncate the answer
+            # with no error. Discovery also reads the advertised `root`, so a
+            # bare alias like `aither-orchestrator` still resolves to
+            # Nemotron-8B-AWQ-4bit — i.e. quantization and thinking-model
+            # status come from the endpoint rather than from a name.
+            max_tokens = self.config.max_context
+            if not max_tokens:
+                try:
+                    from adk.model_capabilities import discover
+                    caps = discover(
+                        getattr(self.config, "llm_base_url", "") or "",
+                        getattr(self.config, "model", "") or "",
+                    )
+                    max_tokens = caps.context_window
+                    logger.info("[capabilities] %s", caps.describe())
+                except Exception:
+                    max_tokens = 8000     # last resort, never 0 (0 = no limit)
             self._context_mgr = ContextManager(max_tokens=max_tokens)
         except Exception:
             pass
@@ -2830,7 +2851,39 @@ class AitherAgent:
             f"Complete the following task. Use available tools as needed. "
             f"Think step by step.\n\nTask: {task}"
         )
-        return await self.chat(task_prompt, **kwargs)
+        response = await self.chat(task_prompt, **kwargs)
+        self._report_task_outcome(task, response)
+        return response
+
+    def _report_task_outcome(self, task: str, response: Any) -> None:
+        """Offer this completed task to the platform's learning loop. OPT-IN.
+
+        Hooked on `run()` rather than `chat()` deliberately: a task has the
+        shape a training row wants (an instruction and a result), while ordinary
+        conversation turns do not -- hooking every turn would send far more of a
+        user's text for far less signal.
+
+        Does nothing unless the operator has switched reporting ON and set an
+        endpoint (see `adk.learning_report`; unset means off). Never raises:
+        telemetry must not be able to fail the work it reports on.
+        """
+        try:
+            from adk.learning_report import report_outcome
+
+            text = (getattr(response, "content", None)
+                    or getattr(response, "response", None) or "")
+            report_outcome(
+                task,
+                str(text),
+                agent_name=self.name,
+                # An SDK agent assembles its OWN system prompt, so unlike a
+                # remote peer it genuinely knows what the model was told. That
+                # is why these rows may claim the prompt was captured.
+                system_prompt=self.system_prompt,
+                success=not getattr(response, "error", None),
+            )
+        except Exception as exc:  # noqa: BLE001 - one lost row, never a failed run
+            logger.debug("learning report skipped: %s", exc)
 
     async def remember(self, key: str, value: str, category: str = "general"):
         """Store a value in the agent's persistent memory.

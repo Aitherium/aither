@@ -37,13 +37,13 @@ if (-not $python) {
     }
 }
 
-# Install aither-adk
+# Install awdk
 Write-Host
-Write-Host "Installing aither-adk..."
-& $python -m pip install --upgrade aither-adk
+Write-Host "Installing awdk..."
+& $python -m pip install --upgrade awdk
 
 Write-Host
-Write-Host "[OK] aither-adk installed" -ForegroundColor Green
+Write-Host "[OK] awdk installed" -ForegroundColor Green
 Write-Host
 
 # Run doctor

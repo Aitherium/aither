@@ -2,8 +2,8 @@
 
 WHY THIS EXISTS
     Four call sites in adk/shell each ended their candidate list with a hardcoded
-    ``D:/AitherOS-Fresh`` (and in one case ``C:/AitherOS-Fresh``). That is one
-    developer's drive layout, shipped to every ``pip install aither-adk`` — useless
+    an absolute drive path (and in one case a second drive letter). That is one
+    developer's drive layout, shipped to every ``pip install awdk`` — useless
     to everyone else and noise in a public package.
 
     The intent behind it was reasonable: "also look at the root of a drive". So do

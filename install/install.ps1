@@ -3,12 +3,12 @@
 AitherADK bootstrap installer (Windows) — no Python required.
 
 .DESCRIPTION
-    powershell -ExecutionPolicy ByPass -c "irm https://github.com/Aitherium/aither-adk/releases/latest/download/install.ps1 | iex"
+    powershell -ExecutionPolicy ByPass -c "irm https://github.com/Aitherium/awdk/releases/latest/download/install.ps1 | iex"
 
 What it does:
   1. Installs uv (Astral) if missing — uv brings its own Python, so a system
      Python is NOT required.
-  2. Installs aither-adk as a uv tool in an isolated environment (keeps
+  2. Installs awdk as a uv tool in an isolated environment (keeps
      `adk pack install` / provider extras / addons working — that's why this
      is a real Python env and not a frozen exe).
   3. Launches the first-run wizard (skip with $env:ADK_NO_WIZARD = '1').
@@ -35,10 +35,10 @@ if ($uv) {
     }
 }
 
-# -- 2. aither-adk -------------------------------------------------------------
-Say "Installing aither-adk (Python $PythonPin, isolated tool env)..."
-uv tool install --python $PythonPin --upgrade aither-adk
-if ($LASTEXITCODE -ne 0) { Fail 'uv tool install aither-adk failed' }
+# -- 2. awdk -------------------------------------------------------------
+Say "Installing awdk (Python $PythonPin, isolated tool env)..."
+uv tool install --python $PythonPin --upgrade awdk
+if ($LASTEXITCODE -ne 0) { Fail 'uv tool install awdk failed' }
 
 $toolBin = (uv tool dir --bin 2>$null); if (-not $toolBin) { $toolBin = "$env:USERPROFILE\.local\bin" }
 $env:Path = "$toolBin;$env:Path"
@@ -53,8 +53,8 @@ if ($userPath -notlike "*$toolBin*") {
     Say "Added $toolBin to your user PATH (new terminals will have 'adk')."
 }
 
-$installed = (uv tool list 2>$null | Select-String '^aither-adk').Line
-Say "Installed: $(if ($installed) { $installed } else { 'aither-adk' })"
+$installed = (uv tool list 2>$null | Select-String '^awdk').Line
+Say "Installed: $(if ($installed) { $installed } else { 'awdk' })"
 
 # -- 3. first-run wizard --------------------------------------------------------
 if ($env:ADK_NO_WIZARD -eq '1') {

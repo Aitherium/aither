@@ -1,6 +1,6 @@
 {
   "name": "aither-adk",
-  "version": "3.5.0",
+  "version": "3.7.0",
   "description": "AitherADK CLI \u2014 build AI agent fleets with any LLM backend",
   "bin": {
     "aither": "./bin/aither.js"
@@ -23,7 +23,7 @@
   "homepage": "https://aitherium.com",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Aitherium/aither-adk.git"
+    "url": "https://github.com/Aitherium/awdk.git"
   },
   "engines": {
     "node": ">=18.0.0"

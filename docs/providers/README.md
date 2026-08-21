@@ -1,8 +1,8 @@
-# Model providers — for Aither agents, aither-adk, and Claude Code
+# Model providers — for Aither agents, awdk, and Claude Code
 
 One page per provider, each covering the same three surfaces:
 
-1. **aither-adk agents** — `adk ask`, `adk up`, the daemon, agent packs.
+1. **awdk agents** — `adk ask`, `adk up`, the daemon, agent packs.
 2. **Claude Code** — pointing the coding agent itself at that model.
 3. **AitherOS services** — the platform-wide default for every internal caller.
 
@@ -40,7 +40,7 @@ thing `ANTHROPIC_BASE_URL` can point at. A provider serving OpenAI's
 `/v1/chat/completions` cannot back a Claude Code session directly — not "works
 with reduced features", but returns nothing usable.
 
-aither-adk is the opposite: its router is **OpenAI-shaped by default** and has a
+awdk is the opposite: its router is **OpenAI-shaped by default** and has a
 separate Anthropic provider. So a provider that is easy for ADK may need the
 bridge for Claude Code, and vice versa. Each doc says which.
 
@@ -75,7 +75,7 @@ Two more traps, both worth knowing before you debug anything:
 - **`ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` conflict** when both are set.
   The switcher writes only the latter and actively removes the former.
 
-## Configuring aither-adk
+## Configuring awdk
 
 ADK has first-class provider commands — prefer them over raw env vars, because
 they persist and sync to the vault:

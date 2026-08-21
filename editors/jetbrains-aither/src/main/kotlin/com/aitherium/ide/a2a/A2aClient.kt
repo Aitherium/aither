@@ -17,14 +17,14 @@ import java.time.Duration
 import java.util.Base64
 
 /**
- * A2A client — byte-compatible with aither-adk's `adk/a2a_client.py`.
+ * A2A client — byte-compatible with awdk's `adk/a2a_client.py`.
  *
  * Signs a JSON-RPC `message/send` request with the caller agent's Ed25519 keypair
- * (`~/.aither/agent_key.{name}.pem`, PKCS8 PEM — the same file aither-adk writes
+ * (`~/.aither/agent_key.{name}.pem`, PKCS8 PEM — the same file awdk writes
  * and reads) and POSTs it to `{invokeUrl}/a2a` with `X-Signature` /
  * `X-Public-Key` headers. Reusing the caller agent's keypair means the request
  * carries its registered A2A identity, so the mesh trusts it exactly as it would
- * trust aither-adk's own Python client.
+ * trust awdk's own Python client.
  */
 class A2aClient(
     private val keyDir: Path = Path.of(System.getProperty("user.home"), ".aither"),

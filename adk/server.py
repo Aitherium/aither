@@ -2131,7 +2131,7 @@ def create_app(
                 "message": "No LLM backend available. Set AITHER_API_KEY to use the gateway, or install Ollama locally.",
                 "demo": "https://demo.aitherium.com",
                 "gateway": "https://gateway.aitherium.com",
-                "docs": "https://github.com/Aitherium/aither-adk/blob/main/docs/GETTING_STARTED.md",
+                "docs": "https://github.com/Aitherium/awdk/blob/main/docs/GETTING_STARTED.md",
             },
         )
 
@@ -2730,7 +2730,7 @@ def create_app(
                 builtin_count = len(agent._tools.list_tools()) if agent else 0
                 print(
                     "\n\033[33m\u26a0  STANDALONE MODE \u2014 AitherOS not detected\033[0m\n"
-                    "   AitherNode (localhost:8080) and Genesis (localhost:8001) "
+                    "   awnode (localhost:8080) and Genesis (localhost:8001) "
                     "are unreachable.\n"
                     f"   Only {builtin_count} built-in tools available "
                     f"(vs 449+ with AitherOS).\n"
@@ -4877,8 +4877,8 @@ def _resolve_portal_kit_backend() -> bool:
     if env_path:
         candidates.append(Path(env_path))
 
-    # Monorepo: ADK is at <root>/aither-adk/, backend at <root>/AitherOS/apps/packages/
-    adk_root = Path(__file__).resolve().parent.parent  # aither-adk/
+    # Monorepo: ADK is at <root>/awdk/, backend at <root>/AitherOS/apps/packages/
+    adk_root = Path(__file__).resolve().parent.parent  # awdk/
     monorepo_root = adk_root.parent  # project root
     candidates.append(monorepo_root / "AitherOS" / "apps" / "packages")
     # Also try if portal-kit-backend parent is directly at packages/

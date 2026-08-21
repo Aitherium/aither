@@ -1,4 +1,4 @@
-"""Self-contained proof that an aither-adk agent IS a standard A2A server.
+"""Self-contained proof that an awdk agent IS a standard A2A server.
 
 Drives the agent with a plain httpx JSON-RPC client (zero Aitherium headers, no
 portal, no API key) over an in-process ASGI transport — so it runs offline in CI

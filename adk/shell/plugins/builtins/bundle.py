@@ -127,6 +127,16 @@ class BundlePlugin(SlashCommand):
     aliases: List[str] = field(default_factory=lambda: ["pkg", "sovereign"])
     category: str = "deploy"
 
+    def __init__(self) -> None:
+        # Explicit, because the dataclass base assigns
+        # `self.name = ""` and shadows the class attribute above —
+        # the instance then registers under the empty string and is
+        # overwritten by the next plugin to do the same.
+        super().__init__(
+            name='bundle',
+            description='Pull / inspect / install a sovereign deployment bundle',
+        )
+
     async def run(self, args: List[str], ctx: Dict[str, Any]) -> Optional[str]:
         if not args:
             return self._list_local()

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# AitherSwarm CI proof — parallel aither-adk agents work a shared goal on
+# AitherSwarm CI proof — parallel awdk agents work a shared goal on
 # canonical fleet infra (MicroScheduler LLM, vLLM nomic-768 embeddings, the
 # tenant Qdrant dataplane, and the AitherFlux context superhighway), then a
 # reasoning synthesizer assembles the final answer.
@@ -22,7 +22,7 @@ SWARM_TASKS=${SWARM_TASKS:-4}
 SWARM_WORKERS=${SWARM_WORKERS:-3}
 OUT=${OUT:-/tmp/final.json}
 
-echo "== install aither-adk =="
+echo "== install awdk =="
 pip install -q "$ADK_SRC" 2>&1 | tail -2 || { echo "pip install failed"; exit 1; }
 
 # Trust the AitherNet internal CA for every https client.

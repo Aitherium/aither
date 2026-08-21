@@ -83,6 +83,37 @@ def _pretty(filename: str) -> str:
     return stem.replace("_", " ").replace("-", " ").strip()
 
 
+#: How long GobboNet's swap poller waits before giving up, from js/02-model.js.
+#: A download projected to exceed it is announced rather than left to time out.
+_POLL_WINDOW_S = 170.0
+
+#: Seconds of transfer before a rate means anything. Projecting off the first
+#: chunk reports nonsense in both directions.
+_RATE_SETTLE_S = 3.0
+
+
+def poll_window_note(elapsed: float, done: int, total: int) -> str:
+    """The warning shown when a download will outlive their swap poller.
+
+    Computed from the MEASURED rate, never from the file size. Whether a given
+    download beats a three-minute window is a question about THIS connection —
+    250 MB clears it on a fast line and does not on a slow one — so a size
+    threshold would be a guess about someone else's internet, wrong in both
+    directions.
+
+    Returns "" while there is not yet enough transfer to project from. Silence
+    here is correct: an unwarranted warning on a download that finishes in
+    forty seconds trains people to ignore the one that matters.
+    """
+    if elapsed < _RATE_SETTLE_S or done <= 0 or total <= 0:
+        return ""
+    projected = elapsed * total / done
+    if projected <= _POLL_WINDOW_S:
+        return ""
+    return ("  This is longer than the picker's three-minute wait — it keeps "
+            "downloading in the background and appears when it is done.")
+
+
 @dataclass
 class SwapState:
     """What `/swap-status` reports. `phase` is the field their poller reads."""
@@ -163,10 +194,22 @@ class ModelManager:
 
     # ── the four endpoints ───────────────────────────────────────────────
     def models_list(self) -> dict:
-        """`GET /models-list.json` — every key their <option> builder reads."""
+        """`GET /models-list.json` — every key their <option> builder reads.
+
+        Installed models first, then every catalog model that is NOT installed,
+        so a fresh machine sees a list instead of an empty dropdown. An empty
+        dropdown reads as "no models exist"; the truth is "nothing has told this
+        machine what exists", and those two want opposite responses.
+
+        Catalog rows carry two EXTRA keys their builder ignores — `installed`
+        and `sizeGb`. Extra keys are safe (it reads named fields), and the size
+        also goes into the visible `name`, because a picker that offers a 16 GB
+        download without saying so is how somebody loses an evening.
+        """
         active = self.active_file()
+        installed = self.available()
         models = []
-        for name in self.available():
+        for name in installed:
             family, thinking = _classify(name)
             models.append({
                 "file": name,          # option VALUE — unambiguous
@@ -175,8 +218,36 @@ class ModelManager:
                 "family": family,
                 "thinkingFormat": thinking,
                 "active": name == active,
+                "installed": True,
+            })
+        for entry in self._catalog_entries():
+            if entry.filename in installed:
+                continue
+            _family, thinking = _classify(entry.filename)
+            models.append({
+                "file": entry.filename,
+                "name": f"{entry.label} — {entry.size_gb} GB download",
+                "id": Path(entry.filename).stem.lower(),
+                "family": entry.family,
+                "thinkingFormat": thinking,
+                "active": False,
+                "installed": False,
+                "sizeGb": entry.size_gb,
             })
         return {"models": models}
+
+    def _catalog_entries(self) -> list:
+        """The downloadable list, or empty if the catalog module is absent.
+
+        Absent is a legitimate state — a bare checkout, or a build that trims
+        the pack — and it degrades to exactly the previous behaviour (installed
+        models only) rather than breaking the picker.
+        """
+        try:
+            from adk.packs.gobbonet import catalog
+        except Exception:  # noqa: BLE001 - pack trimmed or bare checkout
+            return []
+        return catalog.entries()
 
     def active_model(self) -> dict:
         """`GET /active-model.json` — id, name, ggufFile, thinkingFormat."""
@@ -205,10 +276,14 @@ class ModelManager:
         """
         if not filename:
             return False, "no file given"
+        entry = None
         if filename not in self.available():
-            # Named explicitly. "Swap failed: HTTP 400" sends someone looking
-            # at the network; naming the file sends them to the models folder.
-            return False, f"{filename} is not in {self.models_dir}"
+            entry = self._catalog_entry(filename)
+            if entry is None:
+                # Named explicitly. "Swap failed: HTTP 400" sends someone
+                # looking at the network; naming the file sends them to the
+                # models folder.
+                return False, f"{filename} is not in {self.models_dir}"
 
         with self._lock:
             if self._state.phase == "loading":
@@ -216,9 +291,16 @@ class ModelManager:
             self._state = SwapState(phase="loading", file=filename,
                                     started=time.time())
 
-        threading.Thread(target=self._do_swap, args=(filename,),
+        threading.Thread(target=self._do_swap, args=(filename, entry),
                          daemon=True, name="gobbonet-swap").start()
-        return True, "swapping"
+        return True, "downloading" if entry is not None else "swapping"
+
+    def _catalog_entry(self, filename: str):
+        try:
+            from adk.packs.gobbonet import catalog
+        except Exception:  # noqa: BLE001 - pack trimmed or bare checkout
+            return None
+        return catalog.find(filename)
 
     def swap_status(self) -> dict:
         """`GET /swap-status` — polled every ~1.5s for up to three minutes."""
@@ -226,8 +308,10 @@ class ModelManager:
             return self._state.as_json()
 
     # ── the work ─────────────────────────────────────────────────────────
-    def _do_swap(self, filename: str) -> None:
+    def _do_swap(self, filename: str, entry=None) -> None:
         try:
+            if entry is not None and not self._fetch(filename, entry):
+                return
             spawn = self._spawn or self._spawn_llama
             spawn(self.models_dir / filename, self.port)
             # READY means it answered a real request, not that the process
@@ -255,6 +339,54 @@ class ModelManager:
             with self._lock:
                 self._state = SwapState(phase="error", file=filename,
                                         message=f"{type(e).__name__}: {e}")
+
+    def _fetch(self, filename: str, entry) -> bool:
+        """Download a catalog model before swapping to it. True if it landed.
+
+        PROGRESS IS PUBLISHED INTO `message`, WHICH THEIR POLLER ALREADY SHOWS.
+        Without it the UI sits on a bare "loading" for however long a multi-GB
+        transfer takes, which is indistinguishable from a hang — and a user who
+        believes it hung kills it, discarding real progress.
+
+        AND IT SAYS SO WHEN IT WILL OUTLIVE THE POLL, FROM THE MEASURED RATE
+        RATHER THAN FROM THE FILE SIZE. Their poller gives up after about three
+        minutes. Whether a given download beats that is a question about THIS
+        connection, not about the number of bytes — 250 MB clears it on a fast
+        line and does not on a slow one — so the projection is computed from
+        bytes actually transferred per second, and the warning appears only once
+        the projection really exceeds the window. A size threshold would be a
+        guess about someone else's internet, wrong in both directions.
+
+        The download really does continue past the timeout: it runs on this
+        thread, which nothing on the poll path cancels, and the model appears in
+        the picker when it lands.
+        """
+        from adk.packs.gobbonet import catalog
+
+        started = time.time()
+
+        def on_progress(done: int, total: int) -> None:
+            pct = int(done * 100 / total) if total else 0
+            tail = poll_window_note(time.time() - started, done, total)
+            with self._lock:
+                # Only while WE still own the swap. A later swap must not have
+                # its state overwritten by a straggling callback from this one.
+                if self._state.file == filename and self._state.phase == "loading":
+                    self._state.message = (
+                        f"downloading {entry.label} — {pct}% "
+                        f"({done // (1 << 20)} of {total // (1 << 20)} MB){tail}")
+
+        try:
+            catalog.download(entry, dest_dir=self.models_dir, progress=on_progress)
+        except Exception as e:  # noqa: BLE001 - must reach the UI, not a log
+            with self._lock:
+                self._state = SwapState(
+                    phase="error", file=filename,
+                    message=f"download failed — {type(e).__name__}: {e}")
+            return False
+        with self._lock:
+            self._state.message = f"downloaded {entry.label} — starting it"
+        return True
 
     def _spawn_llama(self, model_path: Path, port: int) -> None:
         """Restart llama-server on the chosen model."""

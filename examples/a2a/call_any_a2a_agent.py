@@ -1,11 +1,11 @@
-"""Call ANY external A2A agent from aither-adk — vendor-neutral.
+"""Call ANY external A2A agent from awdk — vendor-neutral.
 
 This talks to a remote agent by its Agent Card URL using plain A2A JSON-RPC
 (`message/send`), so it works against a Google-A2A agent, a LangGraph A2A server,
-another aither-adk agent, or anything that implements the spec — no Aitherium SDK
+another awdk agent, or anything that implements the spec — no Aitherium SDK
 required on the remote side.
 
-(For agents in YOUR OWN aither-adk fleet you can use the convenience wrapper
+(For agents in YOUR OWN awdk fleet you can use the convenience wrapper
 `adk.a2a_client.send_message("agent-name", "...")`, which resolves the name via the
 mesh. The function below is the general, by-URL path for external interop.)
 

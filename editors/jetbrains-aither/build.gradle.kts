@@ -32,7 +32,7 @@ intellijPlatform {
         name = "Aither — ACP + A2A integration"
         id = "com.aitherium.aither-jetbrains"
         version = "0.1.0"
-        description = "Full A2A + ACP integration from JetBrains. Drives any AitherOS agent (atlas, lyra, demiurge, ...) over the Agent Client Protocol (adk acp serve, stdio JSON-RPC v2) and talks agent-to-agent via A2A. Requires the aither-adk CLI on PATH."
+        description = "Full A2A + ACP integration from JetBrains. Drives any AitherOS agent (atlas, lyra, demiurge, ...) over the Agent Client Protocol (adk acp serve, stdio JSON-RPC v2) and talks agent-to-agent via A2A. Requires the awdk CLI on PATH."
         vendor {
             name = "Aitherium"
             url = "https://aitherium.com"

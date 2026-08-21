@@ -56,7 +56,7 @@ if __name__ == "__main__":
 
 _CONFIG_TEMPLATE = """\
 # AitherADK agent configuration
-# See https://github.com/Aitherium/aither-adk for docs
+# See https://github.com/Aitherium/awdk for docs
 
 identity: {name}
 port: 8080
@@ -513,10 +513,12 @@ def cmd_workspace(args):
             "app-bot": "Custom bot app + portal-kit",
             "veil": "AitherVeil + all packages",
             "portal": "AitherVeil + portal-kit + desktop-core",
+            "node": "awnode (standalone + monorepo)",
+            "connect": "AitherConnect",
             "node": "AitherNode (standalone + monorepo)",
             "connect": "Awconnect",
             "shell": "AitherShell (standalone + monorepo)",
-            "adk": "aither-adk (this package)",
+            "adk": "awdk (this package)",
             "desktop": "AitherDesktop + Veil + packages",
             "creative": "Canvas-Studio + creative services",
             "gpu": "VRAM-Sentinel + GPU services",
@@ -2010,7 +2012,7 @@ def _device_flow_login(identity_url: str, client_name: str = "adk") -> dict:
         from adk import __version__ as _v
     except Exception:  # noqa: BLE001
         _v = "0"
-    _ua = f"aither-adk/{_v} ({client_name})"
+    _ua = f"awdk/{_v} ({client_name})"
 
     # Step 1: Request device code. Resilient: the first call after a fleet
     # restart can be slow or briefly 5xx while security-core warms its vault/DB,
@@ -2112,7 +2114,7 @@ def _github_device_flow_login(identity_url: str, client_name: str = "adk") -> di
         from adk import __version__ as _v
     except Exception:  # noqa: BLE001
         _v = "0"
-    _ua = f"aither-adk/{_v} ({client_name})"
+    _ua = f"awdk/{_v} ({client_name})"
     _hdrs = {"Content-Type": "application/json", "Accept": "application/json", "User-Agent": _ua}
 
     try:
@@ -2875,22 +2877,27 @@ def cmd_connect(args):
         print("  MCP TOOLS")
         print("  ─────────")
 
-        # Local AitherNode
+        # Local awnode
         try:
             async with httpx.AsyncClient(timeout=3.0) as client:
                 resp = await client.get("http://localhost:8080/health")
                 if resp.status_code == 200:
                     data = resp.json()
                     mode = data.get("mode", "unknown")
-                    print(f"  [OK] AitherNode (local): port 8080, mode={mode}")
+                    print(f"  [OK] awnode (local): port 8080, mode={mode}")
         except Exception:
-            print("  [--] AitherNode (local): not running")
+            print("  [--] awnode (local): not running")
 
         # Cloud MCP
         if api_key and gateway_ok:
             print("  [OK] MCP Gateway (cloud): mcp.aitherium.com")
         elif api_key:
             print("  [--] MCP Gateway (cloud): gateway unreachable")
+            # A status line that says a thing is down and stops there leaves the
+            # user with nowhere to go. Self-hosting is the answer to exactly this
+            # situation, so offer it here rather than making them find it.
+            from adk.config import self_host_hint
+            print(f"       {self_host_hint()}")
         else:
             print("  [--] MCP Gateway (cloud): needs API key")
 
@@ -3953,7 +3960,7 @@ def cmd_onboard(args):
         # ADK
         aither_bin = shutil.which("aither")
         if aither_bin:
-            products.append("aither-adk")
+            products.append("awdk")
             print("  [OK] AitherADK — installed")
         else:
             print("  [--] AitherADK — not found (you're running it though!)")
@@ -4221,7 +4228,7 @@ def cmd_onboard(args):
         # ── 4. Install other products ─────────────────────────
         print("  INSTALL OTHER PRODUCTS")
         print("  ──────────────────────")
-        print("  pip install aither-adk          # CLI + SDK (this package)")
+        print("  pip install awdk          # CLI + SDK (this package)")
         print("  winget install Aitherium.Desktop # Native desktop app (Windows)")
         print("  brew install --cask aither-desktop  # Desktop (macOS)")
         print("  Chrome Web Store: Awconnect  # Browser extension")
@@ -5503,7 +5510,7 @@ def _relay_up(args) -> int:
     if getattr(args, "compose_file", None):
         compose_path = Path(args.compose_file)
     else:
-        # Auto-detect: look in deploy/compose, then aither-adk/deploy/compose
+        # Auto-detect: look in deploy/compose, then awdk/deploy/compose
         candidates = [
             Path("deploy/compose/docker-compose.relay.yml"),
             Path(__file__).resolve().parent.parent / "deploy/compose/docker-compose.relay.yml",
@@ -6355,7 +6362,7 @@ def cmd_packs(args) -> int:
 def _load_arc_pack():
     """File-load the bundled arc-brainpack pack and return its tools module.
     Bundled at adk/toolpacks/arc-brainpack — loaded by path so it works from a
-    plain `pip install aither-adk` with the pack dir not on sys.path."""
+    plain `pip install awdk` with the pack dir not on sys.path."""
     import importlib.util
     pack_dir = Path(__file__).resolve().parent / "toolpacks" / "arc-brainpack"
     init = pack_dir / "__init__.py"
@@ -6384,7 +6391,7 @@ def cmd_contribute(args) -> int:
     """Teach Aither's ARC world model via the bundled arc-brainpack pack.
 
     Zero-to-contributing with no repo clone:
-        pip install 'aither-adk[arc]'
+        pip install 'awdk[arc]'
         adk contribute register
         export ARC_API_KEY=<key from three.arcprize.org>
         adk contribute play
@@ -6424,7 +6431,7 @@ def cmd_contribute(args) -> int:
             print("  adk contribute status         your accepted count + daily quota")
             print("  adk contribute leaderboard    who has taught it the most")
             print("  adk contribute solo           one-command self-host (train YOUR own model)\n")
-            print("Playing needs the arc extra:  pip install 'aither-adk[arc]'")
+            print("Playing needs the arc extra:  pip install 'awdk[arc]'")
             print("and an ARC key:  export ARC_API_KEY=<key from three.arcprize.org>")
             return 0
     except Exception as exc:
@@ -8194,7 +8201,7 @@ def cmd_explore(args) -> int:
     catalog = _load_pack_catalog(genesis_url)
 
     if not catalog:
-        print("\n  No catalog available. Install aither-adk or connect to Genesis.\n")
+        print("\n  No catalog available. Install awdk or connect to Genesis.\n")
         return 1
 
     # Filter
@@ -8362,7 +8369,7 @@ def _version_is_newer(latest: str, current: str) -> bool:
 
 
 def _check_for_updates() -> None:
-    """Check PyPI for newer aither-adk version. Runs at most once per day."""
+    """Check PyPI for newer awdk version. Runs at most once per day."""
     marker = Path.home() / ".aither" / ".last_update_check"
     now = time.time()
 
@@ -8377,14 +8384,14 @@ def _check_for_updates() -> None:
 
     try:
         from urllib.request import urlopen
-        resp = urlopen("https://pypi.org/pypi/aither-adk/json", timeout=3)
+        resp = urlopen("https://pypi.org/pypi/awdk/json", timeout=3)
         data = json.loads(resp.read())
         latest = data.get("info", {}).get("version", "")
 
         # Read current version
         try:
             from importlib.metadata import version as pkg_version
-            current = pkg_version("aither-adk")
+            current = pkg_version("awdk")
         except Exception:
             current = ""
 
@@ -8392,12 +8399,12 @@ def _check_for_updates() -> None:
         # bare `latest != current`, which fires in BOTH directions: a user running a
         # newer build than PyPI (a dev install, or the minutes-long window right after
         # a release while the index propagates) was told
-        #   "Update available: aither-adk 2.36.0 -> 2.35.0"
+        #   "Update available: awdk 2.36.0 -> 2.35.0"
         # i.e. instructed to DOWNGRADE — and this prints on `adk join`, the first
         # command a new contributor ever runs. Seen live on the DGX 2026-07-24.
         if latest and current and _version_is_newer(latest, current):
-            print(f"\n  Update available: aither-adk {current} -> {latest}")
-            print("  Run: pip install --upgrade aither-adk\n")
+            print(f"\n  Update available: awdk {current} -> {latest}")
+            print("  Run: pip install --upgrade awdk\n")
 
         marker.parent.mkdir(parents=True, exist_ok=True)
         marker.write_text(str(now), encoding="utf-8")
@@ -8964,7 +8971,7 @@ def cmd_sync(args):
                 started = await mgr.watch()
                 if not started:
                     print("watchdog not installed. Install with:")
-                    print("  pip install aither-adk[sync]")
+                    print("  pip install awdk[sync]")
                     return 1
                 print(f"Watching {sync_dir} for changes (Ctrl+C to stop)...")
                 try:
@@ -9497,7 +9504,7 @@ def cmd_status(args):
             "Genesis": os.environ.get("AITHER_URL", "http://localhost:8001"),
             "vLLM": os.environ.get("AITHER_VLLM_URL", os.environ.get("VLLM_URL", "http://localhost:8209")),
             "Ollama": _fix_ollama_host(os.environ.get("OLLAMA_HOST", "")),
-            "AitherNode": "http://localhost:8090",
+            "awnode": "http://localhost:8090",
             "Gateway": os.environ.get("AITHER_GATEWAY_URL", "https://gateway.aitherium.com"),
         }
 
@@ -12233,7 +12240,7 @@ def _register_commands(sub):
     # The portal's quickstart advertises a "verify auth + entitlement" step. It
     # advertised `aither entitlement --refresh --json`, which was wrong twice
     # over: there is no `aither` console script (the wheel declares adk, adk-py,
-    # aither-adk, adk-serve, adk-workspace, adk-bug, adk-shell) and no
+    # awdk, adk-serve, adk-workspace, adk-bug, adk-shell) and no
     # `entitlement` subcommand. Rather than downgrade the docs to a command that
     # does not answer the question, whoami now answers it.
     _whoami.add_argument("--json", action="store_true",
@@ -12491,7 +12498,7 @@ def _register_commands(sub):
     setup_all_p.add_argument("--with-stack", dest="with_stack", default="", metavar="PROFILE",
                              help="Also deploy the AitherZero stack via `adk setup --stack` (e.g. core, full)")
     setup_all_p.add_argument("--dev", action="store_true",
-                             help="Editable install of aither-adk from the local checkout (pip -e)")
+                             help="Editable install of awdk from the local checkout (pip -e)")
     setup_all_p.add_argument("--dry-run", dest="dry_run", action="store_true",
                              help="Print the install plan without doing anything")
     setup_all_p.add_argument("--strict", action="store_true",
@@ -13607,7 +13614,7 @@ def _register_commands(sub):
     contribute_sub.add_parser(
         "register", help="Mint a free wallet + contributor token (idempotent)")
     c_play = contribute_sub.add_parser(
-        "play", help="Play ARC games and stream every transition (needs: pip install 'aither-adk[arc]')")
+        "play", help="Play ARC games and stream every transition (needs: pip install 'awdk[arc]')")
     c_play.add_argument("games", nargs="*", default=[],
                         help="ARC game ids (default: a starter set)")
     c_play.add_argument("-n", "--steps", type=int, default=200,
@@ -14492,9 +14499,9 @@ def _cmd_acp_config(args) -> int:
     else:
         serve_argv = [sys.executable, "-m", "adk.cli", "acp", "serve"]
     agent_json = {
-        "name": "aither-adk",
+        "name": "awdk",
         "description": "AitherOS agent exposed over the Agent Client Protocol",
-        "distribution": {"type": "pip", "package": "aither-adk"},
+        "distribution": {"type": "pip", "package": "awdk"},
         "runtime": {"type": "stdio", "command": serve_argv},
         "capabilities": {
             "session": {"list": {}, "resume": {}, "close": {}, "delete": {}},
@@ -14507,7 +14514,7 @@ def _cmd_acp_config(args) -> int:
         # registry agent schema).
         print(json.dumps(agent_json, indent=2))
         print(
-            "\n# Install: save as .zed/agents/aither-adk/agent.json and restart Zed."
+            "\n# Install: save as .zed/agents/awdk/agent.json and restart Zed."
         )
     elif args.ide == "jetbrains":
         # JetBrains' ACP plugin reads the same agent.json via its registry path.
@@ -14926,9 +14933,9 @@ def main():
     elif args.command == "support":
         print("\n  AitherADK Support")
         print("  " + "=" * 40)
-        print("  Docs:      https://github.com/Aitherium/aither-adk")
+        print("  Docs:      https://github.com/Aitherium/awdk")
         print("  Discord:   https://discord.gg/aitherium")
-        print("  Issues:    https://github.com/Aitherium/aither-adk/issues")
+        print("  Issues:    https://github.com/Aitherium/awdk/issues")
         print("  Portal:    https://portal.aitherium.com")
         print("  Email:     support@aitherium.com")
         print()

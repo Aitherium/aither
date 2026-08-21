@@ -68,6 +68,17 @@ class InvitePlugin(SlashCommand):
     description: str = "Manage platform invites (admin only)"
     category: str = "admin"
 
+    def __init__(self) -> None:
+        # Explicit, because the dataclass base assigns
+        # `self.name = ""` and shadows the class attribute above —
+        # the instance then registers under the empty string and is
+        # overwritten by the next plugin to do the same.
+        super().__init__(
+            name='invite',
+            description='Manage platform invites (admin only)',
+            aliases=['inv'],
+        )
+
     async def run(self, args: List[str], ctx: Dict[str, Any]) -> Optional[str]:
         err = _check_admin()
         if err:
@@ -217,6 +228,16 @@ class AdminPlugin(SlashCommand):
     aliases: List[str] = []
     description: str = "Admin commands: capacity, users"
     category: str = "admin"
+
+    def __init__(self) -> None:
+        # Explicit, because the dataclass base assigns
+        # `self.name = ""` and shadows the class attribute above —
+        # the instance then registers under the empty string and is
+        # overwritten by the next plugin to do the same.
+        super().__init__(
+            name='admin',
+            description='Admin commands: capacity, users',
+        )
 
     async def run(self, args: List[str], ctx: Dict[str, Any]) -> Optional[str]:
         err = _check_admin()

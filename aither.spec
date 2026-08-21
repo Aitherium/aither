@@ -2,10 +2,10 @@
 
 
 a = Analysis(
-    ['D:\\AitherOS-Fresh\\aither-adk\\adk\\cli.py'],
+    ['D:\\AitherOS-Fresh\\awdk\\adk\\cli.py'],
     pathex=[],
     binaries=[],
-    datas=[('D:\\AitherOS-Fresh\\aither-adk\\docker-compose.adk-vllm.yml', 'adk')],
+    datas=[('D:\\AitherOS-Fresh\\awdk\\docker-compose.adk-vllm.yml', 'adk')],
     hiddenimports=['tkinter', 'tkinter.ttk', 'httpx', 'httpx._transports', 'httpx._transports.default', 'yaml', 'uvicorn', 'uvicorn.logging', 'uvicorn.loops', 'uvicorn.loops.auto', 'uvicorn.protocols', 'uvicorn.protocols.http', 'uvicorn.protocols.http.auto', 'uvicorn.lifespan', 'uvicorn.lifespan.on', 'fastapi', 'starlette', 'anyio', 'anyio._backends', 'anyio._backends._asyncio'],
     hookspath=[],
     hooksconfig={},

@@ -2,7 +2,7 @@
 
 This is a THIN CLIENT ON PURPOSE. The answer is computed once, on the platform,
 by joining the per-agent capability tokens with the caller's RBAC role; adk,
-AitherNode and AitherShell all read that one answer rather than each deriving
+awnode and AitherShell all read that one answer rather than each deriving
 their own.
 
 Two hand-maintained answers to "what may this agent do" drift, and the failure is

@@ -124,7 +124,7 @@ def _vault_secret(name: str) -> str:
 
     Fleet-only convenience: fails soft to '' everywhere the vault is not
     configured/reachable (i.e. outside the fleet). No monorepo dependency —
-    the pack ships standalone in the aither-adk wheel and never imports a
+    the pack ships standalone in the awdk wheel and never imports a
     private in-fleet helper; the token is expected via env or provider keys.
     """
     key = _internal_secret()

@@ -12,7 +12,7 @@ This demonstrates the full federation stack:
 
 Prerequisites:
     - AitherOS instance running (Genesis:8001, Identity:8112, Mesh:8125, Node:8090)
-    - pip install aither-adk
+    - pip install awdk
 
 Usage:
     python federation_demo.py
@@ -179,9 +179,9 @@ async def phase_4_flux_events(fed: FederationClient):
 
 
 async def phase_5_mcp_tools(fed: FederationClient):
-    """Phase 5: Use MCP tools from AitherNode."""
+    """Phase 5: Use MCP tools from awnode."""
     print("\n" + "=" * 60)
-    print("  PHASE 5: MCP Tools — AitherNode")
+    print("  PHASE 5: MCP Tools — awnode")
     print("=" * 60)
 
     tools = await fed.list_mcp_tools()
@@ -212,7 +212,7 @@ async def phase_5_mcp_tools(fed: FederationClient):
 
         return True
     else:
-        print("  WARNING: No MCP tools available (AitherNode may be down)")
+        print("  WARNING: No MCP tools available (awnode may be down)")
         return False
 
 

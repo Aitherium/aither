@@ -1,6 +1,6 @@
 """AitherZero toolpack — az_* tools for self-service infra config + provisioning.
 
-Registers 7 az_* tools that let an aither-adk agent manage the AitherZero surface:
+Registers 7 az_* tools that let an awdk agent manage the AitherZero surface:
 inventory the automation-scripts + playbooks (az_inventory / az_describe_script),
 regenerate the schema from any (public or private) inventory (az_export_schema),
 generate + validate a config.local.psd1 (az_generate_config / az_validate_config), plan a

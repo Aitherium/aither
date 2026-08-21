@@ -267,16 +267,16 @@ ruff check adk/test_landmark_map.py
 
 5. **Intent scaling**: Reads `_INTENT_RELEVANCE_SCALE` read-only; never edits ContextPipeline.
 
-6. **Standalone**: Zero core-service edits. Lives in aither-adk, importable as `from adk.landmark_map import ...`.
+6. **Standalone**: Zero core-service edits. Lives in awdk, importable as `from adk.landmark_map import ...`.
 
 ## Future: Moving to Core
 
 When Phase 2/3 integrate into Genesis. This describes a change inside the
 AitherOS server-side core, not anything you run from this package — the import
-below is server-side and will not resolve in an `aither-adk` install.
+below is server-side and will not resolve in an `awdk` install.
 
 ```python
-# Before (Phase 1 — aither-adk, what this package ships)
+# Before (Phase 1 — awdk, what this package ships)
 from adk.landmark_map import hints_for
 
 # After (Phase 2+ — AitherOS core library, server-side; same code)

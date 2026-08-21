@@ -29,7 +29,7 @@ The bridge resolves `DEEPSEEK_API_KEY` from env, then AitherSecrets. If
 key is not resolving and every call will 401 — fix that before debugging anything
 else, because the failure surfaces as an unhelpful upstream error.
 
-## aither-adk
+## awdk
 
 ```bash
 adk keys set deepseek sk-...

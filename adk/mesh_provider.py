@@ -793,9 +793,9 @@ async def flux_node(
     # Find the flux-node-up.sh script. Try common paths:
     # 1. In the adk package (relative to this file)
     # 2. In the system PATH via 'which aither-flux-node-up.sh'
-    # 3. In aither-skills/scripts/ from the repo root
+    # 3. In awskills/scripts/ from the repo root
     script_paths = [
-        Path(__file__).parent.parent.parent / "aither-skills" / "scripts" / "flux-node-up.sh",
+        Path(__file__).parent.parent.parent / "awskills" / "scripts" / "flux-node-up.sh",
         Path("/usr/local/bin/flux-node-up.sh"),
         Path("/opt/aitheros/scripts/flux-node-up.sh"),
     ]
@@ -811,7 +811,7 @@ async def flux_node(
             "ok": False,
             "error": (
                 "flux-node-up.sh not found in expected locations. "
-                "Ensure aither-skills is installed or the script is in PATH."
+                "Ensure awskills is installed or the script is in PATH."
             ),
             "step": "flux_node_init",
         }

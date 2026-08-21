@@ -70,6 +70,17 @@ class ScopePlugin(SlashCommand):
     description: str = "Launch AitherScope — codebase visualization and analysis"
     category: str = "development"
 
+    def __init__(self) -> None:
+        # Explicit, because the dataclass base assigns
+        # `self.name = ""` and shadows the class attribute above —
+        # the instance then registers under the empty string and is
+        # overwritten by the next plugin to do the same.
+        super().__init__(
+            name='scope',
+            description='Launch AitherScope — codebase visualization and analysis',
+            aliases=['aitherscope', 'codeview'],
+        )
+
     async def run(self, args: List[str], ctx: Dict[str, Any]) -> Optional[str]:
         if not args:
             return await self._open_browser(args, ctx)

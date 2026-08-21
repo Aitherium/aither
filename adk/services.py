@@ -1,12 +1,12 @@
-"""Service bridge — auto-discover and connect to AitherOS services via AitherNode.
+"""Service bridge — auto-discover and connect to AitherOS services via awnode.
 
-When AitherNode (localhost:8080) or the MCP gateway (mcp.aitherium.com) is
+When awnode (localhost:8080) or the MCP gateway (mcp.aitherium.com) is
 reachable, this module auto-discovers available services and registers their
 tools on agents. When offline, agents fall back to built-in tools only.
 
 Service tiers:
   Tier 0 (always): Built-in tools (file_io, shell, python, web, secrets)
-  Tier 1 (local):  AitherNode stdio/HTTP MCP (449 tools when Genesis running)
+  Tier 1 (local):  awnode stdio/HTTP MCP (449 tools when Genesis running)
   Tier 2 (cloud):  MCP Gateway at mcp.aitherium.com (filtered by tenant tier)
 
 Usage:
@@ -36,8 +36,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("adk.services")
 
-# Port 8080 = AitherNode MCP server (tool protocol)
-# Port 8090 = AitherNode ADK standalone HTTP (OpenAI-compatible /v1/chat/completions)
+# Port 8080 = awnode MCP server (tool protocol)
+# Port 8090 = awnode ADK standalone HTTP (OpenAI-compatible /v1/chat/completions)
 # ServiceBridge connects to the MCP server for tool discovery
 _DEFAULT_NODE_URL = "http://localhost:8080"
 _DEFAULT_GENESIS_URL = "http://localhost:8001"
@@ -63,7 +63,7 @@ class ServiceStatus:
 class ServiceBridge:
     """Auto-discovery bridge to AitherOS services.
 
-    Probes AitherNode (local) and MCP Gateway (cloud) to determine
+    Probes awnode (local) and MCP Gateway (cloud) to determine
     what's available, then registers tools accordingly.
     """
 
@@ -103,7 +103,7 @@ class ServiceBridge:
         """Probe available services and determine operating mode.
 
         Checks in order:
-        1. AitherNode local (localhost:8080/health)
+        1. awnode local (localhost:8080/health)
         2. Genesis (localhost:8001/health) — indicates full AitherOS
         3. MCP Gateway (mcp.aitherium.com/health) — cloud fallback
         """
@@ -111,7 +111,7 @@ class ServiceBridge:
 
         self._status.last_check = time.time()
 
-        # Check AitherNode local
+        # Check awnode local
         try:
             async with httpx.AsyncClient(timeout=3.0) as client:
                 resp = await client.get(f"{self.node_url}/health")
@@ -121,7 +121,7 @@ class ServiceBridge:
                     data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
                     self._status.services_discovered = data.get("services", [])
                     self._status.node_version = data.get("version", "")
-                    logger.info("AitherNode available at %s", self.node_url)
+                    logger.info("awnode available at %s", self.node_url)
         except Exception:
             self._status.node_available = False
 
@@ -172,7 +172,7 @@ class ServiceBridge:
         from adk import __version__
         local_parts = __version__.split(".")[:2]  # major.minor
         for name, remote_ver in [
-            ("AitherNode", self._status.node_version),
+            ("awnode", self._status.node_version),
             ("Genesis", self._status.genesis_version),
         ]:
             if not remote_ver:
@@ -284,7 +284,7 @@ class ServiceBridge:
     async def get_available_services(self) -> list[str]:
         """List service names available through the bridge.
 
-        Returns tool categories when connected to AitherNode, or
+        Returns tool categories when connected to awnode, or
         just built-in categories in standalone mode.
         """
         if self._status.mode == "standalone":

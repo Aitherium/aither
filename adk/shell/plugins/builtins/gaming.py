@@ -42,7 +42,7 @@ def _find_gaming_script() -> Optional[str]:
     ])
 
     # Drive-root checkouts, DISCOVERED rather than hardcoded. This used to name
-    # D:/AitherOS-Fresh explicitly — one developer's drive layout, in a public package.
+    # an absolute drive path explicitly — one developer's drive layout, in a public package.
     from adk.shell._repo_roots import candidate_repo_roots
 
     for root in candidate_repo_roots(include_cwd=False):

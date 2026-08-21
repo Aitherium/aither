@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Purge the moat-leaking artifacts from the PUBLIC aither-adk surface.
+# Purge the moat-leaking artifacts from the PUBLIC awdk surface.
 #
 # Scope (everything before 2.0.0 shipped adk/nanogpt.py + ungated fleet/forge):
-#   1. GitHub Releases  — delete every pre-2.0 release on Aitherium/aither-adk
+#   1. GitHub Releases  — delete every pre-2.0 release on Aitherium/awdk
 #   2. Git tags         — delete the matching pre-2.0 tags
 #   3. Git history      — scrub adk/nanogpt.py from the public repo's history
 #   4. PyPI             — (manual) yank pre-2.0 releases (no API; see note)
@@ -20,7 +20,7 @@
 
 set -euo pipefail
 
-REPO="Aitherium/aither-adk"
+REPO="Aitherium/awdk"
 REMOTE_URL="https://github.com/${REPO}.git"
 LEAK_PATH="adk/nanogpt.py"          # the file to scrub from history
 KEEP_FROM="2.0.0"                    # first clean release
@@ -45,7 +45,7 @@ is_pre_2() {
   [[ "$major" =~ ^[0-9]+$ ]] && (( major < 2 ))
 }
 
-note "== aither-adk public leak purge (repo: ${REPO}) =="
+note "== awdk public leak purge (repo: ${REPO}) =="
 [[ $EXECUTE -eq 0 ]] && warn "DRY RUN — nothing will be deleted. Add --execute to act."
 
 # ---- 1 + 2: releases & tags ------------------------------------------------
@@ -84,8 +84,8 @@ if [[ $REWRITE -eq 1 && $EXECUTE -eq 1 ]]; then
   WORK="$(mktemp -d)"
   note "  cloning mirror into $WORK (a fresh mirror does NOT inherit the"
   note "  monorepo pre-push hook, so it can push to the public repo) ..."
-  git clone --mirror "$REMOTE_URL" "$WORK/aither-adk.git"
-  ( cd "$WORK/aither-adk.git"
+  git clone --mirror "$REMOTE_URL" "$WORK/awdk.git"
+  ( cd "$WORK/awdk.git"
     git filter-repo --force --invert-paths --path "$LEAK_PATH"
     # Drop every pre-2.0 version tag (they mark leaky, ungated releases). The
     # matching GitHub releases were already deleted in step 1.
@@ -107,7 +107,7 @@ if [[ $REWRITE -eq 1 && $EXECUTE -eq 1 ]]; then
 else
   warn "  skipped (needs --execute --rewrite-history)."
   warn "  Manual equivalent:"
-  echo  "    git clone --mirror $REMOTE_URL && cd aither-adk.git"
+  echo  "    git clone --mirror $REMOTE_URL && cd awdk.git"
   echo  "    git filter-repo --invert-paths --path $LEAK_PATH"
   echo  "    git push --force --mirror $REMOTE_URL"
 fi

@@ -64,6 +64,17 @@ class TunnelPlugin(SlashCommand):
     description: str = "Manage Cloudflare tunnel for remote portal access"
     category: str = "infrastructure"
 
+    def __init__(self) -> None:
+        # Explicit, because the dataclass base assigns
+        # `self.name = ""` and shadows the class attribute above —
+        # the instance then registers under the empty string and is
+        # overwritten by the next plugin to do the same.
+        super().__init__(
+            name='tunnel',
+            description='Manage Cloudflare tunnel for remote portal access',
+            aliases=['tun'],
+        )
+
     async def run(self, args: List[str], ctx: Dict[str, Any]) -> Optional[str]:
         err = _require_auth()
         if err:

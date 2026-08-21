@@ -257,7 +257,7 @@ def rag_ingest(path: str, agent: str = "default", chunk_size: int = 0) -> dict:
     rc, out = _run(cmd, timeout=1800)
     if rc == 127:
         return {"error": "adk CLI not found",
-                "fix": "pip install aither-adk, then re-run (see the graph-rag-agent skill)"}
+                "fix": "pip install awdk, then re-run (see the graph-rag-agent skill)"}
     if rc != 0:
         return {"error": f"ingest failed (rc={rc})", "output": out[-800:]}
     return {"ingested": True, "path": path, "agent": agent, "output_tail": out[-400:],

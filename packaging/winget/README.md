@@ -3,7 +3,7 @@
 Submitted to [microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs) at
 `manifests/a/Aitherium/AitherShell/<version>/`.
 
-## Why AitherShell and not aither-adk
+## Why AitherShell and not awdk
 
 **winget installs executables — MSI, EXE, MSIX, zip. It does not install pip
 packages.** `Aitherium.ADK.yaml` used to live here, pointing at
@@ -11,7 +11,7 @@ packages.** `Aitherium.ADK.yaml` used to live here, pointing at
 a product that has no Windows binary at all. It was never submitted and could
 never have been: winget's validator downloads the installer and hash-checks it.
 
-`aither-adk` is distributed on PyPI (`pip install aither-adk` / `uvx aither-adk`)
+`awdk` is distributed on PyPI (`pip install awdk` / `uvx awdk`)
 and through the Homebrew tap. AitherShell is the product with a real `.exe`, so
 it is the one with a winget manifest.
 
@@ -30,14 +30,14 @@ form is deprecated. All three carry the same `PackageIdentifier` and
 ## Updating for a new release
 
 1. `release-aithershell.yml` mirrors the binaries to the **public** repo —
-   `Aitherium/aither-adk` releases, tag `shell-v<version>`. That public URL is
+   `Aitherium/awdk` releases, tag `shell-v<version>`. That public URL is
    the whole reason this is submittable: winget's validator fetches the
    installer with **no credentials**, so a private-repo asset returns 403 and
    the submission fails.
 2. Compute the sha256 from the **downloaded artifact**, never from a build log:
    ```bash
    curl -fsSL -o s.exe \
-     https://github.com/Aitherium/aither-adk/releases/download/shell-v<v>/aither-shell-win64.exe
+     https://github.com/Aitherium/awdk/releases/download/shell-v<v>/aither-shell-win64.exe
    sha256sum s.exe | tr 'a-f' 'A-F'
    ```
 3. Bump `PackageVersion` in all three files, and `InstallerUrl` +

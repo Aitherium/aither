@@ -1,6 +1,6 @@
 """MCP Evaluation Harness — test your tool/pack integration with an MCP gateway.
 
-This module provides a customer-facing capability to bootstrap any aither-adk install
+This module provides a customer-facing capability to bootstrap any awdk install
 against an MCP gateway and self-test every tool/pack it has. Use this after installing
 a paid pack to verify:
 

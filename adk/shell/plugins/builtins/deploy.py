@@ -30,6 +30,17 @@ class DeployPlugin(SlashCommand):
     description: str = "Deploy AitherOS locally via Docker"
     category: str = "system"
 
+    def __init__(self) -> None:
+        # Explicit, because the dataclass base assigns
+        # `self.name = ""` and shadows the class attribute above —
+        # the instance then registers under the empty string and is
+        # overwritten by the next plugin to do the same.
+        super().__init__(
+            name='deploy',
+            description='Deploy AitherOS locally via Docker',
+            aliases=['deployment'],
+        )
+
     async def run(self, args: List[str], ctx: Dict[str, Any]) -> Optional[str]:
         if not args:
             return await self._deploy_interactive(args, ctx)

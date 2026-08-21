@@ -7,7 +7,7 @@ The Private Companion Vault is a locally-encrypted storage system that allows cu
 When a customer self-hosts:
 ```
 Customer's Box
-  ├── AitherNode (local agent backend)
+  ├── awnode (local agent backend)
   ├── AitherShell (CLI)
   └── ~/.aither/private/lockbox/  ← ENCRYPTED, operator-blind
       ├── .vault_key              (Fernet vault key, encrypted with machine ID)

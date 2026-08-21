@@ -69,7 +69,7 @@ class FederationClient:
     - AitherIdentity: Authentication and registration
     - AitherMesh: Node network and discovery
     - AitherFlux: Event routing and pub/sub
-    - MCP tools: AitherNode tool execution
+    - MCP tools: awnode tool execution
     - Genesis chat: Full pipeline access
 
     Args:
@@ -459,10 +459,10 @@ class FederationClient:
     # ─── MCP Tools ───
 
     async def _get_mcp_session(self) -> tuple[str, str]:
-        """Get an MCP session from AitherNode SSE transport.
+        """Get an MCP session from awnode SSE transport.
 
         Returns (messages_url, sse_url).
-        AitherNode uses SSE transport: GET /sse returns endpoint URL,
+        awnode uses SSE transport: GET /sse returns endpoint URL,
         then POST to /messages/?session_id=xxx for JSON-RPC.
         Results come back via SSE stream.
         """
@@ -492,7 +492,7 @@ class FederationClient:
     async def _mcp_request(self, method: str, params: dict | None = None, timeout: float = 30.0) -> dict:
         """Send an MCP JSON-RPC request and collect the response via SSE.
 
-        AitherNode MCP uses SSE transport:
+        awnode MCP uses SSE transport:
         1. POST JSON-RPC to /messages/?session_id=xxx (returns 202 Accepted)
         2. Response comes back on the SSE stream as a JSON-RPC result
         """
@@ -546,7 +546,7 @@ class FederationClient:
         return {}
 
     async def list_mcp_tools(self) -> list[dict]:
-        """List available MCP tools from AitherNode."""
+        """List available MCP tools from awnode."""
         if self._mode == "gateway":
             try:
                 async with self._client() as client:
@@ -570,7 +570,7 @@ class FederationClient:
         return tools
 
     async def call_mcp_tool(self, name: str, arguments: dict | None = None) -> str:
-        """Call an MCP tool on AitherNode."""
+        """Call an MCP tool on awnode."""
         if self._mode == "gateway":
             try:
                 async with self._client() as client:

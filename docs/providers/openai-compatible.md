@@ -53,7 +53,7 @@ the option. Start Ollama, add an alias for your model, restart the bridge.
 Note: on this fleet, host port 11434 is a portproxy to the **OptiPlex** Ollama
 pool — that node is perma-offline, so a local Ollama is the only live path.
 
-## aither-adk
+## awdk
 
 ```bash
 adk keys set openai sk-...

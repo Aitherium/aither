@@ -1,4 +1,4 @@
-"""ACP (Agent Client Protocol) client for aither-adk.
+"""ACP (Agent Client Protocol) client for awdk.
 
 Implements a JSON-RPC 2.0 stdio-based client to connect to ACP-compliant agents
 (e.g., hermes, other ACP servers). Supports session management, prompting, and
@@ -561,9 +561,9 @@ class ACPClient:
                 # `clientInfo`. Both ignore unknown keys, so emitting both means
                 # one initialize serves a v2 agent and a v1-era one alike.
                 "capabilities": self.client_capabilities,
-                "info": {"name": "aither-adk", "version": "1"},
+                "info": {"name": "awdk", "version": "1"},
                 "clientCapabilities": self.client_capabilities,
-                "clientInfo": {"name": "aither-adk", "version": "1"},
+                "clientInfo": {"name": "awdk", "version": "1"},
             },
         )
         # ACP wire format is camelCase (verified against agent-client-protocol,

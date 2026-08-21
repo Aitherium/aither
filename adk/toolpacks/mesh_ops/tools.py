@@ -241,7 +241,7 @@ def mesh_deploy_agent(node_host: str, ssh_user: str, ssh_key_path: str,
     node_id = node_id or node_host.replace(".", "-")
     remote = (
         "([ -x ~/.adk-venv/bin/adk ] || (python3 -m venv ~/.adk-venv && "
-        "~/.adk-venv/bin/pip install -q --upgrade pip aither-adk)) >/dev/null 2>&1; "
+        "~/.adk-venv/bin/pip install -q --upgrade pip awdk)) >/dev/null 2>&1; "
         f"AITHER_LLM_BASE_URL={shlex.quote(inference_url)} "
         f"AITHER_MESH_OVERLAY_IP={shlex.quote(overlay_ip)} "
         f"~/.adk-venv/bin/adk up --yes --force --reach mesh --name {shlex.quote(node_id)} "

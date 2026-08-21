@@ -1,4 +1,4 @@
-"""AitherNet SMTP — Lightweight mail relay for AitherNodes.
+"""AitherNet SMTP — Lightweight mail relay for awnodes.
 
 Every ADK node can send/receive email through configured SMTP providers
 or relay messages across the AitherNet mesh. Agents are addressable as

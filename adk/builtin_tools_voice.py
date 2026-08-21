@@ -64,7 +64,7 @@ def _get_voice_client() -> object:
         _voice_client = MockVoiceClient()
         logger.info("Voice client initialized in MOCK mode (offline)")
     else:
-        # Try real VoiceClient from adk/voice.py (requires aither-adk[voice-*] installed)
+        # Try real VoiceClient from adk/voice.py (requires awdk[voice-*] installed)
         try:
             from adk.voice import VoiceClient
             _voice_client = VoiceClient()

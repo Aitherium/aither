@@ -45,7 +45,7 @@ def harness_url() -> str:
     host = os.getenv("AITHER_HARNESS_HOST", "127.0.0.1")
     port = os.getenv("AITHER_HARNESS_PORT", "8362")
     # 127.0.0.1, never localhost: measured on this box, ::1 refuses after
-    # 2120 ms while IPv4 connects in 3 ms (CLAUDE.md, gate 1w / MCP001).
+    # 2120 ms while IPv4 connects in 3 ms.
     return f"http://{host}:{port}"
 
 

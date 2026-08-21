@@ -358,9 +358,9 @@ TARGET_URL=$(git remote get-url origin)
 ### Step 2: Copy Data Files
 
 ```bash
-cp config/model-library.json /path/to/aither-adk/adk/ods/
-cp config/gpu-database.json /path/to/aither-adk/adk/ods/
-cp config/hardware-classes.json /path/to/aither-adk/adk/ods/
+cp config/model-library.json /path/to/awdk/adk/ods/
+cp config/gpu-database.json /path/to/awdk/adk/ods/
+cp config/hardware-classes.json /path/to/awdk/adk/ods/
 ```
 
 ### Step 3: Update Metadata

@@ -90,7 +90,7 @@ class PortalClient:
         except ImportError as e:  # pragma: no cover
             raise RuntimeError(
                 "PortalClient requires httpx. "
-                "Install with: pip install 'aither-adk[full]'"
+                "Install with: pip install 'awdk[full]'"
             ) from e
         url = f"{self.config.base_url}{path}"
         headers = kwargs.pop("headers", {}) or {}

@@ -1,4 +1,4 @@
-"""Local job engine for aither-adk — background job management on YOUR machine.
+"""Local job engine for awdk — background job management on YOUR machine.
 
 Design goals (owner posture: "local-only by default, opt-in portal sync"):
 

@@ -34,8 +34,8 @@ Invariants
                   ``--all``; never a gate. A check that floods gets switched
                   off, which is how this repo's per-file-ignores came to exist.
   HYG005 (gate)   the discipline's duplicated artifacts stay IDENTICAL across
-                  their delivery homes — the portable twin in aither-skills,
-                  the bundled aither-adk pack, and the published pack template.
+                  their delivery homes — the portable twin in awskills,
+                  the bundled awdk pack, and the published pack template.
                   A drift between copies is the "duplicated source of truth"
                   hazard code-like-david rule 11 calls active: editing one
                   copy silently orphans the others. Skipped for a layout that
@@ -45,7 +45,7 @@ A probe that cannot read its sources exits 2, never 0 — silence is not a pass.
 Use ``--self-test`` to prove it can still fail (it points the reference set at
 a nonexistent file and asserts the gate goes red).
 
-Portable twin lives at ``aither-skills/tools/check_checker_hygiene.py`` — same
+Portable twin lives at ``awskills/tools/check_checker_hygiene.py`` — same
 logic, layout-detected root (AitherOS monorepo, generic ``dev/tools`` install,
 or bare ``tools/``), so an external repo that adopted the discipline can run it.
 """
@@ -84,6 +84,10 @@ ROUTINE_STR_RE = re.compile(
 
 # ── Repo layout: the ONLY monorepo-specific data, and it does not live here ──
 #
+# This module is a PORTABLE TWIN: byte-identical copies ship in awskills and
+# the awdk code-discipline pack, and the parity rule below asserts that
+# identity. Those two facts used to be in direct conflict with a third — the
+# published-tree path scan
 # This module is a PORTABLE TWIN: byte-identical copies ship in aither-skills and
 # the aither-adk code-discipline pack, and HYG005 asserts that identity. Those two
 # facts used to be in direct conflict with a third — the published-tree path scan
@@ -130,6 +134,7 @@ def _load_layout() -> dict:
 
 LAYOUT = _load_layout()
 
+#: Artifacts intentionally duplicated across delivery homes. The parity rule asserts each
 #: Artifacts intentionally duplicated across delivery homes. HYG005 asserts each
 #: copy stays byte-identical to its canonical, so editing one home cannot silently
 #: orphan the others. Empty outside the monorepo — see LAYOUT_FILE above.
@@ -140,7 +145,7 @@ def _hyg5(root: Path) -> list[str]:
     """Copy-parity violations across the discipline's delivery homes.
 
     A pair is asserted only when THIS layout carries both the canonical and the
-    copy's home: a generic adopted repo has neither aither-skills nor the adk
+    copy's home: a generic adopted repo has neither awskills nor the adk
     pack, so skipping there is correct, not a pass-by-omission.
     """
     violations: list[str] = []
@@ -194,6 +199,12 @@ def find_root(start: Path) -> Path:
 
 
 def candidate_trees(root: Path) -> list[Path]:
+    """Every plausible checker tree, in priority order, from LAYOUT.
+
+    Resolution spans ALL of them because a checker can live at repo-root
+    `dev/tools` rather than under the primary tree. The list is data (see
+    LAYOUT_FILE) so this module names no repo's private layout.
+    """
     """Every plausible checker tree: AitherOS monorepo, generic dev/tools, bare
     tools/. Resolution spans ALL of them — check_actions_allowlist.py lives at
     repo-root dev/tools. The list is data (see LAYOUT_FILE)."""
@@ -213,23 +224,6 @@ def detect_gate_tree(root: Path) -> Path | None:
 
 def _is_gate(name: str) -> bool:
     return name.startswith("check_") or name in NON_CHECK_GATES
-
-
-def documented_tools(rules: Path, trees: list[Path]) -> set[str]:
-    """Every `.py` named in the rules that RESOLVES to a real file in the gate tree.
-
-    Deliberately NOT `_is_gate`: that gates on a `check_` prefix plus the
-    hand-maintained NON_CHECK_GATES set, so a documented tool with neither is
-    invisible. `product_ops_triage.py` was exactly that -- named in quality-gate rule
-    1zc as the triage that assigns every product gap to its owner, sitting UNTRACKED
-    on one machine, and reported by nothing.
-
-    Resolution against the tree is what keeps this from flooding: a `.py` mentioned in
-    prose that is not a file here is somebody else's script, not our missing tool.
-    """
-    text = rules.read_text(encoding="utf-8", errors="replace")
-    return {m.group(1) for m in TOKEN_RE.finditer(text)
-            if resolve(m.group(1), trees) is not None}
 
 
 def documented_gates(rules: Path) -> set[str]:
@@ -294,41 +288,6 @@ _CANNOT_READ_EXC = {
     "SyntaxError", "UnicodeDecodeError", "IndentationError", "TokenError",
 }
 # Return values that mean "nothing to report" — i.e. CLEAN.
-def _returns_declared_unknown(node: "ast.AST", owner: "ast.AST | None") -> bool:
-    """True when returning None here is an honest 'cannot judge', not silence.
-
-    `return None` is only silence if None means "no findings". When the enclosing
-    function's signature DECLARES the sentinel — `-> set[str] | None`, `-> Optional[X]`
-    — None is a documented third state and the caller is expected to branch on it.
-
-    Both live instances did exactly that and were false positives:
-    `_mounted_prefixes` in check_service_registry_resolves.py is annotated
-    `-> set[str] | None`, its docstring says "Returns None if the module does not
-    parse — that is 'cannot judge', not a violation", and its caller records the file
-    in `not_judged`. Flagging that is telling someone to fix what they already did.
-
-    Scoped deliberately narrow: only a None-valued return, only when the annotation
-    admits None. A function returning `[]` is still silence however it is annotated.
-    """
-    if owner is None:
-        return False
-    v = getattr(node, "value", None)
-    if not (v is None or (isinstance(v, ast.Constant) and v.value is None)):
-        return False
-    ann = getattr(owner, "returns", None)
-    if ann is None:
-        return False
-    # `X | None` (BinOp), `Optional[X]` / `Union[..., None]` (Subscript), bare `None`.
-    for sub in ast.walk(ann):
-        if isinstance(sub, ast.Constant) and sub.value is None:
-            return True
-        if isinstance(sub, ast.Name) and sub.id == "Optional":
-            return True
-        if isinstance(sub, ast.Attribute) and sub.attr == "Optional":
-            return True
-    return False
-
-
 def _is_clean_return(node: "ast.AST") -> bool:
     """True if this return says 'no findings' rather than 'I could not judge'."""
     v = getattr(node, "value", None)
@@ -359,14 +318,59 @@ def _is_clean_return(node: "ast.AST") -> bool:
 # check_undefined_names' main analysis path (11 shipped service modules were invisible to
 # it because a BOM made ast.parse raise) and check_async_blocking (same BOM blindness, so
 # PQ010's blocking-call gate was clean on those same files). The rest are real and open.
-#: Calls that turn an INPUT into something checkable. A try that contains none of these
-#: cannot be swallowing an unreadable input, whatever it catches. `literal_eval` is
-#: deliberately ABSENT: it reads an already-parsed AST node, so None means "not a
-#: literal", not "a file was lost".
-_INPUT_READS = {
-    "parse", "generate_tokens", "read_text", "read_bytes", "compile",
-    "load", "loads", "safe_load", "safe_load_all", "open",
+_HYG004_BASELINE = {
+    "check_capability_surfaced.py",
+    "check_llm_facade_conformance.py",
+    "check_local_call_signatures.py",
+    "check_mcp_apps_contract.py",
+    "check_nexus_client_contract.py",
+    "check_python_quality.py",
+    "check_service_registry_resolves.py",
+    "check_undefined_names.py",
 }
+
+# HYG008 — a checker that talks to the container engine as `docker` ONLY.
+#
+# This fleet runs rootful podman in WSL2. A checker that shells `docker ps` does not
+# report a smaller truth here, it reports NOTHING: every call fails, the tool exits 2,
+# and the invariant it guards goes unwatched for as long as nobody reads the exit code.
+# `check_container_import_errors.py` was found in exactly that state on 2026-08-13,
+# minutes after a new rule was added to it — the rule could never have run.
+#
+# The fix is the ladder both check_lb_upstream_liveness.py and (now)
+# check_container_import_errors.py use: PROBE for the engine, docker first so a box
+# mid-cutover still works, podman-in-WSL second, and say which one answered.
+#
+# Pinned, not zero: 36 of the 64 engine-touching checkers were docker-only when this
+# rule was written, and a gate that opens red gets bypassed rather than satisfied —
+# which is exactly how this repo's per-file-ignores came to exist. The count must
+# SHRINK. A checker newly hardcoding docker fails immediately; remediating one lowers
+# the pin in the same commit.
+# 36 -> 32 on 2026-08-15. One of those four is check_wal_retention_bounded.py,
+# which was docker-only and therefore had NEVER judged the WAL invariant it was
+# written for — every run returned NOT VERIFIED. It is exactly the state this
+# rule's own comment describes, found by asking the fleet rather than the tool.
+_HYG008_PIN = 32
+
+_ENGINE_CALL_RE = re.compile(r'["\']docker["\']|\bdocker\s+(?:ps|inspect|exec|logs)\b')
+_ENGINE_LADDER_RE = re.compile(r"_engine_prefix|def engine\(|podman")
+
+
+def _hyg8(trees: list[Path]) -> list[str]:
+    """HYG008 — engine-touching checkers with no podman path. Returns offenders."""
+    out: list[str] = []
+    for tree in trees:
+        for f in sorted(tree.glob("check_*.py")):
+            try:
+                src = f.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            if not _ENGINE_CALL_RE.search(src):
+                continue
+            if _ENGINE_LADDER_RE.search(src):
+                continue
+            out.append(f.name)
+    return sorted(set(out))
 
 #: EMPTY as of 2026-08-11, and it must stay that way. All eight entries were
 #: discharged rather than re-pinned: three checkers now record unparseable files and
@@ -410,37 +414,7 @@ def _hyg4(trees: list[Path]) -> list[str]:
                 # say so rather than passing over it (the very rule being enforced).
                 out.append(f"{f.name}: could not be parsed by HYG004")
                 continue
-            # Only a try that READS AN INPUT can swallow an unreadable one. Walking
-            # bare ExceptHandlers flagged `ast.literal_eval(node)` in
-            # check_mcp_apps_contract.py, which evaluates an ALREADY-PARSED AST node
-            # and returns None for "not a literal" — a legitimate value, not a lost
-            # file. This rule's cost is entirely in false positives (a checker family
-            # that cries wolf gets switched off), so it now requires the try body to
-            # actually parse or read something.
-            # Handlers are collected WITH their enclosing function, because whether a
-            # `return None` is silence or an honest "cannot judge" depends on whether
-            # that function DECLARES the sentinel — see _declares_optional.
-            handlers: list[tuple[ast.ExceptHandler, ast.AST | None]] = []
-            _fn_of: dict[int, ast.AST] = {}
-            for fn in ast.walk(mod):
-                if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    for sub in ast.walk(fn):
-                        if isinstance(sub, ast.Try):
-                            _fn_of.setdefault(id(sub), fn)
-
-            for tnode in (n for n in ast.walk(mod) if isinstance(n, ast.Try)):
-                reads_input = any(
-                    isinstance(c, ast.Call) and (
-                        getattr(getattr(c, "func", None), "attr", "") in _INPUT_READS
-                        or getattr(getattr(c, "func", None), "id", "") in _INPUT_READS
-                    )
-                    for b in tnode.body for c in ast.walk(b)
-                )
-                if reads_input:
-                    owner = _fn_of.get(id(tnode))
-                    handlers.extend((hh, owner) for hh in tnode.handlers)
-
-            for h, owner in handlers:
+            for h in (n for n in ast.walk(mod) if isinstance(n, ast.ExceptHandler)):
                 names = set()
                 t = h.type
                 for node in ast.walk(t) if t is not None else []:
@@ -464,87 +438,12 @@ def _hyg4(trees: list[Path]) -> list[str]:
                 if escalates:
                     continue
                 for n in h.body:
-                    if (isinstance(n, ast.Return) and _is_clean_return(n)
-                            and not _returns_declared_unknown(n, owner)):
+                    if isinstance(n, ast.Return) and _is_clean_return(n):
                         out.append(f"{f.name}:{n.lineno}: "
                                    f"except {sorted(names & _CANNOT_READ_EXC)} returns "
                                    f"CLEAN — unreadable input reported as no findings")
     return out
 
-
-
-#: HYG007 baseline — gate ids ALREADY duplicated when the rule was added (2026-08-10).
-#: Same contract as _HYG004_BASELINE: this list must SHRINK, never grow. Renumbering a
-#: published gate id rewrites references in commit messages and reviews, so these are
-#: pinned rather than force-fixed; a NEW collision fails immediately, which is the case
-#: that actually costs time (two sessions appending concurrently both reach for the next
-#: free letter, and markdown renders the duplicate perfectly).
-_HYG007_BASELINE = {"1n", "1u", "1x"}
-
-
-_GATE_ID_RE = re.compile(r"^(1[a-z]{1,2})\.\s", re.M)
-
-
-
-def _git_tracked(root: Path, path: Path) -> bool:
-    """Is *path* known to git? Unknown-but-present is invisible to CI.
-
-    A wired checker that exists on YOUR disk but is not TRACKED does not exist on CI,
-    which runs a fresh checkout — the workflow step then dies with "can't open file".
-    Disk presence is the wrong question; `git ls-files` is the right one. That is
-    D-975's lesson restated: a file is not tracked because you wrote it, it is tracked
-    when git says so.
-
-    Hit again on 2026-08-10: a peer's `check_ecosystem_surfaces.py` was wired into
-    debt-invariants.yml while still untracked, so committing that workflow would have
-    turned the job red for everyone. It was caught by hand, not by this gate.
-
-    Fails OPEN deliberately: if git is unavailable we cannot distinguish untracked from
-    tracked, and inventing violations from a missing tool would make the gate unusable
-    off a checkout. The disk-existence half still applies, so a genuinely missing file
-    is still caught.
-    """
-    try:
-        out = subprocess.run(
-            ["git", "ls-files", "--error-unmatch", str(path)],
-            cwd=str(root),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=20,
-        )
-        return out.returncode == 0
-    except (OSError, subprocess.SubprocessError, ValueError):
-        return True
-
-
-def _duplicate_gate_ids(rules: Path) -> list[str]:
-    """HYG007 — two gates in quality-gate.md sharing one identifier.
-
-    Gate ids are how every rule, commit message and review refers to a gate, and they
-    are hand-assigned in a file several sessions append to concurrently. Two sessions
-    reaching for the next free letter at the same time both pick it, and the collision
-    is invisible: the file parses, renders, and reads correctly top to bottom, because
-    markdown does not care that two headings start with `1zg.`. It surfaces later as
-    "gate 1zg" meaning two different things in two different commits.
-
-    Measured 2026-08-10: a peer landed "decision-card channel" as 1zg while an
-    AitherEvent gate was in flight under the same id. Caught by hand, on the way to a
-    commit that would have shipped the duplicate.
-    """
-    if not rules.is_file():
-        return [f"{rules} is missing — cannot check gate ids"]
-    text = rules.read_text(encoding="utf-8", errors="replace")
-    ids = _GATE_ID_RE.findall(text)
-    seen: dict[str, int] = {}
-    for gid in ids:
-        seen[gid] = seen.get(gid, 0) + 1
-    return [
-        f"gate id {gid!r} used {n} times — two gates cannot share an identifier"
-        for gid, n in sorted(seen.items())
-        if n > 1 and gid not in _HYG007_BASELINE
-    ]
 
 
 _MARKER_NAME = "canonical-deploy-root"
@@ -585,18 +484,6 @@ def _marker_parse_violations(tools_dir: Path) -> list[str]:
             continue
         if _MARKER_NAME not in src:
             continue
-        # A file that only NAMES the marker in a comment does not read it, so it
-        # cannot have this bug. Triggering on the bare string is the "cries wolf"
-        # failure this rule's own docstring warns about -- it had already produced
-        # one false positive (check_baked_code_staleness.py), and produced a second
-        # on check_awgit_lease_plane.py, which mentions the marker in a single
-        # explanatory comment and never opens it. Strip comment-only lines before
-        # deciding the file reads the marker at all.
-        code_only = "\n".join(
-            ln for ln in src.splitlines() if not ln.lstrip().startswith("#")
-        )
-        if _MARKER_NAME not in code_only:
-            continue
         linewise = ('startswith("#")' in src or "startswith('#')" in src
                     or 'split("#", 1)[0]' in src or 'split("#",1)[0]' in src)
         if not linewise:
@@ -630,6 +517,9 @@ def _collect(root: Path):
     wired = wired_in_workflow(workflow) | wired_in_routines(routines_dir, probe)
 
     hyg1: list[str] = []
+    hyg2 = sorted(n for n in doc if resolve(n, trees) is None)
+    hyg3 = sorted(n for n in wired if resolve(n, trees) is None)
+    hyg9 = _untracked_live(root, doc | wired, resolve, trees)
     # HYG002 asks TWO questions, because disk presence is not the bar. The second was
     # asymmetric until 2026-08-11: HYG003 already refused an untracked WIRED tool
     # ("absent on a CI checkout") while HYG002 accepted an untracked DOCUMENTED one.
@@ -684,12 +574,97 @@ def _collect(root: Path):
         "wired_count": len(wired),
     }
     hyg6 = _marker_parse_violations(root / 'AitherOS' / 'dev' / 'tools')
+    hyg7 = _hyg7(root, trees)
+    hyg8 = _hyg8(trees)
+    return hyg1, hyg2, hyg3, hyg4, hyg5, hyg6, hyg7, hyg8, hyg9, report
+
+
+def _hyg7(root: Path, trees: list[Path]) -> list[str]:
+    """HYG007 — a deploy-playbook phase gate must name a checker that EXISTS.
+
+    Why this is a gate and not a convention
+    ---------------------------------------
+    AitherOS/config/deploy/phases/*.yaml drive orchestrate_fleet.py, and each phase declares
+    `gate.tool`. If that tool does not exist on disk the phase does not fail loudly -- the
+    orchestrator finds nothing to run, and the phase reads as SATISFIED. A gate that names a
+    missing tool therefore ALWAYS PASSES, which is strictly worse than having no gate: the
+    playbook reports a verified deployment it never verified.
+
+    Added 2026-08-11, when the phases were authored by agents. The rule "never invent a
+    checker" was given to them as an INSTRUCTION, and an instruction is not an assertion --
+    the same reasoning that turned the python-quality rules into check_python_quality.py
+    after one of seven was found actually enforced. A later rename of any check_*.py would
+    also silently hollow out every phase that gated on it.
+
+    Skipped cleanly when the phases tree is absent (an adopted repo has none), which is a
+    correct skip rather than a pass-by-omission.
+    """
+    violations: list[str] = []
+    phases = root / "AitherOS" / "config" / "deploy" / "phases"
+    if not phases.is_dir():
+        return violations
+    try:
+        import yaml  # noqa: PLC0415 -- optional dep; absence must not crash the whole gate
+    except ImportError:
+        # Cannot parse => cannot judge. Surfaced as a violation rather than silence, because
+        # "I could not look" must never render as "nothing is wrong" (HYG004's whole lesson).
+        return ["(pyyaml missing — phase gate tools NOT VERIFIED)"]
+
+    for f in sorted(phases.glob("*.yaml")):
+        try:
+            doc = yaml.safe_load(f.read_text(encoding="utf-8", errors="replace")) or {}
+        except Exception:  # noqa: BLE001 -- an unparseable phase is itself a finding
+            violations.append(f"{f.name}: unparseable YAML — gate NOT VERIFIED")
+            continue
+        # `gate:` appears in BOTH shapes across the authored phases: a mapping with an
+        # explicit `tool:`, and a free-text string describing the command. A first version
+        # of this rule assumed the mapping and crashed on the string form -- caught by its
+        # own negative control, which is the only reason it is not silently skipping those
+        # files today. Handle both; anything else is a finding, not an exception.
+        gate = doc.get("gate")
+        tool = None
+        if isinstance(gate, dict):
+            # orchestrate_fleet.py reads gate["tool"] (line ~250). Phases authored later
+            # declare the checker under gate["name"] instead, so the orchestrator resolves
+            # None and RUNS NOTHING -- the phase passes without ever being verified.
+            # Measured 2026-08-11: 7 of 11 phases, INCLUDING 08-inference-engine and
+            # 09-embeddings-boot, whose gate is the DGX memory headroom check that exists
+            # specifically to stop a model service starting into a starved pool. A grep for
+            # the checker NAME finds it in all of them and looks correct; only asking the
+            # key the orchestrator actually reads exposes it. Assert `tool`, and report a
+            # `name`-only gate as the silent-pass defect it is.
+            tool = gate.get("tool")
+            if not tool and gate.get("name"):
+                violations.append(
+                    f"{f.name}: gate declares '{gate.get('name')}' under `name`, but "
+                    f"orchestrate_fleet.py reads `gate.tool` — this gate NEVER RUNS and "
+                    f"the phase always passes"
+                )
+                continue
+        elif isinstance(gate, str):
+            m = re.search(r"(check_[A-Za-z0-9_]+\.py)", gate)
+            tool = m.group(1) if m else None
+            if tool is None:
+                continue  # a prose gate naming no checker: an inline command, allowed
+        if not tool:
+            # A phase with no gate cannot fail. That is the defect this family exists for.
+            violations.append(f"{f.name}: phase declares NO gate.tool — it can never fail")
+            continue
+        if not str(tool).endswith(".py"):
+            continue  # an inline command, deliberately allowed; nothing to resolve
+        if resolve(str(tool), trees) is None:
+            violations.append(
+                f"{f.name}: gate.tool '{tool}' does not exist on disk — this phase "
+                f"ALWAYS PASSES"
+            )
+    return violations
     hyg7 = _duplicate_gate_ids(root / '.claude' / 'rules' / 'quality-gate.md')
     return hyg1, hyg2, hyg3, hyg4, hyg5, hyg6, hyg7, report
 
 
 def run(root: Path, show_all: bool) -> int:
     try:
+        hyg1, hyg2, hyg3, hyg4, hyg5, hyg6, hyg7, hyg8, hyg9, report = _collect(root)
         hyg1, hyg2, hyg3, hyg4, hyg5, hyg6, hyg7, report = _collect(root)
     except RuntimeError as exc:
         print(f"CANNOT RUN: {exc}", file=sys.stderr)
@@ -698,19 +673,51 @@ def run(root: Path, show_all: bool) -> int:
     findings = False
     for code, label, items in (
         ("HYG001", "documented-or-wired checkers with no --self-test", hyg1),
-        ("HYG002", "documented checkers missing on disk or untracked", hyg2),
+        ("HYG002", "documented checkers missing on disk", hyg2),
         ("HYG003", "wired checkers missing on disk", hyg3),
         ("HYG004", "checkers that report CLEAN on input they could not read (NEW)",
          [x for x in hyg4 if x.split(":")[0] not in _HYG004_BASELINE]),
         ("HYG005", "discipline copies drifted across delivery homes", hyg5),
         ("HYG006", "tools parsing the deploy-root marker whole (wrong root)", hyg6),
-        ("HYG007", "duplicate gate ids in quality-gate.md", hyg7),
+        ("HYG007", "deploy-playbook phase gates naming a checker that does not exist "
+                   "(such a phase ALWAYS PASSES)", hyg7),
+        ("HYG008", f"docker-only checkers — inert on this podman fleet "
+                   f"(pin {_HYG008_PIN}, must shrink)",
+         hyg8 if len(hyg8) > _HYG008_PIN else []),
     ):
         if items:
             findings = True
             _safe_print(f"{code}: {label}:")
             for n in items:
                 _safe_print(f"  - {n}")
+
+    if len(hyg8) <= _HYG008_PIN:
+        _safe_print(
+            f"HYG008 baseline: {len(hyg8)} docker-only checker(s) of the engine-touching "
+            f"set — pin {_HYG008_PIN}, must shrink, never grow"
+        )
+        if len(hyg8) < _HYG008_PIN:
+            _safe_print(f"  ratchet: lower _HYG008_PIN to {len(hyg8)} in this commit")
+
+    _safe_print(
+        f"HYG009 baseline: {len(hyg9)} documented-or-wired checker(s) git is NOT tracking "
+        f"— pin {HYG009_PIN}, must shrink, never grow. A wired gate that is not committed "
+        f"resolves to nothing in every clone and every CI run:"
+    )
+    for _n in hyg9:
+        _safe_print(f"  [untracked] {_n}")
+    if len(hyg9) > HYG009_PIN:
+        findings = True
+        _safe_print(
+            f"HYG009: {len(hyg9)} untracked live checker(s) exceeds the pin of "
+            f"{HYG009_PIN} — fix is a commit, not an allowlist entry"
+        )
+    elif len(hyg9) < HYG009_PIN:
+        findings = True
+        _safe_print(
+            f"HYG009: pin is stale — {len(hyg9)} untracked, pin says {HYG009_PIN}. "
+            f"Lower HYG009_PIN in the same commit that fixed them, or the win is given back."
+        )
 
     known4 = [x for x in hyg4 if x.split(":")[0] in _HYG004_BASELINE]
     if known4:
@@ -771,6 +778,11 @@ def self_test() -> int:
             "run python dev/tools/check_real_but_no_selftest.py\n",
             encoding="utf-8",
         )
+        # A drifted copy across delivery homes, so the parity rule can also fire. The pair
+        # is taken from PARITY (data) rather than written as literals: this module
+        # ships publicly and must name no repo's private layout. With no parity
+        # registry — the portable copy — there is nothing for it to assert, and
+        # the fixture is skipped rather than faked.
         # A drifted copy across delivery homes, so the parity rule can also fire.
         # The pair comes from PARITY (data), never literals: this module ships
         # publicly and must name no repo's private layout. With no parity registry
@@ -782,6 +794,31 @@ def self_test() -> int:
                 dest = root / rel
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_text(body, encoding="utf-8")
+        # HYG004: a swallowing handler must fire; a subscript-recording one must not.
+        (root / "dev/tools/check_swallows_parse.py").write_text(
+            '"""x"""\nimport ast\n\n\ndef scan(p):\n'
+            "    try:\n        return ast.parse(p)\n"
+            "    except SyntaxError:\n        return None\n\n\n"
+            'def self_test():\n    return 0\n',
+            encoding="utf-8",
+        )
+        (root / "dev/tools/check_records_parse.py").write_text(
+            '"""x"""\nimport ast\nBAD = {}\n\n\ndef scan(p):\n'
+            "    try:\n        return ast.parse(p)\n"
+            "    except SyntaxError as exc:\n"
+            "        BAD[p] = type(exc).__name__\n        return None\n\n\n"
+            'def self_test():\n    return 0\n',
+            encoding="utf-8",
+        )
+        hyg1, hyg2, hyg3, hyg4, hyg5, hyg6, _hyg7, _hyg8, hyg9, _ = _collect(root)
+        if not any("check_swallows_parse" in x for x in hyg4):
+            print("SELF-TEST FAIL: HYG004 did not fire on a swallowing handler",
+                  file=sys.stderr)
+            return 1
+        if any("check_records_parse" in x for x in hyg4):
+            print("SELF-TEST FAIL: HYG004 fired on a handler that RECORDS the failure",
+                  file=sys.stderr)
+            return 1
         hyg1, hyg2, hyg3, hyg4, hyg5, hyg6, _hyg7, _ = _collect(root)
         # HYG002's SECOND half specifically: a documented tool that is present on disk
         # but not tracked. Asserted separately from "hyg2 is non-empty", because the

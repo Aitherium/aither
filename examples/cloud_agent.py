@@ -3,7 +3,7 @@
 No local GPU needed. Uses mcp.aitherium.com for inference and 100+ MCP tools.
 
 Setup:
-    pip install aither-adk
+    pip install awdk
     export AITHER_API_KEY=aither_sk_live_...   # Get one at aitherium.com
     python cloud_agent.py
 """

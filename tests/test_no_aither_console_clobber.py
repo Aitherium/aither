@@ -1,7 +1,7 @@
-"""Test guard: aither-adk must NEVER register `aither` console_script.
+"""Test guard: awdk must NEVER register `aither` console_script.
 
 The `aither` command is owned by the npm @aitheros/shell-cli (TypeScript REPL).
-The Python aithershell package uses `aither-py`. The aither-adk SDK uses `adk`.
+The Python aithershell package uses `aither-py`. The awdk SDK uses `adk`.
 
 This test fails if a future PR re-adds `aither = ...` under [project.scripts].
 """
@@ -23,14 +23,14 @@ PYPROJECT = REPO_ROOT / "pyproject.toml"
 def test_aither_console_script_not_registered() -> None:
     """Reserve the `aither` binary for the npm shell-cli REPL.
 
-    See aither-adk/pyproject.toml [project.scripts] for the rule.
+    See awdk/pyproject.toml [project.scripts] for the rule.
     """
     data = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))
     scripts = data.get("project", {}).get("scripts", {})
     forbidden = {"aither", "aithershell"}
     collisions = forbidden & set(scripts.keys())
     assert not collisions, (
-        f"aither-adk MUST NOT register {sorted(collisions)} as console_scripts. "
+        f"awdk MUST NOT register {sorted(collisions)} as console_scripts. "
         f"The `aither` command belongs to the npm @aitheros/shell-cli REPL. "
         f"Use `adk`, `adk-bug`, `adk-serve` for SDK CLIs. "
         f"Found in [project.scripts]: {dict(scripts)}"
@@ -39,18 +39,18 @@ def test_aither_console_script_not_registered() -> None:
 
 #: The distribution's own name. `uvx <package>` runs the console script whose
 #: name MATCHES the package, and the ACP registry's uvx distribution is exactly
-#: that shape — without this entry `uvx aither-adk acp serve` fails with "no
+#: that shape — without this entry `uvx awdk acp serve` fails with "no
 #: such executable" while the registry entry validates fine (it only checks that
 #: the PyPI package exists, never that it runs).
 #:
-#: It is a NARROW exception, not a loosening: `aither-adk` is a distinct binary
+#: It is a NARROW exception, not a loosening: `awdk` is a distinct binary
 #: from `aither`, so the invariant this file exists for — the `aither` command
 #: belongs to the npm shell-cli — is untouched and still asserted above.
-DISTRIBUTION_SCRIPT = "aither-adk"
+DISTRIBUTION_SCRIPT = "awdk"
 
 
 def test_only_adk_prefixed_scripts() -> None:
-    """All aither-adk console_scripts must be `adk`, `adk-*`, or the dist name."""
+    """All awdk console_scripts must be `adk`, `adk-*`, or the dist name."""
     data = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))
     scripts = data.get("project", {}).get("scripts", {})
     bad = [
@@ -58,7 +58,7 @@ def test_only_adk_prefixed_scripts() -> None:
         if not (name == "adk" or name.startswith("adk-") or name == DISTRIBUTION_SCRIPT)
     ]
     assert not bad, (
-        f"aither-adk console_scripts must be `adk`, `adk-*`, or `{DISTRIBUTION_SCRIPT}`. "
+        f"awdk console_scripts must be `adk`, `adk-*`, or `{DISTRIBUTION_SCRIPT}`. "
         f"Found non-conforming entries: {bad}. "
         f"All scripts: {list(scripts.keys())}"
     )
@@ -67,8 +67,8 @@ def test_only_adk_prefixed_scripts() -> None:
 def test_uvx_entrypoint_is_present() -> None:
     """The exception above must actually be USED, not merely permitted.
 
-    Allowing `aither-adk` without registering it is the worst of both: the fence
-    is widened and `uvx aither-adk` still cannot launch.
+    Allowing `awdk` without registering it is the worst of both: the fence
+    is widened and `uvx awdk` still cannot launch.
     """
     data = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))
     scripts = data.get("project", {}).get("scripts", {})

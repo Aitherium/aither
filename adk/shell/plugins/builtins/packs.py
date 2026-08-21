@@ -101,7 +101,11 @@ class PacksPlugin(SlashCommand):
     """
 
     name = "packs"
-    aliases = ["pack", "store"]
+    # `pack` is pack_customize's NAME and `store` is commerce's alias for a
+    # Stripe storefront. Both were claimed here too, and since the loader
+    # registers in glob order the LAST writer silently won — which made the
+    # winner depend on a filename rather than on a decision.
+    aliases = ["packstore"]
     category = "marketplace"
 
     def __init__(self):
@@ -109,7 +113,7 @@ class PacksPlugin(SlashCommand):
         super().__init__(
             name="packs",
             description="Browse and manage agent/skill/tool packs from marketplace.",
-            aliases=["pack", "store"],
+            aliases=["packstore"],
         )
         self.auth = AuthStore()
         self._base_url = self._get_base_url()

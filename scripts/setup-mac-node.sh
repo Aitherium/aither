@@ -6,7 +6,7 @@
 # Uses Metal GPU acceleration on Apple Silicon for fast inference.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/Aitherium/aither-adk/main/scripts/setup-mac-node.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/Aitherium/awdk/main/scripts/setup-mac-node.sh | bash
 #   # or
 #   bash scripts/setup-mac-node.sh
 #   bash scripts/setup-mac-node.sh https://custom-url/model.gguf

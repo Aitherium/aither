@@ -199,6 +199,17 @@ class SpritePlugin(SlashCommand):
     description: str = "AitherSprite — your companion creature (care, talk, evolve)"
     category: str = "fun"
 
+    def __init__(self) -> None:
+        # Explicit, because the dataclass base assigns
+        # `self.name = ""` and shadows the class attribute above —
+        # the instance then registers under the empty string and is
+        # overwritten by the next plugin to do the same.
+        super().__init__(
+            name='sprite',
+            description='AitherSprite — your companion creature (care, talk, evolve)',
+            aliases=['pet'],
+        )
+
     async def run(self, args: List[str], ctx: Dict[str, Any]) -> Optional[str]:
         import httpx
 

@@ -295,7 +295,26 @@ async def _handle(args: str, **kwargs) -> str:
         )
 
 
-# Register as slash commands
-COMMANDS: List[SlashCommand] = [
-    SlashCommand(name="appforge", handler=_handle, description="AppForge pipeline control", aliases=["forge", "af"]),
-]
+# Register as a slash command.
+#
+# This was `SlashCommand(name=..., handler=_handle, ...)` — a `handler=` kwarg
+# the dataclass has never had, so constructing it raised TypeError at IMPORT,
+# the loader swallowed it at DEBUG, and /appforge simply did not exist. The
+# loader looks for SlashCommand SUBCLASSES; a list of instances named COMMANDS
+# is read by nothing.
+class AppForgeCommand(SlashCommand):
+    """`/appforge` — AppForge pipeline control."""
+
+    name = "appforge"
+    description = "AppForge pipeline control"
+    aliases = ["forge", "af"]
+
+    def __init__(self) -> None:
+        super().__init__(
+            name="appforge",
+            description="AppForge pipeline control",
+            aliases=["forge", "af"],
+        )
+
+    async def run(self, args: List[str], ctx: Dict[str, Any]) -> Optional[str]:
+        return await _handle(" ".join(args))

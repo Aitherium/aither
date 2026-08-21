@@ -14,6 +14,7 @@ tags: [node, bootstrap, inference, deployment, vllm, ollama, hardware, edge]
 
 mcp_tools:
   - "node_*"
+  - "relay_*"
 
 # Empty -> the loader file-loads this pack's __init__.py by path
 # (pack dir on submodule_search_locations, so `from . import tools` resolves)

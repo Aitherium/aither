@@ -4,7 +4,7 @@ Spins up 4 agents that auto-delegate tasks between each other.
 All inference happens on mcp.aitherium.com. No GPU required.
 
 Setup:
-    pip install aither-adk
+    pip install awdk
     export AITHER_API_KEY=aither_sk_live_...
     python cloud_fleet.py
 """

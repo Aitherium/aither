@@ -155,6 +155,17 @@ class AppPlugin(SlashCommand):
     description: str = "Pull and manage workspace apps from portal.aitherium.com"
     category: str = "workspace"
 
+    def __init__(self) -> None:
+        # Explicit, because the dataclass base assigns
+        # `self.name = ""` and shadows the class attribute above —
+        # the instance then registers under the empty string and is
+        # overwritten by the next plugin to do the same.
+        super().__init__(
+            name='app',
+            description='Pull and manage workspace apps from portal.aitherium.com',
+            aliases=['apps', 'workspace-app'],
+        )
+
     async def run(self, args: List[str], ctx: Dict[str, Any]) -> Optional[str]:
         if not args:
             return await self._list(args)

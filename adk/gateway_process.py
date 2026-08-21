@@ -47,7 +47,7 @@ async def run_gateway(
         )
     except ImportError as e:
         print(f"Channel adapters not available: {e}")
-        print("Install with: pip install aither-adk")
+        print("Install with: pip install awdk")
         sys.exit(1)
 
     if telegram:

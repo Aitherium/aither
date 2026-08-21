@@ -26,6 +26,7 @@ tags: [arc-agi, world-model, crowdsource, contribute, acta, leaderboard, free]
 # Marketplace gate matches these against (tool_name, tool_module).
 mcp_tools:
   - "arc_*"
+  - "relay_*"
 
 # The pack directory has a hyphen (`arc-brainpack`), which is NOT importable as a
 # dotted module, so there is no importable `tool_modules` path. The ADK loader

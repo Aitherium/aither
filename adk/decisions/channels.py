@@ -130,7 +130,7 @@ def load_config() -> dict[str, ChannelConfig]:
     if not isinstance(raw, dict):
         raise ChannelConfigError(f"{target} must contain a JSON object")
 
-    # A malformed ENTRY is raised on rather than skipped (SEC004). Dropping it
+    # A malformed ENTRY is raised on rather than skipped. Dropping it
     # silently would leave a caller unable to tell "nothing configured" from
     # "your Discord block is broken and your cards are going nowhere" — and the
     # second one looks exactly like the first from every surface.
@@ -265,7 +265,36 @@ class DecisionChannelBridge:
             # act on is an interruption, not a decision surface.
             return False
         floor = _URGENCY_RANK.get(cfg.min_urgency, 1)
-        return _URGENCY_RANK.get(card.urgency, 1) >= floor
+        rank = _URGENCY_RANK.get(card.urgency, 1)
+        if rank < floor:
+            return False
+
+        # PRESENCE, the Slack rule: the phone stays quiet while you are at the
+        # desktop, because the popup already has you. A card that arrives on a
+        # screen you are looking at AND buzzes in your pocket trains you to
+        # ignore the pocket.
+        #
+        # CRITICAL is never suppressed. Presence decides whether a REDUNDANT
+        # channel fires, never whether an urgent card reaches somebody.
+        #
+        # And it fails toward DELIVERING: unmeasurable presence (no API,
+        # non-Windows, permission error) counts as away. Suppressing on
+        # evidence nobody gathered is the failure cards exist to prevent.
+        if rank < _URGENCY_RANK.get("critical", 99):
+            try:
+                from adk.decisions.presence import is_at_desk, presence_note
+                if is_at_desk():
+                    # Logged, not silent: a notification that did not happen is
+                    # otherwise indistinguishable from one that failed.
+                    print(f"[decisions] {card.id}: {presence_note()}")
+                    return False
+            except Exception as exc:  # noqa: BLE001 - best-effort, but LOUD
+                # Never silent. A swallowed presence error means every card
+                # quietly reverts to always-DM, or worse never-DM, and nobody
+                # can tell which — the exact "the feature is just off" shape.
+                print(f"[decisions] presence check failed "
+                      f"({type(exc).__name__}: {exc}) — delivering anyway")
+        return True
 
     def note_sent(self, platform: str, card_id: str) -> None:
         with self._lock:

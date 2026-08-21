@@ -90,7 +90,7 @@ def test_list_agents_returns_bundled_manifests():
     assert "claude-agent-acp" in ids
     assert "codex-acp" in ids
     assert "gemini-cli" in ids
-    assert "aither-adk" in ids
+    assert "awdk" in ids
 
 
 def test_bundled_manifests_are_valid_agent_packs():

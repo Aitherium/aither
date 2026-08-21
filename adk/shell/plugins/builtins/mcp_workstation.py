@@ -17,7 +17,7 @@ class MCPWorkstationPlugin(SlashCommand):
     """
     /mcp-workstation — Launch a local MCP server and register with portal.
 
-    Starts aithernode mcp as a background subprocess and optionally registers
+    Starts awnode mcp as a background subprocess and optionally registers
     the endpoint with the portal so agents can discover and use your local tools.
 
     Subcommands:
@@ -32,6 +32,17 @@ class MCPWorkstationPlugin(SlashCommand):
     category = "infrastructure"
 
     _running_process: Optional[subprocess.Popen] = None
+
+    def __init__(self) -> None:
+        # Explicit, because the dataclass base assigns
+        # `self.name = ""` and shadows the class attribute above —
+        # the instance then registers under the empty string and is
+        # overwritten by the next plugin to do the same.
+        super().__init__(
+            name='mcp-workstation',
+            description='',
+            aliases=['mcp'],
+        )
 
     def execute(self, args: List[str], **kwargs) -> str:
         """Main entry point for /mcp-workstation command."""
@@ -64,19 +75,19 @@ class MCPWorkstationPlugin(SlashCommand):
             else:
                 i += 1
 
-        # Check for aithernode executable
-        aithernode = shutil.which("aithernode")
-        if not aithernode:
+        # Check for awnode executable
+        awnode = shutil.which("awnode")
+        if not awnode:
             return (
                 "ERROR: 'aithernode' not found. Install with:\n"
                 "  pip install awnode\n"
                 "or\n"
-                "  adk install aithernode"
+                "  adk install awnode"
             )
 
         # Start MCP server as subprocess
         try:
-            cmd = [aithernode, "mcp", "--transport", "sse", "--port", str(port)]
+            cmd = [awnode, "mcp", "--transport", "sse", "--port", str(port)]
             self._running_process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
@@ -84,7 +95,7 @@ class MCPWorkstationPlugin(SlashCommand):
                 text=True,
             )
         except Exception as e:
-            return f"ERROR: Failed to start aithernode: {e}"
+            return f"ERROR: Failed to start awnode: {e}"
 
         # Determine public URL
         if not public_url:

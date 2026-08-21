@@ -15,7 +15,7 @@
 
 set -euo pipefail
 
-ADK_PACKAGE="aither-adk"
+ADK_PACKAGE="awdk"
 SKIP_WIZARD=false
 
 # Colors

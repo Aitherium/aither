@@ -391,6 +391,7 @@ class AddonManager:
             result = subprocess.run(
                 ["docker", "compose", "-f", str(compose_file), "up", "-d", svc_name],
                 capture_output=True, text=True, timeout=120,
+                encoding="utf-8", errors="replace",
             )
             if result.returncode != 0:
                 raise RuntimeError(result.stderr or f"compose up failed (rc={result.returncode})")
@@ -400,6 +401,7 @@ class AddonManager:
                 ["docker", "compose", "-f", str(compose_file),
                  "ps", "-q", svc_name],
                 capture_output=True, text=True, timeout=10,
+                encoding="utf-8", errors="replace",
             )
             instance.container_id = id_result.stdout.strip()[:12] if id_result.stdout else ""
             instance.endpoint = f"http://localhost:{port}"

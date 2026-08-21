@@ -41,14 +41,14 @@ if [ -z "$PYTHON" ]; then
     fi
 fi
 
-# Install aither-adk
+# Install awdk
 echo
-echo "Installing aither-adk..."
-$PYTHON -m pip install --upgrade aither-adk 2>/dev/null || \
-    $PYTHON -m pip install --user --upgrade aither-adk
+echo "Installing awdk..."
+$PYTHON -m pip install --upgrade awdk 2>/dev/null || \
+    $PYTHON -m pip install --user --upgrade awdk
 
 echo
-echo "[OK] aither-adk installed"
+echo "[OK] awdk installed"
 echo
 
 # Run doctor

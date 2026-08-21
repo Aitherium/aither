@@ -6,7 +6,7 @@ import org.json.JSONObject
 /**
  * ACP (Agent Client Protocol) v2 wire helpers — stdio JSON-RPC 2.0.
  *
- * Mirrors the server implemented by aither-adk (`adk/adk/acp_server.py`), which
+ * Mirrors the server implemented by awdk (`adk/adk/acp_server.py`), which
  * advertises exactly these methods over newline-delimited JSON-RPC 2.0:
  * `session/new|list|resume|load|close|delete|prompt|cancel`, with the server
  * pushing `session/update` notifications and `session/request_permission`

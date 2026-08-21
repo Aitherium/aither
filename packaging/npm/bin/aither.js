@@ -5,7 +5,7 @@
  * This is a thin shim that delegates to the Python `aither` CLI.
  * If Python isn't installed, it provides helpful installation instructions.
  *
- * Install: npm install -g aither-adk
+ * Install: npm install -g awdk
  * Usage:   aither init my-agent
  */
 
@@ -70,9 +70,9 @@ if (aitherCli) {
   }
 } else {
   // Install via pip and then run
-  console.log("Installing aither-adk Python package...");
+  console.log("Installing awdk Python package...");
   try {
-    execFileSync(python, ["-m", "pip", "install", "--quiet", "aither-adk"], {
+    execFileSync(python, ["-m", "pip", "install", "--quiet", "awdk"], {
       stdio: "inherit",
     });
     // Now run
@@ -80,7 +80,7 @@ if (aitherCli) {
       stdio: "inherit",
     });
   } catch (e) {
-    console.error("Failed to install aither-adk. Try: pip install aither-adk");
+    console.error("Failed to install awdk. Try: pip install awdk");
     process.exit(1);
   }
 }

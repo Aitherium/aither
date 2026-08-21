@@ -1,5 +1,7 @@
 """aither deploy — Component deployment for the AitherOS ecosystem.
 
+Deploy individual components (Ollama, vLLM, awnode, core stack, full stack)
+or companion apps (AitherConnect, AitherDesktop) from public GitHub releases.
 Deploy individual components (Ollama, vLLM, AitherNode, core stack, full stack)
 or companion apps (Awconnect, AitherDesktop) from public GitHub releases.
 
@@ -7,7 +9,7 @@ Usage (via CLI):
     aither deploy ollama                   # Install + pull models for your GPU
     aither deploy ollama --models qwen3:8b,phi4  # Pull specific models
     aither deploy vllm                     # Set up vLLM inference (delegates to setup)
-    aither deploy node                     # AitherNode + Genesis via Docker
+    aither deploy node                     # awnode + Genesis via Docker
     aither deploy node --gpu --dashboard   # Node with GPU + Veil dashboard
     aither deploy core                     # Core services (Node, Pulse, Watch, Genesis)
     aither deploy full                     # Full AitherOS stack (~55 containers)
@@ -111,7 +113,7 @@ GATEWAY_URL = "https://gateway.aitherium.com"
 # Health-check endpoints (port -> service name)
 HEALTH_ENDPOINTS = {
     8001: "Genesis",
-    8080: "AitherNode",
+    8080: "awnode",
     8081: "Pulse",
     8082: "Watch",
     3000: "AitherVeil",
@@ -799,7 +801,7 @@ def _deploy_adk_node_native(dry_run: bool = False, api_key: str = "") -> int:
         err("Neither Docker nor adk-serve is available")
         print()
         print(f"  Option 1: Install Docker — {cyan('https://docker.com/products/docker-desktop')}")
-        print(f"  Option 2: Ensure adk-serve is in PATH — {cyan('pip install aither-adk')}")
+        print(f"  Option 2: Ensure adk-serve is in PATH — {cyan('pip install awdk')}")
         return 1
 
     if dry_run:
@@ -1045,7 +1047,7 @@ def deploy_adk_node(
 
 
 # ===========================================================================
-# Component: AitherNode (Tier 3 — full Genesis stack)
+# Component: awnode (Tier 3 — full Genesis stack)
 # ===========================================================================
 
 def deploy_node(
@@ -1063,7 +1065,7 @@ def deploy_node(
     federate: bool = False,
     portal_token: Optional[str] = None,
 ) -> int:
-    """Deploy AitherNode (MCP server) + Genesis orchestrator via Docker Compose.
+    """Deploy awnode (MCP server) + Genesis orchestrator via Docker Compose.
 
     Downloads the node compose file from GitHub and starts the containers with
     selected profile flags. Requires a valid Aitherium API key.
@@ -1087,7 +1089,7 @@ def deploy_node(
         Exit code (0 = success, 1 = failure).
     """
     print()
-    print(bold("  AitherNode Deployment"))
+    print(bold("  awnode Deployment"))
     print(dim("  MCP server (8080) + Genesis orchestrator (8001)"))
     print()
 
@@ -1192,7 +1194,7 @@ def deploy_node(
     step(4, total_steps, "Verifying services")
 
     if dry_run:
-        info("Would check: http://localhost:8080/health (AitherNode)")
+        info("Would check: http://localhost:8080/health (awnode)")
         info("Would check: http://localhost:8001/health (Genesis)")
         if dashboard:
             info("Would check: http://localhost:3000 (AitherVeil)")
@@ -1200,7 +1202,7 @@ def deploy_node(
             info("Would check: http://localhost:8094/health (AitherFederate)")
     else:
         endpoints = [
-            (8080, "AitherNode"),
+            (8080, "awnode"),
             (8001, "Genesis"),
         ]
         if dashboard:
@@ -1255,7 +1257,7 @@ def deploy_node(
     print()
     print(bold("  " + "-" * 60))
     print()
-    info(f"AitherNode: {cyan('http://localhost:8080')}")
+    info(f"awnode: {cyan('http://localhost:8080')}")
     info(f"Genesis:    {cyan('http://localhost:8001')}")
     if dashboard:
         info(f"Dashboard:  {cyan('http://localhost:3000')}")
@@ -1270,7 +1272,7 @@ def deploy_node(
     info(f"  PS:    {cyan(f'docker compose -f {compose_file} ps')}")
     print()
     if not dry_run:
-        info(f"{green(bold('AitherNode is ready!'))}")
+        info(f"{green(bold('awnode is ready!'))}")
     return 0
 
 
@@ -1367,7 +1369,7 @@ def deploy_core(dry_run: bool = False, tag: str = "latest", api_key_arg: Optiona
 
     core_ports = [
         (8001, "Genesis"),
-        (8080, "AitherNode"),
+        (8080, "awnode"),
         (8081, "Pulse"),
         (8082, "Watch"),
         (3000, "AitherVeil"),
@@ -1527,7 +1529,7 @@ def deploy_full(
 
     check_ports = [
         (8001, "Genesis"),
-        (8080, "AitherNode"),
+        (8080, "awnode"),
         (3000, "AitherVeil"),
     ]
 
@@ -1562,7 +1564,7 @@ def deploy_full(
     print(bold("  " + "-" * 60))
     print()
     info(f"Genesis:    {cyan('http://localhost:8001')}")
-    info(f"AitherNode: {cyan('http://localhost:8080')}")
+    info(f"awnode: {cyan('http://localhost:8080')}")
     info(f"Dashboard:  {cyan('http://localhost:3000')}")
     print()
     info(f"Manage:")
@@ -2071,6 +2073,7 @@ def deploy_sovereign(
     Args:
         dry_run: Show what would happen without executing.
         tag: Docker image tag (default: latest).
+        app_template: Workspace app template (e.g., 'demo').
         app_template: Workspace app template (e.g., 'assistant').
         gpu: Enable GPU-accelerated vLLM backend.
         sync: Enable platform sync daemon (updates, telemetry, license).
@@ -3097,6 +3100,30 @@ def cmd_deploy_tenant_agent(args) -> int:
 
 
 # ===========================================================================
+# (removed 2026-08-17) A per-customer deploy shortcut used to live here.
+#
+# It named a CUSTOMER in a package strangers `pip install`, which is not our
+# secret to spend: no secret scanner fires on a company name, and `pip download`
+# turns a handful of them into a client list.
+#
+# Removing rather than renaming, because renaming would have preserved something
+# that could never work. It was a thin wrapper around a monorepo script, and both
+# paths it searched — `AitherOS/scripts/…` relative to cwd, and `../../../AitherOS/
+# scripts/…` relative to this package — exist only inside this repo. For every
+# public user it printed "run from repo root" of a repo they do not have and
+# returned 1. A neutral name would have shipped the same dead end with the
+# evidence filed off.
+#
+# It was also the only customer-shaped entry in a family of generic platform
+# capabilities (ollama, vllm, node, core, sovereign, grid, addons, …). Nothing
+# internal is lost: that product's setup script still lives under
+# `AitherOS/scripts/` and can be run directly, which is where product-specific
+# deployment belongs — in the repo, not in the published SDK.
+#
+# Naming the customer HERE would have re-leaked exactly what this removal is
+# for; a comment ships in the wheel like any other line.
+# ===========================================================================
+
 # Tenant app deployment
 # ===========================================================================
 
@@ -3370,7 +3397,7 @@ def deploy_grid(
     # Check for compose file in adk package directory or current dir
     compose_candidates = [
         Path(__file__).parent.parent / "docker-compose.grid.yml",
-        Path("aither-adk") / "docker-compose.grid.yml",
+        Path("awdk") / "docker-compose.grid.yml",
         Path("docker-compose.grid.yml"),
         AITHER_DIR / "docker-compose.grid.yml",
     ]
@@ -3587,6 +3614,7 @@ def cmd_deploy_component(args) -> int:
         print()
         print(f"  Examples:")
         print(f"    {dim('aither deploy sovereign')}")
+        print(f"    {dim('aither deploy sovereign --app demo --gpu')}")
         print(f"    {dim('aither deploy sovereign --app assistant --gpu')}")
         print(f"    {dim('aither deploy ollama')}")
         print(f"    {dim('aither deploy ollama --models qwen3:8b,phi4')}")

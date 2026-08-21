@@ -1235,7 +1235,7 @@ def main() -> int:
 
     # Gateway integration
     print(f"  {bold('Connect to AitherOS:')}")
-    print(f"    {cyan('pip install aither-adk')}")
+    print(f"    {cyan('pip install awdk')}")
     print(f"    {cyan('python -c \"from adk.federation import FederationClient; ...')}")
     print(f"    See: {cyan('examples/federation_demo.py')}")
     print()

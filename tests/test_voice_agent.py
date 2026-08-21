@@ -1,6 +1,6 @@
 """Offline tests for VoiceAgent (adk/voice_agent.py).
 
-    cd aither-adk && python -m pytest tests/test_voice_agent.py -q
+    cd awdk && python -m pytest tests/test_voice_agent.py -q
 
 Uses the mock voice backend + a fake LLM agent, so no network, models, or keys.
 """

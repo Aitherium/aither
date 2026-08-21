@@ -29,7 +29,7 @@ Configuration:
   Sync failures are logged but do NOT block local operation.
   Bearer token resolution: env → auth.json profiles.default.access_token → legacy access_token
 
-Integration points (in aither-adk):
+Integration points (in awdk):
   - adk/conversations.py: ConversationStore._save() calls registered async hook
   - adk/session_sync_integration.py: enable_session_sync() wires client into store
   - adk/auth.py: Credentials + AuthStore patterns (compatible)

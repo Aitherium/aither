@@ -7,7 +7,7 @@ memory, and your data never leave your box.
 ## TL;DR
 
 ```bash
-pip install aither-adk          # 1. install the toolkit (no other hoops)
+pip install awdk          # 1. install the toolkit (no other hoops)
 adk onboard --quick             # 2. one command: inference + a pack + enroll
 adk run --agents openclaw       # 3. run your agent locally
 ```
@@ -17,7 +17,7 @@ Then open **portal.aitherium.com → Workstation** to see your node and connect 
 ## What each step does
 
 ### 1. Install
-`pip install aither-adk` — that's the whole toolkit (agent runtime, shell, inference setup,
+`pip install awdk` — that's the whole toolkit (agent runtime, shell, inference setup,
 enrollment). Already on PyPI.
 
 ### 2. Stand up inference — local LLM **or** a cloud key
@@ -76,7 +76,7 @@ adk start                            # or: zero-config chat in the current proje
 ```
 your machine                                portal.aitherium.com (control plane only)
 ┌────────────────────────────┐              ┌───────────────────────────────────────┐
-│ aither-adk                  │  device-flow │ AitherIdentity (idp) — verifies you     │
+│ awdk                  │  device-flow │ AitherIdentity (idp) — verifies you     │
 │  • local LLM / BYO key      │ ───login───▶ │ AitherDirectory      — your node entry  │
 │  • agent loop (your data)   │ ──enroll───▶ │ Portal → Workstation — see & manage it  │
 │  • your MCP tool servers    │ ◀─heartbeat─ │                                         │

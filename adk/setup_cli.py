@@ -835,7 +835,7 @@ def _scan_existing_infra() -> ExistingInfra:
     except Exception:
         pass
 
-    # AitherNode (MCP server)
+    # awnode (MCP server)
     try:
         req = urllib.request.Request("http://localhost:8080/health")
         with urllib.request.urlopen(req, timeout=2) as resp:
@@ -1386,7 +1386,7 @@ def cmd_setup(args) -> int:
             if infra.genesis_running:
                 info("AitherOS Genesis running on :8001")
             if infra.aither_node_running:
-                info("AitherNode MCP server on :8080")
+                info("awnode MCP server on :8080")
             if infra.cloud_keys:
                 info(f"Cloud API keys: {', '.join(infra.cloud_keys)}")
 

@@ -15,7 +15,7 @@ Key concepts and design patterns adapted from NOOA:
   - AST visitor pattern for detecting security risks
   - Error code naming scheme (E001, E101, E002, etc.)
 
-Modifications for aither-adk:
+Modifications for awdk:
   - Simplified to pure-stdlib, dependency-free design (removed nooa.* imports)
   - Focused on core security checks only (SecurityValidator logic)
   - Removed complex validators (REPL, ClassAssignment, ReturnTypeShadow, BlockingCall)

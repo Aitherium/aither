@@ -1,13 +1,13 @@
 """Site Ingest Studio — one-command local server.
 
-Runs aither-adk's AitherAgent with the `site-ingest` pack applied, the
+Runs awdk's AitherAgent with the `site-ingest` pack applied, the
 operator's own LLM key (Anthropic / OpenAI / Codex-OAuth / local Ollama), and a
 live "tokens used vs. saved" meter. No sign-in, no AitherOS stack required.
 
     python serve.py                 # auto-detects key from env / .env, opens browser
     python serve.py --port 8131 --no-open
 
-The agent IS aither-adk (ReAct loop, knowledge graph, memory, metering). This
+The agent IS awdk (ReAct loop, knowledge graph, memory, metering). This
 file only: (1) applies the pack, (2) injects the BYO LLM via a metering router,
 (3) registers the curated tool set, and (4) serves the chat UI + SSE + ledger.
 """
@@ -145,7 +145,7 @@ def resolve_provider() -> tuple[str, str, str | None]:
 def load_pack():
     """Load the brain pack — persona/system_prompt, UI labels, tool whitelist. No
     LLM key required, so the app can serve the UI (and the key-config screen) before
-    a provider is configured. Also makes a local aither-adk checkout importable."""
+    a provider is configured. Also makes a local awdk checkout importable."""
     adk_path = os.getenv("AITHER_ADK_PATH", "")  # dev/monorepo escape hatch
     if adk_path and adk_path not in sys.path and Path(adk_path).is_dir():
         sys.path.insert(0, adk_path)

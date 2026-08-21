@@ -3,8 +3,9 @@
 from importlib.metadata import PackageNotFoundError, version as _pkg_version
 
 try:  # single source of truth = the installed package metadata (pyproject version)
-    __version__ = _pkg_version("aither-adk")
+    __version__ = _pkg_version("awdk")
 except PackageNotFoundError:  # running from a source checkout without install
+    __version__ = "3.7.0"  # kept in sync by packaging/sync_versions.py
     __version__ = "3.5.0"  # kept in sync by packaging/sync_versions.py
 
 from adk.agent import AitherAgent
@@ -251,7 +252,7 @@ def __getattr__(name):
         except ImportError as exc:
             raise ImportError(
                 "NanoGPT (on-device training) is not available in the open "
-                "aither-adk SDK. It is part of the internal AitherOS runtime."
+                "awdk SDK. It is part of the internal AitherOS runtime."
             ) from exc
     if name == "NeuronPool":
         from adk.neurons import NeuronPool

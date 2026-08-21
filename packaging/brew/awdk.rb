@@ -1,6 +1,6 @@
 # Homebrew formula for AitherADK — distributed via the Aitherium tap.
 #
-#   brew tap aitherium/tap && brew install aither-adk
+#   brew tap aitherium/tap && brew install awdk
 #
 # NOT homebrew-core: their acceptable-formulae policy requires an open-source
 # license and this is Business Source License 1.1. A tap is the correct venue,
@@ -19,8 +19,8 @@ class AitherAdk < Formula
 
   desc "Agent Development Kit for AitherOS — build AI agent fleets with any LLM"
   homepage "https://aitherium.com"
-  url "https://files.pythonhosted.org/packages/source/a/aither-adk/aither_adk-3.5.0.tar.gz"
-  sha256 "552a406a7451b8f68d1cea9a6777d4b306f6bee1d55d0eb3d4bd3aef624994e6"
+  url "https://files.pythonhosted.org/packages/source/a/awdk/awdk-3.7.0.tar.gz"
+  sha256 "PLACEHOLDER_SHA256"
   # SPDX. "Proprietary" is not an SPDX identifier and `brew audit` rejects it;
   # the LICENSE file is Business Source License 1.1.
   license "BUSL-1.1"
@@ -162,13 +162,13 @@ class AitherAdk < Formula
 
   test do
     # `bin/aither` does NOT exist — the old test asserted a command that is not
-    # one of our console scripts (adk, adk-py, aither-adk, adk-serve,
+    # one of our console scripts (adk, adk-py, awdk, adk-serve,
     # adk-workspace, adk-bug, adk-shell), so `brew test` could only ever fail.
     # Same class as the onboarding-funnel rule: never advertise a command the
     # package does not ship.
-    assert_match "3.5.0", shell_output("#{bin}/adk --version")
+    assert_match "3.7.0", shell_output("#{bin}/adk --version")
     # The uvx/registry entrypoint must exist too — `uvx aither-adk` and the ACP
     # registry listing both invoke it by that exact name.
-    assert_predicate bin/"aither-adk", :exist?
+    assert_predicate bin/"awdk", :exist?
   end
 end

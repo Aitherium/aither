@@ -1,4 +1,4 @@
-"""Pack registry for aither-adk — local-first storage and discovery of agent/tool packs.
+"""Pack registry for awdk — local-first storage and discovery of agent/tool packs.
 
 A PackRegistry stores published packs under a root directory, organized as:
   root/<pack_id>/<version>/

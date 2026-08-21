@@ -1,7 +1,7 @@
 # ============================================================================
 # Site Ingest Agent — Brain Pack
 # ============================================================================
-# Applied by aither-adk (adk.pack_discovery). Turns a base AitherAgent into a
+# Applied by awdk (adk.pack_discovery). Turns a base AitherAgent into a
 # website analyst: enumerate pages -> mirror content -> extract brand/SEO/NAP ->
 # assemble a SiteSpec JSON. Runs sign-in-free with the operator's own LLM key.
 # Produces structured, importable website metadata for downstream builders.

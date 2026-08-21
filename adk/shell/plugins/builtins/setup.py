@@ -154,6 +154,16 @@ class SetupPlugin(SlashCommand):
     description: str = "One-command setup for Obsidian, MCP, desktop, shell"
     aliases: List[str] = field(default_factory=lambda: ["connect", "install"])
 
+    def __init__(self) -> None:
+        # Explicit, because the dataclass base assigns
+        # `self.name = ""` and shadows the class attribute above —
+        # the instance then registers under the empty string and is
+        # overwritten by the next plugin to do the same.
+        super().__init__(
+            name='setup',
+            description='One-command setup for Obsidian, MCP, desktop, shell',
+        )
+
     async def run(self, args: List[str], ctx: Dict[str, Any]) -> Optional[str]:
         if not args:
             return self._help()
@@ -194,7 +204,7 @@ class SetupPlugin(SlashCommand):
 | `/setup shell` | Configure shell completions + ~/.aither/config.yaml |
 | `/setup mcp` | Generate MCP server config for Cursor/VS Code |
 | `/setup desktop` | Install AitherDesktop (system tray + hotkeys) |
-| `/setup node` | Start AitherNode (MCP/tooling hub) via Docker |
+| `/setup node` | Start awnode (MCP/tooling hub) via Docker |
 | `/setup zero` | Bootstrap AitherZero PowerShell automation |
 | `/setup connect` | Install Awconnect (SDK + `aither` shell + MCP) |
 | `/setup connect --remote` | Cloud thin client — auth + route API/MCP/inference to the cloud (laptop) |
@@ -505,12 +515,12 @@ class SetupPlugin(SlashCommand):
     # ─── Node ──────────────────────────────────────────────────────────────
 
     async def _setup_node(self, args: List[str], ctx: Dict[str, Any]) -> str:
-        """Start AitherNode via Docker Compose."""
+        """Start awnode via Docker Compose."""
         repo = _find_repo_root()
         if not repo:
             return "❌ Can't find repo root."
 
-        lines = ["🔧 **Setting up AitherNode**\n"]
+        lines = ["🔧 **Setting up awnode**\n"]
         docker = shutil.which("docker")
         if not docker:
             return "❌ Docker not found. Install Docker Desktop: https://docker.com/get-started"
@@ -522,13 +532,13 @@ class SetupPlugin(SlashCommand):
         if not compose_file.exists():
             return f"❌ No compose file found in `{repo}/.DEPLOYMENT/compose`"
 
-        lines.append("  Starting AitherNode container...")
+        lines.append("  Starting awnode container...")
         rc, out, err = await _run(
             [docker, "compose", "-f", str(compose_file), "--project-directory", str(repo), "up", "-d", "aither-node"],
             cwd=str(repo), timeout=180,
         )
         if rc == 0:
-            lines.append("  ✅ AitherNode started")
+            lines.append("  ✅ awnode started")
             lines.append("  Health: https://localhost:8090/health")
             lines.append("  MCP endpoint: https://localhost:8090/mcp")
         else:
@@ -595,15 +605,15 @@ class SetupPlugin(SlashCommand):
         if not pip:
             return "❌ pip not found. Install Python 3.10+ first: https://python.org"
 
-        # ── 1. aither-adk — agent runtime + `adk`/`aither-py` + `mcp setup` ──
-        sdk_dir = repo / "aither-adk" if repo else None
+        # ── 1. awdk — agent runtime + `adk`/`aither-py` + `mcp setup` ──
+        sdk_dir = repo / "awdk" if repo else None
         if sdk_dir and (sdk_dir / "pyproject.toml").exists():
-            lines.append("  Installing aither-adk[shell,node] from source...")
+            lines.append("  Installing awdk[shell,node] from source...")
             rc, out, err = await _run([pip, "install", "-e", f"{sdk_dir}[shell,node]"], timeout=300)
         else:
-            lines.append("  Installing aither-adk[shell,node] from PyPI...")
-            rc, out, err = await _run([pip, "install", "aither-adk[shell,node]"], timeout=300)
-        lines.append(f"  {'✅' if rc == 0 else '❌'} aither-adk (SDK + node MCP server)")
+            lines.append("  Installing awdk[shell,node] from PyPI...")
+            rc, out, err = await _run([pip, "install", "awdk[shell,node]"], timeout=300)
+        lines.append(f"  {'✅' if rc == 0 else '❌'} awdk (SDK + node MCP server)")
         if rc != 0 and err:
             lines.append(f"     {err[:200]}")
 
@@ -865,7 +875,7 @@ class SetupPlugin(SlashCommand):
                 genesis_up = any("genesis" in c for c in containers)
                 vllm_up = any("vllm" in c for c in containers)
                 sched_up = any("scheduler" in c for c in containers)
-                lines.append(f"  **AitherNode:** {'✅ Running' if node_up else '❌ Not running'} (`/setup node`)")
+                lines.append(f"  **awnode:** {'✅ Running' if node_up else '❌ Not running'} (`/setup node`)")
                 lines.append(f"  **Genesis:** {'✅ Running' if genesis_up else '❌ Not running'}")
                 lines.append(f"  **vLLM:** {'✅ Running' if vllm_up else '⚪ Not running'} (`/setup vllm`)")
                 lines.append(f"  **Scheduler:** {'✅ Running' if sched_up else '❌ Not running'}")
@@ -887,7 +897,7 @@ class SetupPlugin(SlashCommand):
         lines.append(
             "  **ADK Client:** ✅ Installed"
             if sdk_installed
-            else "  **ADK Client:** ❌ Not installed (`pip install aither-adk`)"
+            else "  **ADK Client:** ❌ Not installed (`pip install awdk`)"
         )
 
         # MCP

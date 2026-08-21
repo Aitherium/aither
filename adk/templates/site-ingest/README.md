@@ -1,6 +1,6 @@
 # Site Ingest Studio
 
-A self-contained web analyzer powered by aither-adk. Point it at any website, and it will produce a structured **SiteSpec JSON** containing:
+A self-contained web analyzer powered by awdk. Point it at any website, and it will produce a structured **SiteSpec JSON** containing:
 
 - **Content inventory** — all discoverable pages with markdown and headings
 - **Brand tokens** — company name, colors, typography, tagline
@@ -61,7 +61,7 @@ The completed `sitespec.json` lives in `.data/site_foundry/default/` (or your co
 
 ```
 site-ingest/
-├── serve.py              # FastAPI + aither-adk entry point
+├── serve.py              # FastAPI + awdk entry point
 ├── requirements.txt      # Dependencies
 ├── .env.example          # Configuration template
 ├── README.md             # This file
@@ -269,7 +269,7 @@ ruff check . --fix  # auto-fix
 
 ## License & Attribution
 
-Built with [aither-adk](https://github.com/Aitherium/aither-adk), the portable AitherAgent library for building sign-in-free LLM apps.
+Built with [awdk](https://github.com/Aitherium/awdk), the portable AitherAgent library for building sign-in-free LLM apps.
 
 ---
 

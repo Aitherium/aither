@@ -24,7 +24,7 @@ import javax.swing.SwingUtilities
 import javax.swing.border.EmptyBorder
 
 /**
- * The "Aither Agent" panel: drives aither-adk agents from the IDE.
+ * The "Aither Agent" panel: drives awdk agents from the IDE.
  *
  * Two modes:
  *  - **ACP** — spawns `adk acp serve --agent <name>` and chats with that agent
@@ -195,7 +195,7 @@ class ChatPanel(private val project: Project) : JPanel(BorderLayout()) {
         val result = if (target.startsWith("http://") || target.startsWith("https://")) {
             client.sendMessage(target, text, thisAgentName = "jetbrains")
         } else {
-            // Resolve by name: default mesh endpoints live under aither-adk's
+            // Resolve by name: default mesh endpoints live under awdk's
             // registry; if none is configured the caller can paste a URL.
             client.sendMessageByName({ name -> resolveAgentUrl(name) }, target, text, thisAgentName = "jetbrains")
         }
@@ -206,9 +206,9 @@ class ChatPanel(private val project: Project) : JPanel(BorderLayout()) {
         }
     }
 
-    /** Resolve a mesh agent name to an invoke URL, if aither-adk's registry is known. */
+    /** Resolve a mesh agent name to an invoke URL, if awdk's registry is known. */
     private fun resolveAgentUrl(name: String): String? {
-        // Best-effort: the aither-adk mesh registers agents as
+        // Best-effort: the awdk mesh registers agents as
         // <name>-agent / <name> hostnames on the AitherNet overlay. Without a
         // direct registry read we fall back to the conventional mesh hostnames.
         return null // caller pastes an explicit URL, or a later registry reader fills this

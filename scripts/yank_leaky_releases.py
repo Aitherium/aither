@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Identify (and prove) the published aither-adk releases that leak the moat.
+"""Identify (and prove) the published awdk releases that leak the moat.
 
 Every release before 2.0.0 predates the distribution-time moat exclusion and
 ships ``adk/nanogpt.py`` plus ungated fleet/forge/channels/cron — i.e. the
@@ -28,7 +28,7 @@ import sys
 import urllib.request
 import zipfile
 
-PROJECT = "aither-adk"
+PROJECT = "awdk"
 CUTOFF = (2, 0, 0)  # first release with the moat exclusion
 MANAGE_URL = f"https://pypi.org/manage/project/{PROJECT}/releases/"
 

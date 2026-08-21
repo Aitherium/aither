@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Detect and remove orphan `aither` console_script binaries left behind by
-older aither-adk installs.
+older awdk installs.
 
 Why this exists:
   pip install --force-reinstall does NOT remove .exe wrappers that the new
-  version of a package no longer defines. So if aither-adk@0.16.0 once shipped
+  version of a package no longer defines. So if awdk@0.16.0 once shipped
   `aither = adk.cli:main`, the `aither.exe` wrapper persists in Scripts/ even
   after upgrading to 0.17.0+ (which dropped that entry). That orphan then
   shadows the real `aither` REPL from the npm @aitheros/shell-cli package.
@@ -36,7 +36,7 @@ def find_orphans(scripts_dir: Path) -> list[Path]:
 
     Allowed (registered by current packages):
       - aither-py.exe / aither-py-script.py  (aithershell)
-      - adk*, adk-bug*, adk-serve*           (aither-adk)
+      - adk*, adk-bug*, adk-serve*           (awdk)
 
     Anything else matching `aither*` from Python Scripts/ is suspect.
     """
@@ -45,8 +45,8 @@ def find_orphans(scripts_dir: Path) -> list[Path]:
     if not scripts_dir.exists():
         return orphans
     for p in scripts_dir.glob("aither*"):
-        # Skip aithernode/aitheros (separate AitherOS packages)
-        if p.stem.startswith(("aithernode", "aitheros", "aither-desktop")):
+        # Skip awnode/aitheros (separate AitherOS packages)
+        if p.stem.startswith(("awnode", "aitheros", "aither-desktop")):
             continue
         # Skip allowed Python wrappers
         if p.stem in allowed_stems or p.stem.removesuffix("-script") in allowed_stems:

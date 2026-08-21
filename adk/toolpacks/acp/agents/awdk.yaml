@@ -1,7 +1,7 @@
-# aither-adk — this platform's own agent, served over ACP (the server direction).
+# awdk — this platform's own agent, served over ACP (the server direction).
 # Valid AgentPackManifest: runtime.cmd launches `adk acp serve`, so an ACP
 # client/editor spawns THIS platform as the agent on stdio.
-id: aither-adk
+id: awdk
 name: AitherOS Agent (ACP)
 version: 2.0.0
 description: >-

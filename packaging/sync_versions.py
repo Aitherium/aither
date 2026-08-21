@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Sync version from pyproject.toml into all package manifests.
 
-Reads the canonical version from aither-adk/pyproject.toml and updates:
+Reads the canonical version from awdk/pyproject.toml and updates:
   - packaging/npm/package.json
-  - packaging/brew/aither-adk.rb
+  - packaging/brew/awdk.rb
   - packaging/winget/*.yaml  (AitherShell — ASSERTED, not bumped: it versions separately)
   - server.json (MCP Registry entry — carries the version TWICE)
 
@@ -39,7 +39,7 @@ def fetch_sdist_sha256(version: str, *, timeout: float = 15.0) -> str | None:
     not fail a release, it just leaves the digest unfilled (which --check then
     reports).
     """
-    url = f"https://pypi.org/pypi/aither-adk/{version}/json"
+    url = f"https://pypi.org/pypi/awdk/{version}/json"
     try:
         with urllib.request.urlopen(url, timeout=timeout) as resp:
             data = json.load(resp)
@@ -59,7 +59,7 @@ def sync_brew_digest(version: str, check: bool, fetch=fetch_sdist_sha256) -> boo
     Only the FIRST sha256 in the formula is the package's own; the rest belong
     to `resource` blocks and must never be touched (see sync_brew).
     """
-    path = Path(__file__).parent / "brew" / "aither-adk.rb"
+    path = Path(__file__).parent / "brew" / "awdk.rb"
     text = path.read_text(encoding="utf-8")
     match = re.search(r'sha256 "([^"]*)"', text)
     if not match:
@@ -161,12 +161,17 @@ def sync_npm(version: str, check: bool) -> bool:
 
 
 def sync_brew(version: str, check: bool) -> bool:
-    """Update packaging/brew/aither-adk.rb."""
-    path = Path(__file__).parent / "brew" / "aither-adk.rb"
+    """Update packaging/brew/awdk.rb."""
+    path = Path(__file__).parent / "brew" / "awdk.rb"
     text = path.read_text(encoding="utf-8")
 
+    # Accepts BOTH filenames on purpose: the formula still carries an
+    # `aither_adk-<v>.tar.gz` url from before the awdk rename, and this
+    # function's job is to read the CURRENT version out of it. Matching only
+    # the new name would make old_ver None on the transition release, which
+    # reads as "already up to date" and silently skips the bump.
     old_url = re.search(
-        r'url "https://files\.pythonhosted\.org/.*?aither_adk-([^"]+)\.tar\.gz"', text
+        r'url "https://files\.pythonhosted\.org/.*?(?:aither_adk|awdk)-([^"]+)\.tar\.gz"', text
     )
     old_ver = old_url.group(1) if old_url else None
 
@@ -201,9 +206,9 @@ def sync_brew(version: str, check: bool) -> bool:
         print(f"  brew: {old_ver} -> {version} (needs update)")
         return False
 
-    new_url = f'https://files.pythonhosted.org/packages/source/a/aither-adk/aither_adk-{version}.tar.gz'
+    new_url = f'https://files.pythonhosted.org/packages/source/a/awdk/awdk-{version}.tar.gz'
     # count=1: ONLY the formula's own `url` may be rewritten. Without it this
-    # repointed every `resource "<dep>"` block at the aither-adk tarball too, so
+    # repointed every `resource "<dep>"` block at the awdk tarball too, so
     # `brew install` fetched the adk sdist and called it httpx — silently
     # corrupting the formula on every single release.
     text = re.sub(
@@ -227,8 +232,8 @@ def sync_brew(version: str, check: bool) -> bool:
 def sync_winget(version: str, check: bool) -> bool:
     """ASSERT the winget manifests are consistent. Does NOT bump them.
 
-    This used to stamp aither-adk's version and a fabricated
-    `https://aitherium.com/download/aither-adk-<v>-win64.exe` into a manifest —
+    This used to stamp awdk's version and a fabricated
+    `https://aitherium.com/download/awdk-<v>-win64.exe` into a manifest —
     for a product that has no Windows binary. That URL 404s, and winget installs
     executables, not pip packages, so `Aitherium.ADK` was unsubmittable by
     construction while a version-sync kept it looking maintained.

@@ -86,6 +86,17 @@ class AddonPlugin(SlashCommand):
     description: str = "Self-hosted addon management — enable, disable, status, logs"
     category: str = "infrastructure"
 
+    def __init__(self) -> None:
+        # Explicit, because the dataclass base assigns
+        # `self.name = ""` and shadows the class attribute above —
+        # the instance then registers under the empty string and is
+        # overwritten by the next plugin to do the same.
+        super().__init__(
+            name='addon',
+            description='Self-hosted addon management — enable, disable, status, logs',
+            aliases=['addons'],
+        )
+
     async def run(self, args: List[str], ctx: Dict[str, Any]) -> Optional[str]:
         if not args:
             return self.get_help()
@@ -180,7 +191,7 @@ class AddonPlugin(SlashCommand):
         except Exception as e:
             return f"Failed to enable {addon_id}: {e}"
 
-        return f"AddonManager not available. Install aither-adk to manage addons locally."
+        return f"AddonManager not available. Install awdk to manage addons locally."
 
     async def _disable(self, args: List[str], ctx: Dict[str, Any]) -> str:
         if not args:
@@ -192,7 +203,7 @@ class AddonPlugin(SlashCommand):
             await mgr.disable(addon_id)
             return f"Addon **{addon_id}** disabled"
         except ImportError:
-            return "AddonManager not available. Install aither-adk to manage addons locally."
+            return "AddonManager not available. Install awdk to manage addons locally."
         except Exception as e:
             return f"Failed to disable {addon_id}: {e}"
 
@@ -213,7 +224,7 @@ class AddonPlugin(SlashCommand):
                 )
             return "\n\n".join(lines)
         except ImportError:
-            return "AddonManager not available. Install aither-adk."
+            return "AddonManager not available. Install awdk."
         except Exception as e:
             return f"Error: {e}"
 

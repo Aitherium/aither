@@ -103,6 +103,17 @@ class CommercePlugin(SlashCommand):
     description: str = "Stripe Commerce — storefronts, products, checkout, revenue"
     category: str = "business"
 
+    def __init__(self) -> None:
+        # Explicit, because the dataclass base assigns
+        # `self.name = ""` and shadows the class attribute above —
+        # the instance then registers under the empty string and is
+        # overwritten by the next plugin to do the same.
+        super().__init__(
+            name='commerce',
+            description='Stripe Commerce — storefronts, products, checkout, revenue',
+            aliases=['store'],
+        )
+
     async def run(self, args: List[str], ctx: Dict[str, Any]) -> Optional[str]:
         if not args:
             return self.get_help()

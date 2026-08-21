@@ -153,7 +153,7 @@ def test_acp_cli_has_login_subcommand():
 
 
 def test_uvx_entrypoint_exists():
-    """`uvx aither-adk ...` runs the console script NAMED aither-adk.
+    """`uvx awdk ...` runs the console script NAMED awdk.
 
     Without it the registry's uvx distribution installs fine and then cannot
     launch — and the registry's own validation only checks that the PyPI package
@@ -165,8 +165,8 @@ def test_uvx_entrypoint_exists():
     pyproject = pathlib.Path(__file__).resolve().parents[1] / "pyproject.toml"
     text = pyproject.read_text(encoding="utf-8")
     scripts = text.split("[project.scripts]", 1)[1].split("\n[", 1)[0]
-    assert re.search(r"^aither-adk\s*=", scripts, re.M), (
-        "no `aither-adk` console script -> `uvx aither-adk acp serve` cannot launch"
+    assert re.search(r"^awdk\s*=", scripts, re.M), (
+        "no `awdk` console script -> `uvx awdk acp serve` cannot launch"
     )
 
 

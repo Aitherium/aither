@@ -309,13 +309,13 @@ def check_version() -> bool:
     import urllib.request
 
     try:
-        req = urllib.request.Request("https://pypi.org/pypi/aither-adk/json")
+        req = urllib.request.Request("https://pypi.org/pypi/awdk/json")
         with urllib.request.urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read())
             latest = data.get("info", {}).get("version", "")
             if latest and latest != __version__:
                 _warn(f"Update available: {latest} (you have {__version__})")
-                print(f"         pip install --upgrade aither-adk")
+                print(f"         pip install --upgrade awdk")
             elif latest:
                 _ok("Up to date")
     except Exception:

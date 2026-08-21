@@ -148,7 +148,7 @@ class TestServiceBridgeWiring:
 
     @pytest.mark.asyncio
     async def test_bridge_local_mode(self):
-        """Bridge detects local AitherNode."""
+        """Bridge detects local awnode."""
         from adk.services import ServiceBridge
         bridge = ServiceBridge(node_url="http://localhost:8080")
 

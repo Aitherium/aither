@@ -44,7 +44,7 @@ deployment:
   target: delegate
   compose_template: ""
   # The real interface is the forge_burst_up MCP tool
-  # (AitherOS/apps/AitherNode/tools/mcp/mcp_character_forge.py), NOT a CLI
+  # (AitherOS/apps/awnode/tools/mcp/mcp_character_forge.py), NOT a CLI
   # subcommand. Args: max_price_per_hour (default 0.60), min_gpu_vram_gb
   # (default 24). Paired teardown: forge_burst_down.
   delegate: "forge_burst_up(max_price_per_hour=0.60, min_gpu_vram_gb=24)  # MCP tool"

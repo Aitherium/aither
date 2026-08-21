@@ -6,7 +6,7 @@ This runbook describes the complete flow for deploying an autonomous agent on yo
 
 ```bash
 # 1. Install and create a local agent
-pip install aither-adk
+pip install awdk
 adk up --identity my-agent
 
 # 2. Provision local Qdrant for working-set memory (optional, but recommended)
@@ -51,15 +51,15 @@ The agent's memory is split into two tiers:
 
 ---
 
-## Step 1: Install aither-adk
+## Step 1: Install awdk
 
 ```bash
 # Via pip (recommended)
-pip install aither-adk
+pip install awdk
 
 # Or build from source
-git clone https://github.com/aitherium/aither-adk
-cd aither-adk
+git clone https://github.com/aitherium/awdk
+cd awdk
 pip install -e .
 ```
 

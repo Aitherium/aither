@@ -309,7 +309,7 @@ Enabling MODE_STEER (AITHER_AGENT_WM=steer) allows the world model to reorder to
 
 ## Aither-OS Integration
 
-The aither-adk world model is designed to be complemented by a richer AitherOS backend (in `lib/cognitive/adk_wm_backend.py`) that:
+The awdk world model is designed to be complemented by a richer AitherOS backend (in `lib/cognitive/adk_wm_backend.py`) that:
 
 - Adds AitherSense interoception (5-D affect dimensions) to the state vector
 - Writes transitions to a shared fleet corpus for cross-agent learning

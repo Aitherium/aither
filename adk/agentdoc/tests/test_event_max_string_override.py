@@ -11,7 +11,7 @@ import pytest
 
 from adk.agentdoc import pformat
 
-# nooa.events is Unix-only and not available in aither-adk.
+# nooa.events is Unix-only and not available in awdk.
 # This test is kept for parity but marked skip if events cannot be imported.
 try:
     from nooa.events import LLMOutput, PythonOutput, ResultStatus, Summary, Task

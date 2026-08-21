@@ -1,5 +1,5 @@
 # Site Ingest Studio — dependencies
-# Assumes aither-adk is already installed; these are additional packages.
+# Assumes awdk is already installed; these are additional packages.
 
 httpx>=0.24.0
 pyyaml>=6.0

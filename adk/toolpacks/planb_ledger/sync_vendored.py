@@ -30,7 +30,7 @@ TARGETS = {
 
 HEADER = (
     "# GENERATED — do not edit. Source of truth:\n"
-    "#   aither-adk/adk/toolpacks/planb_ledger/{name}\n"
+    "#   awdk/adk/toolpacks/planb_ledger/{name}\n"
     "# Regenerate: python adk/toolpacks/planb_ledger/sync_vendored.py\n"
     "# Drift is asserted by test_planb_vendored_in_sync.\n"
 )

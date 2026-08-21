@@ -1,5 +1,5 @@
 """
-AitherNode -- Lightweight local MCP server.
+awnode -- Lightweight local MCP server.
 
 Modes:
 - proxy: Proxies tool calls to mcp.aitherium.com (default, needs account)

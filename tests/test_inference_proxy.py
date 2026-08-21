@@ -33,11 +33,11 @@ import importlib.util
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 INFERENCE_PATH = os.path.join(
-    PROJECT_ROOT, "AitherOS", "apps", "AitherNode", "gateway", "inference.py"
+    PROJECT_ROOT, "AitherOS", "apps", "awnode", "gateway", "inference.py"
 )
 
 # Monorepo-coupled test: the subject module lives in the private AitherOS tree,
-# which does not exist in the public aither-adk checkout (this file loads it by
+# which does not exist in the public awdk checkout (this file loads it by
 # PATH, so absence breaks pytest COLLECTION, not just this suite). Skip the
 # whole module when running outside the monorepo.
 if not os.path.exists(INFERENCE_PATH):
@@ -50,9 +50,9 @@ if not os.path.exists(INFERENCE_PATH):
 _auth_mock = MagicMock()
 _auth_mock.TenantContext = MockTenantContext
 sys.modules["apps"] = MagicMock()
-sys.modules["apps.AitherNode"] = MagicMock()
-sys.modules["apps.AitherNode.gateway"] = MagicMock()
-sys.modules["apps.AitherNode.gateway.auth"] = _auth_mock
+sys.modules["apps.awnode"] = MagicMock()
+sys.modules["apps.awnode.gateway"] = MagicMock()
+sys.modules["apps.awnode.gateway.auth"] = _auth_mock
 
 spec = importlib.util.spec_from_file_location("inference", INFERENCE_PATH)
 inference_mod = importlib.util.module_from_spec(spec)

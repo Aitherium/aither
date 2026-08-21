@@ -1,6 +1,6 @@
 name: my-agent
 display_name: My Agent
-description: A custom AI agent built with aither-adk and cognitive-core.
+description: A custom AI agent built with awdk and cognitive-core.
 role: assistant
 will: Help users accomplish their goals efficiently and accurately.
 personality:

@@ -52,9 +52,20 @@ def _headers() -> Dict[str, str]:
 
 class CloudPlugin(SlashCommand):
     name: str = "cloud"
-    aliases: List[str] = ["gpu", "cloud-deploy"]
+    aliases: List[str] = ["cloud-gpu", "cloud-deploy"]
     description: str = "Self-service GPU deployment and cloud management"
     category: str = "ai"
+
+    def __init__(self) -> None:
+        # Explicit, because the dataclass base assigns
+        # `self.name = ""` and shadows the class attribute above —
+        # the instance then registers under the empty string and is
+        # overwritten by the next plugin to do the same.
+        super().__init__(
+            name='cloud',
+            description='Self-service GPU deployment and cloud management',
+            aliases=['cloud-gpu', 'cloud-deploy'],
+        )
 
     async def run(self, args: List[str], ctx: Dict[str, Any]) -> Optional[str]:
         if not args:

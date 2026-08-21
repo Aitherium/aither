@@ -248,7 +248,7 @@ class OpenAIVoiceBackend(VoiceBackend):
         try:
             from openai import AsyncOpenAI  # noqa: F401 - presence check
         except ImportError as exc:  # surfaced to the factory, which falls back
-            raise ImportError("openai package not installed (pip install 'aither-adk[voice-cloud]')") from exc
+            raise ImportError("openai package not installed (pip install 'awdk[voice-cloud]')") from exc
         self._api_key = api_key or os.getenv("OPENAI_API_KEY", "")
         self._stt_model = stt_model or os.getenv("AITHER_VOICE_OPENAI_STT", "whisper-1")
         self._tts_model = tts_model or os.getenv("AITHER_VOICE_OPENAI_TTS", "tts-1")
@@ -355,7 +355,7 @@ class LocalVoiceBackend(VoiceBackend):
         try:
             import faster_whisper  # noqa: F401 - presence check
         except ImportError as exc:
-            raise ImportError("faster-whisper not installed (pip install 'aither-adk[voice-local]')") from exc
+            raise ImportError("faster-whisper not installed (pip install 'awdk[voice-local]')") from exc
         self._model_size = model_size or os.getenv("AITHER_WHISPER_MODEL", "base")
         self._device = device or os.getenv("AITHER_WHISPER_DEVICE", "cpu")
         self._compute = os.getenv("AITHER_WHISPER_COMPUTE", "int8")

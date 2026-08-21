@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Post-install script for npm package.
- * Ensures the Python aither-adk package is installed.
+ * Ensures the Python awdk package is installed.
  */
 
 const { execFileSync } = require("child_process");
@@ -29,7 +29,7 @@ const python = findPython();
 if (!python) {
   console.log("");
   console.log("  Note: Python 3.10+ not found. AitherADK requires Python.");
-  console.log("  Install Python, then run: pip install aither-adk");
+  console.log("  Install Python, then run: pip install awdk");
   console.log("");
   process.exit(0); // Don't fail npm install
 }
@@ -44,12 +44,12 @@ try {
 } catch {
   console.log("  Installing AitherADK Python package...");
   try {
-    execFileSync(python, ["-m", "pip", "install", "--quiet", "aither-adk"], {
+    execFileSync(python, ["-m", "pip", "install", "--quiet", "awdk"], {
       stdio: "inherit",
       timeout: 120000,
     });
     console.log("  AitherADK installed successfully.");
   } catch {
-    console.log("  Auto-install failed. Run manually: pip install aither-adk");
+    console.log("  Auto-install failed. Run manually: pip install awdk");
   }
 }

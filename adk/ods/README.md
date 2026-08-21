@@ -4,7 +4,7 @@ Deterministic, offline model selection for local LLM inference based on hardware
 
 ## Overview
 
-The **Open Data Systems (ODS)** model resolver is a vendored, ported component from [github.com/Osmantic/ODS](https://github.com/Osmantic/ODS). It powers model-fitting decisions in the aither-adk without requiring external binaries, network calls, or third-party services.
+The **Open Data Systems (ODS)** model resolver is a vendored, ported component from [github.com/Osmantic/ODS](https://github.com/Osmantic/ODS). It powers model-fitting decisions in the awdk without requiring external binaries, network calls, or third-party services.
 
 ### Design Principles
 
@@ -408,11 +408,11 @@ All FIVE vendored files, verbatim — the two scripts are vendored as code, not
 just as data, and are what the differential tests run as their reference:
 
 ```bash
-cp ods/config/model-library.json     /path/to/aither-adk/adk/ods/
-cp ods/config/gpu-database.json      /path/to/aither-adk/adk/ods/
-cp ods/config/hardware-classes.json  /path/to/aither-adk/adk/ods/
-cp ods/scripts/select-model.py       /path/to/aither-adk/adk/ods/_upstream_select.py
-cp ods/scripts/classify-hardware.sh  /path/to/aither-adk/adk/ods/_upstream_classify.sh
+cp ods/config/model-library.json     /path/to/awdk/adk/ods/
+cp ods/config/gpu-database.json      /path/to/awdk/adk/ods/
+cp ods/config/hardware-classes.json  /path/to/awdk/adk/ods/
+cp ods/scripts/select-model.py       /path/to/awdk/adk/ods/_upstream_select.py
+cp ods/scripts/classify-hardware.sh  /path/to/awdk/adk/ods/_upstream_classify.sh
 ```
 
 Do not hand-edit any of them: `ODS_VENDORED_SHA256` pins each one and
@@ -421,7 +421,7 @@ LF so `core.autocrlf` cannot break the hashes on checkout.
 
 ### 3. Update metadata
 
-Edit `/path/to/aither-adk/adk/ods/__init__.py`:
+Edit `/path/to/awdk/adk/ods/__init__.py`:
 
 ```python
 ODS_VENDORED_COMMIT = "abc123def456"  # from step 1
@@ -431,7 +431,7 @@ ODS_VENDORED_URL = "https://github.com/Osmantic/ODS"
 ### 4. Validate schema
 
 ```bash
-cd /path/to/aither-adk
+cd /path/to/awdk
 python -c "from adk.ods import load_catalog; load_catalog()"
 ```
 

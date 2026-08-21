@@ -1,17 +1,17 @@
 # Aither ADK — Build AI Agent Fleets
 
-<!-- mcp-name: io.github.Aitherium/aither-adk -->
+<!-- mcp-name: io.github.Aitherium/awdk -->
 
-[![PyPI](https://img.shields.io/pypi/v/aither-adk)](https://pypi.org/project/aither-adk/)
+[![PyPI](https://img.shields.io/pypi/v/awdk)](https://pypi.org/project/awdk/)
 [![License: BSL 1.1](https://img.shields.io/badge/license-BSL--1.1-blue)](LICENSE)
-[![Docs](https://img.shields.io/badge/docs-aitherium.github.io-8A2BE2)](https://aitherium.github.io/aither-adk/)
+[![Docs](https://img.shields.io/badge/docs-aitherium.github.io-8A2BE2)](https://aitherium.github.io/awdk/)
 
 **3 lines of code. Any backend. Local or cloud. Zero lock-in.**
 
 Aither ADK is a Python SDK + CLI for building AI agents that run on **your** hardware — a single helpful agent or a coordinated fleet that delegates work to each other. Agents get tools, persistent knowledge-graph memory, safety filtering, and effort-based model routing out of the box. Swap the LLM backend at runtime — your GPU, Ollama, llama.cpp, or any cloud API — **same code, same agents.**
 
 ```bash
-pip install aither-adk
+pip install awdk
 adk quickstart                                    # auto-detect hardware, set up inference
 adk init my-agent && cd my-agent && python agent.py
 ```
@@ -95,7 +95,7 @@ If you only remember one thing: **`agent.chat()` is the agent.** Everything else
 | Run a private, local-only companion | [PRIVATE_COMPANION.md](PRIVATE_COMPANION.md) |
 | See working code | [`examples/`](examples/) — five runnable scripts |
 | See what changed | [CHANGELOG.md](CHANGELOG.md) |
-| Browse rendered docs | [aitherium.github.io/aither-adk](https://aitherium.github.io/aither-adk/) |
+| Browse rendered docs | [aitherium.github.io/awdk](https://aitherium.github.io/awdk/) |
 
 ## Interoperability
 
@@ -146,10 +146,40 @@ uri = server.from_agent_response("reviewer", "task_123", blocks)
 
 - **Module**: `adk.mcp_ui_resources.RenderBlocksMCPServer`
 - **Block types**: 24 primitives (markdown, header, table, code, form, approve, slider, file_upload, etc.)
-- **Schema validation**: parity with the platform's RenderBlocks schema, asserted
-  in CI so a block type cannot exist on one side of the boundary only
+- **Schema validation**: Block schemas are kept at parity with the AitherOS RenderBlocks protocol, so a block emitted here renders identically in any AitherOS surface
 - **MIME type**: `application/vnd.aitheros.renderblocks+json`
 - **Integration**: Mount into FastAPI, use in MCP clients that understand `ui://`
+
+---
+
+## The `aw` packages — three questions adk can ask about a repository
+
+adk is the agent runtime; three small, independent packages give it the facts it
+would otherwise have to guess at. Each answers a different question, each installs
+on its own, and **none of the three requires the others**:
+
+| Package | Knows | The question it answers |
+|---|---|---|
+| [`awgraph`](https://github.com/Aitherium/awgraph) | what the code is, and what depends on what | Where is this symptom coming from? |
+| [`awgit`](https://github.com/Aitherium/awgit) | what changed, and who is editing it | Is this an in-flight edit someone else owns? |
+| [`awrelay`](https://github.com/Aitherium/awrelay) | who found what, and who still needs to hear it | Who do I tell? |
+
+```bash
+pip install awgraph awgit awrelay   # or any one of them, alone
+```
+
+Used together, an agent can find a symptom with `awgraph`, check whether it is an
+in-flight edit with `awgit`, and tell the agent already working that file with
+`awrelay` — three questions a solo grep-and-guess loop cannot ask at all. The
+failure they remove is not "the agent was wrong"; it is two agents editing the
+same file without knowing, and a finding that died in a transcript nobody read.
+
+Each publishes an `aither-manifest.json` beside its page, and each page renders
+the others live from those manifests — a project whose manifest is missing shows
+as unknown rather than silently disappearing:
+[awgraph](https://aitherium.github.io/awgraph/) ·
+[awgit](https://aitherium.github.io/awgit/) ·
+[awrelay](https://aitherium.github.io/awrelay/).
 
 ---
 
@@ -252,7 +282,7 @@ a prompt asking it nicely.
 `adk quickstart` detects your hardware, pulls the right models, configures backends, and gets you chatting:
 
 ```bash
-pip install aither-adk
+pip install awdk
 adk quickstart                 # local GPU: detect → pull models → serve
 adk quickstart --cloud         # no GPU: enter an API key (Anthropic / OpenAI / DeepSeek)
 adk start                      # start chatting
@@ -526,8 +556,8 @@ Run a 3-tier effort-routed cluster — GPU desktop + Mac + CPU mini-PCs — with
 
 ```bash
 # On Mac / each mini-PC (one-time):
-bash <(curl -fsSL https://raw.githubusercontent.com/Aitherium/aither-adk/main/scripts/setup-mac-node.sh)
-bash <(curl -fsSL https://raw.githubusercontent.com/Aitherium/aither-adk/main/scripts/setup-cluster-node.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/Aitherium/awdk/main/scripts/setup-mac-node.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/Aitherium/awdk/main/scripts/setup-cluster-node.sh)
 
 # On the main PC:
 adk deploy grid --mac-host 192.168.1.100 --cluster-nodes '["192.168.1.10"]'
@@ -859,54 +889,6 @@ aither-bug --dry-run                       # preview what would be sent
 
 **Business Source License 1.1** — free for individuals, internal use, building your own products, research, and education. A commercial license is required only to offer a competing hosted AI-agent platform. Converts to **AGPL-3.0** on 2030-03-13. See [LICENSE](LICENSE); commercial licensing: hello@aitherium.com.
 
-<!-- AITHER-ESTATE:BEGIN -- generated by tools/gen_contributing.py -->
-
----
-
-## Part of the Aitherium estate
-
-**Aither ADK** is one of several open repositories cut from the same system. They
-share one set of engineering rules, published as the Developer Codex.
-
-**New here? → [Read the Codex](https://aitherium.github.io/aither-skills/codex.html)** — eighteen laws for building software
-that tells you when it is wrong, plus a four-chapter ramp if you have never
-worked with a coding agent. **Contributing? → [CONTRIBUTING.md](CONTRIBUTING.md)**
-
-- **[aitherium.com](https://aitherium.com)** — the system these repos are cut from
-- **[The Codex](https://aitherium.github.io/aither-skills/codex.html)** — how we work here, and how to contribute
-- **[aither-skills](https://aitherium.github.io/aither-skills/)** — procedures an agent can load and run
-- **[AitherZero](https://aitherium.github.io/AitherZero/)** — PowerShell automation
-- **[aither-kvcache](https://aitherium.github.io/aitherkvcache/)** — KV cache compression
-- **[The Blog](https://blog.aitherium.com)** — what we measured, and what it cost
-
-<!-- AITHER-ESTATE:END -->
-
-<!-- aitherium-ecosystem:start -->
-## Aitherium open-source ecosystem
-
-This repo is one piece of a connected set. All public, MIT/BSL-licensed:
-
-| repo | what it is | pages |
-|---|---|---|
-| [awrecover](https://github.com/Aitherium/awrecover) | Labelled snapshots with an all-or-nothing restore | [docs](https://aitherium.github.io/awrecover/) |
-| [awshare](https://github.com/Aitherium/awshare) | Publish an artifact and fetch it back verified | [docs](https://aitherium.github.io/awshare/) |
-| [awseal](https://github.com/Aitherium/awseal) | Sign an artifact so a stranger can verify it | [docs](https://aitherium.github.io/awseal/) |
-| [awnode](https://github.com/Aitherium/awnode) | Lightweight local gateway — your apps to backends you chose | [docs](https://aitherium.github.io/awnode/) |
-| [awnix](https://github.com/Aitherium/awnix) | A bootable, immutable Linux base for agent-run machines | [docs](https://aitherium.github.io/awnix/) |
-| [awdk](https://github.com/Aitherium/awdk) | Build AI agent fleets — 3 lines, any backend | [docs](https://aitherium.github.io/awdk/) |
-| [awskills](https://github.com/Aitherium/awskills) | Free agent skills, scripts & automations | [docs](https://aitherium.github.io/awskills/) |
-| [AitherZero](https://github.com/Aitherium/AitherZero) | PowerShell 7+ automation framework | [docs](https://aitherium.github.io/AitherZero/) |
-| [awgit](https://github.com/Aitherium/awgit) | Semantic version control on top of git | [docs](https://aitherium.github.io/awgit/) |
-| [awgraph](https://github.com/Aitherium/awgraph) | Code knowledge graph for AI agents | [docs](https://aitherium.github.io/awgraph/) |
-| [aitherkvcache](https://github.com/Aitherium/aitherkvcache) | Near-optimal KV cache quantization | [docs](https://aitherium.github.io/aitherkvcache/) |
-| [awrelay](https://github.com/Aitherium/awrelay) | Agent-to-agent messaging over any chat server | [docs](https://aitherium.github.io/awrelay/) |
-| [awm](https://github.com/Aitherium/awm) | A small world model (LeWM JEPA + MLP) to bootstrap your own | [docs](https://aitherium.github.io/awm/) |
-| [AitherConnect](https://github.com/Aitherium/AitherConnect) | Browser extension: federated AI search & desktop bridge | — |
-| [homebrew-tap](https://github.com/Aitherium/homebrew-tap) | `brew tap aitherium/tap` | — |
-
-Built by [Aitherium](https://aitherium.com).
-<!-- aitherium-ecosystem:end -->
-
 <!-- aither-ecosystem:start GENERATED from the ecosystem registry. Edits here are overwritten; change the registry instead. -->
 
 ## The aw family
@@ -936,12 +918,6 @@ Each installs on its own, works offline, and needs no account.
 | [aitherkvcache](https://github.com/Aitherium/aitherkvcache) | a vendor's quantisation defaults | sub-byte KV cache kernels you can benchmark yourself |
 | [AitherZero](https://github.com/Aitherium/AitherZero) | a pile of scripts nobody has numbered | numbered, discoverable automation with declarative playbooks |
 | [AitherConnect](https://github.com/Aitherium/AitherConnect) | what a page tells your browser to do | a federated search and desktop bridge you host |
-| [awreason](https://github.com/Aitherium/awreason) | a confident paragraph | the phases it went through, and every tool call it made to get there |
-| [awrecurse](https://github.com/Aitherium/awrecurse) | that everything you pasted in was actually read | which slices it opened, and what it concluded from each |
-| [awprism](https://github.com/Aitherium/awprism) | the first explanation that fits | the ranked alternatives, and the observation that separates them |
-| [awrepl](https://github.com/Aitherium/awrepl) | what the agent believes the value is | the value, printed from the live session |
-| [awresearch](https://github.com/Aitherium/awresearch) | a summary of pages nobody opened | every claim against the source it came from |
-| [awkno](https://github.com/Aitherium/awkno) | that the docs site is up, or that you remember the family | the whole ecosystem in your terminal, with no network at all |
 
 [**awnix**](https://github.com/Aitherium/awnix) is the ground floor — A Linux you can hand to an agent — immutable base, capabilities included.
 
@@ -971,11 +947,5 @@ Every repository here is public. Each publishes an `aither-manifest.json` beside
 | [aitherkvcache](https://github.com/Aitherium/aitherkvcache) | Near-optimal KV cache quantization for LLM inference — sub-byte compression | [docs](https://aitherium.github.io/aitherkvcache/) |
 | [AitherZero](https://github.com/Aitherium/AitherZero) | PowerShell 7+ automation framework — numbered, self-describing scripts | [docs](https://aitherium.github.io/AitherZero/) |
 | [AitherConnect](https://github.com/Aitherium/AitherConnect) | Browser extension — federated AI search, page context, and the Living OS overlay | [docs](https://aitherium.github.io/AitherConnect/) |
-| [awreason](https://github.com/Aitherium/awreason) | A portable reasoning client — sessions, phases, thoughts, and the chain that produced the answer | [docs](https://aitherium.github.io/awreason/) |
-| [awrecurse](https://github.com/Aitherium/awrecurse) | Answer a question over a context far larger than the window — recursively, with the trace kept | [docs](https://aitherium.github.io/awrecurse/) |
-| [awprism](https://github.com/Aitherium/awprism) | Turn a failure into ranked hypotheses — and say what would confirm each one | [docs](https://aitherium.github.io/awprism/) |
-| [awrepl](https://github.com/Aitherium/awrepl) | A REPL an agent can actually use — state that survives between turns | [docs](https://aitherium.github.io/awrepl/) |
-| [awresearch](https://github.com/Aitherium/awresearch) | Ask a research question, get a cited report you can check | [docs](https://aitherium.github.io/awresearch/) |
-| [awkno](https://github.com/Aitherium/awkno) | The man page for the Aither World — every brick, stack and law, offline | [docs](https://aitherium.github.io/awkno/) |
 
 <!-- aither-ecosystem:end -->

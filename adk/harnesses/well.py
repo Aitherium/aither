@@ -89,7 +89,7 @@ MAX_ITEMS = 40
 def _lease_store_path() -> Path:
     """Mirror awgit.data_root.vcs_data_root() WITHOUT importing awgit.
 
-    aither-adk ships to PyPI and must not depend on the monorepo. The resolution order
+    awdk ships to PyPI and must not depend on the monorepo. The resolution order
     is copied deliberately and kept narrow: env override, then the documented default.
     If awgit ever moves its store, this degrades to "unavailable" and SAYS so, which is
     the correct failure — silently reporting zero leases would tell every agent the

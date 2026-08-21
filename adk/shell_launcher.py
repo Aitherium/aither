@@ -1,6 +1,6 @@
 """AitherShell binary launcher — download and run the compiled CLI.
 
-The binary is published as a GitHub Release asset on Aitherium/aither-adk
+The binary is published as a GitHub Release asset on Aitherium/awdk
 (tag: shell-cli-v*). `adk shell` downloads the platform-appropriate
 binary on first use, verifies its SHA256 checksum, caches it in ~/.aither/bin/,
 and launches it.
@@ -19,7 +19,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-_REPO = "Aitherium/aither-adk"
+_REPO = "Aitherium/awdk"
 _CACHE_DIR = Path.home() / ".aither" / "bin"
 
 _PLATFORM_BINARY = {
@@ -523,7 +523,7 @@ def _run_python_repl(args) -> int:
         from adk.shell.cli import entry
         return entry(standalone_mode=False) or 0
     except ImportError:
-        print("Python shell not available. Install with: pip install aither-adk[shell]")
+        print("Python shell not available. Install with: pip install awdk[shell]")
         return 1
     except KeyboardInterrupt:
         return 0

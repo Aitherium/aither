@@ -126,7 +126,7 @@ def _check_sandbox_proven(tool_name: str) -> bool:
 
 # ── Heuristic fallback ─────────────────────────────────────────────────
 # Used when _tool_deps is not importable (e.g. vendored ADK without
-# the full AitherNode tree).
+# the full awnode tree).
 
 _KNOWN_STANDALONE = frozenset({
     # Core ADK built-in tools — pure-local (file I/O, shell, python, web fetch).

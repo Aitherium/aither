@@ -41,7 +41,7 @@ Multiple mini PCs can be used — each runs an independent llama.cpp server. The
 ### 1. Set up Mac (one-time)
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/Aitherium/aither-adk/main/scripts/setup-mac-node.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/Aitherium/awdk/main/scripts/setup-mac-node.sh)
 ```
 
 This installs llama.cpp via Homebrew, downloads DeepSeek-R1 8B Q4_K_M (~5GB), creates a launchd service with Metal GPU acceleration and `--api-oai`, and binds to `0.0.0.0` for LAN access.
@@ -52,7 +52,7 @@ Verify: `curl http://<mac-ip>:8121/v1/models` should return model list.
 
 ```bash
 # On each mini PC:
-bash <(curl -fsSL https://raw.githubusercontent.com/Aitherium/aither-adk/main/scripts/setup-cluster-node.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/Aitherium/awdk/main/scripts/setup-cluster-node.sh)
 ```
 
 This installs llama.cpp, downloads Qwen2.5-32B Q4_K_M (~20GB), and creates a systemd service.
@@ -62,7 +62,7 @@ Verify: `curl http://<node-ip>:8121/v1/chat/completions -d '{"model":"qwen","mes
 ### 3. Deploy on main PC
 
 ```bash
-pip install aither-adk
+pip install awdk
 
 # All three tiers (explicit IPs)
 adk deploy grid \

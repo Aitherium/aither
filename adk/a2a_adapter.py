@@ -39,10 +39,10 @@ _stats = {"sent": 0, "failed": 0, "last_error": None}
 def emit(event_type: str, **kwargs: Any) -> bool:
     """POST one event to the harness daemon. Returns True only when it was ACCEPTED.
 
-    This deliberately does NOT import AitherOS's AeonEmit. aither-adk ships to PyPI and
+    This deliberately does NOT import AitherOS's AeonEmit. awdk ships to PyPI and
     must never depend on the monorepo — an `from AitherOS.lib...` import fails on every
     install outside this repo, and on Windows it can even bind to the AitherOS DIRECTORY
-    and "succeed" while resolving nothing (PQ017).
+    and "succeed" while resolving nothing.
 
     The previous version fell back to a stub that logged at DEBUG and returned **True**.
     That is the exact defect that made three separate producers report success while

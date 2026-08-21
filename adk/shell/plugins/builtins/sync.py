@@ -30,6 +30,17 @@ class SyncPlugin(SlashCommand):
     description = "Sync local directory with AitherOS platform (AitherDrive)"
     aliases = ["drive"]
 
+    def __init__(self) -> None:
+        # Explicit, because the dataclass base assigns
+        # `self.name = ""` and shadows the class attribute above —
+        # the instance then registers under the empty string and is
+        # overwritten by the next plugin to do the same.
+        super().__init__(
+            name='sync',
+            description='Sync local directory with AitherOS platform (AitherDrive)',
+            aliases=['drive'],
+        )
+
     async def run(self, args: List[str], ctx: Dict[str, Any]) -> Optional[str]:
         action = args[0] if args else "status"
 
@@ -38,7 +49,7 @@ class SyncPlugin(SlashCommand):
             from adk.client.services.strata import StrataClient
             from adk.client.services.data_plane import DataPlaneClient
         except ImportError:
-            return "adk.sync not available. Install aither-adk: pip install aither-adk"
+            return "adk.sync not available. Install awdk: pip install awdk"
 
         config = ctx.get("config", {})
         if hasattr(config, "__dict__"):
@@ -141,7 +152,7 @@ class SyncPlugin(SlashCommand):
             elif action == "watch":
                 started = await mgr.watch()
                 if not started:
-                    return "watchdog not installed. Run: pip install aither-adk[sync]"
+                    return "watchdog not installed. Run: pip install awdk[sync]"
                 # Store watcher reference in ctx for /sync stop
                 ctx["_sync_watcher"] = mgr
                 return f"Watching {sync_dir} for changes. Use /sync stop to stop."

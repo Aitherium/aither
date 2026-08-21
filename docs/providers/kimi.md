@@ -11,7 +11,7 @@ Moonshot publishes **two** endpoints for the same models:
 | endpoint | shape | use it for |
 |---|---|---|
 | `https://api.moonshot.ai/anthropic` | Anthropic Messages API | **Claude Code** |
-| `https://api.moonshot.ai/v1` | OpenAI chat-completions | **aither-adk**, AitherOS services |
+| `https://api.moonshot.ai/v1` | OpenAI chat-completions | **awdk**, AitherOS services |
 
 So Kimi is the one provider that needs **no bridge for Claude Code** — point
 `ANTHROPIC_BASE_URL` straight at the `/anthropic` endpoint. Routing it through
@@ -61,7 +61,7 @@ thinking off, use `kimi-k2.6`.
 
 ---
 
-## 2. aither-adk
+## 2. awdk
 
 ADK talks to Kimi over the **OpenAI-shaped** endpoint. `moonshot` is a built-in
 backend, aliased `kimi` and `kimi-k3`:

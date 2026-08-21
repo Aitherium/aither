@@ -19,7 +19,7 @@
     .\install.ps1 -SkipWizard
 
 .NOTES
-    This replaces the old SDK/Node/Shell trio. The modern package is aither-adk.
+    This replaces the old SDK/Node/Shell trio. The modern package is awdk.
 #>
 
 [CmdletBinding()]
@@ -29,7 +29,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$ADK_PACKAGE = "aither-adk"
+$ADK_PACKAGE = "awdk"
 
 # ── Logging helpers (plain words, big and friendly) ─────────────────────────
 

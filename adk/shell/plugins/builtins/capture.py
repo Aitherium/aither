@@ -78,6 +78,17 @@ class CapturePlugin(SlashCommand):
     description: str = "AitherCapture — capture coding sessions, export clean ShareGPT datasets"
     category: str = "data"
 
+    def __init__(self) -> None:
+        # Explicit, because the dataclass base assigns
+        # `self.name = ""` and shadows the class attribute above —
+        # the instance then registers under the empty string and is
+        # overwritten by the next plugin to do the same.
+        super().__init__(
+            name='capture',
+            description='AitherCapture — capture coding sessions, export clean ShareGPT datasets',
+            aliases=['cap'],
+        )
+
     async def run(self, args: List[str], ctx: Dict[str, Any]) -> Optional[str]:
         if not args:
             return self.get_help()

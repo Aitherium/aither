@@ -1,12 +1,12 @@
 #!/bin/sh
 # AitherADK bootstrap installer (macOS / Linux) — no Python required.
 #
-#   curl -LsSf https://github.com/Aitherium/aither-adk/releases/latest/download/install.sh | sh
+#   curl -LsSf https://github.com/Aitherium/awdk/releases/latest/download/install.sh | sh
 #
 # What it does:
 #   1. Installs uv (Astral) if missing — uv brings its own Python, so a system
 #      Python is NOT required.
-#   2. Installs aither-adk as a uv tool in an isolated environment (keeps
+#   2. Installs awdk as a uv tool in an isolated environment (keeps
 #      `adk pack install` / provider extras / addons working — that's why this
 #      is a real Python env and not a frozen binary).
 #   3. Launches the first-run wizard (skip with ADK_NO_WIZARD=1).
@@ -31,15 +31,15 @@ else
     command -v uv >/dev/null 2>&1 || fail "uv installed but not on PATH — open a new shell and re-run"
 fi
 
-# ── 2. aither-adk ────────────────────────────────────────────────────────────
-say "Installing aither-adk (Python $PYTHON_PIN, isolated tool env)…"
-uv tool install --python "$PYTHON_PIN" --upgrade aither-adk
+# ── 2. awdk ────────────────────────────────────────────────────────────
+say "Installing awdk (Python $PYTHON_PIN, isolated tool env)…"
+uv tool install --python "$PYTHON_PIN" --upgrade awdk
 
 TOOL_BIN="$(uv tool dir --bin 2>/dev/null || echo "$HOME/.local/bin")"
 export PATH="$TOOL_BIN:$PATH"
 command -v adk >/dev/null 2>&1 || fail "adk installed to $TOOL_BIN but not on PATH — add it to your shell profile"
 
-say "Installed: $(uv tool list 2>/dev/null | grep '^aither-adk' || echo aither-adk)"
+say "Installed: $(uv tool list 2>/dev/null | grep '^awdk' || echo awdk)"
 case ":$(sh -lc 'echo $PATH')": in
     *":$TOOL_BIN:"*) ;;
     *) say "NOTE: add $TOOL_BIN to your PATH (e.g. 'uv tool update-shell') so 'adk' works in new shells." ;;

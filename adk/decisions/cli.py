@@ -446,10 +446,10 @@ def _self_test() -> int:
 
         # A Windows path inside an option must survive parsing. The colon form
         # cannot carry one, which is why the pipe form exists.
-        windows = parse_option(r"repoint|Repoint to C:\AitherOS-Fresh|Drops the D: dep")
+        windows = parse_option(r"repoint|Repoint to C:\Projects\Example|Drops the D: dep")
         check("an option can carry a Windows path",
               windows.key == "repoint"
-              and windows.label == r"Repoint to C:\AitherOS-Fresh"
+              and windows.label == r"Repoint to C:\Projects\Example"
               and windows.consequence == "Drops the D: dep",
               f"got key={windows.key!r} label={windows.label!r} cons={windows.consequence!r}")
         legacy = parse_option("a:Plain label:and a consequence")

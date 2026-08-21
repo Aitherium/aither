@@ -1,6 +1,6 @@
 # Aither-ADK — Agent Developer Guide
 
-> How to build a real, production-grade agent (or a shippable **pack**) on `aither-adk`
+> How to build a real, production-grade agent (or a shippable **pack**) on `awdk`
 > the right way the first time. This is the opinionated golden path — it encodes the
 > mistakes you do **not** need to repeat.
 >
@@ -260,7 +260,7 @@ globals → it treats `request` as a required **query param** → every call 422
 ## 8. Worked example
 
 `adk/templates/deep-research/` — shipped inside the package, so it is already on your disk
-after `pip install aither-adk` — is a complete, verified reference: a sign-in-free
+after `pip install awdk` — is a complete, verified reference: a sign-in-free
 deep-research analyst pack (BYO Anthropic/OpenAI/DeepSeek/Ollama key) that searches → reads
 → cites → writes PDF/DOCX/MD reports, with a live token used/saved meter. It demonstrates
 every section here: the pack layout (§2), RAG-grounded never-forget memory (§3, proven

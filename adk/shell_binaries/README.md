@@ -28,7 +28,7 @@ When `adk shell` runs and the cached binary is not found:
    and verifies SHA256 against `checksums.sha256`
 2. **Use bundled binary** (this directory) — If download fails or network is
    unavailable, falls back to the bundled version that shipped with the
-   aither-adk package
+   awdk package
 
 This ensures the product works offline after first install, and keeps users
 on the latest version when network is available.

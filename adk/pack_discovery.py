@@ -13,7 +13,7 @@ A "pack" is a pip-installable package that ships:
 - ``skills/``          — skill assets (.md files)
 - ``packs/``           — tool pack manifests
 
-Customers install: ``pip install aither-adk aither-pack-myapp``
+Customers install: ``pip install awdk aither-pack-myapp``
 Then run: ``adk-workspace`` — auto-discovers the brain pack.
 
 Entry point registration in the pack's pyproject.toml:

@@ -1,5 +1,5 @@
 """
-AitherNode MCP Server -- Lightweight local MCP over streamable-http.
+awnode MCP Server -- Lightweight local MCP over streamable-http.
 
 Two modes:
 - **proxy**: Forwards list_tools / call_tool to the cloud gateway at
@@ -85,7 +85,7 @@ class ProxyMCPNode:
             timeout=60.0,
             headers={
                 "Authorization": f"Bearer {self.token}",
-                "User-Agent": "AitherNode/1.0",
+                "User-Agent": "awnode/1.0",
             },
         )
 
@@ -301,7 +301,7 @@ def _build_mcp_app(mode: str, port: int):
 
 
 def run_node(mode: str = "proxy", port: int = DEFAULT_PORT) -> None:
-    """Start the AitherNode MCP server.
+    """Start the awnode MCP server.
 
     Args:
         mode: 'proxy' to forward to cloud gateway, 'standalone' for local tools.
@@ -319,7 +319,7 @@ def run_node(mode: str = "proxy", port: int = DEFAULT_PORT) -> None:
 
     banner = (
         f"\n"
-        f"  AitherNode MCP Server\n"
+        f"  awnode MCP Server\n"
         f"  Mode: {mode}\n"
         f"  Port: {port}\n"
         f"  MCP endpoint: http://localhost:{port}/mcp\n"

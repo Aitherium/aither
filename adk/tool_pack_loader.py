@@ -146,7 +146,7 @@ def _default_dirs(extra_dirs: list[Path] | None) -> list[Path]:
     except Exception:
         pass
     # 3. packs bundled inside the wheel (adk/toolpacks/) — these ship with the
-    # SDK so a bare `pip install aither-adk` has arc-brainpack, deep_research and
+    # SDK so a bare `pip install awdk` has arc-brainpack, deep_research and
     # cloudflare available with no monorepo checkout or marketplace download.
     dirs.append(Path(__file__).resolve().parent / "toolpacks")
     # 4. marketplace-installed packs

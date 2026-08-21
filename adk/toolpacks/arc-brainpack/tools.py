@@ -1,7 +1,7 @@
 """arc-brainpack tools — self-contained, guarded client for the AitherWorldModel
 Contribution Gateway, plus a VENDORED random-policy ARC player.
 
-This module is fully self-contained: `pip install aither-adk[arc]` gives a working
+This module is fully self-contained: `pip install awdk[arc]` gives a working
 contribution experience with NO clone of any other repo. The gateway client
 (register / observe / status / leaderboard) needs only httpx (a core dep); the
 ARC play path lazily imports `arcengine` (the [arc] extra) for ACTION/STATE
@@ -560,7 +560,7 @@ def contribute_random(game_ids: List[str], n: int = 200,
         from arcengine import GameAction, GameState  # type: ignore
     except Exception:  # noqa: BLE001
         return {"ok": False, "submitted": 0, "accepted": 0, "games": [],
-                "error": "ARC gameplay needs the arc extra: pip install 'aither-adk[arc]'"}
+                "error": "ARC gameplay needs the arc extra: pip install 'awdk[arc]'"}
 
     base = (base_url or _gateway()).rstrip("/")
     tok = (token or _token()).strip()

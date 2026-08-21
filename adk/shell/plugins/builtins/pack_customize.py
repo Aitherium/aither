@@ -32,6 +32,16 @@ class PackCustomizePlugin(SlashCommand):
     aliases = []
     category = "agents"
 
+    def __init__(self) -> None:
+        # Explicit, because the dataclass base assigns
+        # `self.name = ""` and shadows the class attribute above —
+        # the instance then registers under the empty string and is
+        # overwritten by the next plugin to do the same.
+        super().__init__(
+            name='pack',
+            description='',
+        )
+
     def execute(self, args: List[str], **kwargs) -> str:
         """Main entry point for /pack command."""
         if not args:

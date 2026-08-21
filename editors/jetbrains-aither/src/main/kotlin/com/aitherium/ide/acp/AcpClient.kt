@@ -19,7 +19,7 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
 
 /**
- * ACP v2 CLIENT — drives the aither-adk ACP server (`adk acp serve --agent <name>`)
+ * ACP v2 CLIENT — drives the awdk ACP server (`adk acp serve --agent <name>`)
  * over stdio JSON-RPC 2.0, with no editor-specific code, exactly as the server
  * documents. This is the counterpart to `adk/acp_server.py`'s `serve_stdio`.
  *

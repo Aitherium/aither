@@ -3,7 +3,7 @@
 This module provides:
   - Device mTLS identity enrollment and persistence
   - DriveClient for cloud change-feed polling
-  - SyncEngine that reuses AitherNode's reconcile algorithm
+  - SyncEngine that reuses awnode's reconcile algorithm
   - Per-agent fabric for syncing memory/graph/session data
   - Brain, Files, Lockbox, Secrets, Session, Settings, and Watermark sync clients
     for various data planes (embeddings, files, encrypted secrets, etc.)

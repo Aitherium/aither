@@ -18,6 +18,7 @@ tags: [research, web-search, osint, report-writing, knowledge-graph, citations]
 # Namespaced dr_* so nothing collides with AitherBrowser's web_* tools.
 mcp_tools:
   - "dr_*"
+  - "relay_*"
 
 # Registration is dynamic (session-scoped closures built at register() time).
 # Empty tool_modules -> the loader file-loads this pack's __init__.py by path

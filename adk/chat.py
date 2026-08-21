@@ -1,4 +1,4 @@
-"""AitherNet Chat — Lightweight IRC-compatible chat relay for AitherNodes.
+"""AitherNet Chat — Lightweight IRC-compatible chat relay for awnodes.
 
 Every ADK node running `aither-serve` becomes a chat relay node.
 Supports WebSocket real-time + REST API + IRC protocol bridge (RFC 2812 subset).

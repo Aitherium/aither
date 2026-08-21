@@ -52,7 +52,6 @@ def test_roles_are_not_degenerate(resolver: OdsResolver, envelope: dict) -> None
     [
         ("fast", "Fast"),
         ("reasoning", "Reasoning"),
-        ("coding", "Code"),
         ("long_context", "Long Context"),
         ("chat", "Chat"),
     ],
@@ -60,11 +59,65 @@ def test_roles_are_not_degenerate(resolver: OdsResolver, envelope: dict) -> None
 def test_role_matches_its_specialty_when_one_fits(
     resolver: OdsResolver, role: str, expected_specialty: str
 ) -> None:
-    """POSITIVE assertion: on a large box the role gets its own specialty."""
+    """POSITIVE assertion: on a large box the role gets its own specialty.
+
+    `coding` is deliberately absent — its specialty group is EXHAUSTED on a box
+    this size, which the two tests below pin in both directions.
+    """
     rec = resolver.resolve_role(role, profile="qwen", **RTX_5090)
     assert rec.selected.specialty == expected_specialty
     assert f"role-{role}" in rec.policy
     assert f"matched specialty '{expected_specialty}'" in rec.reason
+
+
+def test_coding_keeps_the_dedicated_coder_when_it_fills_the_box(
+    resolver: OdsResolver,
+) -> None:
+    """The direction that must NOT change: a small box keeps its coder.
+
+    Without this half the underfill fallback could be widened until it fires
+    everywhere, which would delete specialty matching for coding entirely while
+    the other test still passed.
+    """
+    rec = resolver.resolve_role("coding", profile="qwen", **GPU_8GB)
+    assert rec.selected.specialty == "Code"
+    assert "tops out at" not in (rec.reason or "")
+
+
+def test_coding_takes_the_larger_general_pick_when_its_group_is_exhausted(
+    resolver: OdsResolver,
+) -> None:
+    """A 1.9GB coder is the wrong answer for an agent on a 32GB card.
+
+    The library's entire Code specialty is three records of 3B and under, so
+    this is not a ranking fault that reordering could fix — the group has
+    nothing bigger. The pick must be the larger general model AND must SAY it
+    passed over the specialty, so a degraded answer is labelled rather than
+    silent.
+    """
+    coder = resolver.resolve_role("coding", profile="qwen", **GPU_8GB).selected
+    rec = resolver.resolve_role("coding", profile="qwen", **RTX_5090)
+
+    assert rec.selected.vram_required_gb > coder.vram_required_gb * 2
+    assert "tops out at" in rec.reason
+    assert "'Code'" in rec.reason, "the note must name the specialty passed over"
+    assert rec.selected.id == resolver.resolve(profile="qwen", **RTX_5090).selected.id
+
+
+def test_underfill_fallback_leaves_the_small_roles_alone(
+    resolver: OdsResolver,
+) -> None:
+    """`fast` and `long_context` must never be pulled up to the general pick.
+
+    Measured while writing the rule: applying it to every role turned `fast`
+    into the LARGEST model on the box and collapsed `chat` onto `balanced` —
+    five roles answering with one model, the degeneracy this suite exists for.
+    """
+    general = resolver.resolve(profile="qwen", **RTX_5090).selected
+    for role in ("fast", "long_context", "chat"):
+        rec = resolver.resolve_role(role, profile="qwen", **RTX_5090)
+        assert rec.selected.id != general.id, f"{role} collapsed onto the general pick"
+        assert "tops out at" not in (rec.reason or "")
 
 
 def test_balanced_role_is_upstream_pick_unchanged(resolver: OdsResolver) -> None:

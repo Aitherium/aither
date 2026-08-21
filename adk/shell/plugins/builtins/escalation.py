@@ -33,6 +33,17 @@ class EscalationCommand(SlashCommand):
     description = "Manage human-approval escalations"
     aliases = ["esc"]
 
+    def __init__(self) -> None:
+        # Explicit, because the dataclass base assigns
+        # `self.name = ""` and shadows the class attribute above —
+        # the instance then registers under the empty string and is
+        # overwritten by the next plugin to do the same.
+        super().__init__(
+            name='escalations',
+            description='Manage human-approval escalations',
+            aliases=['esc'],
+        )
+
     async def run(self, args: List[str], ctx: Dict[str, Any]) -> Optional[str]:
         import httpx
 
@@ -123,6 +134,17 @@ class AuditCommand(SlashCommand):
     name = "audit"
     description = "Query agent activity audit trail"
     aliases = ["timeline"]
+
+    def __init__(self) -> None:
+        # Explicit, because the dataclass base assigns
+        # `self.name = ""` and shadows the class attribute above —
+        # the instance then registers under the empty string and is
+        # overwritten by the next plugin to do the same.
+        super().__init__(
+            name='audit',
+            description='Query agent activity audit trail',
+            aliases=['timeline'],
+        )
 
     async def run(self, args: List[str], ctx: Dict[str, Any]) -> Optional[str]:
         import httpx

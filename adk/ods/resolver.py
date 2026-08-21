@@ -52,6 +52,16 @@ class RolePreference:
 
     specialties: tuple[str, ...]
     objective: str = "rank"
+    capacity_seeking: bool = False
+    """Whether a BIGGER model is a better answer for this role.
+
+    True only where capability scales with size for the work the role names.
+    It gates the underfill fallback, and getting it wrong is not subtle:
+    measured across eight envelopes, setting it for every role turned `fast`
+    into the largest model on the box (a 48GB pick on an A6000) and collapsed
+    `chat` onto `balanced` -- five roles answering with one model, which is the
+    degeneracy the role system exists to prevent.
+    """
 
 
 # Catalog specialty values, counted over the vendored 52-model library:
@@ -69,8 +79,11 @@ ROLE_PREFERENCES: dict[str, RolePreference] = {
     # to the Balanced specialty would CAP a 96GB host at the largest 7B record
     # that happens to carry that label.
     "balanced": RolePreference(()),
-    "reasoning": RolePreference(("Reasoning", "Quality")),
-    "coding": RolePreference(("Code", "Tool Use")),
+    "reasoning": RolePreference(("Reasoning", "Quality"), capacity_seeking=True),
+    # The library's entire Code specialty is three records of 3B and under, so
+    # on anything past ~12GB this role's group is exhausted far below the
+    # envelope -- see the underfill fallback.
+    "coding": RolePreference(("Code", "Tool Use"), capacity_seeking=True),
     "long_context": RolePreference(("Long Context",), objective="context"),
     "chat": RolePreference(("Chat", "Balanced", "General")),
 }
@@ -105,6 +118,70 @@ def is_agent_viable(model: dict[str, Any]) -> bool:
     """
     status = agent_viability(model)
     return status is None or status == "verified"
+
+
+# A specialty pick may need at most this much LESS memory than the general pick
+# before it counts as underfilling the envelope. At 0.5, a specialty match is
+# kept whenever it is within 2x of the general pick's requirement.
+UNDERFILL_RATIO = 0.5
+
+
+def _required_gb(model: dict[str, Any]) -> float:
+    """Memory the catalog says this record needs, including context/KV."""
+    try:
+        return float(model.get("vram_required_gb") or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _underfills(
+    pick: dict[str, Any], general: dict[str, Any], preference: RolePreference
+) -> bool:
+    """True when a specialty match leaves most of the envelope unused.
+
+    A specialty group can be EXHAUSTED far below the hardware: the library's
+    entire Code specialty is three records of 3B and under, so a 24GB box asking
+    for a coding model is handed a 1.9GB one while a 16.3GB general model fits.
+    That is not a ranking fault to be reordered away -- the group has nothing
+    bigger -- so the choice is between a small on-specialty model and a much
+    larger off-specialty one, and past some gap the larger model is the better
+    answer for an agent.
+
+    Deliberately narrow, because a rule that fires on every envelope would
+    disable specialty matching altogether: it needs the general pick to require
+    more than TWICE what the specialty pick does. A group holding anything
+    comparable in size is left alone.
+
+    Applies ONLY to a `capacity_seeking` role. `fast` wants a SMALL model and
+    `long_context` wants the longest window, so a small record winning there is
+    the correct answer rather than an underfill; `chat` collapsing onto the
+    general pick would make that tier redundant.
+    """
+    if not preference.capacity_seeking:
+        return False
+    if preference.objective == "context":
+        return False
+    if pick is general:
+        return False
+    pick_gb = _required_gb(pick)
+    general_gb = _required_gb(general)
+    if pick_gb <= 0 or general_gb <= 0:
+        # No usable sizes recorded -- keep the specialty match rather than
+        # guessing. An absent number must not decide this.
+        return False
+    return pick_gb < general_gb * UNDERFILL_RATIO
+
+
+def _underfill_note(
+    pick: dict[str, Any], general: dict[str, Any], specialty: str
+) -> str:
+    """Say WHICH specialty was passed over and why, never just 'fallback'."""
+    return (
+        f"the '{specialty}' specialty tops out at {pick.get('name') or pick.get('id')} "
+        f"({_required_gb(pick):.0f}GB), well under this envelope; took the larger "
+        f"general pick {general.get('name') or general.get('id')} "
+        f"({_required_gb(general):.0f}GB) instead"
+    )
 
 
 EMBEDDING_ROLE_UNSUPPORTED = (
@@ -404,7 +481,10 @@ class OdsResolver:
             ]
             if not group:
                 continue
-            return _from(group, specialty), specialty, note
+            pick = _from(group, specialty)
+            if _underfills(pick, pool[0], preference):
+                return pool[0], None, _underfill_note(pick, pool[0], specialty)
+            return pick, specialty, note
         return pool[0], None, note
 
     def _finalize(

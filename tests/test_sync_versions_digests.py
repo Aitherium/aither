@@ -26,7 +26,7 @@ sync_versions = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(sync_versions)
 
 REAL_SHA = "a" * 64
-FORMULA = Path(__file__).resolve().parent.parent / "packaging" / "brew" / "aither-adk.rb"
+FORMULA = Path(__file__).resolve().parent.parent / "packaging" / "brew" / "awdk.rb"
 
 
 @pytest.fixture
@@ -34,7 +34,7 @@ def formula(tmp_path, monkeypatch):
     """Operate on a COPY — a test must never rewrite the real formula."""
     pkg = tmp_path / "brew"
     pkg.mkdir()
-    target = pkg / "aither-adk.rb"
+    target = pkg / "awdk.rb"
     shutil.copy(FORMULA, target)
 
     # sync_brew_digest resolves the path via __file__.parent / "brew"

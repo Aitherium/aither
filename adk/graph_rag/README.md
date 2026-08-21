@@ -1,4 +1,4 @@
-# adk.graph_rag — Graph-based RAG for aither-adk
+# adk.graph_rag — Graph-based RAG for awdk
 
 A portable, dependency-light service-pack that turns a **corpus** (Markdown, SQL,
 TypeScript) into an **embedded knowledge graph**, retrieves a **bounded subgraph**
@@ -173,12 +173,12 @@ never tombstones another's nodes, even though they share the registry.
 
 ## Tests
 
-`aither-adk/tests/test_graph_rag.py` — parsers, builder, retriever (floor / BFS /
+`awdk/tests/test_graph_rag.py` — parsers, builder, retriever (floor / BFS /
 determinism), governance (ledger / conflict / tombstone / stable-id), end-to-end
 governed re-ingest, and namespace isolation. Run:
 
 ```
-cd aither-adk && python -m pytest tests/test_graph_rag.py -q
+cd awdk && python -m pytest tests/test_graph_rag.py -q
 ```
 
 ---

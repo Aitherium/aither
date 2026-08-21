@@ -191,6 +191,26 @@ def detect_accel() -> AccelInfo:
         info.kind = "vulkan"
         info.name = "AMD GPU"
         info.notes.append("AMD detected — using Vulkan build")
+        # Read the card's real capacity. Without this the branch returned with
+        # vram_gb still 0.0, and `pick_quant` then took its "vulkan with under
+        # 2GB" path and sized the quant from SYSTEM RAM -- so a 24GB card was
+        # never once asked how much memory it had. It happens not to change the
+        # answer for the quant table as it stands (every entry fits a 32GB
+        # half-RAM pool), which is exactly why it went unnoticed; on an 8GB card
+        # with 64GB of RAM it picks a quant that cannot fit on the GPU.
+        smi = _run(["rocm-smi", "--showmeminfo", "vram", "--csv"])
+        if smi:
+            best_mb = 0.0
+            for line in smi.splitlines():
+                if "total" not in line.lower():
+                    continue
+                for tok in re.findall(r"(\d{4,})", line):
+                    val = float(tok)
+                    mb = val / (1024 * 1024) if val > 1_000_000 else val
+                    best_mb = max(best_mb, mb)
+            if best_mb > 0:
+                info.vram_gb = best_mb / 1024
+                info.name = f"AMD GPU ({info.vram_gb:.0f}GB)"
         return info
 
     # Intel Arc / iGPU on Windows -> Vulkan

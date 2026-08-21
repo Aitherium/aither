@@ -1,7 +1,7 @@
 """adk's ACP SERVER driven by Zed's REFERENCE ACP CLIENT.
 
 The mirror of `test_acp_live_reference.py` (which proves our client). Together
-they prove aither-adk speaks ACP in BOTH directions:
+they prove awdk speaks ACP in BOTH directions:
   * client: adk can drive any ACP agent (hermes, ...)
   * server: any ACP host (Zed / VS Code / JetBrains) can drive an adk agent
 

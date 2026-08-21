@@ -1,7 +1,7 @@
 """Decision cards as first-class ADK agent tools.
 
 Until now this whole channel was Claude-Code-shaped: a CLI an agent shelled out
-to, plus a Stop hook. An ADK agent — Lyra, Demiurge, a customer's `aither-adk`
+to, plus a Stop hook. An ADK agent — Lyra, Demiurge, a customer's `awdk`
 agent on their own laptop — had no way to reach its owner at all except
 ``escalate_to_human``, which in standalone mode wrote a log line and returned
 ``"status": "logged_locally"``. Nothing raised, nothing notified, nobody saw it.
@@ -348,9 +348,9 @@ def _self_test() -> int:
           len(parsed) == 2 and parsed[1].consequence == "needs a restart")
     parsed = parse_options("a|Keep it|nothing changes\nb|Fix it|needs a restart")
     check("parses newline-separated pipe strings", len(parsed) == 2)
-    parsed = parse_options(r"repoint|Repoint to C:\AitherOS-Fresh|drops the D: dep")
+    parsed = parse_options(r"repoint|Repoint to C:\Projects\Example|drops the D: dep")
     check("an option can carry a Windows path",
-          parsed[0].label == r"Repoint to C:\AitherOS-Fresh", parsed[0].label)
+          parsed[0].label == r"Repoint to C:\Projects\Example", parsed[0].label)
     try:
         parse_options("[not json")
         check("refuses malformed JSON", False, "it was accepted")

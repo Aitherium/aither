@@ -13,7 +13,7 @@ as a relay node on the AitherNet mesh. This enables:
 
 Architecture::
 
-    AitherNode (laptop)                AitherNode (GPU server)
+    awnode (laptop)                awnode (GPU server)
         |                                   |
         | register + heartbeat              | register + heartbeat
         v                                   v

@@ -62,6 +62,17 @@ class InferencePlugin(SlashCommand):
     description: str = "Configure local/custom LLM inference backend"
     category: str = "ai"
 
+    def __init__(self) -> None:
+        # Explicit, because the dataclass base assigns
+        # `self.name = ""` and shadows the class attribute above —
+        # the instance then registers under the empty string and is
+        # overwritten by the next plugin to do the same.
+        super().__init__(
+            name='inference',
+            description='Configure local/custom LLM inference backend',
+            aliases=['inf-config', 'backend'],
+        )
+
     async def run(self, args: List[str], ctx: Dict[str, Any]) -> Optional[str]:
         err = _require_auth()
         if err:

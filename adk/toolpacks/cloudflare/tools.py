@@ -406,6 +406,26 @@ def cf_dns_list(zone: str = "") -> dict:
     return {"zone": config.mask_id(zid), "count": len(recs), "records": recs}
 
 
+def _as_bool(v, default: bool = True) -> bool:
+    """Parse a boolean that may arrive as a real bool, a string, or a number.
+
+    Tool arguments cross a JSON boundary where a schema may declare a string, and
+    `bool("false")` is True. Anything not recognised falls back to `default` rather
+    than being silently coerced, so a typo cannot flip a routing decision.
+    """
+    if isinstance(v, bool):
+        return v
+    if v is None:
+        return default
+    if isinstance(v, (int, float)):
+        return bool(v)
+    s = str(v).strip().lower()
+    if s in ("true", "1", "yes", "on"):
+        return True
+    if s in ("false", "0", "no", "off", ""):
+        return False
+    return default
+
 def cf_dns_upsert(name: str, type: str, content: str, proxied: bool = True,
                   zone: str = "") -> dict:  # noqa: A002 — 'type' is the CF field name
     """Create a DNS record, or update it in place if name+type already exists.
@@ -432,6 +452,17 @@ def cf_dns_upsert(name: str, type: str, content: str, proxied: bool = True,
     zid, err = _zone(zone)
     if err:
         return err
+
+    # 🚨 `proxied` ARRIVES AS A STRING over MCP, and `bool("false")` is True.
+    # The signature says `proxied: bool = True`, but the tool schema declares it a
+    # string, so every value a caller would reach for does the OPPOSITE of what it
+    # says: measured 2026-08-20 against the live zone, "false" -> proxied=True and
+    # "0" -> proxied=True, while only "" produced False. This decides whether a
+    # hostname is fronted by Cloudflare or answers with the ORIGIN's own address, so
+    # the empty-string case silently exposes an origin, and the caller is told
+    # nothing -- the API returns 200 and the record shows the value it chose, not
+    # the one that was asked for.
+    proxied = _as_bool(proxied)
 
     if rec_type not in _PROXYABLE:
         proxied = False

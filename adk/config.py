@@ -23,6 +23,46 @@ logger = logging.getLogger("adk.config")
 
 
 # ---------------------------------------------------------------------------
+# Self-host handoff
+# ---------------------------------------------------------------------------
+#: What to tell someone when the hosted platform cannot be reached.
+#:
+#: Self-hosting is a capability of AitherOS itself, not of any one deployment or
+#: tenant — the installer is the same for everybody — so this is a constant here
+#: rather than something each surface hardcodes or each operator configures. Any
+#: surface that reports "cloud unreachable" should offer it: a status line that
+#: says a thing is down and stops there leaves the user with nowhere to go, which
+#: is the whole failure this exists to end.
+#:
+#: The web half of this lives in portal-kit's SignIn screen, which applies the
+#: same values as a default and lets a deployment opt OUT. Keep the two in step.
+#:
+#: Public URLs only — this module ships to PyPI. Verified 2026-08-17 to serve a
+#: real shell script rather than an HTML page: `curl -fsSL` does not fail on a
+#: 200, so a wrong URL here pipes a web page straight into a shell.
+SELF_HOST_INSTALL_URL = "https://aitherium.com/install.sh"
+SELF_HOST_INSTALL_PS1 = "https://aitherium.com/install.ps1"
+SELF_HOST_DOCS_URL = "https://portal.aitherium.com/get"
+
+
+def self_host_hint(windows: bool | None = None) -> str:
+    """One line telling the user they can run this themselves, with the command.
+
+    ``windows`` selects the PowerShell installer; None auto-detects. Returns a
+    plain string so every caller — CLI, daemon log, agent reply — renders it in
+    its own voice instead of each inventing its own URL.
+    """
+    import sys as _sys
+    if windows is None:
+        windows = _sys.platform == "win32"
+    if windows:
+        cmd = f"irm {SELF_HOST_INSTALL_PS1} | iex"
+    else:
+        cmd = f"curl -fsSL {SELF_HOST_INSTALL_URL} | bash"
+    return f"Run it yourself instead: {cmd}  ({SELF_HOST_DOCS_URL})"
+
+
+# ---------------------------------------------------------------------------
 # ~/.aither/config.json helpers
 # ---------------------------------------------------------------------------
 

@@ -1,7 +1,7 @@
 """adk.licensing — the open-core entitlement keystone.
 
 This module is the single source of truth for what a locally-installed
-``aither-adk`` runtime is allowed to do **without** phoning home.  It is
+``awdk`` runtime is allowed to do **without** phoning home.  It is
 deliberately shipped in the published PyPI wheel (unlike the internal moat at
 ``AitherOS/packages/aither_adk``) and contains **no secrets** — only a public
 verification key.  The portal signs entitlements with its private key; this
@@ -191,7 +191,7 @@ def _verify_signature(payload: bytes, signature_hex: str) -> bool:
     except ImportError:
         logger.debug(
             "cryptography not installed — cannot verify licenses. "
-            "Install with: pip install 'aither-adk[federation]'",
+            "Install with: pip install 'awdk[federation]'",
         )
         return False
     except Exception as exc:  # malformed key/signature

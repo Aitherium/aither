@@ -94,6 +94,17 @@ class SagaPlugin(SlashCommand):
     description: str = "Interactive storytelling engine"
     category: str = "creative"
 
+    def __init__(self) -> None:
+        # Explicit, because the dataclass base assigns
+        # `self.name = ""` and shadows the class attribute above —
+        # the instance then registers under the empty string and is
+        # overwritten by the next plugin to do the same.
+        super().__init__(
+            name='saga',
+            description='Interactive storytelling engine',
+            aliases=['story'],
+        )
+
     async def run(self, args: List[str], ctx: Dict[str, Any]) -> Optional[str]:
         if not args:
             return await self._list_projects([], ctx)

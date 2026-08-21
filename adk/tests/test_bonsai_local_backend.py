@@ -1,7 +1,7 @@
 """`adk bonsai-local` must be REACHABLE by an adk agent.
 
 THE GAP THIS CLOSES (found 2026-07-31 while chasing "make it dead simple to install/use
-Bonsai-27B with aither-adk agents seamlessly"):
+Bonsai-27B with awdk agents seamlessly"):
 
 `adk bonsai-local` starts llama.cpp on **:8090**. Every backend preset pointed at **:8201**,
 which is AitherVLLMSwap — a FLEET service that does not exist on anyone else's machine. So

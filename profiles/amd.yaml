@@ -2,7 +2,7 @@
 # For AMD GPUs with ROCm support (RX 7900 XTX, MI250, etc.)
 
 name: amd
-description: AMD GPU with ROCm — mid-to-large models via ROCm backend
+description: AMD GPU, 12-20GB VRAM — 8B-class models on-card
 
 gpu:
   vendor: amd

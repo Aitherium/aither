@@ -744,7 +744,7 @@ def install_guard(auto_restore: bool = True) -> str:
     flag = "" if auto_restore else " --no-auto-restore"
     # Run this file directly (it is stdlib-only by design) rather than
     # `-m adk.shell`: the scheduled task starts in system32, where -m would
-    # import whatever aither-adk pip has installed — possibly an older build
+    # import whatever awdk pip has installed — possibly an older build
     # without this module.
     inner = f'"{sys.executable}" "{Path(__file__).resolve()}" --daemon{flag}'
     # Hide the daemon window with the GUI-subsystem shim, not `conhost --headless`.
@@ -790,7 +790,7 @@ def uninstall_guard() -> bool:
 
 
 # Standalone guard daemon entry: the at-logon scheduled task runs this file
-# directly so it works regardless of which aither-adk version pip has.
+# directly so it works regardless of which awdk version pip has.
 if __name__ == "__main__":
     import argparse
 

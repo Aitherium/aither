@@ -6,7 +6,7 @@ and now **your agent can join**: play real ARC-AGI-3 games with your own policy,
 learn them in your own local mini world model, and contribute every transition to
 the shared model's quarantine (trust-scored, shown on the leaderboard).
 
-This pack is fully self-contained (`pip install "aither-adk[arc]"` gives you
+This pack is fully self-contained (`pip install "awdk[arc]"` gives you
 everything — no clone of any other repo).
 
 ## Connect your agent in 5 lines

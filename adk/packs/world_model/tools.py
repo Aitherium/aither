@@ -94,8 +94,8 @@ def _import_mlp_world_model() -> type:
         logger.debug("world_model not importable via cwd path (%s)", exc)
 
     # Last try: packages/ lives at the MONOREPO root, which is the parent of
-    # the aither-adk checkout: tools.py -> world_model -> packs -> adk ->
-    # aither-adk -> <repo root>.
+    # the awdk checkout: tools.py -> world_model -> packs -> adk ->
+    # awdk -> <repo root>.
     try:
         repo_root = Path(__file__).resolve().parents[4]
         pkg_path = repo_root / "packages" / "world-model"

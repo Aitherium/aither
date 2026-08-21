@@ -1,6 +1,6 @@
-"""Shared startup entitlement gate for aither-adk products.
+"""Shared startup entitlement gate for awdk products.
 
-Called early from each product entrypoint (aithershell, aithernode, the MCP server) to:
+Called early from each product entrypoint (aithershell, awnode, the MCP server) to:
 
   1. Resolve the active license tier (via :mod:`adk.licensing`, fail-closed).
   2. Log what the runtime is entitled to (clear UX, not a hard wall).

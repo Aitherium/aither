@@ -1,10 +1,10 @@
 """MCP server — expose agent tools via JSON-RPC 2.0 at POST /mcp.
 
-Every AitherNode running ``aither-serve`` becomes both an MCP **client**
+Every awnode running ``aither-serve`` becomes both an MCP **client**
 (consuming tools from mcp.aitherium.com via MCPBridge) and an MCP **server**
 (exposing its own registered tools to any MCP-compatible caller).
 
-Protocol — same wire format as AitherOS/AitherNode (FastMCP):
+Protocol — same wire format as AitherOS/awnode (FastMCP):
 
     POST /mcp
     Content-Type: application/json
@@ -255,7 +255,7 @@ class MCPServer:
         """
         if Request is None:  # fastapi not installed
             raise RuntimeError(
-                "MCPServer.mount() requires fastapi — install aither-adk[node]"
+                "MCPServer.mount() requires fastapi — install awdk[node]"
             )
 
         @app.post(path)

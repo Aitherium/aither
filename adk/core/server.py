@@ -14,7 +14,7 @@ Endpoints:
   - ``POST /chat`` — body ``{"prompt": "..."}`` → ``{"output", "steps", ...}``
   - ``POST /chat/stream`` — same body, SSE stream of incremental chunks
 
-This is a thin FastAPI wrapper; install with ``pip install 'aither-adk[full]'``
+This is a thin FastAPI wrapper; install with ``pip install 'awdk[full]'``
 (or just add ``fastapi`` + ``uvicorn`` yourself).
 """
 
@@ -38,7 +38,7 @@ def build_app(agent: Agent) -> Any:
     except ImportError as e:  # pragma: no cover
         raise RuntimeError(
             "HTTP serve mode requires fastapi. "
-            "Install with: pip install fastapi uvicorn (or 'aither-adk[full]')"
+            "Install with: pip install fastapi uvicorn (or 'awdk[full]')"
         ) from e
 
     app = FastAPI(title=f"AitherADK agent: {agent.name}")
@@ -184,7 +184,7 @@ def serve(
     except ImportError as e:  # pragma: no cover
         raise RuntimeError(
             "HTTP serve mode requires uvicorn. "
-            "Install with: pip install uvicorn (or 'aither-adk[full]')"
+            "Install with: pip install uvicorn (or 'awdk[full]')"
         ) from e
     app = build_app(agent)
     _log.info("server.start", extra={"host": host, "port": port, "agent": agent.name})

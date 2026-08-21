@@ -1,6 +1,6 @@
 """Offline unit tests for voice tools (no network, no ML models).
 
-    cd aither-adk && python -m pytest tests/test_voice_tools.py -q
+    cd awdk && python -m pytest tests/test_voice_tools.py -q
 
 Uses MOCK backend to avoid requiring faster-whisper or OpenAI keys.
 """

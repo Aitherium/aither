@@ -103,6 +103,17 @@ class GraphPlugin(SlashCommand):
     description: str = "AitherGraph — unified intelligence graph (code, knowledge, events, memory, research)"
     category: str = "intelligence"
 
+    def __init__(self) -> None:
+        # Explicit, because the dataclass base assigns
+        # `self.name = ""` and shadows the class attribute above —
+        # the instance then registers under the empty string and is
+        # overwritten by the next plugin to do the same.
+        super().__init__(
+            name='graph',
+            description='AitherGraph — unified intelligence graph (code, knowledge, events, memory, research)',
+            aliases=['g'],
+        )
+
     async def run(self, args: List[str], ctx: Dict[str, Any]) -> Optional[str]:
         if not args:
             return self.get_help()

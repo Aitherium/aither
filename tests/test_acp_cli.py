@@ -54,7 +54,7 @@ def test_acp_config_emits_agent_json():
     assert rc == 0
     # The JSON doc is everything before the "# Install:" guidance line.
     data = json.loads(buf.getvalue().split("# Install:", 1)[0])
-    assert data["name"] == "aither-adk"
+    assert data["name"] == "awdk"
     assert data["runtime"]["type"] == "stdio"
     assert data["runtime"]["command"][-2:] == ["acp", "serve"]
     assert "prompt" in data["capabilities"]

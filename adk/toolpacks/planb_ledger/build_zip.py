@@ -2,9 +2,9 @@
 
 The zip contains the SAME core modules as this toolpack (relative imports make
 them location-agnostic) as package `planb/`, plus the install wizards. Output:
-aither-adk/dist/PlanB-Ledger.zip.
+awdk/dist/PlanB-Ledger.zip.
 
-Run: python adk/toolpacks/planb_ledger/build_zip.py   (from aither-adk/)
+Run: python adk/toolpacks/planb_ledger/build_zip.py   (from awdk/)
 """
 from __future__ import annotations
 

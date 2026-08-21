@@ -69,6 +69,17 @@ class AgentPlugin(SlashCommand):
     description: str = "Dispatch a task to a named AitherOS agent"
     category: str = "agents"
 
+    def __init__(self) -> None:
+        # Explicit, because the dataclass base assigns
+        # `self.name = ""` and shadows the class attribute above —
+        # the instance then registers under the empty string and is
+        # overwritten by the next plugin to do the same.
+        super().__init__(
+            name='agent',
+            description='Dispatch a task to a named AitherOS agent',
+            aliases=['a'],
+        )
+
     async def run(self, args: List[str], ctx: Dict[str, Any]) -> Optional[str]:
         if not args:
             return self.get_help()
@@ -164,6 +175,16 @@ class AgentsPlugin(SlashCommand):
     aliases: List[str] = []
     description: str = "List and manage workspace agents"
     category: str = "agents"
+
+    def __init__(self) -> None:
+        # Explicit, because the dataclass base assigns
+        # `self.name = ""` and shadows the class attribute above —
+        # the instance then registers under the empty string and is
+        # overwritten by the next plugin to do the same.
+        super().__init__(
+            name='agents',
+            description='List and manage workspace agents',
+        )
 
     async def run(self, args: List[str], ctx: Dict[str, Any]) -> Optional[str]:
         if not args:
@@ -525,9 +546,9 @@ class AgentsPlugin(SlashCommand):
             )
         except ImportError:
             return (
-                "aither-adk is not installed. Install it to "
+                "awdk is not installed. Install it to "
                 "run agents locally:\n"
-                "  `pip install aither-adk`\n\n"
+                "  `pip install awdk`\n\n"
                 "Or run the agent script directly:\n"
                 "  `python agent.py` (from the package directory)"
             )

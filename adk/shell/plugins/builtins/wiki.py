@@ -96,6 +96,17 @@ class WikiPlugin(SlashCommand):
     _tenant: str = os.environ.get("LYRA_TENANT_ID", "default")
     _wiki: str = os.environ.get("LYRA_WIKI_PROJECT", "default")
 
+    def __init__(self) -> None:
+        # Explicit, because the dataclass base assigns
+        # `self.name = ""` and shadows the class attribute above —
+        # the instance then registers under the empty string and is
+        # overwritten by the next plugin to do the same.
+        super().__init__(
+            name='wiki',
+            description='LyraWiki — ingest, ask, search, and curate a tenant-isolated LLM wiki',
+            aliases=['lyra', 'kb-wiki'],
+        )
+
     async def run(self, args: List[str], ctx: Dict[str, Any]) -> Optional[str]:
         if not args:
             return self.get_help()
