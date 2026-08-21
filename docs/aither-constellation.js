@@ -42,7 +42,13 @@
     { id: "awbrowse", label: "awbrowse", blurb: "A portable browser client — navigate,..." },
     { id: "aitherkvcache", label: "aitherkvcache", blurb: "Near-optimal KV cache quantization for LLM..." },
     { id: "AitherZero", label: "AitherZero", blurb: "PowerShell 7+ automation framework —..." },
-    { id: "AitherConnect", label: "AitherConnect", blurb: "Browser extension — federated AI search, page..." }
+    { id: "AitherConnect", label: "AitherConnect", blurb: "Browser extension — federated AI search, page..." },
+    { id: "awreason", label: "awreason", blurb: "A portable reasoning client — sessions,..." },
+    { id: "awrecurse", label: "awrecurse", blurb: "Answer a question over a context far larger..." },
+    { id: "awprism", label: "awprism", blurb: "Turn a failure into ranked hypotheses — and..." },
+    { id: "awrepl", label: "awrepl", blurb: "A REPL an agent can actually use — state that..." },
+    { id: "awresearch", label: "awresearch", blurb: "Ask a research question, get a cited report..." },
+    { id: "awkno", label: "awkno", blurb: "The man page for the Aither World — every..." }
   ];
 
   var CSS = [
