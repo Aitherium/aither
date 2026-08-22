@@ -12160,6 +12160,22 @@ def _register_commands(sub):
     up_p.add_argument("--dry-run", action="store_true", help="Show what would happen without starting anything")
 
     # adk bonsai-local — one command: run Bonsai-27B locally on :8090 (the ladder's local tier)
+    # adk publish-preflight — every check that can fail BEFORE an upload.
+    # Separate from any publish command on purpose: an upload is the only
+    # irreversible step, and this deliberately does not perform it.
+    pf_p = sub.add_parser(
+        "publish-preflight",
+        help="Check a package can actually be published: an interpreter that "
+             "meets requires-python, and a wheel that installs AND imports")
+    pf_p.add_argument("path", nargs="?", default=".",
+                      help="Package directory (default: the current one)")
+    pf_p.add_argument("--import-name", default="",
+                      help="Module to import, when it legitimately differs "
+                           "from the distribution name")
+    pf_p.add_argument("--diagnose", default="",
+                      help="Translate a publish error into its cause instead "
+                           "of running the checks")
+
     bonsai_p = sub.add_parser(
         "bonsai-local",
         help="Run Bonsai-27B on your own hardware (:8090) — GPU or CPU; aitherium.com then chats locally")
@@ -14667,6 +14683,19 @@ def main():
         sys.exit(cmd_up(args))
     elif args.command == "sandbox":
         sys.exit(cmd_sandbox(args))
+    elif args.command == "publish-preflight":
+        from .toolpacks.publish_preflight.tools import (
+            publish_diagnose_failure, publish_preflight)
+        if args.diagnose:
+            print(publish_diagnose_failure(args.diagnose))
+        else:
+            out = publish_preflight(args.path, args.import_name)
+            print(out)
+            # Exit non-zero on a refusal so a caller can gate on it. A
+            # preflight that reports failure and exits 0 is advice, not a check.
+            import json as _json
+            if _json.loads(out).get("status") != "success":
+                return 1
     elif args.command == "bonsai-local":
         sys.exit(cmd_bonsai_local(args))
     elif args.command == "down":

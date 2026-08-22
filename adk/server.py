@@ -587,6 +587,31 @@ def create_app(
         # permissive list widens what a whitelisted-origin page can do cross-site.
         allow_headers=["Authorization", "Content-Type", "Accept",
                        "X-Caller-Type", "X-Request-ID", "X-Tenant-ID", "X-Workspace-ID"],
+        # PRIVATE NETWORK ACCESS -- without this the allowlist above is necessary and
+        # NOT sufficient, and the daemon is undetectable from the web for a SECOND
+        # reason that looks identical to the first.
+        #
+        # Chrome treats an https:// page fetching http://127.0.0.1 as a private-network
+        # request and sends `Access-Control-Request-Private-Network: true` on the
+        # preflight. Starlette KNOWS about that header and REFUSES by default: measured
+        # 2026-08-22 against this daemon, a plain preflight returned 200 while the same
+        # preflight plus that one header returned `400 Disallowed CORS private-network`.
+        # The browser then discards the response and aitherium.com reports "no node"
+        # while `curl http://127.0.0.1:9001/v1/models` answers 200 with a correct
+        # Access-Control-Allow-Origin -- so every hand check from a shell says the node
+        # is detectable and every real browser disagrees.
+        #
+        # That is the SAME failure the comment above documents (origin missing from the
+        # allowlist), recurring one layer deeper after it was fixed, with the identical
+        # symptom and no log line on either side. The extension still sees the daemon
+        # fine, because extensions bypass both CORS and PNA with host permissions -- so
+        # the side panel can read "node online" a few pixels from the page's "no node".
+        #
+        # Scoped by construction, not widened: PNA exists to stop a public site probing
+        # your LAN, and this grant applies only to the explicit origin allowlist above.
+        # allow_credentials stays OFF, so no ambient cookie rides along. A wildcard
+        # origin here would hand every website on the internet a port scanner.
+        allow_private_network=True,
     )
 
     # Trace ID middleware — generates/propagates X-Request-ID on every request
