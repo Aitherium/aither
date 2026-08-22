@@ -32,12 +32,17 @@
     { id: "awgit", label: "awgit", blurb: "Semantic version control on top of git —..." },
     { id: "awseal", label: "awseal", blurb: "Sign an artifact so a stranger can verify it" },
     { id: "awshare", label: "awshare", blurb: "Publish an artifact and fetch it back verified" },
+    { id: "awdit", label: "awdit", blurb: "An append-only audit trail whose gaps are..." },
+    { id: "awbac", label: "awbac", blurb: "Role-based access control that fails closed..." },
+    { id: "awiam", label: "awiam", blurb: "Who is this caller? A directory and session..." },
+    { id: "awtunnel", label: "awtunnel", blurb: "Reach a service that has no public address" },
     { id: "awnest", label: "awnest", blurb: "Prove there is a human before you let them..." },
     { id: "awnboard", label: "awnboard", blurb: "A front gate you can put in front of..." },
     { id: "awnix", label: "awnix", blurb: "A Linux you can hand to an agent — immutable..." },
     { id: "awrecover", label: "awrecover", blurb: "Labelled snapshots with an all-or-nothing..." },
     { id: "awrelay", label: "awrelay", blurb: "Portable agent messaging — findings, alerts,..." },
     { id: "awmail", label: "awmail", blurb: "Give an agent an email address — send, and..." },
+    { id: "awnet", label: "awnet", blurb: "The agentic web — agents host a mesh, and..." },
     { id: "awfind", label: "awfind", blurb: "A portable search client — query, results,..." },
     { id: "awbrowse", label: "awbrowse", blurb: "A portable browser client — navigate,..." },
     { id: "awknowledge", label: "awknowledge", blurb: "How to run a coding agent so the result..." },
@@ -49,6 +54,7 @@
     { id: "awprism", label: "awprism", blurb: "Turn a failure into ranked hypotheses — and..." },
     { id: "awrepl", label: "awrepl", blurb: "A REPL an agent can actually use — state that..." },
     { id: "awresearch", label: "awresearch", blurb: "Ask a research question, get a cited report..." },
+    { id: "awpredict", label: "awpredict", blurb: "Predict what your environment does next, and..." },
     { id: "awkno", label: "awkno", blurb: "The man page for the Aither World — every..." }
   ];
 
