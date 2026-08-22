@@ -40,6 +40,7 @@
     { id: "awmail", label: "awmail", blurb: "Give an agent an email address — send, and..." },
     { id: "awfind", label: "awfind", blurb: "A portable search client — query, results,..." },
     { id: "awbrowse", label: "awbrowse", blurb: "A portable browser client — navigate,..." },
+    { id: "awknowledge", label: "awknowledge", blurb: "How to run a coding agent so the result..." },
     { id: "aitherkvcache", label: "aitherkvcache", blurb: "Near-optimal KV cache quantization for LLM..." },
     { id: "AitherZero", label: "AitherZero", blurb: "PowerShell 7+ automation framework —..." },
     { id: "AitherConnect", label: "AitherConnect", blurb: "Browser extension — federated AI search, page..." },
