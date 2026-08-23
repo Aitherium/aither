@@ -879,6 +879,23 @@ class AitherAgent:
             logger.debug("brain-pack persona load failed: %s", exc)
         return None
 
+    def _situation_suffix(self, system_additions=None) -> str:
+        """The [AGENT HOST] block + caller additions as a suffix, or "". Never
+        raises: a context block must not take the turn down with it."""
+        try:
+            from adk.situation import situation_block
+            return situation_block(system_additions)
+        except Exception as exc:  # noqa: BLE001 - decoration, not the turn
+            logger.debug("situation block unavailable: %s", exc)
+            return ""
+
+    def _turn_system_prompt(self, system_additions=None) -> str:
+        """The system prompt for ONE turn: identity (``system_prompt``) with the
+        live situation block and any caller ``system_additions`` appended at the
+        END (cache-prefix-safe). Every turn path builds from this, so an agent
+        always knows the time, host and -- via AitherShell -- the user's shell."""
+        return (self.system_prompt or "").rstrip() + self._situation_suffix(system_additions)
+
     @property
     def system_prompt(self) -> str:
         # WHOLESALE IDENTITY SWAP (mirrors Genesis build_system_message
@@ -1227,6 +1244,13 @@ class AitherAgent:
         # LLM call; threaded into tool execution below. None → unchanged behavior.
         _auth = kwargs.pop("auth", None)
 
+        # Per-turn system prompt = identity + [AGENT HOST] situation block + any
+        # caller-supplied system_additions (AitherShell's [USER'S SHELL] block).
+        # Popped so it never reaches the provider as a kwarg. Appended at the END
+        # so the cached prefix (identity + tools) stays stable — see adk.situation.
+        _sys_additions = kwargs.pop("system_additions", None)
+        _turn_sys_prompt = self._turn_system_prompt(_sys_additions)
+
         # Advisor tool (beta): a fast executor consults a stronger Opus advisor
         # mid-generation. Popped + normalized here, threaded explicitly to each
         # llm.chat() below. None / disabled → every branch is a no-op.
@@ -1283,7 +1307,7 @@ class AitherAgent:
                 # Make intent available to context assembly (add_system uses it
                 # to skip the heavy technical system-facts block on chit-chat).
                 self._context_mgr.set_intent(self._current_intent)
-                self._context_mgr.add_system(self.system_prompt)
+                self._context_mgr.add_system(_turn_sys_prompt)
                 if history:
                     for h in history:
                         self._context_mgr.add(h["role"], h["content"])
@@ -1298,7 +1322,7 @@ class AitherAgent:
                 messages = None  # Fall back to manual
 
         if messages is None:
-            messages = [Message(role="system", content=self.system_prompt)]
+            messages = [Message(role="system", content=_turn_sys_prompt)]
             if history:
                 for h in history:
                     messages.append(Message(role=h["role"], content=h["content"]))
@@ -2290,6 +2314,9 @@ class AitherAgent:
         the stream is killed and trimmed to the last clean sentence.
         """
         sid = session_id or self._session_id
+        # See chat(): popped so it never reaches the provider as a kwarg;
+        # forwarded explicitly on the tool-loop fallback below.
+        _sys_additions = kwargs.pop("system_additions", None)
 
         # Input safety check
         if self._safety:
@@ -2322,7 +2349,8 @@ class AitherAgent:
         if self._tools.list_tools():
             try:
                 resp = await asyncio.wait_for(
-                    self.chat(message, history=history, session_id=sid, **kwargs),
+                    self.chat(message, history=history, session_id=sid,
+                              system_additions=_sys_additions, **kwargs),
                     timeout=60.0,
                 )
             except asyncio.TimeoutError:
@@ -2337,7 +2365,7 @@ class AitherAgent:
             return
 
         # Build messages
-        messages = [Message(role="system", content=self.system_prompt)]
+        messages = [Message(role="system", content=self._turn_system_prompt(_sys_additions))]
         if history:
             for h in history:
                 messages.append(Message(role=h["role"], content=h["content"]))
@@ -2471,6 +2499,7 @@ class AitherAgent:
         max_steps: int = 6,
         session_id: str | None = None,
         steering: "Callable[[], list[str]] | None" = None,
+        system_additions: list[str] | None = None,
     ) -> AgentResponse:
         """Streaming, tool-using ReAct loop.
 
@@ -2529,6 +2558,10 @@ class AitherAgent:
             "When you have enough information, after your <think> reply:\n"
             "FINAL: <concise answer for the user>\n\n"
             f"Available tools:\n{tools_block}"
+            # Situation LAST: identity + protocol + tools is the stable, cacheable
+            # prefix; the clock and the caller's [USER'S SHELL] block change per
+            # turn and must not sit in front of it. See adk.situation.
+            + self._situation_suffix(system_additions)
         )
 
         msgs = [Message(role="system", content=sys_prompt)]

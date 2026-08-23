@@ -2413,9 +2413,11 @@ def create_app(
         agent_name = body.get("agent")
         reasoning = body.get("reasoning", False)
         mcp_endpoints = body.get("mcp_endpoints")
+        system_additions = body.get("system_additions")
 
         return StreamingResponse(
-            _aitheros_stream(get_agent, message, session_id, agent_name, reasoning, mcp_endpoints),
+            _aitheros_stream(get_agent, message, session_id, agent_name, reasoning, mcp_endpoints,
+                             system_additions=system_additions),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
@@ -2434,6 +2436,13 @@ def create_app(
         agent_name = body.get("agent") or body.get("persona")
         reasoning = body.get("reasoning", False)
         mcp_endpoints = body.get("mcp_endpoints")
+        # Extra SYSTEM content for this turn — the same `system_additions` list
+        # genesis honours. AitherShell sends a pack prompt and its live
+        # [USER'S SHELL] block (clock, cwd, shell) here. Until 2026-08-23 this
+        # handler silently DROPPED the field, so the shell's pack persona and
+        # situation reached genesis and never the daemon — the body looked right
+        # in every log and changed nothing. Bounded in adk.situation.
+        system_additions = body.get("system_additions")
 
         # Optional per-turn generation params (honored by the OpenAI-compatible
         # providers). Only forward what the caller actually set + what is valid,
@@ -2449,7 +2458,8 @@ def create_app(
 
         return StreamingResponse(
             _aitheros_stream(get_agent, message, session_id, agent_name, reasoning,
-                             mcp_endpoints, gen_params=gen_params or None),
+                             mcp_endpoints, gen_params=gen_params or None,
+                             system_additions=system_additions),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
@@ -4634,7 +4644,33 @@ async def _strata_ingest_bg(**kwargs):
         pass
 
 
-async def _aitheros_stream(get_agent_fn, message: str, session_id: str, agent_name: str | None, reasoning: bool, mcp_endpoints: list | None = None, gen_params: dict | None = None):
+
+def _tool_result_ok(result) -> bool:
+    """Did this tool actually succeed?
+
+    Derived from the payload rather than assumed. A JSON object carrying an
+    `error` key is a failure; everything else keeps the previous answer, so
+    this can only turn a wrong True into a right False -- it can never invent
+    a failure for a tool that worked.
+
+    Deliberately narrow. A broader rule (scanning for the word 'error'
+    anywhere) would mark a successful web_search for 'python error handling'
+    as failed, and a tool result that lies in the other direction is worse:
+    it makes the agent abandon work that succeeded.
+    """
+    text = result if isinstance(result, str) else str(result)
+    stripped = text.strip()
+    if not stripped.startswith('{'):
+        return True
+    try:
+        parsed = json.loads(stripped)
+    except (ValueError, TypeError):
+        return True
+    if isinstance(parsed, dict) and parsed.get('error'):
+        return False
+    return True
+
+async def _aitheros_stream(get_agent_fn, message: str, session_id: str, agent_name: str | None, reasoning: bool, mcp_endpoints: list | None = None, gen_params: dict | None = None, system_additions: list | None = None):
     """SSE generator emitting AitherOS-typed events.
 
     Uses the app-level get_agent() for shared memory/tools/fleet support.
@@ -4668,32 +4704,57 @@ async def _aitheros_stream(get_agent_fn, message: str, session_id: str, agent_na
         _gp = gen_params or {}
         # If agent has tools, use stream_react to emit events (KG, steering, tokens)
         if agent._tools.list_tools():
-            from adk.steering import steering_session, register_steering_queue, unregister_steering_queue
+            from adk.steering import register_steering_queue, unregister_steering_queue
 
-            # Collect emitted events to re-yield as SSE + build KG context
-            emitted_events = []
+            # LIVE RELAY — not collect-then-replay.
+            #
+            # Until 2026-08-23 this branch appended every stream_react event to a
+            # list and yielded the list AFTER the whole turn returned. Measured
+            # from AitherShell: session_start at +0.4 s, then NOTHING for 17.4 s,
+            # then one token blob + answer + complete. The agent was genuinely
+            # streaming its <think> and its answer the entire time; the daemon
+            # was holding every byte. A user sees that as "hung for 18 s, then
+            # dumped" — and the spinner the shell runs on heartbeats never got
+            # one, because nothing was yielded to carry it.
+            #
+            # So: stream_react runs as a task, on_event drops each event on a
+            # queue, and THIS generator yields as they land. A 2 s quiet period
+            # yields a heartbeat so the client can show liveness during a slow
+            # tool or a long model stall. The steering queue is registered around
+            # the task exactly as before (clients may inject mid-turn).
+            _q: asyncio.Queue = asyncio.Queue()
+            _DONE = object()
             tool_calls_for_kg = []
 
             def _on_stream_event(ev: dict) -> None:
-                """Collect stream_react events for re-emission as SSE."""
-                emitted_events.append(ev)
+                """Relay one stream_react event to the SSE loop below, live."""
                 if ev.get("type") == "tool":
                     tool_calls_for_kg.append(ev.get("name", "?"))
+                _q.put_nowait(ev)
 
-            # Register steering session BEFORE stream_react so client can inject
-            # (unregister happens at the end, after all yields)
-            try:
-                await register_steering_queue(session_id)
-                resp = await agent.stream_react(
-                    message,
-                    on_event=_on_stream_event,
-                    session_id=session_id,
-                )
-            finally:
-                unregister_steering_queue(session_id)
+            async def _run_turn():
+                try:
+                    await register_steering_queue(session_id)
+                    return await agent.stream_react(
+                        message,
+                        on_event=_on_stream_event,
+                        session_id=session_id,
+                        system_additions=system_additions,
+                    )
+                finally:
+                    unregister_steering_queue(session_id)
+                    _q.put_nowait(_DONE)
 
-            # Yield collected events as SSE
-            for ev in emitted_events:
+            _turn_task = asyncio.ensure_future(_run_turn())
+
+            while True:
+                try:
+                    ev = await asyncio.wait_for(_q.get(), timeout=2.0)
+                except asyncio.TimeoutError:
+                    yield f"event: heartbeat\ndata: {json.dumps({'type': 'heartbeat', 'elapsed_ms': int((time.time() - start) * 1000)})}\n\n"
+                    continue
+                if ev is _DONE:
+                    break
                 ev_type = ev.get("type", "")
 
                 if ev_type == "thinking":
@@ -4719,6 +4780,10 @@ async def _aitheros_stream(get_agent_fn, message: str, session_id: str, agent_na
                     yield f"event: error\ndata: {json.dumps({'type': 'error', 'error': error_msg})}\n\n"
                 # Skip "done" events - we emit complete separately
 
+            # Re-raises a stream_react failure into the outer handler, which
+            # emits a typed error + terminal complete (never a truncated stream).
+            resp = await _turn_task
+
             yield f"event: answer\ndata: {json.dumps({'type': 'answer', 'answer': resp.content})}\n\n"
 
             duration_ms = int((time.time() - start) * 1000)
@@ -4736,7 +4801,8 @@ async def _aitheros_stream(get_agent_fn, message: str, session_id: str, agent_na
         # Streaming path — no tools
         full_content = ""
         token_count = 0
-        async for chunk in agent.chat_stream(message, session_id=session_id, **_gp):
+        async for chunk in agent.chat_stream(message, session_id=session_id,
+                                             system_additions=system_additions, **_gp):
             if chunk:
                 full_content += chunk
                 token_count += 1
