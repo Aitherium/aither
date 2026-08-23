@@ -1072,7 +1072,7 @@ def create_app(
             result = subprocess.run(
                 [sys.executable, '-m', 'adk', 'enroll', '--yes'],
                 capture_output=True,
-                text=True,
+                text=True, encoding="utf-8", errors="replace",
                 timeout=120,
             )
 
@@ -3745,7 +3745,7 @@ def create_app(
             import subprocess
             result = subprocess.run(
                 ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
             )
             if result.returncode == 0 and result.stdout.strip():
                 caps.append("inference")
@@ -4670,7 +4670,11 @@ def _tool_result_ok(result) -> bool:
         return False
     return True
 
-async def _aitheros_stream(get_agent_fn, message: str, session_id: str, agent_name: str | None, reasoning: bool, mcp_endpoints: list | None = None, gen_params: dict | None = None, system_additions: list | None = None):
+async def _aitheros_stream(
+    get_agent_fn, message: str, session_id: str, agent_name: str | None, reasoning: bool,
+    mcp_endpoints: list | None = None, gen_params: dict | None = None,
+    system_additions: list | None = None,
+):
     """SSE generator emitting AitherOS-typed events.
 
     Uses the app-level get_agent() for shared memory/tools/fleet support.
@@ -4723,7 +4727,7 @@ async def _aitheros_stream(get_agent_fn, message: str, session_id: str, agent_na
             # tool or a long model stall. The steering queue is registered around
             # the task exactly as before (clients may inject mid-turn).
             _q: asyncio.Queue = asyncio.Queue()
-            _DONE = object()
+            _done = object()
             tool_calls_for_kg = []
 
             def _on_stream_event(ev: dict) -> None:
@@ -4743,7 +4747,7 @@ async def _aitheros_stream(get_agent_fn, message: str, session_id: str, agent_na
                     )
                 finally:
                     unregister_steering_queue(session_id)
-                    _q.put_nowait(_DONE)
+                    _q.put_nowait(_done)
 
             _turn_task = asyncio.ensure_future(_run_turn())
 
@@ -4751,9 +4755,10 @@ async def _aitheros_stream(get_agent_fn, message: str, session_id: str, agent_na
                 try:
                     ev = await asyncio.wait_for(_q.get(), timeout=2.0)
                 except asyncio.TimeoutError:
-                    yield f"event: heartbeat\ndata: {json.dumps({'type': 'heartbeat', 'elapsed_ms': int((time.time() - start) * 1000)})}\n\n"
+                    _hb = {'type': 'heartbeat', 'elapsed_ms': int((time.time() - start) * 1000)}
+                    yield f"event: heartbeat\ndata: {json.dumps(_hb)}\n\n"
                     continue
-                if ev is _DONE:
+                if ev is _done:
                     break
                 ev_type = ev.get("type", "")
 

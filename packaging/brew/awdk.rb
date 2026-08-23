@@ -19,7 +19,7 @@ class AitherAdk < Formula
 
   desc "Agent Development Kit for AitherOS — build AI agent fleets with any LLM"
   homepage "https://aitherium.com"
-  url "https://files.pythonhosted.org/packages/source/a/awdk/awdk-3.7.2.tar.gz"
+  url "https://files.pythonhosted.org/packages/source/a/awdk/awdk-3.7.3.tar.gz"
   sha256 "PLACEHOLDER_SHA256"
   # SPDX. "Proprietary" is not an SPDX identifier and `brew audit` rejects it;
   # the LICENSE file is Business Source License 1.1.
@@ -166,7 +166,7 @@ class AitherAdk < Formula
     # adk-workspace, adk-bug, adk-shell), so `brew test` could only ever fail.
     # Same class as the onboarding-funnel rule: never advertise a command the
     # package does not ship.
-    assert_match "3.7.2", shell_output("#{bin}/adk --version")
+    assert_match "3.7.3", shell_output("#{bin}/adk --version")
     # The uvx/registry entrypoint must exist too — `uvx aither-adk` and the ACP
     # registry listing both invoke it by that exact name.
     assert_predicate bin/"awdk", :exist?
