@@ -48,17 +48,29 @@ def test_aither_console_script_not_registered() -> None:
 #: belongs to the npm shell-cli — is untouched and still asserted above.
 DISTRIBUTION_SCRIPT = "awdk"
 
+#: The pre-rename distribution name. PyPI served `aither-adk` up to 3.6.0 and the
+#: ACP registry's uvx entry for it is already in the wild — `uvx aither-adk …`
+#: runs the console script whose name matches THAT package, so dropping the
+#: script strands every registry consumer while the redirect package still
+#: installs fine (the registry validates existence, never runnability).
+#: pyproject.toml documents the same decision beside the entry itself.
+#: Still not a loosening of the `aither` fence: `aither-adk` is a distinct
+#: binary from `aither`, which stays owned by the npm shell-cli.
+LEGACY_ALIAS_SCRIPT = "aither-adk"
+
 
 def test_only_adk_prefixed_scripts() -> None:
     """All awdk console_scripts must be `adk`, `adk-*`, or the dist name."""
     data = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))
     scripts = data.get("project", {}).get("scripts", {})
+    allowed = {"adk", DISTRIBUTION_SCRIPT, LEGACY_ALIAS_SCRIPT}
     bad = [
         name for name in scripts
-        if not (name == "adk" or name.startswith("adk-") or name == DISTRIBUTION_SCRIPT)
+        if not (name in allowed or name.startswith("adk-"))
     ]
     assert not bad, (
-        f"awdk console_scripts must be `adk`, `adk-*`, or `{DISTRIBUTION_SCRIPT}`. "
+        f"awdk console_scripts must be `adk`, `adk-*`, `{DISTRIBUTION_SCRIPT}`, "
+        f"or the legacy alias `{LEGACY_ALIAS_SCRIPT}`. "
         f"Found non-conforming entries: {bad}. "
         f"All scripts: {list(scripts.keys())}"
     )
