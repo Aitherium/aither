@@ -51,12 +51,34 @@ from typing import Optional
 # Constants
 # ---------------------------------------------------------------------------
 
-DEFAULT_MODEL_REPO = "bartowski/nvidia_Nemotron-Orchestrator-8B-GGUF"
+# NOT bartowski. That repo never existed -- HF answers 401 (not 404) for a
+# nonexistent repo, which made this read as an auth failure. Measured
+# 2026-08-22: the API confirms no such repo, while MaziyarPanahi's (92k
+# downloads, ungated) and Mungert's are real.
+DEFAULT_MODEL_REPO = "MaziyarPanahi/Nemotron-Orchestrator-8B-GGUF"
+
+#: Tried in order after whatever repo the caller named. One dead repo must
+#: not end the install when a sibling conversion exists.
+DEFAULT_MODEL_REPO_FALLBACKS = [
+    "Mungert/Nemotron-Orchestrator-8B-GGUF",
+]
+
+#: When the requested quant is not in a repo, walk DOWN this ladder and take
+#: the first match. Substitution is announced, never silent.
+QUANT_FALLBACK_LADDER = [
+    "Q8_0", "Q6_K", "Q5_K_M", "Q5_K_S", "Q4_K_M", "Q4_K_S", "Q3_K_M",
+]
 DEFAULT_MODEL_DISPLAY = "nemotron-orchestrator-8b"
 DEFAULT_SERVED_NAME = "aither-orchestrator"
 DEFAULT_PORT = 8200
 DEFAULT_CTX = 8192
-LLAMACPP_RELEASES_API = "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest"
+# NOT /releases/latest. GitHub's `latest` EXCLUDES prereleases, and every
+# llama.cpp build release (bNNNNN) is marked prerelease -- so `latest` returned
+# `v0.2.0`, a non-build tag with a single asset, and the matcher never saw a
+# build list. Measured 2026-08-22: that one line broke install on EVERY
+# platform, and reported it as 'no matching build for linux/cpu/x64', which
+# sent the investigation at the matcher instead of the URL.
+LLAMACPP_RELEASES_API = "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=5"
 HF_RESOLVE_BASE = "https://huggingface.co/{repo}/resolve/main/{filename}"
 
 # Quant catalog with approximate sizes (Nemotron-Orchestrator-8B specific)
@@ -264,55 +286,89 @@ def pick_quant(vram_gb: float, ram_gb: float, accel_kind: str = "cuda") -> str:
 # llama.cpp binary acquisition
 # ---------------------------------------------------------------------------
 
-def _pick_release_asset(assets: list, accel: AccelInfo) -> Optional[str]:
-    """Pick the right llama.cpp release asset for this platform/accelerator."""
-    # llama.cpp asset naming: llama-b<NUMBER>-bin-<OS>-<ACCEL>-<ARCH>.zip
-    # Examples:
-    #   llama-b4400-bin-win-cuda-cu12.4-x64.zip
-    #   llama-b4400-bin-win-vulkan-x64.zip
-    #   llama-b4400-bin-win-cpu-x64.zip
-    #   llama-b4400-bin-ubuntu-x64.zip
-    #   llama-b4400-bin-macos-arm64.zip
-    os_tag = {"windows": "win", "linux": "ubuntu", "macos": "macos"}.get(accel.os_family, "ubuntu")
-    accel_tag = accel.kind  # cuda, vulkan, cpu, metal
+#: Archive suffixes llama.cpp ships. Windows is .zip; Linux and macOS moved to
+#: .tar.gz. A zip-only filter silently excluded both before scoring.
+_ARCHIVE_SUFFIXES = (".zip", ".tar.gz")
 
-    # macOS only has metal builds (no separate cpu)
+#: Every accelerator/variant token llama.cpp puts in an asset name. The plain
+#: CPU build carries NONE of these, so 'is this the CPU build' is decided by
+#: their ABSENCE -- there is no `-cpu-` token on Linux to look for.
+_ACCEL_TOKENS = ("cuda", "vulkan", "rocm", "sycl", "openvino", "opencl", "hip",
+                 "metal", "cudart", "xcframework", "-ui")
+
+
+def _is_archive(name: str) -> bool:
+    return any(name.endswith(s) for s in _ARCHIVE_SUFFIXES)
+
+
+def _is_plain_cpu_build(name: str) -> bool:
+    """`llama-bNNN-bin-<os>-<arch>.<ext>` with no accelerator token at all."""
+    return not any(tok in name for tok in _ACCEL_TOKENS)
+
+
+def _pick_release_asset(assets: list, accel: AccelInfo) -> Optional[str]:
+    """Pick the right llama.cpp release asset for this platform/accelerator.
+
+    Asset naming (live, b10588):
+      llama-b10588-bin-win-cuda-12.4-x64.zip
+      llama-b10588-bin-win-cpu-x64.zip          <- Windows CPU HAS a tag
+      llama-b10588-bin-ubuntu-vulkan-x64.tar.gz
+      llama-b10588-bin-ubuntu-x64.tar.gz        <- Linux CPU has NO tag
+      llama-b10588-bin-macos-arm64.tar.gz
+    """
+    os_tag = {"windows": "win", "linux": "ubuntu", "macos": "macos"}.get(
+        accel.os_family, "ubuntu")
+    arch = (accel.arch or "x64").lower()
+
+    # macOS ships one build per arch (Metal is built in); match on arch only.
     if accel.os_family == "macos":
         for a in assets:
-            name = a.get("name", "")
-            if "macos" in name and accel.arch in name and name.endswith(".zip"):
+            name = a.get("name", "").lower()
+            if "macos" in name and arch in name and _is_archive(name) \
+                    and "xcframework" not in name:
                 return a.get("browser_download_url")
         return None
 
-    # Score candidates
     candidates = []
     for a in assets:
         name = a.get("name", "").lower()
-        if not name.endswith(".zip"):
+        if not _is_archive(name):
             continue
-        if os_tag not in name:
+        if not name.startswith("llama-") or os_tag not in name:
+            continue
+        if "cudart" in name or name.endswith("-ui.tar.gz"):
+            continue  # runtime DLLs and the web UI are not the server
+        if arch not in name:
             continue
         score = 0
-        if accel_tag in name:
-            score += 100
-        if accel.arch in name or "x64" in name:
-            score += 10
-        if accel.kind == "cuda" and "cu12" in name:
-            score += 5
-        if score > 0:
+        if accel.kind == "cpu":
+            # Either an explicit -cpu- build (Windows) or the untagged plain
+            # build (Linux). Both are the CPU build; neither name looks like
+            # the other.
+            if "-cpu-" in name or _is_plain_cpu_build(name):
+                score = 100
+        else:
+            if accel.kind in name:
+                score = 100
+                if accel.kind == "cuda" and "cu12" in name:
+                    score += 5
+        if score:
             candidates.append((score, a.get("browser_download_url")))
 
     if candidates:
         candidates.sort(reverse=True)
         return candidates[0][1]
 
-    # Fallback to CPU build for the OS
+    # Accelerator requested but no such build: fall back to the CPU build for
+    # this OS rather than failing. A slow model beats no model, and the
+    # caller prints what it picked.
     for a in assets:
         name = a.get("name", "").lower()
-        if name.endswith(".zip") and os_tag in name and "cpu" in name:
+        if (_is_archive(name) and name.startswith("llama-") and os_tag in name
+                and arch in name and "cudart" not in name
+                and ("-cpu-" in name or _is_plain_cpu_build(name))):
             return a.get("browser_download_url")
     return None
-
 
 def verify_sha256(path: Path, expected: str, label: str = "artifact") -> bool:
     """Verify a downloaded artifact against an expected sha256. Fail closed.
@@ -401,12 +457,33 @@ def install_llamacpp(accel: AccelInfo, dry_run: bool = False) -> Optional[Path]:
                                      headers={"User-Agent": "AitherADK/1.0",
                                               "Accept": "application/vnd.github+json"})
         with urllib.request.urlopen(req, timeout=15) as resp:
-            release = json.loads(resp.read())
+            releases = json.loads(resp.read())
+        # A list now, not one release. Take the first one that actually
+        # carries builds: a tag with no llama-*-bin-* asset is a UI or
+        # framework release, not a server release.
+        release = next(
+            (r for r in releases
+             if any(a.get("name", "").startswith("llama-") and "-bin-" in a.get("name", "")
+                    for a in r.get("assets", []))),
+            None)
+        if release is None:
+            print("  ERROR: none of the recent releases carries a server build",
+                  file=sys.stderr)
+            return None
+        print(f"  Release: {release.get('tag_name')}")
     except Exception as e:
         print(f"  ERROR: GitHub API failed: {e}", file=sys.stderr)
         return None
 
     asset_url = _pick_release_asset(release.get("assets", []), accel)
+    # SAY when the accelerator the user has is not the build they got. llama.cpp
+    # ships no Linux CUDA binary, so a CUDA box lands on the CPU build -- which
+    # is the right fallback, but reads as 'my GPU is not being used' unless it is
+    # stated here, where the decision was made.
+    if asset_url and accel.kind != "cpu" and accel.kind not in asset_url.lower():
+        print(f"  NOTE: no {accel.kind} build for {accel.os_family}; using the CPU "
+              f"build. For GPU on Linux, install a vulkan-capable driver or build "
+              f"llama.cpp from source.")
     if not asset_url:
         print(f"  ERROR: no matching llama.cpp build for "
               f"{accel.os_family}/{accel.kind}/{accel.arch}", file=sys.stderr)
@@ -418,9 +495,17 @@ def install_llamacpp(accel: AccelInfo, dry_run: bool = False) -> Optional[Path]:
 
     print("  Extracting...")
     try:
-        import zipfile
-        with zipfile.ZipFile(zip_path) as z:
-            z.extractall(LLAMACPP_DIR)
+        # .zip on Windows, .tar.gz on Linux and macOS. zipfile alone meant a
+        # correctly chosen Linux asset still failed here, one step after the
+        # matcher was fixed -- the fourth bug hiding behind the third.
+        if asset_url.endswith(".tar.gz"):
+            import tarfile
+            with tarfile.open(zip_path, "r:gz") as tf:
+                tf.extractall(LLAMACPP_DIR)
+        else:
+            import zipfile
+            with zipfile.ZipFile(zip_path) as z:
+                z.extractall(LLAMACPP_DIR)
         zip_path.unlink(missing_ok=True)
     except Exception as e:
         print(f"  ERROR: extract failed: {e}", file=sys.stderr)
@@ -503,6 +588,55 @@ def catalog_sha256_for(filename: str) -> str:
     return ""
 
 
+def _hf_list_gguf_files(repo: str, hf_token: str = "") -> Optional[list]:
+    """The repo's REAL .gguf filenames, from the HF API. None if unreachable.
+
+    None (not []) on failure, deliberately: 'the API is down' and 'the repo
+    has no GGUFs' need different fallbacks. The first retries with guessed
+    names; the second moves to the next repo."""
+    url = f"https://huggingface.co/api/models/{repo}"
+    try:
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "AitherADK/1.0",
+            **({"Authorization": f"Bearer {hf_token}"} if hf_token else {}),
+        })
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            data = json.loads(resp.read())
+    except Exception:
+        return None
+    return [s.get("rfilename", "") for s in data.get("siblings", [])
+            if s.get("rfilename", "").endswith(".gguf")]
+
+
+def _resolve_gguf(files: list, quant: str) -> tuple:
+    """(filename, actual_quant) from real filenames, or (None, None).
+
+    Case-insensitive on purpose: MaziyarPanahi writes `.Q6_K.gguf`, Mungert
+    writes `-q8_0.gguf`, and a case-exact match sees only one of them.
+    Excludes imatrix/bf16/f16-only artifacts, which contain no usable quant
+    for a plain llama-server run."""
+    def hit(q: str) -> Optional[str]:
+        ql = q.lower()
+        for f in files:
+            fl = f.lower()
+            if "imatrix" in fl:
+                continue
+            if ql in fl:
+                return f
+        return None
+
+    found = hit(quant)
+    if found:
+        return found, quant
+    for q in QUANT_FALLBACK_LADDER:
+        if q.lower() == quant.lower():
+            continue
+        found = hit(q)
+        if found:
+            return found, q
+    return None, None
+
+
 def install_model(
     repo: str, quant: str, dry_run: bool = False, expected_sha256: str = ""
 ) -> Optional[Path]:
@@ -523,14 +657,38 @@ def install_model(
         )
 
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
-    # Convention: <repo-base>-<quant>.gguf (matches bartowski/nvidia layout)
-    # Try standard naming first
-    repo_short = repo.split("/")[-1].replace("-GGUF", "")
-    candidates = [
-        f"{repo_short}-{quant}.gguf",
-        f"{repo_short.lower()}-{quant}.gguf",
-        f"{repo_short.replace('_', '-')}-{quant}.gguf",
-    ]
+    hf_token = os.environ.get("HF_TOKEN", "")
+
+    # ASK, do not guess. The guessed-convention approach shipped three
+    # spellings of a filename for a repo that did not exist, and real
+    # uploaders disagree with each other anyway (dot vs dash, upper vs
+    # lower). The API returns what is actually there; the wanted quant is
+    # matched against that, with a downward ladder when it is absent --
+    # announced, because a silent substitution reads as 'wrong model'.
+    candidates = []
+    files = _hf_list_gguf_files(repo, hf_token)
+    if files:
+        resolved, actual = _resolve_gguf(files, quant)
+        if resolved:
+            if actual != quant:
+                print(f"  NOTE: {repo} has no {quant}; using {actual} instead")
+            candidates = [resolved]
+        else:
+            print(f"  NOTE: {repo} exists but ships no usable quant")
+    elif files is None:
+        print(f"  NOTE: HF API unreachable for {repo}; falling back to "
+              f"guessed filenames")
+
+    if not candidates:
+        # The API said nothing usable, or was unreachable: the old guesses,
+        # covering the dot AND dash conventions this time.
+        repo_short = repo.split("/")[-1].replace("-GGUF", "")
+        candidates = [
+            f"{repo_short}-{quant}.gguf",
+            f"{repo_short}.{quant}.gguf",
+            f"{repo_short.lower()}-{quant.lower()}.gguf",
+            f"{repo_short.replace('_', '-')}-{quant}.gguf",
+        ]
 
     for filename in candidates:
         dest = MODELS_DIR / filename
@@ -543,7 +701,6 @@ def install_model(
         return MODELS_DIR / candidates[0]
 
     # Try each candidate filename
-    hf_token = os.environ.get("HF_TOKEN", "")
     last_err = None
     for filename in candidates:
         url = HF_RESOLVE_BASE.format(repo=repo, filename=filename)
@@ -598,6 +755,42 @@ def _build_server_cmd(binary: Path, model: Path, port: int, accel: AccelInfo,
     return cmd
 
 
+def _spawn_detached(cmd: list, log_path: Path) -> bool:
+    """Run llama-server as a plain detached process. The no-systemd fallback.
+
+    A service is a convenience (survive reboots); it is not a precondition
+    for serving. Containers, minimal distros and systemd-less WSL have no
+    service manager, and crashing AFTER the multi-GB download -- with binary
+    and weights already on disk -- was the worst place this could fail.
+    """
+    try:
+        with open(log_path, "ab") as log:
+            subprocess.Popen(
+                cmd, stdout=log, stderr=log,
+                stdin=subprocess.DEVNULL,
+                start_new_session=True,  # survives THIS process; not a reboot
+            )
+        return True
+    except Exception as e:  # noqa: BLE001 - report, never crash post-download
+        print(f"  ERROR: could not start llama-server directly: {e}",
+              file=sys.stderr)
+        return False
+
+
+def _systemd_available() -> bool:
+    """Is systemd both PRESENT and MANAGING this machine?
+
+    shutil.which alone is not enough: systemctl can exist on a box where
+    PID 1 is not systemd (a container with the binary installed), and then
+    every call fails one step later with a different, stranger error."""
+    if shutil.which("systemctl") is None:
+        return False
+    try:
+        return Path("/run/systemd/system").exists()
+    except OSError:
+        return False
+
+
 def install_service(binary: Path, model: Path, port: int, accel: AccelInfo,
                     dry_run: bool = False) -> bool:
     """Install background service for this OS."""
@@ -605,7 +798,18 @@ def install_service(binary: Path, model: Path, port: int, accel: AccelInfo,
     cmd = _build_server_cmd(binary, model, port, accel)
 
     if accel.os_family == "linux":
-        return _install_systemd_user(cmd, dry_run)
+        if _systemd_available():
+            return _install_systemd_user(cmd, dry_run)
+        # No service manager. Serve NOW as a plain process and say what the
+        # difference is -- silently skipping the service would read as
+        # installed-and-persistent when it is neither.
+        print("  NOTE: no systemd here (container/minimal OS); starting "
+              "llama-server directly. It will serve now but will NOT "
+              "restart after a reboot -- re-run `adk gobbonet --setup-model` "
+              "or start it yourself then.")
+        if dry_run:
+            return True
+        return _spawn_detached(cmd, LOG_DIR / "llama-server.log")
     elif accel.os_family == "macos":
         return _install_launchd(cmd, dry_run)
     elif accel.os_family == "windows":
@@ -941,6 +1145,15 @@ def install(
     # 4. Download model
     print(f"  [4/5] Model:")
     model = install_model(model_repo, quant, dry_run=dry_run)
+    # Fallback repos apply ONLY when the caller is on the default. A user who
+    # pinned --model-repo asked for THAT model; silently handing them a
+    # Nemotron conversion from someone else would be worse than failing.
+    if not model and model_repo == DEFAULT_MODEL_REPO:
+        for _fb in DEFAULT_MODEL_REPO_FALLBACKS:
+            print(f"  Primary repo yielded nothing; trying {_fb}")
+            model = install_model(_fb, quant, dry_run=dry_run)
+            if model:
+                break
     if not model:
         return InstallResult(success=False, accel=accel, binary=binary,
                              error="model download failed")

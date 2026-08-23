@@ -94,8 +94,17 @@ def setup_model() -> int:
     print("installing llama.cpp and a model that fits (this downloads several GB)…\n")
 
     rc = lc.install(accel=accel) if _accepts_accel(lc.install) else lc.install()
-    if rc not in (0, None, True):
-        print(f"\nsetup did not complete (rc={rc}).")
+    # lc.install returns an InstallResult, not an exit code. `rc not in (0,
+    # None, True)` treated EVERY result -- including success=True -- as a
+    # failure, so a fully working install printed "setup did not complete" and
+    # the launcher bailed before serving the UI. Measured live 2026-08-22:
+    # InstallResult(success=True, ...) with llama-server already running was
+    # reported as a failure. Read the field; keep exit-code semantics only for
+    # an install() that really returns one.
+    ok = rc.success if hasattr(rc, "success") else rc in (0, None, True)
+    if not ok:
+        detail = getattr(rc, "error", "") or rc
+        print(f"\nsetup did not complete ({detail}).")
         return 1
 
     # VERIFY. An installer that copies files and prints "done" is exactly how a
