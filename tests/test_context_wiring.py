@@ -49,7 +49,15 @@ class TestContextManagerWiring:
         agent._context_mgr = spy_ctx
         await agent.chat("Hello")
         spy_ctx.clear.assert_called_once()
-        spy_ctx.add_system.assert_called_once_with("You are helpful.")
+        # The system prompt is the configured prompt PLUS the live [AGENT HOST]
+        # state block ("agents know the time", 3.7.2). Assert the contract —
+        # prompt first, host block appended — rather than the exact bytes: the
+        # block carries the wall clock and hostname, which differ every run,
+        # and an equality assert here is how 3.7.2's mirror CI went red twice.
+        spy_ctx.add_system.assert_called_once()
+        sys_prompt = spy_ctx.add_system.call_args[0][0]
+        assert sys_prompt.startswith("You are helpful.")
+        assert "[AGENT HOST" in sys_prompt
         spy_ctx.add_user.assert_called_once_with("Hello")
         spy_ctx.build.assert_called_once()
 
