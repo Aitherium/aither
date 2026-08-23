@@ -14636,6 +14636,11 @@ def _cmd_mcp_status(args) -> int:
 
 
 def main():
+    # GENERATED doctor intercept (gen_aw_doctor.py) -- do not edit
+    _dv = locals().get("argv")
+    if (_dv if _dv is not None else __import__("sys").argv[1:])[:1] == ["doctor"]:
+        from ._doctor import report
+        return report()
     global _cached_parser
     # Windows consoles default to a legacy code page (cp1252) that cannot encode
     # the Unicode glyphs (arrows, box-drawing, emoji) the CLI prints — which

@@ -238,7 +238,7 @@ drives, and as the **driver** of any external ACP agent.
 
 - AitherShell as a shell-of-shells over the adk harness; per-session model routing
   via `--setting-sources project,local`.
-- Two D-975-family release gates (ignored-source, doc-drift).
+- Two release gates (ignored-source, doc-drift).
 
 ## [2.47.0] - 2026-08-02
 
@@ -618,7 +618,7 @@ All new capabilities are exported lazily from the top-level `adk` namespace.
 
 ### Removed — dead modules and internal integrations
 
-- **`adk.swarm`, `adk.provisioning_tools`, `adk.session_sync_integration`, `adk.addon_metering`** — four orphan modules with zero public usage have been deleted. These were internal prototypes kept for legacy monorepo consumers; public packages have not imported them since 2.21.0 (tracked as D-348). **Breaking for anyone directly importing these modules** (import will fail). They are no longer exempt from the orphan-module check.
+- **`adk.swarm`, `adk.provisioning_tools`, `adk.session_sync_integration`, `adk.addon_metering`** — four orphan modules with zero public usage have been deleted. These were internal prototypes kept for legacy monorepo consumers; public packages have not imported them since 2.21.0. **Breaking for anyone directly importing these modules** (import will fail). They are no longer exempt from the orphan-module check.
 - **`adk.aither_bridge`** — the AitherOS-internal IRC ↔ chat gateway bridge is no longer shipped in the public aither-adk package (stripped at sync time). All public importers already degrade behind `except ImportError` (in `adk.server` and `adk.builtin_tools`), so public packages remain unaffected. The module stays in the private AitherOS monorepo for internal use.
 - **Identity document trim** — removed internal agent names from `adk/identities/aither.yaml` delegation guidance, replacing with role-generic wording ("delegate code review, refactoring, security analysis, performance and testing to specialist agents when available"). Effort-tier routing philosophy remains unchanged and is product design, not a leak.
 
