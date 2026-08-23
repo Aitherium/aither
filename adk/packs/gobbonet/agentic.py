@@ -125,7 +125,11 @@ class AgenticEngineMixin:
         # scopes are siblings and the store will not cross them. Empty store or
         # no awm ⇒ empty brief ⇒ history is exactly what it always was.
         mem = self._get_campaign_memory()
-        campaign_brief = mem.brief(mem.present_in(messages)) if mem.available() else ""
+        campaign_brief = mem.brief(
+            mem.present_in(messages),
+            # The scene itself, so the budget carries the notes this turn
+            # is about rather than whichever came back first.
+            scene=prompt) if mem.available() else ""
         if campaign_brief:
             history = [{"role": "system", "content": campaign_brief}] + history
 

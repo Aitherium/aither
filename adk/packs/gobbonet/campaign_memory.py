@@ -163,7 +163,8 @@ class CampaignMemory:
         return present
 
     def brief(self, present: List[str], *, arc: str = "*",
-              budget_chars: int = _BRIEF_BUDGET_CHARS) -> str:
+              budget_chars: int = _BRIEF_BUDGET_CHARS,
+              scene: str = "") -> str:
         """The scene brief: world notes + notes of each PRESENT character.
 
         Absent characters' knowledge is structurally excluded — not filtered
@@ -184,10 +185,22 @@ class CampaignMemory:
                 tag = "everyone" if owner == WORLD else f"known to {owner}"
                 lines.append(f"- ({tag}) {it['value']}")
 
-        add(WORLD, self.notes_for(WORLD, arc=arc))
+        # Presence decides ELIGIBILITY; relevance decides ORDER within it. The
+        # candidate set below is unchanged — ranking never adds a note, so an
+        # absent character's secret stays unreachable however well it matches.
+        candidates = [(WORLD, self.notes_for(WORLD, arc=arc))]
         for who in present:
-            add(who, [it for it in self.notes_for(who, arc=arc)
-                      if it["scope"].split(":")[1] != WORLD])
+            candidates.append((who, [it for it in self.notes_for(who, arc=arc)
+                                     if it["scope"].split(":")[1] != WORLD]))
+        if scene:
+            try:
+                from adk.packs.gobbonet.retrieval import rank
+                candidates = [(owner, rank(items, scene))
+                              for owner, items in candidates]
+            except Exception as e:  # noqa: BLE001 - ranking is an enhancement
+                log.debug("scene ranking unavailable: %s", e)
+        for owner, items in candidates:
+            add(owner, items)
         if not lines:
             return ""
         head = ("CAMPAIGN NOTES — durable facts the harness keeps between "
