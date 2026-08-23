@@ -54,3 +54,12 @@ jobs:
         with:
           packages-dir: dist/
           skip-existing: true
+          # TOKEN AUTH, TEMPORARILY. Trusted publishing broke on 2026-08-23 when the
+          # repo was renamed aither-adk -> awdk: the OIDC claim now says
+          # `repository: Aitherium/awdk` and PyPI's publisher registration still
+          # names the old repo, so every exchange fails `invalid-publisher`
+          # (run 32625237581). PyPI publisher registrations pin the repo NAME and
+          # can only be edited in the PyPI web UI — re-register the publisher for
+          # Aitherium/awdk there, then DELETE this `password:` line to go back to
+          # OIDC. Token auth skips the exchange entirely.
+          password: ${{ secrets.PYPI_API_TOKEN }}
