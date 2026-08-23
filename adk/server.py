@@ -2443,6 +2443,19 @@ def create_app(
         # situation reached genesis and never the daemon — the body looked right
         # in every log and changed nothing. Bounded in adk.situation.
         system_additions = body.get("system_additions")
+        # `session_context.summary` is the genesis-protocol channel AitherShell
+        # uses to replay a resumed transcript ("Conversation so far"). Until
+        # 2026-08-23 this handler dropped it too, so every --resume'd or
+        # omnibox follow-up line reached the agent cold: the owner typed
+        # "what time is it", then "how do you know that?", and got an essay on
+        # epistemology. Folded into the system additions, after the caller's.
+        _sc = body.get("session_context") or {}
+        _summary = str(_sc.get("summary") or "").strip() if isinstance(_sc, dict) else ""
+        if _summary:
+            system_additions = list(system_additions or []) + [
+                "Conversation so far in this terminal (most recent last); the new "
+                "line may be a follow-up to it:\n" + _summary[:6000]
+            ]
 
         # Optional per-turn generation params (honored by the OpenAI-compatible
         # providers). Only forward what the caller actually set + what is valid,
