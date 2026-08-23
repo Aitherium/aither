@@ -67,6 +67,19 @@ class AgenticEngineMixin:
 
     _agent = None
     _agent_lock = threading.Lock()
+    _campaign_memory = None
+
+    def _get_campaign_memory(self):
+        """Campaign notes, once per engine. Fail-soft: without awm installed
+        this returns a memory whose brief is empty and whose tools say what to
+        install — the chat path is identical to before either way."""
+        if self._campaign_memory is None:
+            import os
+
+            from adk.packs.gobbonet.campaign_memory import CampaignMemory
+            self._campaign_memory = CampaignMemory(
+                campaign=os.environ.get("AITHER_GOBBONET_CAMPAIGN", "default"))
+        return self._campaign_memory
 
     def _get_agent(self):
         """Build the agent once, lazily.
@@ -85,6 +98,14 @@ class AgenticEngineMixin:
                     builtin_tools=True,
                     load_packs=True,
                 )
+                # The pen: the agent records and consults campaign notes
+                # itself (campaign_note / campaign_recall). Registration is
+                # fail-soft; the loop works without it.
+                from adk.packs.gobbonet.campaign_memory import (
+                    register_campaign_tools,
+                )
+                register_campaign_tools(self._agent,
+                                        self._get_campaign_memory())
             return self._agent
 
     def stream_chat(self, messages: list[dict], **opts: Any) -> Iterator[str]:
@@ -93,6 +114,15 @@ class AgenticEngineMixin:
         history = [m for m in messages[:-1] if m.get("role") in ("user", "assistant", "system")]
         last = messages[-1] if messages else {}
         prompt = last.get("content") or ""
+
+        # The scene brief: durable campaign notes, scoped to who is PRESENT in
+        # the recent turns. Absent characters' knowledge is never fetched — the
+        # scopes are siblings and the store will not cross them. Empty store or
+        # no awm ⇒ empty brief ⇒ history is exactly what it always was.
+        mem = self._get_campaign_memory()
+        campaign_brief = mem.brief(mem.present_in(messages)) if mem.available() else ""
+        if campaign_brief:
+            history = [{"role": "system", "content": campaign_brief}] + history
 
         out: "queue.Queue[Any]" = queue.Queue()
 

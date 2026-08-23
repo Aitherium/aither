@@ -209,6 +209,11 @@ platform = [
 ]
 dev = [
     "pytest>=7.0",
+    # Campaign memory's real store: without it CI importorskips the entire
+    # gobbonet campaign suite forever, which is a vacuous pass wearing a green
+    # tick. awm is published (0.1.0 on PyPI since 2026-08); dev-only here — the
+    # runtime keeps it as the `memory` extra so a stranger's install is untouched.
+    "awm>=0.1.0",
     "pytest-asyncio>=0.23.0",
     "pytest-timeout>=2.2.0",
     "respx>=0.20.0",
