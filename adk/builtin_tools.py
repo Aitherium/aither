@@ -82,7 +82,7 @@ def _is_safe_path(path: str) -> bool:
 # File I/O Tools
 # ─────────────────────────────────────────────────────────────────────────────
 
-def file_read(path: str, start_line: int = 0, end_line: int = 0) -> str:
+def file_read(path: str, start_line: int = 0, end_line: int = 0, **_ignored) -> str:
     """Read a file from disk. Returns file contents.
 
     path: Absolute or relative file path
@@ -94,7 +94,13 @@ def file_read(path: str, start_line: int = 0, end_line: int = 0) -> str:
     try:
         p = Path(path)
         if not p.exists():
-            return json.dumps({"error": f"File not found: {path}"})
+            _alt, _note = _resolve_missing_path(path)
+            if not _alt:
+                return json.dumps({"error": f"File not found: {path}",
+                                   "hint": _note or ("Locate the file with a "
+                                                     "search and use the path "
+                                                     "the search reported.")})
+            p = Path(_alt)
         if p.stat().st_size > 10_000_000:  # 10MB limit
             return json.dumps({"error": "File too large (>10MB)"})
         content = p.read_text(encoding="utf-8", errors="replace")
@@ -108,7 +114,26 @@ def file_read(path: str, start_line: int = 0, end_line: int = 0) -> str:
         return json.dumps({"error": str(e)})
 
 
-def file_write(path: str, content: str, mode: str = "overwrite") -> str:
+def _eol_of(raw: str) -> str:
+    """The line ending a file actually uses, so an edit keeps it.
+
+    Measured 2026-08-22 on SWE-bench-Live falcon-2366, driven from a Windows host:
+    `Path.write_text` translates every LF to CRLF, so ONE exact-match edit in a Linux
+    checkout came back as a 616-line whole-file rewrite (616 insertions / 616
+    deletions, zero semantic change under --ignore-cr-at-eol). The graded patch was
+    line-ending noise and nothing in the tool result said so. The rule is: the file
+    decides, never the host.
+    """
+    crlf = raw.count(CR_LF)
+    lf = raw.count(LF) - crlf
+    return CR_LF if crlf > lf else LF
+
+
+CR_LF = "\r\n"
+LF = "\n"
+
+
+def file_write(path: str, content: str, mode: str = "overwrite", **_ignored) -> str:
     """Write content to a file on disk.
 
     path: File path to write to
@@ -120,17 +145,132 @@ def file_write(path: str, content: str, mode: str = "overwrite") -> str:
     try:
         p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
+        # newline="" = write the bytes the caller gave, never the host's line
+        # ending. On append, match whatever the file already uses (see _eol_of).
         if mode == "append":
-            with open(p, "a", encoding="utf-8") as f:
+            if p.exists():
+                with open(p, "r", encoding="utf-8", newline="") as f:
+                    eol = _eol_of(f.read())
+                content = content.replace(CR_LF, LF).replace(LF, eol)
+            with open(p, "a", encoding="utf-8", newline="") as f:
                 f.write(content)
         else:
-            p.write_text(content, encoding="utf-8")
+            p.write_text(content, encoding="utf-8", newline="")
         return json.dumps({"success": True, "path": str(p), "bytes": len(content)})
     except Exception as e:
         return json.dumps({"error": str(e)})
 
 
-def file_edit(path: str, old_text: str, new_text: str) -> str:
+def _resolve_missing_path(path: str, max_hits: int = 5):
+    """Locate a file the caller named wrongly, or explain what was found.
+
+    MEASURED, and it overturned two earlier theories. On the A9 arm the
+    dominant `file_edit` failure was NOT bad `old_text` at all -- it was
+    `File not found`, 7 of 16 misses, including
+    `dev/babel/babel/dates.py`: a real file under a prefix the model invented.
+    (The theories it replaced: "the model edits without reading" -- false, only
+    6 of 39 edits targeted an unread file; and "the content is evicted from
+    context" -- false, failed edits sit at median distance 2 from the read,
+    identical to successful ones.)
+
+    So the model knows WHICH file it wants and cannot spell the path to it. A
+    unique basename match under an allowed root is therefore not a guess, it is
+    the file -- and resolving it is the difference between a turn spent and a
+    turn wasted. Ambiguity is REPORTED rather than picked: two files named
+    `utils.py` are a question only the caller can answer, and choosing one
+    silently would edit the wrong file while reporting success.
+
+    Returns (resolved_path | None, note).
+    """
+    try:
+        want = Path(path).name
+        if not want:
+            return None, ""
+        roots = []
+        for r in (os.environ.get("AITHER_ALLOWED_ROOTS") or "").split(os.pathsep):
+            r = r.strip()
+            if r and Path(r).is_dir():
+                roots.append(Path(r))
+        if not roots:
+            return None, ""
+        hits = []
+        for root in roots:
+            for cand in root.rglob(want):
+                if cand.is_file() and _is_safe_path(str(cand)):
+                    hits.append(cand)
+                    if len(hits) > max_hits:
+                        break
+            if len(hits) > max_hits:
+                break
+        if len(hits) == 1:
+            return str(hits[0]), f"path resolved by basename to {hits[0]}"
+        if len(hits) > 1:
+            names = ", ".join(str(h) for h in hits[:max_hits])
+            return None, f"{len(hits)} files match {want!r}: {names}"
+        return None, ""
+    except Exception as e:  # noqa: BLE001
+        # Say WHY the search failed instead of folding it into the caller's
+        # bare "File not found". A permission error on the tree walk and a
+        # genuinely absent file produce the SAME message otherwise, and they
+        # need opposite fixes -- the exact silence this resolver exists to end.
+        return None, f"path search failed ({type(e).__name__}: {e})"
+
+
+def _edit_miss_diagnosis(content: str, old_text: str, max_chars: int = 700) -> dict:
+    """Explain WHY an exact-match edit missed, instead of just saying it did.
+
+    `{"error": "old_text not found in file"}` is a dead end: it tells the model
+    that its guess was wrong and nothing about how, so the only move left is to
+    guess again. Measured 2026-08-21 on a 12-instance SWE-bench-Live run, an 8B
+    agent failed **26 of 39** `file_edit` calls this way (67%), including one
+    instance that retried the SAME failing edit four times on one file. A 27B on
+    the identical harness failed 0 of 14 -- so this error message is most
+    expensive exactly where the model is weakest, and it is the difference
+    between a retry that can converge and one that cannot.
+
+    Three causes are separated because they need different corrections:
+      * whitespace/indentation only  -> re-copy the line verbatim;
+      * present but not unique       -> add surrounding context;
+      * genuinely absent             -> here is the closest region we found.
+    """
+    import difflib
+
+    norm = lambda t: " ".join(t.split())          # noqa: E731
+    if norm(old_text) and norm(old_text) in norm(content):
+        return {"reason": "whitespace_or_indentation",
+                "hint": ("The text IS present but its WHITESPACE or INDENTATION "
+                         "differs. Re-read the file and copy the line exactly, "
+                         "including leading spaces.")}
+
+    stripped = old_text.strip()
+    if stripped and stripped in content and stripped != old_text:
+        return {"reason": "surrounding_whitespace",
+                "hint": ("The text matches once stripped. Drop the leading or "
+                         "trailing whitespace from old_text.")}
+
+    lines = content.splitlines()
+    first = (old_text.strip().splitlines() or [""])[0].strip()
+    best_i, best_r = None, 0.0
+    if first:
+        for i, ln in enumerate(lines):
+            r = difflib.SequenceMatcher(None, first, ln.strip()).ratio()
+            if r > best_r:
+                best_i, best_r = i, r
+    if best_i is None or best_r < 0.5:
+        return {"reason": "not_present",
+                "hint": ("No similar text found. Read the file first and copy "
+                         "the exact text you intend to replace.")}
+    lo, hi = max(0, best_i - 3), min(len(lines), best_i + 6)
+    nearest = "\n".join(lines[lo:hi])[:max_chars]
+    return {"reason": "closest_match",
+            "closest_line": best_i + 1,
+            "similarity": round(best_r, 2),
+            "nearest_text": nearest,
+            "hint": ("Nearest region shown above. Copy from it EXACTLY -- "
+                     "old_text must match the file byte for byte.")}
+
+
+def file_edit(path: str, old_text: str, new_text: str, **_ignored) -> str:
     """Edit a file by replacing old_text with new_text (exact string match).
 
     path: File path to edit
@@ -142,21 +282,42 @@ def file_edit(path: str, old_text: str, new_text: str) -> str:
     try:
         p = Path(path)
         if not p.exists():
-            return json.dumps({"error": f"File not found: {path}"})
-        content = p.read_text(encoding="utf-8")
-        if old_text not in content:
-            return json.dumps({"error": "old_text not found in file"})
-        count = content.count(old_text)
+            _alt, _note = _resolve_missing_path(path)
+            if not _alt:
+                return json.dumps({"error": f"File not found: {path}",
+                                   "hint": _note or ("Locate the file with a "
+                                                     "search and use the path "
+                                                     "the search reported.")})
+            p = Path(_alt)
+            path = _alt
+        if old_text == new_text:
+            # A replacement that changes nothing used to answer {"success": true}:
+            # measured 2026-08-22 (falcon-2366), the agent "edited" twice with
+            # old_text == new_text, was told both succeeded, stopped, and shipped
+            # an empty change. Silence is not a pass; say it.
+            return json.dumps({"error": "old_text and new_text are identical — "
+                                        "nothing would change. Supply the NEW text."})
+        with open(p, "r", encoding="utf-8", newline="") as f:
+            raw = f.read()  # newline="" keeps CR; Path.read_text(newline=) is 3.13+
+        eol = _eol_of(raw)
+        content = raw.replace(CR_LF, LF)          # match on LF, whatever the file uses
+        old_lf = old_text.replace(CR_LF, LF)
+        if old_lf not in content:
+            diag = _edit_miss_diagnosis(content, old_lf)
+            return json.dumps({"error": "old_text not found in file", **diag})
+        count = content.count(old_lf)
         if count > 1:
             return json.dumps({"error": f"old_text found {count} times — must be unique. Add more context."})
-        new_content = content.replace(old_text, new_text, 1)
-        p.write_text(new_content, encoding="utf-8")
+        new_content = content.replace(old_lf, new_text.replace(CR_LF, LF), 1)
+        if eol != LF:
+            new_content = new_content.replace(LF, eol)
+        p.write_text(new_content, encoding="utf-8", newline="")
         return json.dumps({"success": True, "path": str(p)})
     except Exception as e:
         return json.dumps({"error": str(e)})
 
 
-def file_list(path: str = ".", pattern: str = "*") -> str:
+def file_list(path: str = ".", pattern: str = "*", **_ignored) -> str:
     """List files in a directory.
 
     path: Directory path to list
@@ -180,13 +341,40 @@ def file_list(path: str = ".", pattern: str = "*") -> str:
         return json.dumps({"error": str(e)})
 
 
-def file_search(path: str, pattern: str, content_pattern: str = "") -> str:
+def file_search(path: str = ".", pattern: str = "", content_pattern: str = "",
+                max_results: int = 50, file_glob: str = "",
+                query: str = "", **_ignored) -> str:
     """Search for files by name pattern, optionally grep for content.
 
     path: Root directory to search
     pattern: Glob pattern for filenames (e.g. '**/*.py')
     content_pattern: Optional text to search for inside matching files
+    max_results: Max files to return (default 50)
+
+    `max_results` exists because the SIBLINGS have it. `code_search` and
+    `repowise_search` both accept it, so a model reasonably generalises across
+    the *_search family and calls `file_search(max_results=...)` -- which
+    raised `unexpected keyword argument` and burned a whole turn on a HARD
+    failure. Measured 2026-08-21 on a real agent run: three consecutive
+    file_search calls failed that way inside one instance before the agent gave
+    up. The result was recorded as the model failing to find the defect.
+
+    An inconsistent tool family is a harness defect, not a model error: the
+    model's inference was correct and only our signature disagreed. The limit
+    was already hardcoded at 50 below, so this exposes an existing behaviour
+    rather than adding one.
+
+    WHY `**_ignored` AND THE ALIASES, rather than adding kwargs one at a time.
+    Patching `max_results` alone was whack-a-mole: the very next run failed on
+    `file_glob` (which `code_search` has), in a different instance. A tool that
+    HARD-FAILS on an unexpected keyword converts a near-miss into a lost turn,
+    and an agent with a 15-step budget cannot afford three of them. So unknown
+    keywords are absorbed and REPORTED in the payload rather than raising --
+    visible, so a real schema drift is still noticed, but never fatal.
+    `file_glob` and `query` are accepted as aliases for `pattern` because that
+    is unambiguously what a caller means by them.
     """
+    pattern = pattern or file_glob or query or "**/*"
     if not _is_safe_path(path):
         return json.dumps({"error": f"Path outside allowed roots: {path}"})
     try:
@@ -212,9 +400,14 @@ def file_search(path: str, pattern: str, content_pattern: str = "") -> str:
                     continue
             else:
                 matches.append({"path": str(item)})
-            if len(matches) >= 50:
+            if len(matches) >= max(1, int(max_results or 50)):
                 break
-        return json.dumps({"results": matches, "count": len(matches)})
+        payload = {"results": matches, "count": len(matches)}
+        if _ignored:
+            # Surface, never swallow: a silently-absorbed kwarg is how a real
+            # schema drift hides. The call still succeeds.
+            payload["ignored_kwargs"] = sorted(_ignored)
+        return json.dumps(payload)
     except Exception as e:
         return json.dumps({"error": str(e)})
 
@@ -250,7 +443,7 @@ def shell_exec(command: str, timeout: int = 30) -> str:
             cmd_arg,
             shell=use_shell,
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             timeout=timeout,
             cwd=os.getcwd(),
             stdin=subprocess.DEVNULL,
@@ -344,48 +537,53 @@ async def web_search(query: str, limit: int = 5) -> str:
 
     query: Search query string
     limit: Maximum number of results (default 5)
-
-    Prefers the maintained `ddgs` client and falls back to scraping the HTML
-    endpoint. That order matters, and it was the wrong way round.
-
-    Measured 2026-08-16: the scrape path returned 3/3 results with an EMPTY
-    snippet while `ddgs` was installed and unused. DuckDuckGo changed their
-    markup, so `class="result__a"` still matched (titles and URLs survived) and
-    `class="result__snippet"` matched nothing. The tool kept answering, kept
-    looking healthy, and handed the model a list of links with no text — which
-    reads as "the web had nothing useful", not as a broken parser.
-
-    That is the standing hazard with a hand-rolled scraper: it does not fail, it
-    THINS. A maintained client tracks the markup so we do not have to, and
-    `ddgs` returns {title, href, body} with real content for the same queries.
     """
-    try:
-        # `ddgs` (and its former name) are optional: absent, we still scrape.
-        for _mod in ("ddgs", "duckduckgo_search"):
-            try:
-                _m = __import__(_mod, fromlist=["DDGS"])
-                rows = list(_m.DDGS().text(query, max_results=limit))
-            except Exception:
-                continue
-            hits = [
-                {
-                    "title": (r.get("title") or "").strip(),
-                    "url": (r.get("href") or r.get("url") or "").strip(),
-                    # `body` is ddgs's name for the snippet. Reading only
-                    # "snippet" here is what produced empty bodies.
-                    "snippet": (r.get("body") or r.get("snippet") or "").strip()[:300],
-                }
-                for r in rows
-            ]
-            hits = [h for h in hits if h["title"] and h["url"]]
-            if hits:
-                return json.dumps({"query": query, "results": hits,
-                                   "provider": _mod, "count": len(hits)})
-            # No rows: fall through to the scrape rather than reporting empty,
-            # since "the client returned nothing" and "the client is broken"
-            # are not distinguishable from here.
-            break
 
+    # USE awfind -- the search client that already exists.
+    #
+    # Everything below this is a REGEX SCRAPE OF DUCKDUCKGO'S HTML, and its
+    # failure mode is the bad one: when the markup changes the title selector
+    # keeps matching while the snippet pattern stops, so results come back with
+    # titles, URLs and EMPTY TEXT. That reads as "the web had nothing useful"
+    # rather than as a broken tool, and it is the class this repo's pack
+    # contract checker exists for.
+    #
+    # The first fix here hand-rolled an httpx POST at the service. That was the
+    # same mistake one layer over: `awfind` IS the client for exactly this
+    # service -- typed rows, mode selection, a bearer that is the CALLER's, and
+    # it RAISES rather than returning an empty list, because "the search failed"
+    # and "the search matched nothing" are different facts. Reimplementing it
+    # produced a second thing to keep in step with a service neither of us owns.
+    #
+    # Configured by ENV with no default host: this package ships to PyPI and
+    # must carry nobody's topology, and a URL nobody set cannot go stale.
+    _svc = os.environ.get("ADK_SEARCH_URL") or os.environ.get("AITHER_SEARCH_URL")
+    if _svc:
+        try:
+            from awfind import FindClient
+
+            # verify: never False. A private-CA deployment passes its bundle
+            # path; anything else keeps full verification.
+            _ca = os.environ.get("ADK_SEARCH_CA_BUNDLE")
+            _client = FindClient(_svc, token=os.environ.get("ADK_SEARCH_TOKEN"),
+                                 verify=_ca if _ca else True)
+            _answer = _client.quick(query, limit=limit)
+            _rows = list(_answer)
+            if _rows:
+                _nl = chr(10)
+                return (_nl + _nl).join(
+                    _nl.join([r.title or "", r.url or "", r.snippet or ""])
+                    for r in _rows[:limit]
+                )
+            # Empty is not an error, but it is not an answer either: fall
+            # through rather than report "nothing found" from a service that
+            # may simply be warming up.
+        except ImportError:
+            pass  # awfind not installed -> the scrape below still answers
+        except Exception:
+            pass  # service down or refusing -> same
+
+    try:
         import httpx
         async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
             resp = await client.get(
@@ -794,7 +992,7 @@ def git_status(path: str = ".") -> str:
     try:
         r = subprocess.run(
             ["git", "status", "--short"],
-            capture_output=True, text=True, timeout=10, cwd=path,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10, cwd=path,
         )
         return r.stdout or "(clean)"
     except Exception as e:
@@ -807,7 +1005,7 @@ def git_diff(path: str = ".", staged: bool = False) -> str:
     if staged:
         cmd.append("--staged")
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=15, cwd=path)
+        r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15, cwd=path)
         return r.stdout[:20000] or "(no changes)"
     except Exception as e:
         return f"Error: {e}"
@@ -818,7 +1016,7 @@ def git_log(path: str = ".", count: int = 10) -> str:
     try:
         r = subprocess.run(
             ["git", "log", f"-{count}", "--oneline", "--no-decorate"],
-            capture_output=True, text=True, timeout=10, cwd=path,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10, cwd=path,
         )
         return r.stdout or "(no commits)"
     except Exception as e:
@@ -830,7 +1028,7 @@ def git_add(files: str, path: str = ".") -> str:
     try:
         r = subprocess.run(
             ["git", "add"] + files.split(),
-            capture_output=True, text=True, timeout=10, cwd=path,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10, cwd=path,
         )
         return r.stdout + r.stderr or "Staged"
     except Exception as e:
@@ -842,7 +1040,7 @@ def git_commit(message: str, path: str = ".") -> str:
     try:
         r = subprocess.run(
             ["git", "commit", "-m", message],
-            capture_output=True, text=True, timeout=15, cwd=path,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15, cwd=path,
         )
         return r.stdout + r.stderr
     except Exception as e:
@@ -854,7 +1052,7 @@ def git_branch_list(path: str = ".") -> str:
     try:
         r = subprocess.run(
             ["git", "branch", "-a", "--no-color"],
-            capture_output=True, text=True, timeout=10, cwd=path,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10, cwd=path,
         )
         return r.stdout or "(no branches)"
     except Exception as e:
@@ -888,7 +1086,7 @@ def code_search(pattern: str, path: str = ".", file_glob: str = "", max_results:
             cmd.extend([pattern, path])
 
             r = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=30,
+                cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30,
             )
             output = r.stdout[:30000]
             lines = output.strip().split("\n")
@@ -1586,6 +1784,442 @@ def _init_relay_tools():
 
 
 # ─────────────────────────────────────────────────────────────────────────
+# awrun — a priority-aware queue for agentic runs and ad-hoc CI builds, so an
+# agent can manage its OWN work instead of hand-rolling a submit/poll loop
+# (the exact pain that started this package: ~40 minutes lost to a queued
+# rebuild with no way to move it up, plus a session of hand-typed
+# `gh workflow run`/`gh run cancel`/polling).
+#
+# Same shape as the awrelay block above on purpose -- one vocabulary for
+# "call a tool, get JSON back or a `{error, fix}` object", not two.
+#
+# AUTH note: `awrun_submit` with kind="comet-deploy" is trust-plane gated
+# INSIDE awrun itself (awrun.authz — resolves AITHER_SESSION_BEARER, checks
+# an awbac permission, writes an awdit audit record) — this wrapper does not
+# duplicate that gate, it just surfaces whatever awrun.cli already decided.
+# ─────────────────────────────────────────────────────────────────────────
+
+def _queue_store():
+    """A RunStore, or None when awrun is not installed (it is an EXTRA,
+    `awdk[queue]` — see pyproject.toml). Imported lazily for the same
+    reason as `_relay_client()`: an agent whose task never touches the run
+    queue should not pay the import, and a missing package must degrade
+    rather than take every tool listing down with it."""
+    try:
+        from awrun.store import RunStore
+    except Exception:
+        return None
+    return RunStore()
+
+
+def queue_submit(kind: str, priority: int = 0, paths: list[str] | None = None,
+                  task: str = "", agent: str = "", adk_args: list[str] | None = None,
+                  workflow: str = "", ref: str = "", inputs: dict | None = None,
+                  service_name: str = "", target: str = "",
+                  spec: dict | None = None) -> str:
+    """Queue a new run. Higher `priority` runs first; equal priority is FIFO.
+
+    Args:
+        kind: "agent" (needs task + agent), "ci" (needs workflow), or
+            "comet-deploy" (needs service_name -- trust-plane gated, see
+            module note above; requires AITHER_SESSION_BEARER to resolve to
+            an authorized session or this call is refused).
+        paths: files this run will touch -- an agent run whose paths collide
+            with another actor's live awgit lease is skipped by the
+            dispatcher until the lease clears, rather than colliding.
+        task, agent, adk_args: kind=agent fields.
+        workflow, ref, inputs: kind=ci fields (ref defaults to develop).
+        service_name, target, spec: kind=comet-deploy fields; `spec` merges
+            in as the full AitherComet DeployRequest body, service_name/
+            target override matching keys in it.
+    """
+    try:
+        from awrun.store import RunError, RunStore
+    except Exception:
+        return json.dumps({"error": "awrun not available", "fix": "pip install awdk[queue]"})
+    store = RunStore()
+    built: dict = dict(spec or {})
+    if kind == "agent":
+        built["task"] = task
+        built["agent"] = agent
+        if adk_args:
+            built["adk_args"] = adk_args
+    elif kind == "ci":
+        built["workflow"] = workflow
+        built["ref"] = ref or "develop"
+        built["inputs"] = inputs or {}
+    elif kind == "comet-deploy":
+        if service_name:
+            built["service_name"] = service_name
+        if target:
+            built["target"] = target
+        # Same gate `awrun submit --kind comet-deploy` runs on the CLI path --
+        # called here too so an agent using the tool directly cannot skip it.
+        from awrun import authz
+        token = os.getenv("AITHER_SESSION_BEARER", "").strip()
+        subject_id = authz.resolve_session(token)
+        if not subject_id:
+            authz.audit("comet-deploy-denied", reason="no resolved session", spec=built)
+            return json.dumps({"error": "comet-deploy requires a resolved awiam session",
+                               "fix": "set AITHER_SESSION_BEARER to a valid session token"})
+        decision = authz.check_permission(subject_id)
+        if not decision:
+            authz.audit("comet-deploy-denied", subject=subject_id,
+                        reason=decision.reason, spec=built)
+            return json.dumps({"error": f"comet-deploy refused for {subject_id!r}: "
+                                        f"{decision.reason}"})
+        record = authz.audit("comet-deploy-submitted", subject=subject_id,
+                             reason=decision.reason, spec=built)
+        if record is None:
+            return json.dumps({"error": "comet-deploy refused: could not write the "
+                                        "audit record (spend must be auditable)"})
+    try:
+        item = store.submit(kind, built, priority=priority, paths=paths or [])
+    except RunError as exc:
+        return json.dumps({"error": str(exc)})
+    return json.dumps(item.to_dict(), default=str)
+
+
+def queue_list(kind: str = "", include_closed: bool = False) -> str:
+    """List queued runs, highest priority first. `kind` filters
+    (agent/ci/comet-deploy); leave empty for all. `include_closed=True`
+    also shows done/failed/cancelled runs, not just open ones."""
+    store = _queue_store()
+    if store is None:
+        return json.dumps({"error": "awrun not available", "fix": "pip install awdk[queue]"})
+    from awrun.store import OPEN_STATUSES
+    statuses = None if include_closed else list(OPEN_STATUSES)
+    items = store.list(statuses=statuses, kind=kind or None)
+    return json.dumps([i.to_dict() for i in items], default=str)
+
+
+def queue_status(run_id: str) -> str:
+    """Full state of one run by id."""
+    store = _queue_store()
+    if store is None:
+        return json.dumps({"error": "awrun not available", "fix": "pip install awdk[queue]"})
+    item = store.get(run_id)
+    if item is None:
+        return json.dumps({"error": f"no such run: {run_id}"})
+    return json.dumps(item.to_dict(), default=str)
+
+
+def queue_bump(run_id: str, priority: int) -> str:
+    """Change a queued/claimed run's priority -- this is how an urgent run
+    jumps ahead of what is already waiting. Refused (not silently ignored)
+    on a run that has already finished."""
+    try:
+        from awrun.store import RunError, RunStore
+    except Exception:
+        return json.dumps({"error": "awrun not available", "fix": "pip install awdk[queue]"})
+    store = RunStore()
+    try:
+        item = store.bump(run_id, priority)
+    except RunError as exc:
+        return json.dumps({"error": str(exc)})
+    return json.dumps(item.to_dict(), default=str)
+
+
+def queue_cancel(run_id: str) -> str:
+    """Withdraw a queued/claimed run. Idempotent on an already-finished run
+    (returns it unchanged rather than erroring)."""
+    try:
+        from awrun.store import RunError, RunStore
+    except Exception:
+        return json.dumps({"error": "awrun not available", "fix": "pip install awdk[queue]"})
+    store = RunStore()
+    try:
+        item = store.cancel(run_id)
+    except RunError as exc:
+        return json.dumps({"error": str(exc)})
+    return json.dumps(item.to_dict(), default=str)
+
+
+_QUEUE_TOOLS = [queue_submit, queue_list, queue_status, queue_bump, queue_cancel]
+
+
+def _init_queue_tools():
+    """Lazily populate the queue category."""
+    if not TOOL_CATEGORIES.get("queue"):
+        TOOL_CATEGORIES["queue"] = _QUEUE_TOOLS
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# awnest — is there a human there, and can this agent prove one stood behind
+# a change. Needs `pip install awdk[nest]`.
+#
+# WHY AN AGENT GETS THESE AT ALL. Two of the four are about being HONEST rather
+# than getting in: an agent that meets a human-gated surface should declare what
+# it is and take the agent door, not imitate a person. If the only way through a
+# door is to be human, every automation is taught to imitate one, and the check
+# has trained the thing it exists to detect.
+#
+# 🚨 THE ONE RULE THAT MAKES `nest_attest_commit` MEAN ANYTHING. The agent holds
+# the signing secret in its own process, so it can mint whatever it likes — and a
+# tool that let it mint "a human stood behind this" would make every commit
+# attestation worthless the moment anyone noticed. So this mints verdict AGENT by
+# default, and carries a HUMAN verdict across only when it is HANDED a human
+# attestation it can verify. The claim is derived, never asserted.
+# ─────────────────────────────────────────────────────────────────────────
+
+def _nest_secret() -> "str | None":
+    """The shared attestation secret, or None. Never defaulted: a default signing
+    key is a key everybody has, including whoever is trying to get in."""
+    return os.getenv("AWNEST_SECRET") or None
+
+
+def nest_declare_agent(audience: str, reason: str = "") -> str:
+    """Declare, honestly, that you are an agent at a gated door.
+
+    Use this when a surface asks whether you are a person. Declaring costs you the
+    human door and buys you the agent door — which is a real door, with its own
+    limits, and is the path that stays open. Pretending is the path that gets the
+    whole class of automation blocked.
+
+    Args:
+        audience: the door, e.g. "channel:#help" or "repo:acme/widgets".
+        reason: what you are trying to do there. Shown to whoever runs the door.
+    """
+    try:
+        from awnest import DECLARED_AGENT, Evidence, Verdict, assess
+    except ImportError:
+        return json.dumps({"error": "awnest not available", "fix": "pip install awdk[nest]"})
+    a = assess([Evidence(DECLARED_AGENT, source="adk-agent", detail=reason)])
+    return json.dumps({
+        "audience": audience,
+        "verdict": a.verdict.value,
+        "declared": True,
+        "admitted_if_door_allows_agents": a.verdict is Verdict.AGENT,
+        "reasons": list(a.reasons),
+    })
+
+
+def nest_verify(token: str, audience: str, subject: str = "", context: str = "") -> str:
+    """Verify an attestation somebody presented to YOU, against one door.
+
+    `audience` is required and is the door you are guarding. Verifying without it
+    accepts a claim earned somewhere else entirely, which is the whole attack.
+    """
+    try:
+        from awnest import AttestationError, HmacKey, verify
+    except ImportError:
+        return json.dumps({"error": "awnest not available", "fix": "pip install awdk[nest]"})
+    secret = _nest_secret()
+    if not secret:
+        return json.dumps({"error": "AWNEST_SECRET is not set",
+                           "note": "refusing to verify with a key nobody configured"})
+    try:
+        att = verify(token, HmacKey(secret), audience=audience,
+                     subject=subject or None, context=context or None)
+    except (AttestationError, ValueError) as exc:
+        # REFUSED is a result, not an error to swallow: the caller has to be able to
+        # tell "this claim does not hold" from "the tool broke".
+        return json.dumps({"admitted": False, "refused": str(exc)})
+    return json.dumps({"admitted": True, "subject": att.sub, "audience": att.aud,
+                       "verdict": att.verdict.value, "score": att.score,
+                       "method": att.method, "age_s": int(att.age_s())})
+
+
+def nest_attest_commit(repo: str, tree_sha: str, human_token: str = "",
+                       ref: str = "", identity: str = "") -> str:
+    """Produce the `Awnest-Attestation:` trailer for a commit you are about to make.
+
+    Without `human_token` this attests what is true: an AGENT made this change.
+    With one, it verifies that attestation and carries the person's identity and
+    score across — so "a human stood behind this" is a claim you can only make when
+    you can show the check that produced it.
+
+    Args:
+        repo: e.g. "acme/widgets".
+        tree_sha: `git rev-parse HEAD^{tree}` — the CONTENT, not the commit sha,
+            which cannot work because the trailer lives inside the commit.
+        human_token: an attestation for this repo's door, if a person authorised it.
+        ref: for a branch-specific door, e.g. "release".
+        identity: who to name when there is no human token.
+    """
+    try:
+        from awnest import (
+            AttestationError,
+            HmacKey,
+            Verdict,
+            attest_commit,
+            trailer_line,
+        )
+        from awnest import verify as _verify
+        from awnest.commit import repo_audience
+    except ImportError:
+        return json.dumps({"error": "awnest not available", "fix": "pip install awdk[nest]"})
+    secret = _nest_secret()
+    if not secret:
+        return json.dumps({"error": "AWNEST_SECRET is not set"})
+    key = HmacKey(secret)
+
+    verdict, score = Verdict.AGENT, None
+    subject, method = (identity or "adk-agent"), "declared"
+    if human_token:
+        try:
+            att = _verify(human_token, key, audience=repo_audience(repo, ref or None))
+        except (AttestationError, ValueError) as exc:
+            return json.dumps({"error": f"the human attestation does not hold: {exc}",
+                               "note": "refusing to claim a person stood behind this"})
+        if att.verdict is not Verdict.HUMAN:
+            return json.dumps({"error": f"that attestation records {att.verdict.value}, "
+                                        "not a human"})
+        verdict, score, subject, method = att.verdict, att.score, att.sub, att.method
+
+    try:
+        token = attest_commit(key, identity=subject, tree_sha=tree_sha, repo=repo,
+                              ref=ref or None, verdict=verdict, score=score, method=method)
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)})
+    return json.dumps({"trailer": trailer_line(token), "verdict": verdict.value,
+                       "identity": subject, "score": score})
+
+
+def nest_verify_commit(message: str, repo: str, tree_sha: str, ref: str = "") -> str:
+    """Read a commit's trailer and check it against the CONTENT in front of you.
+
+    The content comparison is the part that matters: a valid attestation lifted off
+    a different commit verifies perfectly, and only the tree check notices.
+    """
+    try:
+        from awnest import AttestationError, HmacKey, verify_commit
+    except ImportError:
+        return json.dumps({"error": "awnest not available", "fix": "pip install awdk[nest]"})
+    secret = _nest_secret()
+    if not secret:
+        return json.dumps({"error": "AWNEST_SECRET is not set"})
+    try:
+        att = verify_commit(message, HmacKey(secret), repo=repo, tree_sha=tree_sha,
+                            ref=ref or None)
+    except (AttestationError, ValueError) as exc:
+        return json.dumps({"attested": False, "refused": str(exc)})
+    return json.dumps({"attested": True, "identity": att.sub, "verdict": att.verdict.value,
+                       "score": att.score, "content": att.ctx, "method": att.method})
+
+
+_NEST_TOOLS = [nest_declare_agent, nest_verify, nest_attest_commit, nest_verify_commit]
+
+
+def _init_nest_tools():
+    """Lazily populate the nest category."""
+    if not TOOL_CATEGORIES.get("nest"):
+        TOOL_CATEGORIES["nest"] = _NEST_TOOLS
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# awbrowse — portable browser client for agents
+# ─────────────────────────────────────────────────────────────────────────
+
+def browse_page(url: str, action: str = "read") -> str:
+    """Navigate and inspect a web page.
+
+    Args:
+        url: The page to navigate to
+        action: "read" to extract content, "screenshot" to capture visual, "dom" for structure
+
+    This tool requires pip install awdk[senses] and an AitherBrowser-shaped service.
+    """
+    try:
+        from awbrowse import Browser
+    except ImportError:
+        return json.dumps({"error": "awbrowse not available", "fix": "pip install awdk[senses]"})
+
+    browser = Browser()
+    try:
+        browser.navigate(url)
+        if action == "read":
+            return json.dumps({"url": url, "content": browser.get_text()})
+        elif action == "screenshot":
+            return json.dumps({"url": url, "screenshot": browser.screenshot()})
+        elif action == "dom":
+            return json.dumps({"url": url, "dom": browser.get_dom()})
+        else:
+            return json.dumps({"error": f"unknown action: {action}"})
+    except Exception as e:
+        return json.dumps({"error": str(e), "url": url})
+    finally:
+        browser.close()
+
+
+def browse_fill_form(url: str, fields: dict) -> str:
+    """Fill and submit a form on a page.
+
+    Args:
+        url: The page containing the form
+        fields: Dict of field names and values to fill
+    """
+    try:
+        from awbrowse import Browser
+    except ImportError:
+        return json.dumps({"error": "awbrowse not available", "fix": "pip install awdk[senses]"})
+
+    browser = Browser()
+    try:
+        browser.navigate(url)
+        for field_name, value in fields.items():
+            browser.fill_field(field_name, value)
+        browser.submit()
+        return json.dumps({"url": url, "submitted": True, "result": browser.get_text()})
+    except Exception as e:
+        return json.dumps({"error": str(e), "url": url})
+    finally:
+        browser.close()
+
+
+_BROWSE_TOOLS = [browse_page, browse_fill_form]
+
+
+def _init_browse_tools():
+    """Lazily populate the browse category."""
+    if not TOOL_CATEGORIES.get("browse"):
+        TOOL_CATEGORIES["browse"] = _BROWSE_TOOLS
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# awfind — portable search client for agents
+# ─────────────────────────────────────────────────────────────────────────
+
+def find_search(query: str, limit: int = 5) -> str:
+    """Search the web and get ranked results.
+
+    Args:
+        query: What to search for
+        limit: Maximum number of results to return (default 5)
+
+    This tool requires pip install awdk[senses] and a search-shaped service.
+    Returns ranked results sorted by relevance.
+    """
+    try:
+        from awfind import Finder
+    except ImportError:
+        return json.dumps({"error": "awfind not available", "fix": "pip install awdk[senses]"})
+
+    finder = Finder()
+    try:
+        results = finder.search(query, limit=limit)
+        return json.dumps({
+            "query": query,
+            "count": len(results),
+            "results": [
+                {"title": r.title, "url": r.url, "snippet": r.snippet, "rank": i+1}
+                for i, r in enumerate(results)
+            ]
+        })
+    except Exception as e:
+        return json.dumps({"error": str(e), "query": query})
+
+
+_FIND_TOOLS = [find_search]
+
+
+def _init_find_tools():
+    """Lazily populate the find category."""
+    if not TOOL_CATEGORIES.get("find"):
+        TOOL_CATEGORIES["find"] = _FIND_TOOLS
+
+
+# ─────────────────────────────────────────────────────────────────────────
 # Workspace Intelligence tools — people analytics, meetings, email, collab
 # ─────────────────────────────────────────────────────────────────────────
 
@@ -2223,6 +2857,11 @@ TOOL_CATEGORIES: dict = {
     "notebooks": [],  # populated lazily by _init_notebook_tools()
     "persona": [],  # populated lazily by _init_persona_tools()
     "decisions": [],  # populated lazily by _init_decision_tools()
+    "relay": [],  # populated lazily by _init_relay_tools()
+    "queue": [],  # populated lazily by _init_queue_tools()
+    "nest": [],  # populated lazily by _init_nest_tools()
+    "browse": [],  # populated lazily by _init_browse_tools()
+    "find": [],  # populated lazily by _init_find_tools()
 }
 
 # Default categories for common identity profiles
@@ -2400,6 +3039,13 @@ def register_builtin_tools(
     _init_notebook_tools()  # lazily populate notebooks category
     _init_persona_tools()  # lazily populate persona category
     _init_decision_tools()  # lazily populate decisions category
+    # `relay` had an initialiser and no caller until 2026-08-19, so its three
+    # tools were registered by nothing: written, imported, and unreachable.
+    _init_relay_tools()  # lazily populate relay category
+    _init_queue_tools()  # lazily populate queue category (awrun)
+    _init_nest_tools()  # lazily populate nest category
+    _init_browse_tools()  # lazily populate browse category (awbrowse)
+    _init_find_tools()  # lazily populate find category (awfind)
 
     if categories is None and auto:
         # Unknown identities get a minimal, fully-local default. "workspace"

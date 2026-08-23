@@ -37,7 +37,7 @@ MODELS_DIR = ledger.DATA_DIR / "models"
 LLAMA_DIRS = [Path.home() / ".aither" / "llamacpp",
               ledger.DATA_DIR / "llamacpp"]
 
-# Mirrors the portal-kit bonsai catalogue (webml/bonsai-models.ts).
+# Mirrors the awkit bonsai catalogue (webml/bonsai-models.ts).
 MODELS = {
     "bonsai-1.7b": {"fname": "Bonsai-1.7B-Q1_0.gguf", "repo": "Bonsai-1.7B-gguf",
                     "size_mb": 236, "min_ram_gb": 2},

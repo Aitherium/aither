@@ -34,7 +34,7 @@ logger = logging.getLogger("adk.config")
 #: says a thing is down and stops there leaves the user with nowhere to go, which
 #: is the whole failure this exists to end.
 #:
-#: The web half of this lives in portal-kit's SignIn screen, which applies the
+#: The web half of this lives in awkit's SignIn screen, which applies the
 #: same values as a default and lets a deployment opt OUT. Keep the two in step.
 #:
 #: Public URLs only — this module ships to PyPI. Verified 2026-08-17 to serve a

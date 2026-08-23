@@ -193,7 +193,7 @@ def cmd_new(args):
 
 
 def cmd_create_app(args):
-    """Scaffold a full portal-kit workspace app using WorkspaceRuntime template."""
+    """Scaffold a full awkit workspace app using WorkspaceRuntime template."""
     import subprocess as _sp
 
     slug = args.subdomain or re.sub(r"[^a-z0-9-]", "-", args.name.lower().strip()).strip("-")[:30]
@@ -509,10 +509,10 @@ def cmd_workspace(args):
             "fullstack": "Full monorepo + AitherZero (admin/developer)",
             "frontend": "AitherVeil + packages",
             "backend": "lib + services + config + tests",
-            "app-crm": "Custom app + portal-kit",
-            "app-bot": "Custom bot app + portal-kit",
+            "app-crm": "Custom app + awkit",
+            "app-bot": "Custom bot app + awkit",
             "veil": "AitherVeil + all packages",
-            "portal": "AitherVeil + portal-kit + desktop-core",
+            "portal": "AitherVeil + awkit + desktop-core",
             "node": "awnode (standalone + monorepo)",
             "connect": "AitherConnect",
             "node": "AitherNode (standalone + monorepo)",
@@ -522,7 +522,7 @@ def cmd_workspace(args):
             "desktop": "AitherDesktop + Veil + packages",
             "creative": "Canvas-Studio + creative services",
             "gpu": "VRAM-Sentinel + GPU services",
-            "custom-app-dev": "custom apps + portal-kit (indie devs)",
+            "custom-app-dev": "custom apps + awkit (indie devs)",
         }
         print("Available workspace scopes:")
         print()
@@ -5283,9 +5283,17 @@ BONSAI_LOCAL_PORT = 8090
 
 
 _BACKEND_PRESETS: dict[str, dict] = {
-    # Sovereign local default — Bonsai-27B on the AitherVLLMSwap server.
-    "local":   {"provider": "openai", "base_url": "http://localhost:8201/v1", "model": "bonsai-27b"},
-    "bonsai":  {"provider": "openai", "base_url": "http://localhost:8201/v1", "model": "bonsai-27b"},
+    # Sovereign local default — Bonsai-27B, reached through MicroScheduler (:8150),
+    # which is where every fleet LLM call goes and which routes `bonsai-27b` to the
+    # live llama.cpp lane (the 5090 today). Until 2026-08-22 these two presets
+    # dialled AitherVLLMSwap on :8201 — a slot that has been OFFLINE for bonsai since
+    # 2026-07-25 (catalog row `bonsai-27b-awq`), so `--backend local|bonsai` pointed
+    # a sovereign agent at nothing while reading as the sovereign default. The same
+    # day the bare id `bonsai-27b` was made to resolve to the live lane (canonical
+    # catalog row), so this name is safe to use here. `vllm` is the provider that
+    # speaks MicroScheduler's TLS + internal CA; `openai` would refuse the cert.
+    "local":   {"provider": "vllm", "base_url": "https://127.0.0.1:8150/v1", "model": "bonsai-27b"},
+    "bonsai":  {"provider": "vllm", "base_url": "https://127.0.0.1:8150/v1", "model": "bonsai-27b"},
     # `adk bonsai-local` serves llama.cpp on :8090 — a DIFFERENT backend from the two
     # above, which target AitherVLLMSwap on :8201. That is a fleet service and does not
     # exist on anyone else's machine, so before this preset existed the one-command
@@ -12629,9 +12637,9 @@ def _register_commands(sub):
     aeon_p.add_argument("-r", "--rounds", type=int, default=1, help="Discussion rounds per message (default: 1)")
     aeon_p.add_argument("--no-synthesize", action="store_true", help="Skip orchestrator synthesis")
 
-    # adk create-app — scaffold a full portal-kit workspace app
+    # adk create-app — scaffold a full awkit workspace app
     ca_p = sub.add_parser("create-app",
-                          help="Scaffold a portal-kit workspace app")
+                          help="Scaffold a awkit workspace app")
     ca_p.add_argument("name", help="App name (e.g. 'ACME Assistant')")
     ca_p.add_argument("-o", "--output", help="Output directory (default: ./<slug>)")
     ca_p.add_argument("--company", default="", help="Company name")

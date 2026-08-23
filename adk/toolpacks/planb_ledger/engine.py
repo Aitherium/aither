@@ -4,7 +4,7 @@ Every function here takes and returns a plain ``state`` dict, which is why the
 SAME engine serves three very different stores:
 
   * the offline zip / adk pack  -> a local JSON file  (ledger.py)
-  * the multi-tenant server     -> a SQL row per user (portal-kit-backend)
+  * the multi-tenant server     -> a SQL row per user (awkit-backend)
   * the browser                 -> localStorage / IndexedDB
 
 A face may not fork this logic — the merge rules that make paper and digital

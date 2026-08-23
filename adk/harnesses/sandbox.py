@@ -34,7 +34,7 @@ PROVISION_PATH = "/v1/dev-workspace"
 
 #: Default repos a sandbox may materialize. The server holds the real
 #: whitelist; this is only what we ASK for.
-DEFAULT_REPOS = ["portal-kit", "adk"]
+DEFAULT_REPOS = ["awkit", "adk"]
 
 
 class SandboxError(RuntimeError):

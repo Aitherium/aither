@@ -325,7 +325,9 @@ curl -s http://localhost:8122/health  # Local fleet
 curl -s https://gateway.aitherium.com/v1/memory/health  # Cloud gateway
 
 # Check graph_memory logs
-AITHER_GRAPH_DEBUG=1 adk status
+# (AITHER_GRAPH_DEBUG was documented here and is read by nothing -- setting it
+#  did exactly nothing. The real switch is the log level.)
+AITHER_ADK_LOG_LEVEL=DEBUG adk status
 ```
 
 ---

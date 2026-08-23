@@ -7,7 +7,7 @@ ONE shared place that decides, for a single chat turn:
   • reasoning_depth     (skip | gate | light | sase)
 
 This replaces the brittle keyword classifiers that were copied across Genesis
-(lib/faculties + lib/orchestration), portal-kit-backend (agent_core/intent.py),
+(lib/faculties + lib/orchestration), awkit-backend (agent_core/intent.py),
 and ad-hoc per-product logic — every surface now imports THIS.
 
 Design:

@@ -2,7 +2,7 @@
 
 Mock first-pass streamer + enrich coroutine — no network. Validates the
 "answer now, enrich in the background, auto-continue" event flow shared by
-Genesis, portal-kit and ADK agents.
+Genesis, awkit and ADK agents.
 """
 
 import asyncio

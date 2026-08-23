@@ -14,7 +14,7 @@ Decision (locked with the owner): **the portal profile is the source of truth.**
     (:func:`SettingsSyncClient.push_snapshot`), debounced and fail-soft.
   * Offline → keep the local cache; the next successful pull reconciles.
 
-Storage mapping (verified in portal-kit-backend/routers/settings_api.py):
+Storage mapping (verified in awkit-backend/routers/settings_api.py):
   * per-user settings  → ``GET/PUT /api/settings/preferences`` (merge semantics,
     ``require_write`` RBAC). We namespace under ``preferences.adk`` so we never
     stomp other apps' prefs. NOTE: ``/api/settings/llm`` is deployment-global +

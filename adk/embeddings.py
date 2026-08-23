@@ -490,7 +490,7 @@ class AdkEmbeddings:
 
 def _tls_verify():
     """Trust the internal CA for mesh TLS (never disable verification). Falls
-    back to default verification when the portal-kit TLS helper isn't importable."""
+    back to default verification when the awkit TLS helper isn't importable."""
     try:
         from portal_kit_backend.tls import internal_verify
         return internal_verify()

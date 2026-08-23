@@ -1,7 +1,7 @@
 """Pytest bootstrap: load agent_core directly from the package directory.
 
 These tests must run regardless of whether the consumer app has
-performed the Docker rename of `portal-kit-backend` -> `portal_kit_backend`.
+performed the Docker rename of `awkit-backend` -> `portal_kit_backend`.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 _PKG_DIR = Path(__file__).resolve().parent.parent  # .../agent_core
-_PORTAL_DIR = _PKG_DIR.parent  # .../portal-kit-backend
+_PORTAL_DIR = _PKG_DIR.parent  # .../awkit-backend
 
 
 def _load_agent_core() -> None:

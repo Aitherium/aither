@@ -784,7 +784,79 @@ adk install pack:hermes    # install one → usable as an agent in your fleet
 
 ---
 
+## Extend it with your own tools
+
+Two extension points. Neither requires a fork, and neither is limited to tools we wrote.
+
+### Bring your own MCP server
+
+Drop an `mcpServers` block anywhere adk looks and its tools are registered on your
+agent alongside the built-ins. It is the **same config shape Claude Code and Cursor
+use**, so if you already have one of those files you already have this:
+
+```json
+{
+  "mcpServers": {
+    "sqlite":  {"command": "uvx", "args": ["mcp-server-sqlite", "--db", "./app.db"]},
+    "weather": {"url": "https://example.com/mcp", "headers": {"Authorization": "Bearer ..."}},
+    "paused":  {"command": "uvx", "args": ["some-server"], "disabled": true}
+  }
+}
+```
+
+Looked for in this order, first hit wins:
+
+| # | location |
+|---|---|
+| 1 | `$AITHER_MCP_CONFIG` (explicit — a missing file here is an error, not a fallback) |
+| 2 | `./.mcp.json`, then `./mcp.json` |
+| 3 | `~/.aither/mcp.json` |
+
+Both transports work: **stdio** (`command` + `args`, which is what most community
+servers use) and **HTTP** (`url`). Tools arrive named `mcp__<server>__<tool>` — the
+same spelling Claude Code shows — so two servers that both ship a `search` cannot
+shadow each other.
+
+```python
+from adk.agent import AitherAgent
+
+agent = AitherAgent()              # your servers are connected and registered
+agent = AitherAgent(user_mcp=False)  # ...or not, if you would rather they were not
+```
+
+A server that is down does not break the agent: the others keep working, the failure
+is logged with its reason, and calling a tool from a dead server returns a message
+that **names the server** rather than an empty result. (An empty result is
+indistinguishable from "nothing matched", which is how a broken integration passes
+for a working one.)
+
+> A stdio server is an arbitrary command from a config file — exactly as in Claude
+> Code. It is opt-in by that config existing; adk never takes a server list from a
+> prompt, a tool result, or anything else a model can influence.
+
+### Bring your own tool pack
+
+A tool pack is a directory with a `.toolpack.yaml` and Python beside it. Point adk at
+it and its tools are yours:
+
+```bash
+export AITHER_TOOLPACK_DIRS=/path/to/my-packs:/another/dir   # os.pathsep-separated
+```
+
+Packs are also discovered from any importable package that declares one, and from the
+packs bundled in this SDK. Author's guide: [docs/AGENT_DEV_GUIDE.md](docs/AGENT_DEV_GUIDE.md).
+
+**Which one?** An MCP server if the capability already exists as one, or if you want it
+usable from Claude Code and Cursor too. A tool pack if it is Python you are writing
+anyway and you want it in-process with no subprocess.
+
+---
+
 ## CLI Reference
+
+> **Every command:** [docs/CLI-REFERENCE.md](docs/CLI-REFERENCE.md) — all 95,
+> generated from the parser itself, so it cannot describe a command that does
+> not exist or omit one that does. The tour below is the opinionated subset.
 
 ```bash
 # Getting started
@@ -977,8 +1049,5 @@ Every repository here is public. Each publishes an `aither-manifest.json` beside
 | [awresearch](https://github.com/Aitherium/awresearch) | Ask a research question, get a cited report you can check | [docs](https://aitherium.github.io/awresearch/) |
 | [awpredict](https://github.com/Aitherium/awpredict) | Predict what your environment does next, and how surprised you were | [docs](https://aitherium.github.io/awpredict/) |
 | [awkno](https://github.com/Aitherium/awkno) | The man page for the Aither World — every brick, stack and law, offline | [docs](https://aitherium.github.io/awkno/) |
-
-<div id="aither-constellation" data-self="awdk"></div>
-<script src="aither-constellation.js"></script>
 
 <!-- aither-ecosystem:end -->

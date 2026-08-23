@@ -140,6 +140,22 @@ def _intent_matches_categories(intent_type: str, categories: list[str]) -> bool:
     if not categories:
         return True
     intent_normalized = (intent_type or "").strip().lower()
+    # DEFAULT means "the classifier could not tell" -- it must NOT filter.
+    #
+    # The docstring above has always said DEFAULT matches unmarked tools, and
+    # the code implemented only half of that: a tool with NO categories passed,
+    # a tool WITH categories was dropped. DEFAULT is what coarse_code_intent
+    # returns for most real input -- measured 2026-08-22, both "what is in the
+    # news today" AND "search the web for AI news" classify as DEFAULT -- so the
+    # agent's web and file tools were invisible to the model on almost every
+    # turn. Asked to list its tools it named 4 of 13.
+    #
+    # The user-visible symptom was the agent saying "I don't have direct web
+    # search capability" while web_search was registered, bound and working. A
+    # capability filtered out of the prompt is indistinguishable from one that
+    # does not exist.
+    if intent_normalized in ("", "default"):
+        return True
     return any(cat.strip().lower() == intent_normalized for cat in categories)
 
 
@@ -322,6 +338,7 @@ class AitherAgent:
         phonehome: bool = False,
         builtin_tools: bool = True,
         load_packs: bool = False,
+        user_mcp: bool = True,
         memory_maintenance: bool = False,
         routines: bool = False,
     ):
@@ -608,6 +625,32 @@ class AitherAgent:
                 self._load_discovered_packs()
             except Exception as exc:
                 logger.debug("Auto pack discovery failed: %s", exc)
+
+        # ── The user's OWN MCP servers ───────────────────────────────────
+        # Until this existed, every MCP path in the package pointed outward:
+        # MCPBridge talks to our gateway, cli.py writes us into other people's
+        # editor configs, and mcp_stdio.py runs this agent AS a server. So a
+        # self-hoster could extend the agent with a Python tool pack and
+        # nothing else -- its capabilities were bounded by what we shipped.
+        #
+        # Reads the `mcpServers` shape Claude Code and Cursor already use, and
+        # is a no-op when no config exists, which is the ordinary case. Placed
+        # BEFORE _filter_unavailable_tools() deliberately: a user's tool passes
+        # the same readiness filter as one of ours, rather than being exempt
+        # from a check every built-in has to survive.
+        if user_mcp:
+            try:
+                from adk.mcp_client import register_user_mcp_tools
+                register_user_mcp_tools(self)
+            except ImportError:
+                # Optional add-on, like the tool-pack loader above.
+                pass
+            except Exception as exc:  # noqa: BLE001
+                # Somebody else's process on somebody else's machine. It must
+                # never be the reason an agent fails to construct -- but it is
+                # logged, because a user who configured a server and silently
+                # got nothing has no way to find out why.
+                logger.warning("user MCP servers unavailable: %s", exc)
 
         # Filter out tools that can't work in current deployment context
         self._filter_unavailable_tools()
@@ -2733,7 +2776,7 @@ class AitherAgent:
         Decides intent / effort / whether the agentic tool-loop is warranted, via
         a SINGLE fast effort-2 call on this agent's own LLM (keyword fallback if
         the LLM is unavailable). This is the ONE shared classifier — Genesis,
-        portal-kit and every ADK agent route through here instead of each
+        awkit and every ADK agent route through here instead of each
         carrying a divergent keyword classifier.
         """
         from adk.intent import classify_intent as _classify
@@ -2770,7 +2813,7 @@ class AitherAgent:
         answer materially adds value (tools used / content diverged). Trivial
         chat (the intent router says non-agentic, low effort) skips the grounded
         pass entirely. This is the canonical instant-response capability — Genesis
-        chat and portal-kit delegate here so the behaviour is identical
+        chat and awkit delegate here so the behaviour is identical
         everywhere instead of each reimplementing it.
         """
         from adk import responder as _responder

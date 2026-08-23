@@ -131,8 +131,17 @@ memory = ["awm>=0.1.0"]          # portable scoped agent memory (tenant:user:pro
 snapshots = ["awrecover>=0.1.0"] # labelled snapshots; restore lands fully or not at all
 seal = ["awseal>=0.1.0"]         # Ed25519 provenance a stranger can verify
 share = ["awshare>=0.1.0"]       # content-addressed publish/fetch, verified on retrieval
+nest = ["awnest>=0.1.0"]         # is there a human there -- verdicts and bound attestations
+senses = ["awfind>=0.1.0", "awbrowse>=0.1.0"]  # search and page reading for agents
+# Priority-aware run queue (awrun_submit/queue/status/bump/cancel below). Same
+# reason as memory/snapshots/seal/share above: awrun is 0.1.0 and NOT on PyPI,
+# so it is an extra, never a hard dependency in [project.dependencies] -- a
+# hard pin here would break `pip install awdk` for every stranger and is
+# exactly what PVR003 (check_package_version_ahead_of_registry.py) exists to
+# catch. Promote to a hard dependency in the commit that publishes it.
+queue = ["awrun>=0.1.0"]
 # Everything the family offers, for an agent that wants the lot.
-aw = ["awm>=0.1.0", "awrecover>=0.1.0", "awseal>=0.1.0", "awshare>=0.1.0"]
+aw = ["awm>=0.1.0", "awrecover>=0.1.0", "awseal>=0.1.0", "awshare>=0.1.0", "awnest>=0.1.0", "awfind>=0.1.0", "awbrowse>=0.1.0", "awrun>=0.1.0"]
 
 anthropic = ["anthropic>=0.18.0"]
 openai = ["openai>=1.0.0"]

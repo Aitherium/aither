@@ -1,7 +1,7 @@
 """Tests for the canonical LLM intent router (adk.intent).
 
 Pure-logic tests with a mock ``llm_complete`` — no network. Validates the one
-shared classifier that Genesis, portal-kit and ADK agents all route through.
+shared classifier that Genesis, awkit and ADK agents all route through.
 """
 
 import asyncio

@@ -128,7 +128,7 @@ class Supervisor:
             if t in ("tool", "tool_start", "step"):
                 c["tool_calls"] += 1
             # Vocab-agnostic failure detection: adk stream_react emits
-            # tool_result{error}; portal-kit run_react emits step{ok:False}. Either
+            # tool_result{error}; awkit run_react emits step{ok:False}. Either
             # way ``ok`` is False or ``error`` is set.
             if ev.get("ok") is False or ev.get("error"):
                 c["failures"] += 1

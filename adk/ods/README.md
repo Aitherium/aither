@@ -45,7 +45,7 @@ print(recommendation.confidence)
 
 Upstream ODS answers exactly one question: *which single model should this box
 install*. Calling `resolve()` once per ADK tier therefore returns the same model
-five times (that was D-916). `resolve_role()` narrows upstream's **feasible**
+five times. `resolve_role()` narrows upstream's **feasible**
 set — it never adds a candidate upstream rejected, and the arch-policy
 substitution still applies to the role's own pick.
 
@@ -112,7 +112,7 @@ host to `cpu`/`T1` — sized from RAM instead of VRAM.
 
 This matters beyond bookkeeping: `recommend_config()` used to pass `tier=None`,
 which pins the tier to `"1"` and makes upstream's Spark/GB10 arch-policy guard
-structurally unreachable (D-918).
+structurally unreachable.
 
 ### Return Shape
 

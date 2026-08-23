@@ -84,6 +84,24 @@ await ely.register_agent("my-agent", capabilities=["code", "search"])
 agents = await ely.discover_agents(capability="code")
 ```
 
+## CLI
+
+`adk` has 95 top-level commands. The full reference is generated from the
+parser itself, so it never describes a command that does not exist:
+docs/CLI-REFERENCE.md in the repo.
+
+A few worth knowing:
+
+```
+adk quickstart                 # inference + auth + shell, one command
+adk gobbonet                   # serve the GobboNet chat UI locally (any OS)
+adk gobbonet --setup-model     # ...and fetch llama.cpp + a model that fits
+adk run                        # start the agent server
+adk chat                       # talk to your agent
+adk packs                      # list installed agent packs
+adk doctor                     # diagnose a broken install
+```
+
 ## Links
 
 - PyPI: https://pypi.org/project/awdk/

@@ -80,7 +80,7 @@ async def test_supervisor_escalates_via_steering():
 
 @pytest.mark.asyncio
 async def test_supervisor_detects_run_react_vocab_failures():
-    """portal-kit run_react emits step{ok:False} (not tool_result) on tool failure —
+    """awkit run_react emits step{ok:False} (not tool_result) on tool failure —
     the supervisor must still escalate. Locks in the integration contract."""
     sess = ReasoningSession("sup-rr")
 

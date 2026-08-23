@@ -25,7 +25,7 @@ PURE = ["engine.py", "sheet_render.py"]
 
 # consumer dir -> filename prefix (backend keeps a flat module namespace)
 TARGETS = {
-    REPO / "AitherOS" / "apps" / "packages" / "portal-kit-backend": "planb_",
+    REPO / "AitherOS" / "apps" / "packages" / "awkit-backend": "planb_",
 }
 
 HEADER = (

@@ -60,15 +60,53 @@ class Backend:
         return f"{self.kind} at {self.url} (model: {self.model})"
 
 
-def _probe(port: int, kind: str) -> Optional[Backend]:
-    url = f"http://127.0.0.1:{port}"
+def _model_names(data: dict) -> list:
+    """Model ids from EITHER shape a real server answers with.
+
+    OpenAI:    {"object": "list", "data": [{"id": ...}]}
+    llama.cpp: {"models": [{"name": ..., "model": ...}]}
+
+    Only the first was read, so a llama.cpp server -- measured, answering
+    200 and completing chat -- was reported as 'listening but empty' and
+    refused. On localhost too, not just when pinned."""
+    if not isinstance(data, dict):
+        return []
+    out = [m.get("id") for m in (data.get("data") or [])
+           if isinstance(m, dict) and m.get("id")]
+    if out:
+        return out
+    for m in (data.get("models") or []):
+        if not isinstance(m, dict):
+            continue
+        name = m.get("id") or m.get("name") or m.get("model")
+        if name:
+            out.append(name)
+    return out
+
+
+def _probe(target, kind: str) -> Optional[Backend]:
+    """`target` is a full base URL, or an int port on localhost.
+
+    It used to be a port ONLY, and built `http://127.0.0.1:{port}`
+    unconditionally -- so a pinned `--backend http://other-host:8090` was
+    silently rewritten to localhost and refused. discover() still passes
+    ints, which is why both forms are accepted."""
+    if isinstance(target, int):
+        url = f"http://127.0.0.1:{target}"
+    else:
+        url = str(target).rstrip("/")
+        # A pinned URL may already carry the API prefix; /v1/models is
+        # appended below, so strip a trailing /v1 rather than probing
+        # /v1/v1/models and calling a healthy server dead.
+        if url.endswith("/v1"):
+            url = url[:-3]
     try:
         with urllib.request.urlopen(f"{url}/v1/models", timeout=TIMEOUT) as r:
             data = json.loads(r.read().decode("utf-8"))
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError):
         return None
 
-    models = [m.get("id") for m in (data.get("data") or []) if m.get("id")]
+    models = _model_names(data)
     if not models:
         # Listening but empty. Reporting this as a usable backend produces a
         # confusing failure one step later, on the first completion.

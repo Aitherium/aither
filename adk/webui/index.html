@@ -1576,6 +1576,16 @@ document.querySelector('[data-tab="flux"]')?.addEventListener("click", () => {
   if (!root || !navBtn) return;
   const mb = (b) => (b / 1048576).toFixed(0);
   const gpu = typeof navigator !== "undefined" && "gpu" in navigator && !!navigator.gpu;
+  // A PHONE NEVER GETS THE WEBGPU LANE, tap or no tap (same rule as gpuLaneAllowed in the
+  // awkit/Veil brains). Mobile browsers expose navigator.gpu and then the OS kills the
+  // worker for memory mid-load -- no message, no onerror, nothing to clean up. The 900 MB
+  // model below is far past any phone tab budget; the honest answer is the local node.
+  const isMobileDevice = () => {
+    const ua = (typeof navigator !== "undefined" && navigator.userAgent) || "";
+    if (/Android|iPhone|iPad|iPod|Mobile|Silk|Kindle/i.test(ua)) return true;
+    return /Macintosh/i.test(ua) && ((navigator.maxTouchPoints || 0) > 1);
+  };
+  const mobile = isMobileDevice();
 
   let worker = null, inited = false, files = {}, msgs = [], streaming = "", status = "idle", progress = 0, loaded = 0, total = 0, curFile = "", tps = null, err = "";
 
@@ -1634,6 +1644,7 @@ self.addEventListener("message", async (e) => {
 
   function render() {
     const A = "var(--accent)", P = "var(--panel)", L = "var(--line)", M = "var(--muted)";
+    if (mobile) { root.innerHTML = `<div class="card"><strong>On-device WebGPU is off on phones and tablets.</strong> A phone tab cannot hold this model; the OS kills it mid-load without an error. Run <code>adk up</code> on a computer, or serve the model natively on this phone with <code>curl -fsSL https://aitherium.com/phone.sh | bash</code> -- the console finds it on localhost.</div>`; return; }
     if (!gpu) { root.innerHTML = `<div class="card"><strong>WebGPU isn't available in this browser.</strong>
       <div class="muted" style="margin-top:6px">On-device inference needs WebGPU — use Chrome or Edge. The rest of the console works fine.</div></div>`; return; }
     let h = "";

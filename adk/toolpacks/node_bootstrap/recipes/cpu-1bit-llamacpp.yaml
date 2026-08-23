@@ -50,7 +50,7 @@ inference_config:
     - no-gpu-layers
 
 deployment:
-  # ⚠ D-931: `serve_args` above are ADVISORY for this recipe, not deployment
+  # ⚠ `serve_args` above are ADVISORY for this recipe, not deployment
   # config. target=delegate-playbook takes the `elif delegate:` path in
   # node_plan_deployment(), which only REPORTS the script name — _render_compose()
   # is never called, so nothing here reaches a real node.

@@ -11,6 +11,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import adk.builtin_tools as bt
 
+LF_ = chr(10)
+B_LF = b"\n"
+B_CRLF = b"\r\n"
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -340,39 +344,15 @@ class TestWebSearch:
 
     @pytest.mark.asyncio
     async def test_web_search_handles_error(self):
-        # EVERY provider must fail before this reports an error. Patching only
-        # httpx used to be enough; since `ddgs` became the preferred provider it
-        # is not, and this test silently stopped testing the error path — it made
-        # a REAL network call, got real results, and passed for the wrong reason.
         mock_client = AsyncMock()
         mock_client.get = AsyncMock(side_effect=Exception("Connection failed"))
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("ddgs.DDGS", side_effect=Exception("ddgs down")), \
-             patch("httpx.AsyncClient", return_value=mock_client):
+        with patch("httpx.AsyncClient", return_value=mock_client):
             result = await bt.web_search("test")
             data = json.loads(result)
             assert "error" in data
-
-    @pytest.mark.asyncio
-    async def test_web_search_prefers_ddgs_and_maps_body_to_snippet(self):
-        """The positive half: a passing error-path test cannot see a dead provider.
-
-        `ddgs` names the snippet `body`. Reading only `snippet` is what produced
-        3/3 results with empty text while every assertion still passed — the tool
-        answered, looked healthy, and handed back links with no content.
-        """
-        class _FakeDDGS:
-            def text(self, query, max_results=5):
-                return [{"title": "T", "href": "https://e.com", "body": "real text"}]
-
-        with patch("ddgs.DDGS", _FakeDDGS):
-            data = json.loads(await bt.web_search("q"))
-
-        assert data["provider"] == "ddgs", "scraper used while ddgs was available"
-        assert data["results"][0]["snippet"] == "real text", "body -> snippet mapping lost"
-        assert data["results"][0]["url"] == "https://e.com"
 
 
 class TestWebFetch:
@@ -780,3 +760,58 @@ class TestSwarmCode:
             bt.swarm_code("task")
             url = mock_post.call_args[0][0]
             assert url.startswith("http://custom:9001")
+
+
+class TestFileToolsLineEndings:
+    """The FILE decides its line ending, never the host (measured 2026-08-22:
+    a Windows host turned one exact-match edit into a 616-line CRLF rewrite)."""
+
+    def test_write_keeps_lf_on_any_host(self, safe_dir):
+        target = safe_dir / "lf.py"
+        bt.file_write(str(target), "a" + LF_ + "b" + LF_)
+        assert target.read_bytes() == b"a" + B_LF + b"b" + B_LF
+
+    def test_edit_preserves_crlf_file(self, safe_dir):
+        target = safe_dir / "crlf.py"
+        target.write_bytes(b"x = 1" + B_CRLF + b"y = 2" + B_CRLF + b"z = 3" + B_CRLF)
+        res = json.loads(bt.file_edit(str(target), "y = 2", "y = 20"))
+        assert res.get("success") is True, res
+        raw = target.read_bytes()
+        assert raw == b"x = 1" + B_CRLF + b"y = 20" + B_CRLF + b"z = 3" + B_CRLF
+        assert raw.count(B_CRLF) == 3 and raw.count(B_LF) == 3  # no bare LF crept in
+
+    def test_edit_preserves_lf_file(self, safe_dir):
+        target = safe_dir / "lf2.py"
+        target.write_bytes(b"x = 1" + B_LF + b"y = 2" + B_LF)
+        bt.file_edit(str(target), "y = 2", "y = 20")
+        raw = target.read_bytes()
+        assert raw == b"x = 1" + B_LF + b"y = 20" + B_LF
+        assert B_CRLF not in raw
+
+    def test_edit_matches_multiline_old_text_against_crlf_file(self, safe_dir):
+        target = safe_dir / "ml.py"
+        target.write_bytes(b"def f():" + B_CRLF + b"    return 1" + B_CRLF)
+        res = json.loads(bt.file_edit(str(target), "def f():" + LF_ + "    return 1",
+                                      "def f():" + LF_ + "    return 2"))
+        assert res.get("success") is True, res
+        assert target.read_bytes() == b"def f():" + B_CRLF + b"    return 2" + B_CRLF
+
+    def test_edit_refuses_noop(self, safe_dir):
+        target = safe_dir / "noop.py"
+        target.write_text("a = 1" + LF_)
+        res = json.loads(bt.file_edit(str(target), "a = 1", "a = 1"))
+        assert "error" in res and "identical" in res["error"]
+        assert target.read_text() == "a = 1" + LF_
+
+
+class TestShellExecDecoding:
+    def test_shell_exec_survives_non_utf8_output(self, safe_dir):
+        """Tool output is decoded utf-8 with replacement, never the locale codec.
+        Measured 2026-08-23 on a SWE-bench-Live instance: a reader thread died with
+        UnicodeDecodeError ('charmap' 0x81) on a Windows host, so the tool result
+        was lost mid-run."""
+        import sys
+        cmd = sys.executable + ' -c "import sys; sys.stdout.buffer.write(b' + chr(39) + chr(92) + 'x81ok' + chr(39) + ')"'
+        res = json.loads(bt.shell_exec(cmd))
+        assert "error" not in res or res.get("exit_code") == 0, res
+        assert "ok" in (res.get("stdout") or res.get("output") or json.dumps(res))

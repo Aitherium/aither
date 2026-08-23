@@ -6,7 +6,7 @@ drains between ReAct steps) instead of each spawning a brand-new agentic loop.
 The grounded result streams back through the session while the user keeps
 chatting on the fast lane.
 
-This is the substrate the whole platform shares — portal-kit, Genesis and ADK
+This is the substrate the whole platform shares — awkit, Genesis and ADK
 agents register/look-up sessions here so "keep chatting while it works" behaves
 identically everywhere instead of each reinventing a queue.
 

@@ -492,7 +492,11 @@ class LocalEngine(Engine):
             # A pinned URL is still probed — pointing at a dead port and
             # discovering it one turn later, mid-conversation, is worse than
             # refusing now with the reason.
-            found = be._probe(int(self._pinned.rsplit(":", 1)[-1].strip("/")), "pinned")
+            # THE WHOLE URL, not a port scraped off the end of it. This used to
+            # be `int(self._pinned.rsplit(':', 1)[-1])`, which discarded the
+            # host -- so every pinned backend was probed on localhost, and a
+            # URL without a port raised ValueError on `//host/v1`.
+            found = be._probe(self._pinned, "pinned")
             if not found:
                 raise NotConfigured(f"nothing usable at {self._pinned}\n\n{be.setup_hint()}")
             return found

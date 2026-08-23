@@ -2,7 +2,7 @@
 
 The "answer now, enrich in the background, auto-continue" capability the whole
 platform shares. ONE implementation — used by AitherAgent.stream_respond,
-Genesis chat, and portal-kit, instead of each reinventing it.
+Genesis chat, and awkit, instead of each reinventing it.
 
   Phase A — INITIAL  : immediately stream a fast first-pass answer on minimal
                        context, so there is NO dead air before the first token.
@@ -38,7 +38,7 @@ from typing import Any, AsyncIterator, Awaitable, Callable, Optional
 from adk.grounding import ground_system_prompt
 
 
-# ── Refinement decision (shared so Genesis/portal-kit/ADK agree) ─────────────
+# ── Refinement decision (shared so Genesis/awkit/ADK agree) ─────────────
 
 def text_similarity(a: str, b: str) -> float:
     a, b = (a or "").strip(), (b or "").strip()

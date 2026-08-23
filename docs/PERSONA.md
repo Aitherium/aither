@@ -17,6 +17,7 @@ All tools are **fire-and-forget**: if Persona is unavailable, tools silently no-
 
 **Persona runs on loopback-only** (127.0.0.1:47831). This is intentional:
 - Containerized agents CANNOT reach it without a host relay
+- Host relay (tunnel from container to host Persona bridge) is an owner-gated item.
 - Host relay (tunnel from container to host Persona bridge) is not yet available
 - Only HOST-run adk agents can use Persona tools directly
 
@@ -205,6 +206,7 @@ asyncio.run(avatar_chat())
 
 ## Future Work (Owner-Gated)
 
+- Host relay tunnel — container agents → host Persona bridge
 - Host relay tunnel — container agents → host Persona bridge (planned)
   - Enables containerized agents (e.g., in Docker, Kubernetes) to drive avatars on the host
   - Status: backlog
