@@ -311,6 +311,24 @@ class Spool:
                     logger.warning("Cannot mark failed: rowid %d not found", rowid)
                     return
 
+                # An entry that has already exhausted its budget is not
+                # attempted again, so it must not be COUNTED again. Without this
+                # the budget is not a bound: a redundant mark (two workers that
+                # both read the same page of pending() before either marked it,
+                # or a caller retrying a stale entry) pushes attempts past
+                # max_attempts forever, and re-logs "will not retry" every time.
+                # Measured with max_attempts=3: eight marks produced attempts=8
+                # and five warnings, in a SINGLE thread — so this is a bound
+                # that never held, not a race. It surfaced as an intermittent
+                # thread-safety failure because concurrency is what generates
+                # redundant marks, which is why it read as a flaky test.
+                if row[0] > self._max_attempts:
+                    logger.debug(
+                        "rowid %d already exhausted its retry budget "
+                        "(attempts=%d); not counting a redundant mark",
+                        rowid, row[0])
+                    return
+
                 attempts = row[0] + 1
                 # Matches pending()'s filter: exhausted only once attempts EXCEED
                 # the budget, so the two can never disagree about which rows are

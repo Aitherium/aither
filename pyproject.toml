@@ -12,7 +12,7 @@ name = "awdk"
 # PyPI already served aither-adk 3.6.0 while this file said 3.5.0, so shipping
 # the tree version as awdk would hand every user moving across a DOWNGRADE and
 # a silently older package. Continue the existing line instead of restarting it.
-version = "3.7.4"
+version = "3.8.0"
 description = "Build AI agents with real memory + faculties on any backend, local or cloud. Open-core: free local runtime with typed memory, knowledge graph, code graph and ReAct; paid tiers (portal.aitherium.com) unlock fleets, channels, reasoning and marketplace packs."
 readme = "README.md"
 license = {file = "LICENSE"}

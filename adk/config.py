@@ -149,6 +149,31 @@ def save_saved_config(data: dict[str, Any], config_path: Path | None = None) -> 
     path = config_path or _CONFIG_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
     existing = load_saved_config(path)
+
+    # FAIL CLOSED on an unreadable file. This is a whole-file overwrite, and
+    # load_saved_config swallows every read failure into an empty dict -- so if
+    # the read fails for ANY reason (a transient lock, a half-written file, an
+    # import error in the yaml branch), the merge below has nothing to merge
+    # into and this write DELETES every key the caller did not pass.
+    #
+    # Not hypothetical. Measured 2026-08-23 on the fleet host: ~/.aither/config.yaml
+    # went from 11 keys to exactly the TWO that `adk relay` writes
+    # (relay_token, relay_nick), losing url, gateway_url, safety_level, stream,
+    # rich_output, show_thinking, show_metadata and session_id. The caller
+    # succeeded, nothing logged, and the loss was found only because an unrelated
+    # gate happened to read one of the dropped keys an hour later.
+    #
+    # A config write that cannot see what is already there must REFUSE. Losing a
+    # credential silently is strictly worse than a caller getting an error it can
+    # retry -- the fail-open gate pattern from security-review-patterns.md #1,
+    # applied to a file instead of an authz decision.
+    if not existing and path.exists() and path.stat().st_size > 0:
+        raise OSError(
+            "refusing to write %s: it holds %d bytes but parsed to nothing, so this "
+            "write would DELETE every key not passed in. Fix or move the file first."
+            % (path, path.stat().st_size)
+        )
+
     existing.update(data)
     path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
     return path

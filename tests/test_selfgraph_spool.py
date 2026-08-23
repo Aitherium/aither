@@ -535,8 +535,43 @@ class TestThreadSafety:
         )
         assert stats["sent"] == 0, "nothing was successfully published in this test"
 
-        # Every entry was attempted at least once and none exceeded the budget.
+        # NOT "every entry was attempted". pending() is a HEAD query ordered by
+        # created_at, so which rows the 15 iterations reach depends entirely on
+        # the interleaving: three threads that read the same page all mark the
+        # same rows, and the tail can legitimately go untouched. Asserting it
+        # made this test fail intermittently (D-2121) while blaming
+        # thread-safety for an ordinary property of a bounded work loop.
+        #
+        # What IS guaranteed is the retry BUDGET, and that used to be false: a
+        # redundant mark on an exhausted entry kept incrementing, so attempts
+        # ran past max_attempts without limit. Reproducible in one thread; see
+        # test_budget_is_a_bound below.
         with sqlite3.connect(str(spool_db._db_path)) as conn:
             attempts = [row[0] for row in conn.execute("SELECT attempts FROM spool")]
-        assert attempts and all(a >= 1 for a in attempts), "every entry should show an attempt"
-        assert max(attempts) >= 1
+        assert attempts, "no rows survived the concurrent run"
+        assert all(a >= 0 for a in attempts)
+        assert max(attempts) <= spool_db._max_attempts + 1, (
+            f"attempts exceeded the retry budget under concurrency: {attempts} "
+            f"(max_attempts={spool_db._max_attempts})")
+        # Progress, or the loop did nothing and every assertion above is vacuous.
+        assert any(a >= 1 for a in attempts), "no entry was attempted at all"
+
+    def test_budget_is_a_bound(self, spool_db):
+        """A redundant mark must not push an exhausted entry past its budget.
+
+        Deterministic and single-threaded on purpose: this is the defect behind
+        the intermittent failure in test_concurrent_pending_and_mark, and
+        concurrency was only what GENERATED the redundant marks. Reproducing it
+        with threads would inherit the flakiness of the thing it explains.
+        """
+        rowid = spool_db.enqueue(_make_test_update(run_id="bounded"))
+        for _ in range(spool_db._max_attempts + 6):
+            spool_db.mark_failed(rowid, "boom")
+        with sqlite3.connect(str(spool_db._db_path)) as conn:
+            attempts, status = conn.execute(
+                "SELECT attempts, status FROM spool WHERE rowid = ?", (rowid,)
+            ).fetchone()
+        assert status == "failed"
+        assert attempts == spool_db._max_attempts + 1, (
+            f"attempts={attempts} — the retry budget is not a bound")
+        assert spool_db.pending(limit=10) == [], "an exhausted entry is still pending"
