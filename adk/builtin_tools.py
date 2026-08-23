@@ -557,15 +557,47 @@ async def web_search(query: str, limit: int = 5) -> str:
     #
     # Configured by ENV with no default host: this package ships to PyPI and
     # must carry nobody's topology, and a URL nobody set cannot go stale.
-    _svc = os.environ.get("ADK_SEARCH_URL") or os.environ.get("AITHER_SEARCH_URL")
+    # ENV FIRST, THEN THE USER'S OWN CONFIG -- and the second half is why this
+    # lane had never once run. Measured 2026-08-23 on the author's box: awfind
+    # was installed, AitherSearch was Up 2 hours (healthy) publishing 8114, and
+    # neither env var was set anywhere in the tree -- one reader, zero writers.
+    # So EVERY search fell through to the DuckDuckGo scrape below, which is the
+    # failure this function's own comment warns about, and the user-visible
+    # symptom was exactly what that comment predicts: results with titles and
+    # no usable snippets, reported as "the web had nothing useful".
+    #
+    # An env-only switch is a switch nothing flips. ~/.aither/config.* is the
+    # store the ADK already reads and the user already owns, so honouring it
+    # keeps the PyPI package carrying nobody's topology while giving the box
+    # that HAS a search service a way to say so.
+    _cfg: dict = {}
+    try:
+        from adk.config import load_saved_config
+
+        _cfg = load_saved_config() or {}
+    except Exception:
+        _cfg = {}
+
+    def _resolve(*names: str) -> str:
+        for n in names:
+            v = os.environ.get(n)
+            if v:
+                return v
+        for n in names:
+            v = _cfg.get(n.lower().replace("adk_", "").replace("aither_", ""))
+            if v:
+                return str(v)
+        return ""
+
+    _svc = _resolve("ADK_SEARCH_URL", "AITHER_SEARCH_URL")
     if _svc:
         try:
             from awfind import FindClient
 
             # verify: never False. A private-CA deployment passes its bundle
             # path; anything else keeps full verification.
-            _ca = os.environ.get("ADK_SEARCH_CA_BUNDLE")
-            _client = FindClient(_svc, token=os.environ.get("ADK_SEARCH_TOKEN"),
+            _ca = _resolve("ADK_SEARCH_CA_BUNDLE")
+            _client = FindClient(_svc, token=_resolve("ADK_SEARCH_TOKEN") or None,
                                  verify=_ca if _ca else True)
             _answer = _client.quick(query, limit=limit)
             _rows = list(_answer)
