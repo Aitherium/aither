@@ -7,15 +7,13 @@ Tests verify:
 4. Graceful error handling for common failure modes
 """
 
-import asyncio
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from adk.sync.brain import (
     BrainSyncClient,
     SyncDeltaItem,
     SyncRequest,
-    SyncResponse,
 )
 
 
@@ -338,14 +336,10 @@ class TestAitherBrainIntegration:
             tenant_id="tnt_123",
         )
 
-        # Verify the endpoint URL is correct (platform service, not app-scoped)
-        expected_url = "http://localhost:8271/brain/sync"
-        # Note: We can't easily intercept this without mocking httpx, which we do above
-        # This test documents the contract: client must POST to /brain/sync
-
-        # The real test would require AitherBrain to be running:
-        # result = await client.post_deltas([SyncDeltaItem(chunk_id="test")])
-        # assert result is not None
+        # The contract: the client resolves the PLATFORM AitherBrain URL and
+        # post_deltas builds its target as f"{brain_url}/brain/sync".
+        assert client.brain_url == "http://localhost:8271"
+        assert f"{client.brain_url}/brain/sync" == "http://localhost:8271/brain/sync"
 
 
 if __name__ == "__main__":

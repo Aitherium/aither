@@ -181,6 +181,9 @@ def check_orphan_modules():
     exempt = {
         "__main__",  # executed via `python -m adk`, never imported
         "ports",  # imported by the internal aither_platform toolkit (outside this repo)
+        # Standalone hardware diagnostic: run via `python -m adk.bandwidth_benchmark`,
+        # prints JSON consumed by node-registration payloads. Nothing imports it.
+        "bandwidth_benchmark",
     }
     for name, path in sorted(module_files.items()):
         if name not in imported and name not in exempt:

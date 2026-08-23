@@ -12250,6 +12250,14 @@ def _register_commands(sub):
     login_p.add_argument("--portal-url", default="",
                          help="Portal/Identity URL (default: portal.aitherium.com)")
 
+    # adk pair — node-initiated pairing (the code IS the credential; no login here)
+    pair_p = sub.add_parser(
+        "pair",
+        help="Pair this machine with the portal as an inference node (6-char code from the portal)")
+    pair_p.add_argument("code", help="Pairing code shown in the signed-in portal tab")
+    pair_p.add_argument("--portal", default="",
+                        help="Portal base URL (default: https://portal.aitherium.com)")
+
     # adk whoami
     _whoami = sub.add_parser(
         "whoami", help="Show current auth status, config and entitlement tier")
@@ -14724,6 +14732,9 @@ def main():
         sys.exit(cmd_register(args))
     elif args.command == "login":
         sys.exit(cmd_login(args))
+    elif args.command == "pair":
+        from adk.node_pairing import cmd_pair
+        sys.exit(cmd_pair(args))
     elif args.command == "whoami":
         sys.exit(cmd_whoami(args))
     elif args.command == "logout":

@@ -6,7 +6,6 @@ try:  # single source of truth = the installed package metadata (pyproject versi
     __version__ = _pkg_version("awdk")
 except PackageNotFoundError:  # running from a source checkout without install
     __version__ = "3.7.0"  # kept in sync by packaging/sync_versions.py
-    __version__ = "3.5.0"  # kept in sync by packaging/sync_versions.py
 
 from adk.agent import AitherAgent
 from adk.dispatch import MultiAgentDispatcher, DispatchSpec, DispatchResult
@@ -50,6 +49,12 @@ __all__ = [
     "ContextManager",
     "register_builtin_tools",
     "GraphMemory",
+    # Mesh placement plane (node pairing is a CLI command: `adk pair <CODE>`)
+    "A2AAdapter",
+    "InferencePlacementSolver",
+    "PlacementMemory",
+    "LocalInferenceDiscovery",
+    "measure_node_latencies",
     "NanoGPT",
     "NeuronPool",
     "AutoNeuronFire",
@@ -243,6 +248,21 @@ def __getattr__(name):
     if name == "GraphMemory":
         from adk.graph_memory import GraphMemory
         return GraphMemory
+    if name == "A2AAdapter":
+        from adk.a2a_adapter import A2AAdapter
+        return A2AAdapter
+    if name == "InferencePlacementSolver":
+        from adk.inference_placement_solver import InferencePlacementSolver
+        return InferencePlacementSolver
+    if name == "PlacementMemory":
+        from adk.placement_memory import PlacementMemory
+        return PlacementMemory
+    if name == "LocalInferenceDiscovery":
+        from adk.local_inference import LocalInferenceDiscovery
+        return LocalInferenceDiscovery
+    if name == "measure_node_latencies":
+        from adk.latency_probe import measure_node_latencies
+        return measure_node_latencies
     if name == "NanoGPT":
         # On-device training (NanoGPT) is proprietary IP and is NOT shipped in
         # the published open SDK. It lives in the internal AitherOS runtime.
