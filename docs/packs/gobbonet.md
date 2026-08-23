@@ -1,6 +1,6 @@
 # GobboPack
 
-`gobbonet` · version `3.7.4` · 40.7 KB
+`gobbonet` · version `3.7.4` · 43.3 KB
 
 **[Download gobbonet-3.7.4.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.7.4/gobbonet-3.7.4.tar.gz)** · [checksum](https://github.com/Aitherium/aither-adk/releases/download/v3.7.4/gobbonet-3.7.4.sha256)
 
@@ -52,6 +52,7 @@ agentic.py
 backend.py
 brain_pack.yaml
 campaign_memory.py
+cards.py
 catalog.py
 launch.py
 models.py
@@ -302,5 +303,5 @@ Then `pip install aither-adk aither-pack-myapp` and the pack is discovered autom
 
 ---
 
-sha256 `93e90b84f722f8e112c097f6eac1284c3d4905ee8f56e1ae10c3afd6663277a7`  
+sha256 `11b8b80574471533a51b5693b447e0a27d1d4059bd68d2f39b09a27f5b5b587a`  
 Built from `v3.7.4` (adk 3.7.4). [All packs](../packs.md)

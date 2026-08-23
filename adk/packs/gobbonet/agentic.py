@@ -106,6 +106,11 @@ class AgenticEngineMixin:
                 )
                 register_campaign_tools(self._agent,
                                         self._get_campaign_memory())
+                # And the mod-pack pair: a character card people already trade
+                # imports as SCOPED notes, and what the harness learns exports
+                # back into one. Same fail-soft contract as above.
+                from adk.packs.gobbonet.cards import register_card_tools
+                register_card_tools(self._agent, self._get_campaign_memory())
             return self._agent
 
     def stream_chat(self, messages: list[dict], **opts: Any) -> Iterator[str]:
