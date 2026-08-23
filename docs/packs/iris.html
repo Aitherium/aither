@@ -298,7 +298,7 @@ a:focus-visible, .jump a:focus-visible {
 <span class="o">installed iris -&gt; ~\.aither\packs\iris</span>
 <span class="o">verified: adk discovers &#x27;iris&#x27;</span>
 <span class="p">$</span> <span class="caret"></span></pre></div></div></div>
-  <dl class="spec"><div><dt>Version</dt><dd>3.7.3</dd></div><div><dt>Size</dt><dd>8 KB</dd></div><div><dt>Licence</dt><dd>—</dd></div><div><dt>sha256</dt><dd>ee258fe13edc0935…</dd></div></dl>
+  <dl class="spec"><div><dt>Version</dt><dd>3.7.3</dd></div><div><dt>Size</dt><dd>8 KB</dd></div><div><dt>Licence</dt><dd>—</dd></div><div><dt>sha256</dt><dd>0ca7f460a2832036…</dd></div></dl>
 
   <section>
     <h2>What the pack adds</h2>
@@ -314,12 +314,12 @@ law that governs character work: txt2img + IPAdapter CANNOT pin a character.</p>
 
   <section>
     <h2>Verify</h2>
-    <p class="sub">sha256 <code>ee258fe13edc09351cbacde2d54566d2fe90708adbe65baacaa6ebefe4aaaa77</code></p>
+    <p class="sub">sha256 <code>0ca7f460a2832036e7ea5cf030b27cc023700849878d4e0f65fd8b623b729ef2</code></p>
     <div class="lanes"><div class="lane"><span class="lane-tag">macOS / Linux</span><div class="term"><div class="term-bar"><span class="dot live"></span><span class="dot"></span><span class="dot"></span><span class="term-name">verify</span></div><pre class="term-body"><span class="c"># every artifact ships a checksum; check it before you trust it</span>
 <span class="p">$</span> sha256sum -c iris-3.7.3.sha256
 <span class="o">iris-3.7.3.tar.gz: OK</span>
 <span class="p">$</span> <span class="caret"></span></pre></div></div><div class="lane"><span class="lane-tag">Windows</span><div class="term"><div class="term-bar"><span class="dot live"></span><span class="dot"></span><span class="dot"></span><span class="term-name">verify</span></div><pre class="term-body"><span class="c"># there is no sha256sum on Windows; Get-FileHash is the equivalent</span>
-<span class="p">$</span> $want = &#x27;EE258FE13EDC09351CBACDE2D54566D2FE90708ADBE65BAACAA6EBEFE4AAAA77&#x27;
+<span class="p">$</span> $want = &#x27;0CA7F460A2832036E7EA5CF030B27CC023700849878D4E0F65FD8B623B729EF2&#x27;
 <span class="p">$</span> (Get-FileHash iris-3.7.3.tar.gz -Algorithm SHA256).Hash -eq $want
 <span class="o">True</span>
 <span class="p">$</span> <span class="caret"></span></pre></div></div></div>
