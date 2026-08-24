@@ -14,7 +14,12 @@
 # Regenerate with `brew update-python-resources AitherAdk` (macOS/Linux), or
 # `uv pip compile` plus the PyPI JSON API.
 
-class AitherAdk < Formula
+# The class name is DERIVED FROM THE FILENAME by Homebrew: awdk.rb must
+# declare `Awdk`. This said `AitherAdk` -- residue from the distribution
+# rename -- so `brew install aitherium/tap/awdk` could not even LOAD the
+# formula, let alone build it. That nobody hit it is the tell: this formula
+# had never been installed by anyone.
+class Awdk < Formula
   include Language::Python::Virtualenv
 
   desc "Agent Development Kit for AitherOS — build AI agent fleets with any LLM"
