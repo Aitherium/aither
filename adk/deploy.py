@@ -3491,7 +3491,12 @@ def deploy_grid(
             print(f"     Then:       {cyan('export AITHER_GRID_MAC_HOST=<mac-ip>')}")
         if not cluster_nodes or cluster_nodes == "[]":
             print(f"  2. Set up cluster: {cyan('bash scripts/setup-cluster-node.sh')} (on each node)")
-            print(f"     Then:           {cyan('export AITHER_GRID_CLUSTER_NODES=[\"<ip>\"]')}")
+            # A backslash inside a replacement field is PEP 701 (3.12+) and
+            # awdk declares requires-python ">=3.10", where this module was a
+            # SyntaxError -- so it failed to import for anyone pip-installing
+            # it on the oldest Python we promise to support.
+            _grid = 'export AITHER_GRID_CLUSTER_NODES=["<ip>"]'
+            print(f"     Then:           {cyan(_grid)}")
 
     # -- Save routing config for adk shell / adk-serve ----------------------------
     from adk.config import save_saved_config

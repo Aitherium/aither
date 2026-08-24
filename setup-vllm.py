@@ -1088,7 +1088,9 @@ def main() -> int:
         print()
         print(f"  {bold('Quick test:')}")
         if chat_model:
-            print(f"    {cyan(f'ollama run {chat_model} \"hello\"')}")
+            # Same PEP 701 backslash rule as adk/deploy.py; keep it 3.10-parseable.
+            _try = f'ollama run {chat_model} "hello"'
+            print(f"    {cyan(_try)}")
         print()
         print(f"  {green(bold('Ready!'))}")
         print()
@@ -1213,7 +1215,15 @@ def main() -> int:
     print(f"  {bold('Chat:')}")
     print(f"""    {cyan(f"curl http://localhost:{orch.port}/v1/chat/completions")} \\""")
     print(f"""      {cyan(f'-H "Content-Type: application/json"')} \\""")
-    print(f"""      {cyan(f"""-d '{{"model": "{orch.served_name}", "messages": [{{"role": "user", "content": "hello"}}]}}'""")}""")
+    # Nesting a triple-quoted f-string inside another with the SAME delimiter
+    # is PEP 701 (3.12+). awdk declares requires-python ">=3.10", where this
+    # was a SyntaxError -- so the module failed to import for anyone who
+    # pip-installed it on the oldest Python we promise to support.
+    _payload = json.dumps({
+        "model": orch.served_name,
+        "messages": [{"role": "user", "content": "hello"}],
+    })
+    print(f"      {cyan('-d ' + repr(_payload))}")
     print()
 
     # ADK integration
@@ -1236,7 +1246,9 @@ def main() -> int:
     # Gateway integration
     print(f"  {bold('Connect to AitherOS:')}")
     print(f"    {cyan('pip install awdk')}")
-    print(f"    {cyan('python -c \"from adk.federation import FederationClient; ...')}")
+    # PEP 701 again: a backslash in a replacement field is 3.12+.
+    _snip = 'python -c "from adk.federation import FederationClient; ...'
+    print(f"    {cyan(_snip)}")
     print(f"    See: {cyan('examples/federation_demo.py')}")
     print()
 
