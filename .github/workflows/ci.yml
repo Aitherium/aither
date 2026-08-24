@@ -33,3 +33,44 @@ jobs:
         # user's hardware resolves to. The per-test timeout is raised from 30s
         # because those differentials spawn a subprocess per case.
         run: python -m pytest tests/ adk/ods/tests/ -v --timeout=180
+
+  # ── the lane, per platform ───────────────────────────────────────────────
+  # Windows and macOS support were claimed on entirely STATIC evidence: a
+  # py3-none-any wheel, a launcher with no platform branches, an installer that
+  # picks a macos-arm64 asset. All true; none of it a run. This is the run.
+  #
+  # It exists here, in the PUBLIC mirror, because GitHub hosted runners are free
+  # for public repositories -- macOS included. The alternative priced out at a
+  # 24-hour minimum AWS Mac Dedicated Host, for a worse answer, once.
+  smoke:
+    name: import + CLI on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false          # one OS failing must not hide the others
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: pip install ".[memory]"
+
+      - name: The console script resolves
+        # Not `python -c "import adk"`. A wheel that imports and a COMMAND that
+        # runs are different facts, and it is the command a stranger types.
+        run: adk --version
+
+      - name: The gobbonet pack imports, with its memory backend
+        # awm is what the campaign tools store notes in. Without it `adk
+        # gobbonet` still starts and every scoped-memory tool degrades to
+        # nothing -- which reads as the feature being switched off, not absent.
+        run: python -c "from adk.packs.gobbonet import campaign_memory, cards, retrieval; import awm; print('pack ok')"
+
+      - name: Hardware detection answers on this OS
+        # The only genuinely platform-branching code in the package: darwin ->
+        # Metal, arm64 -> the macos-arm64 asset. If anything is going to be
+        # wrong per-OS it is this, so it is the thing worth a matrix.
+        run: python -c "from adk import llamacpp_setup as lc; a = lc.detect_accel(); print(a.os_family, a.arch, a.kind)"
