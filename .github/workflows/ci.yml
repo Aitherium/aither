@@ -61,7 +61,14 @@ jobs:
       - name: The console script resolves
         # Not `python -c "import adk"`. A wheel that imports and a COMMAND that
         # runs are different facts, and it is the command a stranger types.
-        run: adk --version
+        #
+        # `--help`, NOT `--version`: there is no version flag and no `version`
+        # subcommand (both exit 2). The first draft of this step asserted
+        # `--version` -- the exact class its own comment warns about, caught by
+        # running it on all three platforms at once.
+        run: adk --help
+      - name: ...and reports the version where it actually lives
+        run: python -c "import adk; print(adk.__version__)"
 
       - name: The gobbonet pack imports, with its memory backend
         # awm is what the campaign tools store notes in. Without it `adk
