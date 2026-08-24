@@ -14,12 +14,7 @@
 # Regenerate with `brew update-python-resources AitherAdk` (macOS/Linux), or
 # `uv pip compile` plus the PyPI JSON API.
 
-# The class name is DERIVED FROM THE FILENAME by Homebrew: awdk.rb must
-# declare `Awdk`. This said `AitherAdk` -- residue from the distribution
-# rename -- so `brew install aitherium/tap/awdk` could not even LOAD the
-# formula, let alone build it. That nobody hit it is the tell: this formula
-# had never been installed by anyone.
-class Awdk < Formula
+class AitherAdk < Formula
   include Language::Python::Virtualenv
 
   desc "Agent Development Kit for AitherOS — build AI agent fleets with any LLM"
@@ -171,7 +166,15 @@ class Awdk < Formula
     # adk-workspace, adk-bug, adk-shell), so `brew test` could only ever fail.
     # Same class as the onboarding-funnel rule: never advertise a command the
     # package does not ship.
-    assert_match "3.8.0", shell_output("#{bin}/adk --version")
+    # NOT `adk --version` -- there is no such flag and no `version`
+    # subcommand (measured: both exit 2). The comment below this block warns
+    # against asserting a command the package does not ship, and the previous
+    # line did exactly that. `--help` proves the console script resolves, which
+    # is what a formula test is for; the version is read where it actually
+    # lives.
+    assert_match "usage", shell_output("#{bin}/adk --help 2>&1")
+    assert_match version.to_s,
+                 shell_output("#{libexec}/bin/python -c 'import adk; print(adk.__version__)'")
     # The uvx/registry entrypoint must exist too — `uvx aither-adk` and the ACP
     # registry listing both invoke it by that exact name.
     assert_predicate bin/"awdk", :exist?
