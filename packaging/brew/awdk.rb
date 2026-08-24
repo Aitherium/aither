@@ -14,7 +14,18 @@
 # Regenerate with `brew update-python-resources AitherAdk` (macOS/Linux), or
 # `uv pip compile` plus the PyPI JSON API.
 
-class AitherAdk < Formula
+# The class name is DERIVED FROM THE FILENAME by Homebrew: awdk.rb must
+# declare `Awdk`. It said `AitherAdk` -- residue from the distribution
+# rename -- so `brew install aitherium/tap/awdk` could not even LOAD the
+# formula. That nobody ever hit it is the tell: this formula had never
+# been installed by anyone.
+#
+# Re-applied 2026-08-23 after I reverted it myself: a later PR was built
+# from a copy of develop taken BEFORE the rename landed, so it silently
+# restored the broken name. awgit's shrink guard cannot see that class of
+# overwrite -- nothing shrank, one line changed back -- so the only defence
+# is re-reading the base immediately before staging, not once per session.
+class Awdk < Formula
   include Language::Python::Virtualenv
 
   desc "Agent Development Kit for AitherOS — build AI agent fleets with any LLM"
