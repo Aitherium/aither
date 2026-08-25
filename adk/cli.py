@@ -702,7 +702,7 @@ def cmd_stack(args):
         success, url, api_key = _provision_qdrant()
         if success:
             print(f"  [+] Qdrant URL: {url}")
-            print(f"  [+] API key saved to ~/.aither/config.yaml")
+            print("  [+] API key saved to ~/.aither/config.yaml")
             print()
             print("  Configuration:")
             print(f"    AITHER_FLEET_QDRANT_URL={url}")
@@ -1740,7 +1740,7 @@ def _provision_qdrant() -> tuple[bool, str, str]:
     if not api_key:
         api_key = secrets.token_urlsafe(32)
         save_saved_config({"qdrant_api_key": api_key})
-        print(f"  [+] Generated Qdrant API key")
+        print("  [+] Generated Qdrant API key")
 
     # Start the container, VERIFYING the start actually succeeded — a failed
     # `docker start` must not be reported as success (gate finding).
@@ -1755,14 +1755,14 @@ def _provision_qdrant() -> tuple[bool, str, str]:
         )
         if start.returncode != 0:
             print(f"  [!] Failed to start Qdrant: {start.stderr.decode(errors='replace').strip()}")
-            print(f"      AITHER_FLEET_QDRANT_URL=http://localhost:6333")
+            print("      AITHER_FLEET_QDRANT_URL=http://localhost:6333")
             print(f"      AITHER_FLEET_QDRANT_API_KEY={api_key}")
             return False, "", api_key
         print("  [+] Qdrant container is running")
     except (OSError, subprocess.TimeoutExpired):
         # Docker not available; just return config for manual setup
         print("  [!] Docker not available; set env manually:")
-        print(f"      AITHER_FLEET_QDRANT_URL=http://localhost:6333")
+        print("      AITHER_FLEET_QDRANT_URL=http://localhost:6333")
         print(f"      AITHER_FLEET_QDRANT_API_KEY={api_key}")
         return False, "", api_key
 
@@ -2213,7 +2213,6 @@ def _save_account_license(result: dict) -> str:
 
 def cmd_login(args) -> int:
     """Authenticate with Aitherium — device flow, email/password, or API key."""
-    import json as _json
 
     identity_url = (args.portal_url or os.getenv("AITHER_PORTAL_URL", _DEFAULT_IDENTITY_URL)).rstrip("/")
 
@@ -2514,7 +2513,6 @@ def cmd_ambient(args) -> int:
 def cmd_balance(args) -> int:
     """Show Aitherium credit account (balance, earnings, spending)."""
     import requests
-    import json as _json
 
     saved = load_saved_config()
     api_key = saved.get("api_key", "")
@@ -2732,7 +2730,6 @@ def cmd_x_session(args) -> int:
 def cmd_connect(args):
     """Connect to AitherOS — detect local LLMs, activate cloud, join mesh."""
     import asyncio
-    import json as _json
 
     # ── Elysium desktop connect shortcut ──
     if getattr(args, "elysium", None):
@@ -3307,13 +3304,13 @@ def cmd_agent(args) -> int:
 
             print(f"Stopping agent '{agent_name}' (pid={pid})...")
             if kill_pid(pid):
-                print(f"[+] Agent stopped.")
+                print("[+] Agent stopped.")
                 # Clean up status
                 del agents[agent_name]
                 status_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
                 return 0
             else:
-                print(f"[-] Failed to stop agent.", file=sys.stderr)
+                print("[-] Failed to stop agent.", file=sys.stderr)
                 return 1
         except Exception as exc:
             print(f"Error stopping agent: {exc}", file=sys.stderr)
@@ -3420,7 +3417,7 @@ def cmd_aeon(args):
     import asyncio
 
     async def _aeon():
-        from adk.aeon import AeonSession, AEON_PRESETS
+        from adk.aeon import AeonSession
 
         preset = args.preset or "balanced"
         custom_agents = args.agents.split(",") if args.agents else None
@@ -3646,7 +3643,6 @@ def _onboard_agent(agent_name: str, tenant_slug: str, args) -> int:
         5. Print fleet dashboard URL
     """
     import asyncio
-    import json as _json
 
     async def _do_onboard():
         from adk.config import load_saved_config
@@ -4263,7 +4259,7 @@ def cmd_enroll(args) -> int:
         no_heartbeat = getattr(args, "no_heartbeat", False)
         force = getattr(args, "force", False)
 
-        from adk.fleet_enroll import enroll_on_boot, _load_node_auth, _generate_node_id
+        from adk.fleet_enroll import enroll_on_boot, _load_node_auth
         from adk.enrollment import build_registration
 
         # FAIL CLOSED ON IDENTITY. `_extract_tenant_slug()` (fleet_enroll.py:217) falls back
@@ -4330,13 +4326,13 @@ def cmd_enroll(args) -> int:
         print()
         print("Node Information:")
         print(f"  ID: {result.get('node_id', 'unknown')}")
-        print(f"  Hardware:")
+        print("  Hardware:")
         print(f"    CPU: {reg.get('cpu_count', 0)} cores")
         print(f"    RAM: {reg.get('ram_mb', 0)} MB")
         if reg.get("gpu_name"):
             print(f"    GPU: {reg['gpu_name']} ({reg.get('gpu_vram_mb', 0)} MB)")
         else:
-            print(f"    GPU: none")
+            print("    GPU: none")
         models_str = ", ".join(reg.get("available_models", []))[:80]
         print(f"  Available Models: {models_str if models_str else 'none'}")
         print()
@@ -4344,7 +4340,7 @@ def cmd_enroll(args) -> int:
         print(f"  Workspace ID: {result.get('workspace_id', 'N/A')}")
         print(f"  Agents Upserted: {result.get('agents_upserted', 0)}")
         if not no_heartbeat:
-            print(f"  Heartbeat: enabled (60s interval)")
+            print("  Heartbeat: enabled (60s interval)")
         print()
         print(f"View in portal: {portal_url.rstrip('/')}/portal/workstation")
         print()
@@ -4827,8 +4823,6 @@ def cmd_host(args):
 
 def cmd_integrate(args):
     """Integrate external tools with AitherOS."""
-    import asyncio
-    import json as _json
 
     target = args.target
 
@@ -5072,7 +5066,6 @@ def _integrate_openclaw(args):
 def cmd_publish(args):
     """Publish an agent to the Elysium marketplace."""
     import asyncio
-    import json as _json
 
     async def _publish():
         project_dir = Path(args.directory or ".").resolve()
@@ -5511,7 +5504,6 @@ def _relay_up(args) -> int:
     """
     import socket
     import subprocess as _sp
-    import secrets as _secrets
 
     # Resolve compose file path
     if getattr(args, "compose_file", None):
@@ -5560,7 +5552,7 @@ def _relay_up(args) -> int:
         f"AITHERNET_FEDERATION={'true' if federation else 'false'}",
         f"RELAY_PORT={port}",
         f"REDIS_PORT={6379}",
-        f"AITHER_LOG_LEVEL=INFO",
+        "AITHER_LOG_LEVEL=INFO",
     ]
     public_endpoint = (getattr(args, "public_endpoint", "")
                        or os.environ.get("AITHERNET_PUBLIC_ENDPOINT", "") or "").strip()
@@ -5635,7 +5627,7 @@ def _relay_up(args) -> int:
     if directory_url:
         print(f"    - Directory:   {directory_url} (auto-registering)")
     print()
-    print(f"  Manage:")
+    print("  Manage:")
     print(f"    - Logs:     docker compose -f {compose_path.name} logs -f relay")
     print(f"    - Stop:     docker compose -f {compose_path.name} down")
     print()
@@ -5699,15 +5691,14 @@ def _relay_provision(args) -> int:
             relay_base = _relay_join_base(args)
             reason = _relay_store_credential(relay_base, nick, agent_key, agent_key, verify)
             if not reason:
-                print(f"  Minted a revocable agent key and stored it in the agent lockbox "
-                      f"(recoverable via relay GET /v1/agent/credential).")
+                print("  Minted a revocable agent key and stored it in the agent lockbox "
+                      "(recoverable via relay GET /v1/agent/credential).")
             else:
                 print(f"  Minted a revocable agent key (lockbox store unavailable [{reason}]; "
                       f"saved to local adk config).")
     if not agent_key:
         agent_key = owner_key
         cred_kind = "reused-login"
-    reused = cred_kind == "reused-login"
 
     # 3) Enroll the nick in the relay fleet-trust roster (write locally if reachable).
     default_roster = os.environ.get("AITHER_RELAY_FLEET_TRUST_FILE", "") or str(
@@ -5743,7 +5734,6 @@ def _relay_provision(args) -> int:
 def _relay_notifications(args) -> int:
     """Get and optionally mark notifications as read."""
     import asyncio
-    import json as _json
     from datetime import datetime, timezone
 
     # Resolve token + base URL (same pattern as relay join)
@@ -6293,7 +6283,7 @@ def cmd_install(args) -> int:
                 desc = info["description"].split("\n")[0]
                 print(f"  {'':20s} {desc[:50]}")
             print()
-        print(f"  Install with: adk install pack:<name>")
+        print("  Install with: adk install pack:<name>")
         print()
         return 0
 
@@ -6826,7 +6816,6 @@ def cmd_voice(args):
 
 def cmd_keys(args):
     """Manage cloud provider API keys."""
-    import json as _json
 
     sub = getattr(args, "keys_command", None)
 
@@ -8564,7 +8553,6 @@ def cmd_tools(args):
     import asyncio
 
     async def _tools():
-        from adk.tools import ToolRegistry
         from adk.builtin_tools import get_builtin_registry
 
         # Local built-in tools
@@ -8768,7 +8756,7 @@ def cmd_ingest(args):
         if brain_sync:
             print(f"  Brain sync: ENABLED (workspace: {workspace_id})")
         else:
-            print(f"  Brain sync: disabled (local only)")
+            print("  Brain sync: disabled (local only)")
         print(f"  Classification: {classification}")
         print(f"  Chunk size: {chunk_size} bytes, overlap: {chunk_overlap} bytes")
 
@@ -8788,7 +8776,7 @@ def cmd_ingest(args):
         # Print summary
         print()
         print("=" * 60)
-        print(f"Ingest Summary")
+        print("Ingest Summary")
         print("=" * 60)
         print(f"Total files scanned:      {result.files_total}")
         print(f"Files ingested:           {result.files_ingested}")
@@ -8802,13 +8790,13 @@ def cmd_ingest(args):
         print(f"Chunks created:           {result.chunks_created}")
         print(f"Chunks embedded:          {result.chunks_embedded}")
         if result.embedding_degraded:
-            print(f"  WARNING: Embedding degraded (fallback dimension)")
+            print("  WARNING: Embedding degraded (fallback dimension)")
         print()
         if brain_sync:
             print(f"Brain sync status:        {'SUCCESS' if result.brain_synced else 'FAILED'}")
             print(f"Chunks synced to hub:     {result.chunks_synced}")
         else:
-            print(f"Brain sync:               disabled")
+            print("Brain sync:               disabled")
         print()
         if result.errors:
             print("Errors encountered:")
@@ -9585,7 +9573,6 @@ def cmd_start(args):
     """Zero-config agent start — index, connect, chat. Works for anyone."""
     import asyncio
     import time as _time
-    import shutil
 
     target = os.path.abspath(args.path or ".")
     project_name = os.path.basename(target)
@@ -9683,7 +9670,7 @@ def cmd_start(args):
     if mem_stats.get("nodes", 0) > 0:
         print(f"  Memory:     {mem_stats['nodes']} memories restored from previous sessions")
     else:
-        print(f"  Memory:     New (will persist across sessions)")
+        print("  Memory:     New (will persist across sessions)")
 
     # ── Step 5: Build agent ─────────────────────────────────────────
     print()
@@ -9901,7 +9888,6 @@ def _resolve_explicit_backend(provider: str = None, model: str = None) -> dict:
 def _detect_llm_backend():
     """Detect available LLM backend. Returns dict with provider info."""
     import shutil
-    import subprocess
 
     # 1. Check for Ollama
     ollama_bin = shutil.which("ollama")
@@ -10158,7 +10144,6 @@ def _connect_elysium(args):
 
 def cmd_admin(args):
     """Administration commands."""
-    import asyncio
 
     admin_cmd = getattr(args, "admin_command", None)
 
@@ -10649,7 +10634,7 @@ async def _jobs_watch(args) -> int:
                 print("  " + "=" * 70)
                 return 0
     except Exception as e:
-        print(f"  Error: Could not watch expedition")
+        print("  Error: Could not watch expedition")
         print(f"         {e}")
         return 1
 
@@ -11512,7 +11497,7 @@ def _cmd_pack(args) -> int:
             pack_dir = result["pack_dir"]
             status = result["status"]
 
-            print(f"✓ Eve agent imported to AitherADK pack!")
+            print("✓ Eve agent imported to AitherADK pack!")
             print()
             print(f"  Pack ID:  {pack_id}")
             print(f"  Location: {pack_dir}")
@@ -13096,7 +13081,7 @@ def _register_commands(sub):
     vault_setup_p = vault_sub.add_parser("setup", help="One-time: seal the vault master key into the OS keychain")
     vault_setup_p.add_argument("--from-env", dest="from_env", action="store_true", help="Import AITHER_INTERNAL_SECRET from .env instead of pasting it")
     vault_setup_p.add_argument("--env-file", dest="env_file", help="Path to the .env holding AITHER_INTERNAL_SECRET")
-    vault_setup_p.add_argument("--url", help=f"Vault base URL (default: from env or 127.0.0.1:8111)")
+    vault_setup_p.add_argument("--url", help="Vault base URL (default: from env or 127.0.0.1:8111)")
     vault_setup_p.add_argument("--pin", action="store_true", help="Also set a PIN that guards value reveals")
     vault_sub.add_parser("status", help="Show setup + reachability + secret count")
     vault_ls_p = vault_sub.add_parser("ls", help="List secret names + metadata (never values)")
@@ -13875,7 +13860,7 @@ def _register_commands(sub):
     eval_pack_p.add_argument(
         "--json", action="store_true", help="Output as JSON"
     )
-    eval_self_p = eval_sub.add_parser(
+    eval_sub.add_parser(
         "self-test", help="Run offline self-test (proves the harness can fail)"
     )
 
@@ -14122,7 +14107,7 @@ def _register_commands(sub):
     wm_p = sub.add_parser("wm", help="World model management (status, inspect, train, reset)")
     wm_sub = wm_p.add_subparsers(dest="wm_command")
 
-    wm_status_p = wm_sub.add_parser("status", help="List all agents with checkpoints")
+    wm_sub.add_parser("status", help="List all agents with checkpoints")
 
     wm_inspect_p = wm_sub.add_parser("inspect", help="Show learned effects for an agent")
     wm_inspect_p.add_argument("agent", help="Agent ID (e.g., agent.aither)")
@@ -14189,7 +14174,6 @@ def _register_commands(sub):
 def cmd_forge(args) -> int:
     """Dispatch a task to Genesis /forge/dispatch with optional streaming."""
     import httpx
-    import json
 
     task = getattr(args, "task", "")
     agent = getattr(args, "agent", "demiurge")
