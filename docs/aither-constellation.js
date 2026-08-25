@@ -30,6 +30,7 @@
     { id: "awrun", label: "awrun", blurb: "A priority-aware queue and dispatcher for..." },
     { id: "awgraph", label: "awgraph", blurb: "A semantic code graph for agents — AST +..." },
     { id: "awgit", label: "awgit", blurb: "Semantic version control on top of git —..." },
+    { id: "awtoll", label: "awtoll", blurb: "What every tool call costs you in context,..." },
     { id: "awseal", label: "awseal", blurb: "Sign an artifact so a stranger can verify it" },
     { id: "awshare", label: "awshare", blurb: "Publish an artifact and fetch it back verified" },
     { id: "awdit", label: "awdit", blurb: "An append-only audit trail whose gaps are..." },
@@ -46,6 +47,7 @@
     { id: "awfind", label: "awfind", blurb: "A portable search client — query, results,..." },
     { id: "awbrowse", label: "awbrowse", blurb: "A portable browser client — navigate,..." },
     { id: "awknowledge", label: "awknowledge", blurb: "How to run a coding agent so the result..." },
+    { id: "gobbonet-agentic", label: "gobbonet-agentic", blurb: "GobboNet campaigns with a real agent brain —..." },
     { id: "aitherkvcache", label: "aitherkvcache", blurb: "Near-optimal KV cache quantization for LLM..." },
     { id: "AitherZero", label: "AitherZero", blurb: "PowerShell 7+ automation framework —..." },
     { id: "AitherConnect", label: "AitherConnect", blurb: "Browser extension — federated AI search, page..." },
@@ -55,6 +57,7 @@
     { id: "awrepl", label: "awrepl", blurb: "A REPL an agent can actually use — state that..." },
     { id: "awresearch", label: "awresearch", blurb: "Ask a research question, get a cited report..." },
     { id: "awpredict", label: "awpredict", blurb: "Predict what your environment does next, and..." },
+    { id: "awsh", label: "awsh", blurb: "Your terminal answers you -- type a question..." },
     { id: "awkno", label: "awkno", blurb: "The man page for the Aither World — every..." }
   ];
 
