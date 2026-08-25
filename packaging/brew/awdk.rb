@@ -58,6 +58,21 @@ class Awdk < Formula
     sha256 "cfa139f3ed1a23ee8f88a145ddb5ac7605b8bbfd8592baacd7ce3d8bb4313c7f"
   end
 
+  resource "awgit" do
+    url "https://files.pythonhosted.org/packages/67/f1/805b7ca6e4b410f79621882719e1ea61315d63859bde63f6b517241c9dc9/awgit-1.10.0.tar.gz"
+    sha256 "6f836369c9d0ce4e8e9f85a8827210854681e5cbb1131817641a3863f95fc333"
+  end
+
+  resource "awgraph" do
+    url "https://files.pythonhosted.org/packages/7b/b3/8fd2c3f816b0d5b2949cde7345a80432076f9b61ac80faec9d7862014643/awgraph-1.4.2.tar.gz"
+    sha256 "f3469859e77bbcd9b3b0db90c7b0dd7e51288dd33c18fef48d11e695efa02a95"
+  end
+
+  resource "awrelay" do
+    url "https://files.pythonhosted.org/packages/ce/f1/043a284568254e22288103c26ac8798cca92c2165139b8ed77114027d01e/awrelay-0.3.1.tar.gz"
+    sha256 "29acbe033474278d240f08eabc5fb2bf3aab7f68774b990571d3abd04688b419"
+  end
+
   resource "certifi" do
     url "https://files.pythonhosted.org/packages/a3/c2/24167ea9858356b47a87a50d39908bfdb72ceeefe0041586e704e5376b3a/certifi-2026.7.22.tar.gz"
     sha256 "741e2c3b351ddf169a738da9f2c048608ff7f2c5cc02f1ebc6b118bb090d5d55"
@@ -66,6 +81,16 @@ class Awdk < Formula
   resource "click" do
     url "https://files.pythonhosted.org/packages/76/d4/81420972a676e8ffea40450d8c8c92943e7218a78fe9b64359836cc9876b/click-8.4.2.tar.gz"
     sha256 "9a6cea6e60b17ebe0a44c5cc636d94f09bd66142c1cd7d8b4cd731c4917a15f6"
+  end
+
+  resource "cryptography" do
+    url "https://files.pythonhosted.org/packages/bb/ad/5d6702db60b1e40b41ef513b6967ff5848f307d50f8449baf1634f5908f1/cryptography-50.0.1.tar.gz"
+    sha256 "5dd9bda1c12b4162f6ff568eeb5e0ff956c28d14406e875cfe8a63a2d414ff20"
+  end
+
+  resource "ddgs" do
+    url "https://files.pythonhosted.org/packages/19/b6/b7f3118a3b0a285f54fb4e1289c39e3cba1944066828aa04af9cf80f878e/ddgs-9.15.0.tar.gz"
+    sha256 "12c4148da66525031214279d3ecb5170778a484f2616cac12667d0824818d07d"
   end
 
   resource "fastapi" do
