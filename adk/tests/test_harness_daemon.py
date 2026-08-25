@@ -56,7 +56,10 @@ def test_health_states_whether_cwd_is_restricted(client):
     assert "cwd_restricted" in client.get("/health").json()
 
 
-@pytest.mark.parametrize("path", ["/harnesses", "/sessions", "/profiles", "/agents"])
+@pytest.mark.parametrize(
+    "path",
+    ["/harnesses", "/sessions", "/profiles", "/agents", "/awrun/queue", "/awrun/status/r-x"],
+)
 def test_every_data_route_denies_without_a_token(client, path):
     assert client.get(path).status_code == 401
 
@@ -217,3 +220,103 @@ def test_cwd_outside_allowed_roots_is_refused(monkeypatch, tmp_path):
     # Unset allowlist means "this host is trusted" — the desktop default.
     monkeypatch.setenv("AITHER_HARNESS_ALLOWED_ROOTS", "")
     assert validate_cwd(os.getcwd()) == os.getcwd()
+
+
+# ── awrun job queue ──────────────────────────────────────────────────────────
+
+@pytest.fixture()
+def awrun_client(tmp_path, monkeypatch):
+    """Isolated queue dir so this suite never touches a real awrun store."""
+    monkeypatch.setenv("AITHER_AWRUN_DIR", str(tmp_path / "awrun"))
+    manager = SessionManager(root=tmp_path / "sessions")
+    app = create_app(manager=manager, token=TOKEN)
+    with TestClient(app) as test_client:
+        yield test_client
+    manager.stop_all()
+
+
+def test_awrun_submit_queue_status_bump_cancel_roundtrip(awrun_client):
+    submitted = awrun_client.post(
+        "/awrun/submit",
+        json={"kind": "ci", "workflow": "deploy.yml", "ref": "develop", "priority": 8},
+        headers=auth(),
+    ).json()
+    assert submitted["priority"] == 8
+    run_id = submitted["id"]
+
+    listed = awrun_client.get("/awrun/queue", headers=auth()).json()["runs"]
+    assert any(r["id"] == run_id for r in listed)
+
+    status = awrun_client.get(f"/awrun/status/{run_id}", headers=auth()).json()
+    assert status["id"] == run_id
+
+    bumped = awrun_client.post(
+        f"/awrun/bump/{run_id}", json={"priority": 10}, headers=auth(),
+    ).json()
+    assert bumped["priority"] == 10
+
+    cancelled = awrun_client.post(f"/awrun/cancel/{run_id}", headers=auth()).json()
+    assert cancelled["status"] == "cancelled"
+
+
+def test_awrun_status_malformed_id_returns_clean_error_not_500(awrun_client):
+    r = awrun_client.get("/awrun/status/not-a-real-id", headers=auth())
+    assert r.status_code == 200
+    assert "error" in r.json()
+
+
+def test_awrun_submit_comet_deploy_is_refused_at_the_route(awrun_client):
+    """The route-level fail-closed check, not queue_submit's own gate: this
+    proves the daemon never reaches AITHER_SESSION_BEARER resolution for
+    comet-deploy through THIS route at all, regardless of what the daemon
+    process's own environment happens to hold. See the comment on
+    awrun_submit in daemon.py for why forwarding a session bearer here would
+    be a caller-identity mismatch, not a caller-derived decision."""
+    r = awrun_client.post(
+        "/awrun/submit",
+        json={"kind": "comet-deploy", "service_name": "whatever"},
+        headers=auth(),
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert "error" in body
+    assert "comet-deploy" in body["error"]
+    assert "daemon" in body["error"].lower()
+
+
+def test_awrun_submit_comet_deploy_refused_even_with_a_genuinely_valid_stray_bearer(
+    awrun_client, monkeypatch,
+):
+    """The specific failure mode this route-level check exists to prevent —
+    and proves it against a bearer that would ACTUALLY be honoured, not one
+    that merely looks stray. A prior version of this test set a nonsense
+    token and observed a refusal; that refusal came from
+    authz.resolve_session() correctly rejecting garbage, not from the
+    route-level guard, so the test passed for the wrong reason even with
+    the guard deleted (caught by mutation-testing the guard: removing it
+    left this "stray token" version still green). Here resolve_session and
+    check_permission are patched to return a GENUINE affirmative — proving
+    that WITHOUT the route-level guard, this exact request would actually
+    succeed and authorize as a session the real caller of this HTTP request
+    never presented. The guard is what stands between that and this."""
+    from awbac import Decision
+    from awrun import authz
+
+    monkeypatch.setattr(authz, "resolve_session", lambda token: "some-other-identity")
+    monkeypatch.setattr(
+        authz, "check_permission",
+        lambda subject_id, permission="": Decision(
+            allowed=True, reason="test-authorized", via="test"),
+    )
+    monkeypatch.setenv("AITHER_SESSION_BEARER", "a-bearer-that-would-genuinely-resolve")
+
+    r = awrun_client.post(
+        "/awrun/submit",
+        json={"kind": "comet-deploy", "service_name": "whatever"},
+        headers=auth(),
+    )
+    body = r.json()
+    assert "error" in body
+    assert "comet-deploy" in body["error"]
+    assert "daemon" in body["error"].lower()
+    assert "id" not in body, "a real submit would have returned a run id — this must never"

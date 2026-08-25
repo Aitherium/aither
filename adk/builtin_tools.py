@@ -1930,7 +1930,19 @@ def queue_status(run_id: str) -> str:
     store = _queue_store()
     if store is None:
         return json.dumps({"error": "awrun not available", "fix": "pip install awdk[queue]"})
-    item = store.get(run_id)
+    try:
+        item = store.get(run_id)
+    except Exception as exc:
+        # store.get() -> _locate() -> _validate_id() RAISES RunError on a
+        # malformed id instead of returning None (unlike a merely-absent,
+        # well-formed one, which IS a clean None). queue_bump/queue_cancel
+        # already catch this; this function did not, so a malformed id
+        # crashed the whole call with an unhandled exception instead of the
+        # same clean {"error": ...} every other outcome here returns. Caught
+        # live wiring the harness daemon's /awrun/status/{run_id} route,
+        # which is exactly the caller that types a run_id straight from a
+        # human/agent, malformed or not.
+        return json.dumps({"error": str(exc)})
     if item is None:
         return json.dumps({"error": f"no such run: {run_id}"})
     return json.dumps(item.to_dict(), default=str)

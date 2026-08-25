@@ -815,3 +815,42 @@ class TestShellExecDecoding:
         res = json.loads(bt.shell_exec(cmd))
         assert "error" not in res or res.get("exit_code") == 0, res
         assert "ok" in (res.get("stdout") or res.get("output") or json.dumps(res))
+
+
+class TestQueueTools:
+    """awrun-backed queue_* wrappers (TOOL_CATEGORIES['queue'], awdk[queue]).
+    Isolated to a temp AITHER_AWRUN_DIR so this never touches a real queue."""
+
+    @pytest.fixture(autouse=True)
+    def isolated_queue_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AITHER_AWRUN_DIR", str(tmp_path / "awrun"))
+        yield
+
+    def test_queue_status_malformed_id_returns_clean_error(self):
+        """Regression for a real bug found live 2026-08-24 wiring the harness
+        daemon's /awrun/status/{run_id} route: store.get() -> _locate() ->
+        _validate_id() RAISES RunError on a malformed id instead of returning
+        None, and queue_status did not catch it (unlike queue_bump/
+        queue_cancel, which already do) — a malformed run_id crashed the
+        whole call with an unhandled exception instead of the same clean
+        {"error": ...} every other outcome of this function returns."""
+        res = json.loads(bt.queue_status("not-a-real-id"))
+        assert "error" in res
+        assert "not-a-real-id" in res["error"]
+
+    def test_queue_status_roundtrip(self):
+        submitted = json.loads(bt.queue_submit(
+            "ci", priority=8, workflow="deploy.yml", ref="develop",
+        ))
+        assert "id" in submitted
+        status = json.loads(bt.queue_status(submitted["id"]))
+        assert status["id"] == submitted["id"]
+        assert status["priority"] == 8
+        assert status["status"] == "queued"
+
+    def test_queue_bump_and_cancel(self):
+        submitted = json.loads(bt.queue_submit("ci", priority=1, workflow="x.yml"))
+        bumped = json.loads(bt.queue_bump(submitted["id"], 10))
+        assert bumped["priority"] == 10
+        cancelled = json.loads(bt.queue_cancel(submitted["id"]))
+        assert cancelled["status"] == "cancelled"

@@ -360,6 +360,30 @@ if BaseModel is not None:
         status: str  # "pending" | "approved" | "denied" | "expired"
         expires_at: float  # Unix timestamp
 
+    class SubmitRun(BaseModel):  # type: ignore[misc]
+        """Body for POST /awrun/submit — see adk.builtin_tools.queue_submit for
+        the field meaning per kind ("agent" needs task+agent, "ci" needs
+        workflow, "comet-deploy" needs service_name and is trust-plane gated
+        inside awrun itself, not here). Module level for the same
+        ``from __future__ import annotations`` reason as every model above.
+        """
+
+        kind: str
+        priority: int = 0
+        paths: list[str] = Field(default_factory=list)
+        task: str = ""
+        agent: str = ""
+        adk_args: list[str] = Field(default_factory=list)
+        workflow: str = ""
+        ref: str = ""
+        inputs: dict[str, Any] = Field(default_factory=dict)
+        service_name: str = ""
+        target: str = ""
+        spec: dict[str, Any] = Field(default_factory=dict)
+
+    class BumpRun(BaseModel):  # type: ignore[misc]
+        priority: int
+
 
 def create_app(manager: Optional[SessionManager] = None, token: str = ""):
     """Build the FastAPI app. Raises if no token can be resolved (fail-closed)."""
@@ -623,6 +647,80 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
         from adk.harnesses.agents import AGENT_ROSTER
 
         return {"agents": AGENT_ROSTER}
+
+    # ── awrun job queue (AWS-runner / CI / agent-run priority control) ─────────
+    # Reuses adk.builtin_tools' existing queue_submit/queue_list/queue_status/
+    # queue_bump/queue_cancel wrappers rather than talking to awrun.store
+    # directly — those already carry the awrun[queue]-missing degradation
+    # (returns {"error": "awrun not available", ...} instead of raising) and,
+    # for kind="comet-deploy", the trust-plane gate (awrun.authz: resolves
+    # AITHER_SESSION_BEARER, checks a permission, writes an awdit record).
+    # Reimplementing against RunStore here would either drop that gate or
+    # duplicate it out of step with the ADK tool version. Errors come back as
+    # {"error": ...} in a 200 body — the same convention those wrappers
+    # already use — rather than an HTTPException, since "awrun not installed"
+    # and "no such run id" are domain answers, not transport failures.
+
+    @app.post("/awrun/submit", dependencies=[Depends(auth)])
+    def awrun_submit(body: SubmitRun) -> dict[str, Any]:
+        # kind="comet-deploy" is refused HERE, before reaching queue_submit,
+        # not merely documented as unsupported. queue_submit's trust-plane
+        # gate resolves AITHER_SESSION_BEARER from os.environ — the DAEMON
+        # PROCESS's own environment, since it was written for the ADK-tool
+        # call path where the caller and the process are the same identity.
+        # This HTTP route breaks that assumption: the daemon authenticates
+        # ONE shared bearer token per `Depends(auth)`, not a distinct
+        # session per caller, so there is no per-request identity here to
+        # correctly forward into AITHER_SESSION_BEARER. Passing kind=
+        # comet-deploy through unchanged would silently authorize as
+        # whatever session (if any) happens to be set in the daemon
+        # process's own environment — an identity NOT derived from the
+        # actual caller of this route — the payload-derived-identity trap —
+        # for the one kind that spends real money. Fail closed until the
+        # daemon's auth model carries per-caller identity to forward.
+        if body.kind == "comet-deploy":
+            return {
+                "error": "comet-deploy is not available through the harness daemon's "
+                         "/awrun/submit route — its trust-plane gate authorizes against "
+                         "the daemon PROCESS's own AITHER_SESSION_BEARER, not the caller "
+                         "of this HTTP request, and the daemon has no per-caller session "
+                         "identity to forward correctly. Use `awrun submit --kind "
+                         "comet-deploy` (or the ADK tool) directly on the machine holding "
+                         "the session, where the caller and the process are the same.",
+            }
+        from adk.builtin_tools import queue_submit
+
+        return json.loads(queue_submit(
+            body.kind, priority=body.priority, paths=body.paths or None,
+            task=body.task, agent=body.agent, adk_args=body.adk_args or None,
+            workflow=body.workflow, ref=body.ref, inputs=body.inputs or None,
+            service_name=body.service_name, target=body.target, spec=body.spec or None,
+        ))
+
+    @app.get("/awrun/queue", dependencies=[Depends(auth)])
+    def awrun_queue(kind: str = Query(default=""),
+                     include_closed: bool = Query(default=False)) -> dict[str, Any]:
+        from adk.builtin_tools import queue_list
+
+        return {"runs": json.loads(queue_list(kind=kind, include_closed=include_closed))}
+
+    @app.get("/awrun/status/{run_id}", dependencies=[Depends(auth)])
+    def awrun_status(run_id: str) -> dict[str, Any]:
+        from adk.builtin_tools import queue_status
+
+        return json.loads(queue_status(run_id))
+
+    @app.post("/awrun/bump/{run_id}", dependencies=[Depends(auth)])
+    def awrun_bump(run_id: str, body: BumpRun) -> dict[str, Any]:
+        from adk.builtin_tools import queue_bump
+
+        return json.loads(queue_bump(run_id, body.priority))
+
+    @app.post("/awrun/cancel/{run_id}", dependencies=[Depends(auth)])
+    def awrun_cancel(run_id: str) -> dict[str, Any]:
+        from adk.builtin_tools import queue_cancel
+
+        return json.loads(queue_cancel(run_id))
 
     # ── decision cards ────────────────────────────────────────────────────────
     # The card store is on local disk, but the DAEMON is what makes it reachable
