@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 
 from adk.config import load_saved_config, save_saved_config
+from adk.images import cmd_image
 
 
 def _fix_ollama_host(raw: str) -> str:
@@ -514,8 +515,6 @@ def cmd_workspace(args):
             "veil": "AitherVeil + all packages",
             "portal": "AitherVeil + awkit + desktop-core",
             "node": "awnode (standalone + monorepo)",
-            "connect": "AitherConnect",
-            "node": "AitherNode (standalone + monorepo)",
             "connect": "Awconnect",
             "shell": "AitherShell (standalone + monorepo)",
             "adk": "awdk (this package)",
@@ -12131,6 +12130,25 @@ def _register_commands(sub):
     run_p.add_argument("--mesh", action="store_true",
                        help="Enable mesh hosting (advertise tools/inference to connected desktop)")
 
+    # adk image — generate on local backends (ComfyUI/Sana/SD.Next). The handler
+    # lives in adk/images.py (cmd_image) so the daemon and the CLI share one
+    # implementation; this was the wiring the local-image-generation skill
+    # advertised for months while nothing registered it (ONB006, 2026-08-25).
+    image_p = sub.add_parser(
+        "image", help="Generate an image on a local backend (ComfyUI/Sana/SD.Next)")
+    image_p.add_argument("--backends", action="store_true",
+                         help="list which lanes can actually generate")
+    image_p.add_argument("prompt", nargs="*", help="what to draw")
+    image_p.add_argument("--width", type=int, default=768)
+    image_p.add_argument("--height", type=int, default=768)
+    image_p.add_argument("--steps", type=int, default=20)
+    image_p.add_argument("--cfg", type=float, default=6.0)
+    image_p.add_argument("--seed", type=int, default=None)
+    image_p.add_argument("--model", default="", help="checkpoint to use")
+    image_p.add_argument("--backend", default="", help="force a lane id")
+    image_p.add_argument("--negative", default="")
+    image_p.add_argument("--out", default="", help="output PNG path")
+
     # adk up — one command: run a persistent, fleet-connected agent
     up_p = sub.add_parser(
         "up", help="Run a persistent agent connected to your AitherOS fleet (one command)")
@@ -14721,6 +14739,8 @@ def main():
         sys.exit(cmd_new(args))
     elif args.command == "run":
         cmd_run(args)
+    elif args.command == "image":
+        cmd_image(args)
     elif args.command == "up":
         sys.exit(cmd_up(args))
     elif args.command == "sandbox":
@@ -14888,9 +14908,6 @@ def main():
     elif args.command == "doctor":
         from adk.doctor import cmd_doctor
         sys.exit(cmd_doctor(args))
-    elif args.command == "image":
-        from adk.images import cmd_image
-        sys.exit(cmd_image(args))
     elif args.command == "gobbonet":
         from adk.packs.gobbonet.launch import cmd_gobbonet
         sys.exit(cmd_gobbonet(args))
