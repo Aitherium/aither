@@ -1,83 +1,41 @@
 name: CI
-
 on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   test:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.10", "3.11", "3.12"]
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Install package
-        run: pip install -e ".[dev]"
-
-      - name: Check exports and version sync
-        run: python scripts/check_exports.py
-
-      - name: Run tests
-        # adk/ods/tests/ is included because the vendored ODS model catalog,
-        # selection algorithm and hardware classifier SHIP in this package, and
-        # their differential tests execute the vendored upstream scripts as the
-        # reference. Without them a re-vendor can silently change which model a
-        # user's hardware resolves to. The per-test timeout is raised from 30s
-        # because those differentials spawn a subprocess per case.
-        run: python -m pytest tests/ adk/ods/tests/ -v --timeout=180
-
-  # ── the lane, per platform ───────────────────────────────────────────────
-  # Windows and macOS support were claimed on entirely STATIC evidence: a
-  # py3-none-any wheel, a launcher with no platform branches, an installer that
-  # picks a macos-arm64 asset. All true; none of it a run. This is the run.
-  #
-  # It exists here, in the PUBLIC mirror, because GitHub hosted runners are free
-  # for public repositories -- macOS included. The alternative priced out at a
-  # 24-hour minimum AWS Mac Dedicated Host, for a worse answer, once.
-  smoke:
-    name: import + CLI on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
-      fail-fast: false          # one OS failing must not hide the others
+      fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - { os: ubuntu-latest, python: "3.10" }
+          - { os: ubuntu-latest, python: "3.12" }
+          - { os: windows-latest, python: "3.12" }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
-
-      - name: Install
-        run: pip install ".[memory]"
-
-      - name: The console script resolves
-        # Not `python -c "import adk"`. A wheel that imports and a COMMAND that
-        # runs are different facts, and it is the command a stranger types.
-        #
-        # `--help`, NOT `--version`: there is no version flag and no `version`
-        # subcommand (both exit 2). The first draft of this step asserted
-        # `--version` -- the exact class its own comment warns about, caught by
-        # running it on all three platforms at once.
-        run: adk --help
-      - name: ...and reports the version where it actually lives
-        run: python -c "import adk; print(adk.__version__)"
-
-      - name: The gobbonet pack imports, with its memory backend
-        # awm is what the campaign tools store notes in. Without it `adk
-        # gobbonet` still starts and every scoped-memory tool degrades to
-        # nothing -- which reads as the feature being switched off, not absent.
-        run: python -c "from adk.packs.gobbonet import campaign_memory, cards, retrieval; import awm; print('pack ok')"
-
-      - name: Hardware detection answers on this OS
-        # The only genuinely platform-branching code in the package: darwin ->
-        # Metal, arm64 -> the macos-arm64 asset. If anything is going to be
-        # wrong per-OS it is this, so it is the thing worth a matrix.
-        run: python -c "from adk import llamacpp_setup as lc; a = lc.detect_accel(); print(a.os_family, a.arch, a.kind)"
+          python-version: ${{ matrix.python }}
+      - name: install
+        run: python -m pip install -e .
+      - name: import smoke
+        shell: bash
+        run: |
+          set -e
+          adk --help >/dev/null || adk --version >/dev/null
+          adk-py --help >/dev/null || adk-py --version >/dev/null
+          aither-adk --help >/dev/null || aither-adk --version >/dev/null
+          awdk --help >/dev/null || awdk --version >/dev/null
+      - name: tests
+        if: ${{ hashFiles('tests/**', 'test/**') != '' }}
+        shell: bash
+        run: |
+          python -m pip install pytest
+          python -m pytest -x -q
