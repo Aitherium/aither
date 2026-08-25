@@ -22,6 +22,7 @@ _TOOL_NAMES = [
     "imagegen_apply",
     "imagegen_register_backend",
     "imagegen_verify",
+    "imagegen_setup",
 ]
 
 

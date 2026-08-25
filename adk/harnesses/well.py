@@ -52,8 +52,8 @@ slow or the lease store is missing is worse than one that errors: the caller can
 "nothing is happening" from "I could not look", and that ambiguity is the exact failure
 class this whole subsystem exists to end. `sources` is part of the contract, not debug.
 
-PQ010
------
+Blocking I/O and the event loop
+-------------------------------
 Everything here is blocking I/O — subprocess, file reads, directory walks. It runs on a
 dedicated thread and the HTTP handler only ever reads an already-built dict. A blocking
 call on the event loop is not "slow", it is an outage for every concurrent request for

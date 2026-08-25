@@ -8,7 +8,7 @@ and the lines it missed are still on disk when it comes back.
 
 WHY A THREAD, NOT AN ASYNC TASK
 -------------------------------
-Directory scans and file reads are blocking syscalls. PQ010 exists because a blocking
+Directory scans and file reads are blocking syscalls. This matters because a blocking
 call on the event loop is not "slow", it is an outage for every concurrent request for
 its full duration — a class root-caused four times in this codebase. So the tailer runs
 on its own daemon thread and only touches the room registry, which is itself

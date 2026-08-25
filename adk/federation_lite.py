@@ -1,6 +1,6 @@
 """Lightweight federation client for sovereign ADK agents.
 
-Protocol-compatible with ``AitherOS/lib/core/FederationClient.py`` but with
+Protocol-compatible with the platform's full federation client, but with
 zero AitherOS dependencies.  Uses ``httpx`` (already an ADK core dep) and
 optionally ``cryptography`` for Ed25519 request signing.
 

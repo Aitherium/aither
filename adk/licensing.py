@@ -3,7 +3,7 @@
 This module is the single source of truth for what a locally-installed
 ``awdk`` runtime is allowed to do **without** phoning home.  It is
 deliberately shipped in the published PyPI wheel (unlike the internal moat at
-``AitherOS/packages/aither_adk``) and contains **no secrets** — only a public
+the platform's packages tree) and contains **no secrets** — only a public
 verification key.  The portal signs entitlements with its private key; this
 module merely *verifies* them.
 

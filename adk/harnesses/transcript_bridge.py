@@ -20,7 +20,7 @@ of this existed, which a hook can never do.
 
 THREADS, NOT THE EVENT LOOP
 ---------------------------
-Discovery probes processes and reads files. PQ010: a blocking call inside a coroutine
+Discovery probes processes and reads files. A blocking call inside a coroutine
 is not "slow", it is an outage for every concurrent request for its full duration. This
 runs on its own daemon thread, exactly like ``session_directory``'s own I/O.
 """

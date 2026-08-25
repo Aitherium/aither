@@ -1,6 +1,6 @@
 """Admin-console bridge to the AitherOS ISO Factory.
 
-The ISO Factory lives in the monorepo at ``.DEPLOYMENT/factory`` — OUTSIDE the adk
+The ISO Factory lives in the platform repository, OUTSIDE the adk
 wheel — so ``admin_api`` cannot import it. This module exposes bearer-gated
 ``/admin/factory/*`` routes that shell out to the factory CLI (``python -m
 factory.cli … --json``) and relay the JSON, crossing the packaging boundary
@@ -38,7 +38,7 @@ def _find_factory_dir() -> Optional[Path]:
     if override:
         p = Path(override)
         return p if (p / "factory" / "cli.py").exists() else None
-    # Walk up from this file looking for .DEPLOYMENT/factory (monorepo layout).
+    # Walk up from this file looking for the factory directory (platform layout).
     for base in Path(__file__).resolve().parents:
         cand = base / ".DEPLOYMENT"
         if (cand / "factory" / "cli.py").exists():

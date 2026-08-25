@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 
 from . import tools
@@ -62,6 +63,20 @@ def _handle_verify(args) -> dict:
         base_url=args.base_url,
         backend_type=args.backend_type,
         timeout_s=args.timeout,
+    )
+
+
+def _handle_setup(args) -> dict:
+    return tools.imagegen_setup(
+        prefer_engine=args.prefer_engine,
+        recipe_id=args.recipe_id,
+        tenant=args.tenant,
+        host_port=args.host_port,
+        network=args.network,
+        genesis_url=args.genesis_url,
+        token=os.getenv("AITHER_TOKEN", ""),
+        register=not args.no_register,
+        dry_run=args.dry_run,
     )
 
 
@@ -127,6 +142,28 @@ def main() -> int:
     )
     verify_p.add_argument("--timeout", type=float, default=60.0, help="timeout in seconds")
     verify_p.set_defaults(handler=_handle_verify)
+
+    # ONE COMMAND. Every step below already existed and worked; what did not exist
+    # was a way to run them without being the person who wrote them -- detect,
+    # resolve, plan and apply were separate verbs, each needing a --recipe-id you
+    # could only get by reading the previous one's output. Measured against the real
+    # ask: someone vibe-coded their own ComfyUI mod rather than find this.
+    setup_p = subparsers.add_parser(
+        "setup", help="ONE COMMAND: detect -> resolve -> apply -> verify -> register")
+    setup_p.add_argument("--prefer-engine", default="auto",
+                         help="tiebreaker: comfyui | sana (not a hard gate)")
+    setup_p.add_argument("--recipe-id", default="",
+                         help="skip resolution and use this recipe")
+    setup_p.add_argument("--host-port", type=int, default=0,
+                         help="host port to publish (avoids clashing with an existing engine)")
+    setup_p.add_argument("--tenant", default="", help="tenant for private model resolution")
+    setup_p.add_argument("--network", default="", help="container network to join")
+    setup_p.add_argument("--genesis-url", default="", help="Genesis URL for registration")
+    setup_p.add_argument("--no-register", action="store_true",
+                         help="skip fleet registration (it is skipped anyway without a token)")
+    setup_p.add_argument("--dry-run", action="store_true",
+                         help="plan only; nothing is executed")
+    setup_p.set_defaults(handler=_handle_setup)
 
     args = parser.parse_args()
 

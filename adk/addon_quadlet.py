@@ -47,7 +47,7 @@ def _podman() -> str:
 def render_quadlet(manifest: Dict[str, Any]) -> str:
     """Render a Podman Quadlet ``.container`` unit from an addon manifest.
 
-    Reuses the conventions of .DEPLOYMENT/standalone/systemd/generate-units.py
+    Reuses the conventions of the platform's systemd unit generator
     (Network/health/deps), driven by the addon manifest schema (image,
     default_port, env_defaults, volumes, health_check, dependencies).
     """

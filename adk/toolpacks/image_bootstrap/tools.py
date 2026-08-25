@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import subprocess
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -175,6 +176,13 @@ def _downloads_reachability_note(downloads: list) -> str:
     )
 
 
+#: How long the fleet resolver gets before the public one answers instead. Chosen
+#: from measurement, not taste: a healthy fleet resolve is well under a second, and
+#: the pathological case observed was >110s. Anything in between is still a bad
+#: experience for a command whose whole point is being easy.
+_FLEET_RESOLVE_TIMEOUT_S = 8.0
+
+
 def _resolve_model_downloads(profile: str, tenant: str = "") -> tuple:
     """Best-effort resolve a ComfyUI model profile to AITHER_MODEL_DOWNLOADS.
 
@@ -192,18 +200,80 @@ def _resolve_model_downloads(profile: str, tenant: str = "") -> tuple:
     """
     if not profile:
         return "", ""
-    try:
-        from lib.compute.comfyui_models import to_downloads  # type: ignore
+    # THE FLEET RESOLVER IS BOUNDED, because it can HANG. It presigns MinIO URLs,
+    # which reads credentials from the AitherSecrets vault and talks to the object
+    # store -- measured 2026-08-24 on the fleet box, `to_downloads('studio')` did not
+    # return within 110s, and that is what made `imagegen_plan_deployment` take over
+    # two minutes. An unbounded call here is worse than no call: `setup` appears to
+    # hang, and a setup command that appears to hang is one nobody runs twice.
+    #
+    # A thread rather than signal.alarm: this runs on Windows too, where alarm does
+    # not exist, and inside a server thread where it would not be the main thread.
+    # The worker is left to finish on its own if it is merely slow -- it writes to a
+    # list nobody reads after the timeout, so a late arrival cannot corrupt the
+    # answer we already returned.
+    fleet_result: list = []
 
-        downloads = to_downloads(profile) if not tenant else to_downloads(profile, tenant)
+    def _fleet() -> None:
+        try:
+            from lib.compute.comfyui_models import to_downloads  # type: ignore
+            fleet_result.append(
+                to_downloads(profile) if not tenant else to_downloads(profile, tenant))
+        except Exception as exc:  # noqa: BLE001 — absent off-fleet is EXPECTED
+            logger.debug("comfyui_models resolver unavailable (%s)", exc)
+
+    t = threading.Thread(target=_fleet, daemon=True, name="imagegen-fleet-resolve")
+    t.start()
+    t.join(timeout=_FLEET_RESOLVE_TIMEOUT_S)
+    if fleet_result and fleet_result[0]:
+        downloads = fleet_result[0]
         return json.dumps(downloads), _downloads_reachability_note(downloads or [])
-    except Exception as e:  # noqa: BLE001 — resolver absent off-fleet is EXPECTED
-        logger.debug("comfyui_models resolver unavailable (%s)", e)
+    if t.is_alive():
+        logger.info("fleet model resolver still running after %ss; using public sources",
+                    _FLEET_RESOLVE_TIMEOUT_S)
+
+    # OFF-FLEET IS THE NORMAL CASE, NOT AN ERROR. `lib.compute.comfyui_models` is a
+    # monorepo module that awdk does not ship, so for every stranger who
+    # `pip install awdk`s this branch is the ONLY branch -- and it used to return an
+    # empty list plus a note saying the container "will start with NO models". The
+    # one command that exists to make image generation self-service therefore
+    # installed ComfyUI with nothing in it, honestly reported and completely useless.
+    # That is gate 1i's UNSHIPPED IMPORT class: not a disclosure, a BROKEN tool that
+    # reads as authoritative.
+    #
+    # `public_models` ships WITH the wheel and resolves the same profile to public
+    # HuggingFace / CivitAI URLs. Measured 2026-08-24 on `studio`: 19 of 20 resolve,
+    # and the one that cannot (detail_tweaker_xl, source `strata` with no
+    # `public_ref`) is NAMED in the note rather than dropped -- a silently short list
+    # is exactly how "installed ComfyUI" becomes "installed ComfyUI that generates
+    # nothing".
+    try:
+        from .public_models import ProfileUnavailableError
+        from .public_models import to_downloads as _public
+        downloads, unavailable = _public(profile)
+        if not downloads:
+            return "", (f"model profile {profile!r} resolved to NO public downloads — "
+                        "refusing to report an empty list as success")
+        note = (f"resolved {len(downloads)} model(s) from PUBLIC sources "
+                "(HuggingFace/CivitAI); the fleet resolver was not importable, which "
+                "is normal off-fleet.")
+        if unavailable:
+            note += (" NOT included, no public source: "
+                     + ", ".join(u["model"] for u in unavailable)
+                     + " — ComfyUI will start without these and imagegen_verify will "
+                       "still pass on the rest.")
+        return json.dumps(downloads), note
+    except ProfileUnavailableError as pe:
+        return "", (f"model profile {profile!r} could not be read: {pe}. The container "
+                    "would start with NO models, so this is reported rather than "
+                    "letting an empty list look like success.")
+    except Exception as pe:  # noqa: BLE001
+        logger.debug("public model resolver failed (%s)", pe)
         return "", (
-            f"model profile {profile!r} was NOT resolved to download URLs — the fleet "
-            "resolver (lib.compute.comfyui_models) is not importable here. The container "
-            "will start with NO models. Set AITHER_MODEL_DOWNLOADS yourself, or run this "
-            "on a box with the AitherOS lib available, then re-check imagegen_verify."
+            f"model profile {profile!r} was NOT resolved to download URLs — neither the "
+            f"fleet resolver nor the bundled public one worked ({type(pe).__name__}). "
+            "The container will start with NO models. Set AITHER_MODEL_DOWNLOADS "
+            "yourself, then re-check imagegen_verify."
         )
 
 
@@ -498,8 +568,15 @@ def imagegen_plan_deployment(
 def _run(cmd: list, timeout: int = 1800) -> tuple:
     """Run a command; return (rc, tail_of_output). Never raises."""
     try:
+        # encoding= is NOT optional (PQ009). Without it the child's output is decoded
+        # with the LOCALE codec -- cp1252 on Windows -- and a single non-ASCII byte
+        # from docker raises UnicodeDecodeError. That is a ValueError, which the
+        # OSError/SubprocessError guard below does NOT catch, so the tool crashes
+        # instead of reporting a failed deploy. This sits on the one-command `setup`
+        # path, i.e. the first thing a stranger runs.
         proc = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout, check=False
+            cmd, capture_output=True, text=True, timeout=timeout, check=False,
+            encoding="utf-8", errors="replace",
         )
         out = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
         return proc.returncode, out[-2000:]
@@ -869,3 +946,183 @@ def imagegen_verify(
             "error": f"verification failed: {e}",
             "fix": "check backend URL and service health",
         }
+
+
+# ── one command ──────────────────────────────────────────────────────────────
+
+#: What to hand a person once a backend is really serving. Kept as data next to the
+#: code that earns it, because "it works now" with no next step is how a working
+#: backend still ends in "how do I use this".
+GOBBONET_MOD_URLS = (
+    "https://aitherium.com/gobbonet/image-renderer.js",
+    "https://aitherium.com/gobbonet/image-renderer.css",
+)
+
+
+def imagegen_setup(
+    prefer_engine: str = "auto",
+    recipe_id: str = "",
+    tenant: str = "",
+    host_port: int = 0,
+    network: str = "",
+    genesis_url: str = "",
+    token: str = "",
+    register: bool = True,
+    dry_run: bool = False,
+) -> dict:
+    """Stand up image generation in ONE call: detect -> resolve -> plan -> apply ->
+    verify -> register, and finish by naming how to use it.
+
+    WHY THIS EXISTS. Every step below already existed and worked; what did not exist
+    was a way to run them without being the person who wrote them. The CLI exposed
+    `detect`, `resolve`, `plan` and `apply` as separate subcommands, each needing a
+    `--recipe-id` you could only get by reading the previous one's output -- so
+    "automated setup" still meant eight commands and a copy-paste. Measured against
+    the actual ask: a community member vibe-coded their own ComfyUI mod rather than
+    find this. That is the tooling's failure, not theirs.
+
+    IT IS IDEMPOTENT, AND ALREADY-SERVING IS A SUCCESS. Re-running must be safe, or
+    nobody re-runs it and every failure becomes a fresh manual repair. If the backend
+    the recipe names is already healthy, this reports that and deploys nothing.
+
+    IT RE-ASSERTS AFTER ACTING. `imagegen_verify` is called AFTER apply, and a
+    `degraded` result -- ComfyUI answering 200 with zero checkpoints -- is a FAILURE
+    here, not a pass. That distinction is the whole reason verify exists: health alone
+    is not proof, and a backend that is up and empty generates nothing while looking
+    perfect.
+
+    REGISTRATION IS OPTIONAL AND NEVER FATAL. It needs a Genesis token that a
+    self-hosting stranger does not have and does not need: their backend works
+    locally either way. A missing token SKIPS the step with a reason rather than
+    failing a setup that otherwise succeeded -- fail-closed on authorization, not on
+    usefulness.
+
+    Returns {ok, stage, steps, backend, mod_urls, ...}. `stage` names where it
+    stopped, so a failure says which step rather than just "setup failed".
+    """
+    steps: list = []
+
+    def _step(name: str, result: dict, fatal: bool = True) -> bool:
+        entry = {"step": name, "ok": "error" not in result}
+        if "error" in result:
+            entry["error"] = result["error"]
+            if result.get("fix"):
+                entry["fix"] = result["fix"]
+        steps.append(entry)
+        return not (fatal and "error" in result)
+
+    # 1. Which recipe. Resolution runs detection internally, but detect is reported
+    #    separately because "what did it think my hardware was" is the first question
+    #    anyone asks when the answer surprises them.
+    hw = imagegen_detect_hardware()
+    _step("detect_hardware", hw, fatal=False)
+
+    resolved = imagegen_resolve_recipe(prefer_engine=prefer_engine, recipe_id=recipe_id)
+    if not _step("resolve_recipe", resolved):
+        return {"ok": False, "stage": "resolve_recipe", "steps": steps,
+                "hardware": hw if "error" not in hw else None}
+
+    recipe = resolved.get("recipe") or {}
+    rid = recipe.get("id") or recipe_id
+    engine = (recipe.get("engine") or "comfyui").lower()
+
+    # 2. ALREADY SERVING? Ask FIRST, and take the port from the RECIPE rather than
+    #    from a plan.
+    #
+    #    Ordering measured, not guessed. The first cut planned first (the plan is pure,
+    #    so it looked like the tidy way to learn the port) and the already-serving path
+    #    then cost **over two minutes** -- `imagegen_plan_deployment` resolves model
+    #    downloads and probes their reachability over the network. That is the WRONG
+    #    two minutes: it is the most common path, it is the one where nothing needs to
+    #    happen, and a setup command that appears to hang is one nobody runs twice.
+    #    The recipe already carries `deployment.port`, so the plan was never needed to
+    #    learn it.
+    port = host_port or (recipe.get("deployment") or {}).get("port") or 8188
+    base_url = f"http://localhost:{port}"
+
+    pre = imagegen_verify(base_url=base_url, backend_type=engine)
+    if pre.get("status") == "healthy":
+        steps.append({"step": "verify_existing", "ok": True,
+                      "note": f"{engine} already serving at {base_url} with "
+                              f"{pre.get('model_count', 0)} model(s) - deployed nothing"})
+        return _finish(True, "already_serving", steps, base_url, engine, pre,
+                       rid, register, genesis_url, token)
+
+    # 3. Only NOW is the plan worth its cost -- we know we are going to deploy.
+    plan = imagegen_plan_deployment(recipe_id=rid, tenant=tenant,
+                                    host_port=host_port, network=network)
+    if not _step("plan_deployment", plan):
+        return {"ok": False, "stage": "plan_deployment", "steps": steps, "recipe": rid,
+                "base_url": base_url}
+    port = host_port or plan.get("port") or port
+    base_url = f"http://localhost:{port}"
+
+    if dry_run:
+        # A plan is the deliverable here, not a half-run. Say so rather than
+        # reporting success for work that did not happen.
+        steps.append({"step": "apply", "ok": True, "note": "dry_run - nothing executed"})
+        return {"ok": True, "stage": "dry_run", "steps": steps, "recipe": rid,
+                "plan": plan, "base_url": base_url,
+                "download_size_mb": plan.get("download_size_mb"),
+                "est_duration_min": plan.get("est_duration_min")}
+
+    # 4. Do it.
+    applied = imagegen_apply(recipe_id=rid, tenant=tenant, host_port=host_port,
+                             network=network, dry_run=False)
+    if not _step("apply", applied):
+        return {"ok": False, "stage": "apply", "steps": steps, "recipe": rid,
+                "plan_notes": plan.get("notes")}
+
+    # 5. Re-assert. A repair that does not re-assert has proven only that it ran.
+    post = imagegen_verify(base_url=base_url, backend_type=engine)
+    status = post.get("status")
+    if status != "healthy":
+        steps.append({
+            "step": "verify", "ok": False,
+            "error": f"backend is '{status}' after apply, not 'healthy'",
+            "fix": ("'degraded' means it answered but has NO models loaded - it will "
+                    "generate nothing while looking fine. Model downloads are large; "
+                    "give it time and re-run this, which is safe."),
+            "detail": {k: post.get(k) for k in ("health", "models_loaded", "model_count")},
+        })
+        return {"ok": False, "stage": "verify", "steps": steps, "recipe": rid,
+                "base_url": base_url}
+    steps.append({"step": "verify", "ok": True,
+                  "note": f"healthy with {post.get('model_count', 0)} model(s)"})
+
+    return _finish(True, "deployed", steps, base_url, engine, post,
+                   rid, register, genesis_url, token)
+
+
+def _finish(ok: bool, stage: str, steps: list, base_url: str, engine: str,
+            verified: dict, recipe_id: str, register: bool,
+            genesis_url: str, token: str) -> dict:
+    """Register if we can, then hand back something the caller can ACT on."""
+    if register:
+        if not token:
+            # Not an error. A self-hoster's backend works without Genesis; failing
+            # here would report a broken setup for a working one.
+            steps.append({"step": "register_backend", "ok": True,
+                          "note": "skipped - no token. The backend works locally; "
+                                  "registration only publishes it to the fleet."})
+        else:
+            reg = imagegen_register_backend(
+                genesis_url=genesis_url, base_url=base_url, backend_type=engine,
+                models=verified.get("sample_models"), token=token)
+            steps.append({"step": "register_backend", "ok": "error" not in reg,
+                          **({"error": reg["error"]} if "error" in reg else {})})
+
+    return {
+        "ok": ok,
+        "stage": stage,
+        "recipe": recipe_id,
+        "backend": {"engine": engine, "base_url": base_url,
+                    "model_count": verified.get("model_count"),
+                    "sample_models": verified.get("sample_models")},
+        "steps": steps,
+        "mod_urls": list(GOBBONET_MOD_URLS),
+        "next": ("Add both URLs in GobboNet's Extensions panel. Then point your "
+                 "generator at " + base_url + " and dispatch "
+                 "`gobbonet:image` with the result - the gallery renders anything "
+                 "from a data: URI, a Blob, or a loopback URL like this one."),
+    }

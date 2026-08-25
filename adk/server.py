@@ -21,6 +21,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 import httpx
+from urllib.parse import quote
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import Response
@@ -569,14 +570,77 @@ def create_app(
     # Still an explicit allowlist, never a wildcard: this daemon is on loopback with the
     # user's own tools attached, so the set of origins that may talk to it is a security
     # decision. allow_credentials stays OFF, so no ambient cookie rides along.
+    # 🚨 THIS LIST MUST COVER EVERY ORIGIN THE ADAPTER RUNS ON, and until 2026-08-24
+    # it covered four of twelve. `aither-bonsai-adapter.js` carries its own
+    # ALLOWED_HOSTS -- the surfaces where the page may run at all -- and the two were
+    # hand-maintained separately, so the page ran on origins this daemon refused.
+    #
+    # Measured that day on the owner's box: nine local services up, `adk up` answering
+    # GET http://127.0.0.1:9001/v1/models with 200, and
+    # https://wizzense.github.io/GobboNet/ reporting no node and offering a 545 MB
+    # in-browser download instead. The page advertises the opposite in its own banner --
+    # "ALREADY RUNNING YOUR OWN? PIP INSTALL AWDK THEN ADK UP WORKS TOO, WITH NO
+    # SIGN-IN" -- so the instruction on screen was false for the person reading it.
+    # Nothing logs it: the daemon answers, the browser silently discards the response
+    # for want of an Access-Control-Allow-Origin, and curl from a shell reports 200
+    # because curl does not enforce CORS. Preflight per origin, measured:
+    #     aitherium.com          200
+    #     wizzense.github.io     400   <- the page the user was actually on
+    #     gobbonet.aitherium.com 400
+    #
+    # This is the SAME defect the comment above records being fixed once for
+    # aitherium.com. It recurred because that fix was a LIST, not a rule, and the
+    # second list lived in another repo tree.
+    #
+    # Still an explicit allowlist, never a wildcard, and allow_credentials stays OFF.
+    # Verified after the fix: the three above answer 200 and evil.example.com still 400.
     _aitherium_origins = [
         "https://aitherium.com",
         "https://www.aitherium.com",
         "https://portal.aitherium.com",
         "https://veil.aitherium.com",
+        # GobboNet surfaces. The adapter's ALLOWED_HOSTS is the authority for this set.
+        "https://desktop.aitherium.com",
+        "https://spaces.aitherium.com",
+        "https://gobbonet.aitherium.com",
+        # TENANT SUBDOMAINS ARE NOT LISTED HERE, deliberately, twice over.
+        #
+        # They are matched by the rule at the middleware instead. Naming them
+        # here shipped a CLIENT LIST in a package strangers pip install: no
+        # secret scanner fires on a hostname, and `pip download awdk` turns it
+        # into a roster of who bought what. That is not our secret to spend.
+        #
+        # It also fixes what the comment above complains about -- the defect
+        # 'recurred because that fix was a LIST, not a rule'. A list needs an
+        # edit and a release per tenant, so each new customer is undetectable
+        # from the web until somebody remembers. A rule covers them the day
+        # they exist.
+        # Both GitHub Pages demos: our fork, and UPSTREAM's own site. Upstream is
+        # included deliberately -- a GobboNet user who never heard of us should still
+        # find a node they are already running. That is the local-first promise, and
+        # it costs nothing: this is an origin allowlist on a loopback daemon, not a
+        # grant of anything.
+        "https://wizzense.github.io",
+        "https://elodineofficial.github.io",
     ]
+    # Tenant surfaces as a RULE. Bounded on purpose: https only, ONE label,
+    # our apex and nothing else -- evil.example.com, aitherium.com.evil.test,
+    # a.b.aitherium.com and http:// all fail it (verified in both directions).
+    #
+    # NOT applied when the operator supplied AITHER_CORS_ORIGINS: an explicit
+    # list is a decision, and silently widening it back to every subdomain of
+    # ours would override the person who made it.
+    #
+    # Expressible as a rule here specifically because allow_credentials stays
+    # OFF -- it is never set, and three comments in this file say so -- so a
+    # matching origin still carries no ambient cookie.
+    _tenant_origin_rule = (
+        None if _cors_origins
+        else r"^https://[a-z0-9][a-z0-9-]*\.aitherium\.com$"
+    )
     app.add_middleware(
         CORSMiddleware,
+        allow_origin_regex=_tenant_origin_rule,
         allow_origins=_cors_origins or [
             *_aitherium_origins,
             "http://localhost:3000",
@@ -625,6 +689,13 @@ def create_app(
         "fleet": None,
         "is_fleet": is_fleet,
         "service_bridge": None,
+        # Per-name agent cache (D-2170) — see get_agent() below. Without this,
+        # every /chat/stream for a non-default name (e.g. "aither") rebuilt a
+        # brand-new AitherAgent from scratch: pack discovery, all built-in +
+        # tool-pack tools, MCP gateway attach, MicroScheduler connect, skill
+        # loading. Measured live 2026-08-24: 5-90+ seconds of silent work on
+        # EVERY message, not just the first.
+        "agents_by_name": {},
     }
 
     # ─── Auth middleware (optional, enabled via AITHER_API_KEY or --api-key) ───
@@ -765,8 +836,17 @@ def create_app(
             _state["agent"] = AitherAgent(**kwargs)
         agent = _state["agent"]
 
-        # If a different agent is requested in single mode, create it
+        # If a different agent is requested in single mode, reuse it if we
+        # already built one (D-2170). Rebuilding on every call redid pack
+        # discovery + tool registration + MCP/MicroScheduler reattach on
+        # every single message — this cache is what makes the 2nd+ message
+        # to the same named agent fast instead of paying that tax again.
         if name and name != agent.name:
+            cache: dict[str, AitherAgent] = _state["agents_by_name"]
+            cached = cache.get(name)
+            if cached is not None:
+                return cached
+
             # Load agent spec for the requested agent
             from adk.pack_discovery import load_agent_spec
             from pathlib import Path
@@ -786,7 +866,9 @@ def create_app(
             if agent_spec.get("system_prompt"):
                 kwargs["system_prompt"] = agent_spec["system_prompt"]
 
-            return AitherAgent(**kwargs)
+            built = AitherAgent(**kwargs)
+            cache[name] = built
+            return built
 
         return agent
 
@@ -2672,6 +2754,259 @@ def create_app(
                 for m in models
             ],
         }
+
+    # ── local image generation ────────────────────────────────────────────────
+    #: Where media-forge listens. It is a HOST process, so from this daemon (also a
+    #: host process) that is plain loopback -- the container indirection that
+    #: AITHER_MEDIAFORGE_URL exists for does not apply here.
+    _mediaforge_url = os.environ.get(
+        "AITHER_MEDIAFORGE_URL", "http://127.0.0.1:8200").rstrip("/")
+
+    #: Where a SELF-SERVICE install lands. `imagegen setup` deploys the
+    #: `cuda-comfyui-*` recipe, whose deployment.port is 8188 -- so the person this
+    #: whole path exists for ends up with ComfyUI and NO media-forge. A bridge that
+    #: only spoke to media-forge would answer "media-forge unreachable" to exactly the
+    #: stranger it was built to serve, which is the defect this constant exists to
+    #: prevent.
+    _comfy_url = os.environ.get("COMFYUI_URL", "http://127.0.0.1:8188").rstrip("/")
+
+    async def _comfy_checkpoint(client, want: str = "") -> str:
+        """The checkpoint to use, ASKED of the server rather than hardcoded.
+
+        A hardcoded name is wrong on every machine but the one it was written on --
+        `imagegen setup` installs whatever the recipe pulled, and a user may have
+        added their own. Prefers an SDXL-looking name because the sampler defaults
+        below are SDXL's; falls back to whatever is first rather than failing, since
+        a working render with an unexpected model beats a correct refusal.
+        """
+        r = await client.get(f"{_comfy_url}/object_info/CheckpointLoaderSimple")
+        r.raise_for_status()
+        names = (r.json()["CheckpointLoaderSimple"]["input"]["required"]
+                 ["ckpt_name"][0]) or []
+        if not names:
+            raise RuntimeError("ComfyUI has no checkpoints installed")
+        if want and want in names:
+            return want
+        for n in names:
+            low = n.lower()
+            if "xl" in low and "refiner" not in low:
+                return n
+        return names[0]
+
+    def _comfy_workflow(ckpt: str, prompt: str, width: int, height: int,
+                        steps: int, cfg: float, seed: int) -> dict:
+        """A minimal SDXL txt2img graph in ComfyUI's API format.
+
+        Node ids are strings because that is what /prompt expects; each `inputs` link
+        is [node_id, output_index]. Kept to the seven nodes a text-to-image actually
+        needs -- loading a template from disk would be one more thing to ship and to
+        drift.
+        """
+        return {
+            "1": {"class_type": "CheckpointLoaderSimple",
+                  "inputs": {"ckpt_name": ckpt}},
+            "2": {"class_type": "CLIPTextEncode",
+                  "inputs": {"text": prompt, "clip": ["1", 1]}},
+            "3": {"class_type": "CLIPTextEncode",
+                  # A negative prompt is not optional for SDXL at low step counts;
+                  # without one the output is noticeably muddier.
+                  "inputs": {"text": "blurry, low quality, watermark, text",
+                             "clip": ["1", 1]}},
+            "4": {"class_type": "EmptyLatentImage",
+                  "inputs": {"width": width, "height": height, "batch_size": 1}},
+            "5": {"class_type": "KSampler",
+                  "inputs": {"seed": seed, "steps": steps, "cfg": cfg,
+                             "sampler_name": "euler", "scheduler": "normal",
+                             "denoise": 1.0, "model": ["1", 0],
+                             "positive": ["2", 0], "negative": ["3", 0],
+                             "latent_image": ["4", 0]}},
+            "6": {"class_type": "VAEDecode",
+                  "inputs": {"samples": ["5", 0], "vae": ["1", 2]}},
+            "7": {"class_type": "SaveImage",
+                  "inputs": {"filename_prefix": "adk", "images": ["6", 0]}},
+        }
+
+    async def _generate_via_comfy(prompt: str, width: int, height: int,
+                                  budget: float, req: dict):
+        """Drive ComfyUI directly. Returns {"images": [...]} or a JSONResponse error."""
+        steps = int((req or {}).get("steps") or 24)
+        cfg = float((req or {}).get("cfg") or 7.0)
+        seed = int((req or {}).get("seed") or int(time.time() * 1000) % 2**31)
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            ckpt = await _comfy_checkpoint(client, str((req or {}).get("checkpoint") or ""))
+            wf = _comfy_workflow(ckpt, prompt, width, height, steps, cfg, seed)
+            r = await client.post(f"{_comfy_url}/prompt", json={"prompt": wf})
+            if r.status_code != 200:
+                # ComfyUI reports a rejected GRAPH here, with the offending node --
+                # far more useful than this daemon guessing, so pass it through.
+                return JSONResponse(status_code=502, content={
+                    "error": f"ComfyUI rejected the workflow (HTTP {r.status_code})",
+                    "detail": r.text[:400], "checkpoint": ckpt})
+            pid = (r.json() or {}).get("prompt_id")
+            if not pid:
+                return JSONResponse(status_code=502, content={
+                    "error": "ComfyUI accepted the prompt but returned no prompt_id"})
+
+            deadline = time.time() + budget
+            while time.time() < deadline:
+                h = await client.get(f"{_comfy_url}/history/{pid}")
+                if h.status_code == 200 and (h.json() or {}).get(pid):
+                    entry = h.json()[pid]
+                    # A FAILED run also lands in history. Reporting its outputs as
+                    # success would return an empty list and read as "nothing matched".
+                    status = (entry.get("status") or {})
+                    if status.get("status_str") == "error":
+                        return JSONResponse(status_code=502, content={
+                            "error": "ComfyUI failed to execute the workflow",
+                            "detail": str(status.get("messages"))[:400]})
+                    urls = []
+                    for out in (entry.get("outputs") or {}).values():
+                        for img in (out.get("images") or []):
+                            fn = img.get("filename")
+                            if not fn:
+                                continue
+                            sub = img.get("subfolder", "")
+                            typ = img.get("type", "output")
+                            urls.append(f"{_comfy_url}/view?filename={quote(fn)}"
+                                        f"&subfolder={quote(sub)}&type={quote(typ)}")
+                    if urls:
+                        return {"images": urls, "checkpoint": ckpt, "steps": steps}
+                    # In history, no error, no images: say so rather than looping to a
+                    # timeout that blames the deadline.
+                    return JSONResponse(status_code=502, content={
+                        "error": "ComfyUI finished with no images",
+                        "checkpoint": ckpt})
+                await asyncio.sleep(2)
+        return JSONResponse(status_code=504, content={
+            "error": f"ComfyUI did not finish within {int(budget)}s",
+            "hint": "the run is still queued in ComfyUI; it is not lost"})
+
+    @app.post("/v1/generate")
+    async def generate_image_endpoint(req: dict):
+        """Generate an image on the USER'S OWN hardware, for a browser that cannot.
+
+        WHY THIS LIVES HERE and not in media-forge. The browser tool's contract is
+        `POST {localImageBase}/v1/generate -> {images: [...]}`, and the obvious place
+        to serve it is media-forge, which owns the generator. It cannot: measured
+        2026-08-24, media-forge sends NO CORS headers at all (`OPTIONS
+        /api/studio/txt2img` -> 405, no Access-Control-Allow-Origin on any GET), so a
+        page on aitherium.com or wizzense.github.io cannot call it from a browser.
+        This daemon already has the right origin allowlist, is already discovered by
+        that page, and already routes its chat -- so bridging here is one place to fix
+        instead of two, and media-forge stays a loopback-only service, which is the
+        correct posture for something with no auth.
+
+        THE SHAPE MISMATCH IS THE WORK. media-forge's txt2img returns a JOB, not an
+        image: dispatch, then poll `/api/jobs/{id}` until `status == "done"`, then read
+        `result.images`. The browser tool wants one synchronous answer. So this waits.
+        Measured on the reference box, a 512x512 `fast` preset took ~380s -- that is a
+        real number and it is why `timeout` is generous and why the failure below says
+        which stage it died in rather than just "failed".
+
+        IMAGES COME BACK AS LOOPBACK URLs, deliberately, not base64. media-forge
+        answers `result.images[0] = "/media/<sha>.png"`, and that file serves 200 with
+        `image/png` (458 KB for the measured one). Returning the URL instead of
+        inlining ~600 KB of base64 per image keeps this response small, and an <img>
+        tag needs no CORS to load it -- only `fetch()` does, which is why the render
+        path works while the API path did not. The gobbonet image mod accepts a
+        loopback URL for exactly this reason.
+        """
+        prompt = str((req or {}).get("prompt") or "").strip()
+        if not prompt:
+            return JSONResponse(status_code=400,
+                                content={"error": "prompt is required"})
+        width = int((req or {}).get("width") or 1024)
+        height = int((req or {}).get("height") or 1024)
+        # `fast` unless asked otherwise: this is a browser waiting on a person, and the
+        # difference between presets here is minutes.
+        preset = str((req or {}).get("preset") or "fast")
+        style = str((req or {}).get("style") or "photoreal")
+        budget = float((req or {}).get("timeout") or 600)
+
+        body = {"prompt": prompt, "style": style, "count": 1, "width": width,
+                "height": height, "preset": preset, "timeout": int(budget)}
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                # The dispatch itself can outlive its own HTTP call on this route --
+                # media-forge runs the job inside the request. A read timeout here is
+                # therefore NOT a failure; the job is already tracked, and the poll
+                # below finds it. Treating it as an error would report a failure for a
+                # render that is running.
+                try:
+                    await client.post(f"{_mediaforge_url}/api/studio/txt2img", json=body)
+                except httpx.ReadTimeout:
+                    # Deliberate, and deliberately NOT silent: media-forge runs the job
+                    # inside the request, so a read timeout here means it STARTED, not
+                    # that it failed -- the poll below is the real result. Logging keeps
+                    # a genuine dispatch failure distinguishable from this expected one.
+                    logger.debug("txt2img dispatch read-timeout; polling for the job")
+
+                deadline = time.time() + budget
+                while time.time() < deadline:
+                    r = await client.get(f"{_mediaforge_url}/api/jobs")
+                    r.raise_for_status()
+                    jobs = [j for j in (r.json().get("jobs") or [])
+                            if j.get("kind") == "txt2img"]
+                    if not jobs:
+                        await asyncio.sleep(2)
+                        continue
+                    job = jobs[-1]
+                    status = str(job.get("status") or "")
+                    if status in ("done", "complete", "finished"):
+                        res = job.get("result") or {}
+                        paths = [x for x in (res.get("images") or []) if x]
+                        if not paths:
+                            return JSONResponse(status_code=502, content={
+                                "error": "media-forge finished with no images",
+                                "detail": str(res.get("error") or "")[:300]})
+                        return {"images": [
+                            p if str(p).startswith("http") else f"{_mediaforge_url}{p}"
+                            for p in paths]}
+                    if status == "error":
+                        res = job.get("result") or {}
+                        return JSONResponse(status_code=502, content={
+                            "error": "media-forge could not generate",
+                            # Its own note names the missing engine when there is one,
+                            # which is far more useful than this daemon guessing.
+                            "detail": str(res.get("error") or job.get("error") or "")[:300],
+                            "note": str(res.get("note") or "")[:300]})
+                    await asyncio.sleep(3)
+            return JSONResponse(status_code=504, content={
+                "error": f"image generation did not finish within {int(budget)}s",
+                "hint": "the job is still running in media-forge; it is not lost"})
+        except httpx.HTTPError:
+            # media-forge is absent. That is the NORMAL case for someone who ran
+            # `imagegen setup`, which installs ComfyUI and nothing else -- so fall
+            # through to it rather than reporting a failure that names a service the
+            # user was never told to install.
+            pass
+        try:
+            return await _generate_via_comfy(prompt, width, height, budget, req)
+        except (httpx.HTTPError, RuntimeError, KeyError) as e:
+            return JSONResponse(status_code=503, content={
+                "error": "no local image backend answered",
+                "tried": [_mediaforge_url, _comfy_url],
+                "detail": f"{type(e).__name__}: {e}"[:200],
+                "hint": "run `python -m adk.toolpacks.image_bootstrap setup` to install "
+                        "one, or set COMFYUI_URL / AITHER_MEDIAFORGE_URL"})
+
+    @app.get("/v1/generate")
+    async def generate_image_capability():
+        """Is local image generation actually available? A capability probe, not a health
+        check: the browser needs to know whether to offer the tool at all, and
+        `media-forge is up` does not imply `it can render` -- it needs a diffusion
+        backend behind it."""
+        async with httpx.AsyncClient(timeout=6.0) as client:
+            for name, url, path in (("media-forge", _mediaforge_url, "/api/studio/loras"),
+                                    ("comfyui", _comfy_url, "/system_stats")):
+                try:
+                    r = await client.get(f"{url}{path}")
+                    if r.status_code == 200:
+                        return {"available": True, "engine": url, "kind": name}
+                except httpx.HTTPError:
+                    continue
+        return {"available": False, "tried": [_mediaforge_url, _comfy_url],
+                "hint": "run `python -m adk.toolpacks.image_bootstrap setup`"}
 
     @app.get("/v1/identities")
     async def list_identities_endpoint():

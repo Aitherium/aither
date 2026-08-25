@@ -165,7 +165,7 @@ def save_saved_config(data: dict[str, Any], config_path: Path | None = None) -> 
     #
     # A config write that cannot see what is already there must REFUSE. Losing a
     # credential silently is strictly worse than a caller getting an error it can
-    # retry -- the fail-open gate pattern from security-review-patterns.md #1,
+    # retry -- the classic fail-open gate pattern,
     # applied to a file instead of an authz decision.
     if not existing and path.exists() and path.stat().st_size > 0:
         raise OSError(

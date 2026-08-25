@@ -13568,6 +13568,27 @@ def _register_commands(sub):
     # adk doctor — system health checks
     sub.add_parser("doctor", help="Check system health (Python, GPU, LLM backends, API keys)")
 
+    # `adk image` -- generate a picture on THIS machine, via whatever image
+    # backend is already running. Nothing is installed or started for you; see
+    # adk/images.py. Registered as a real console subcommand rather than
+    # documented as `python -m adk.images`, because a skill that advertises a
+    # command the package does not declare is a command-not-found on a
+    # stranger's laptop (the ONB002 class).
+    p_image = sub.add_parser(
+        "image", help="Generate an image with a local backend (ComfyUI/Sana/SD.Next)")
+    p_image.add_argument("prompt", nargs="*", help="what to draw")
+    p_image.add_argument("--backends", action="store_true",
+                         help="list local image backends and exit")
+    p_image.add_argument("--out", default="", help="write the PNG here (default: ./adk-image.png)")
+    p_image.add_argument("--negative", default="", help="what to avoid")
+    p_image.add_argument("--width", type=int, default=768)
+    p_image.add_argument("--height", type=int, default=768)
+    p_image.add_argument("--steps", type=int, default=20)
+    p_image.add_argument("--cfg", type=float, default=6.0)
+    p_image.add_argument("--seed", type=int, default=None)
+    p_image.add_argument("--model", default="", help="checkpoint name, if the backend has several")
+    p_image.add_argument("--backend", default="", help="force one lane by id")
+
     # adk gobbonet — run the GobboNet UI with keyless search, in one command
     gobbo_p = sub.add_parser(
         "gobbonet",
@@ -14867,6 +14888,9 @@ def main():
     elif args.command == "doctor":
         from adk.doctor import cmd_doctor
         sys.exit(cmd_doctor(args))
+    elif args.command == "image":
+        from adk.images import cmd_image
+        sys.exit(cmd_image(args))
     elif args.command == "gobbonet":
         from adk.packs.gobbonet.launch import cmd_gobbonet
         sys.exit(cmd_gobbonet(args))

@@ -255,7 +255,7 @@ async def serve_coordinator(
     # Every step below is long-running SYNC work (HTTP shard enumeration, hundreds
     # of GB of disk I/O, a CUDA build, a polling health gate). This coroutine is
     # CLI-driven today, but a blocking call in a coroutine is one import away from
-    # stalling a service's whole event loop (PQ010), so each is pushed to a thread.
+    # stalling a service's whole event loop, so each is pushed to a thread.
     # asyncio.to_thread is correct HERE specifically because none of these schedule
     # background work via get_event_loop().create_task() — the trap that silently
     # kills fire-and-forget work when a sync subtree is moved off the loop.

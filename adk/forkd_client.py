@@ -11,7 +11,7 @@ forkd daemon REST API + a DEGRADE path — it does NOT implement Firecracker. Wh
 no forkd daemon is reachable (everywhere today), ``fanout`` degrades to bounded
 sequential spawns so the fan-out still completes.
 
-Fail-closed (see .claude/rules/security-review-patterns.md):
+Fail-closed, by the rule that a gate denies on every error path:
   * A child's tool scope is the INTERSECTION of the child's request and the warm
     parent snapshot's scope — a fork can never ESCALATE privilege. Empty
     intersection => that child is DENIED, not run.

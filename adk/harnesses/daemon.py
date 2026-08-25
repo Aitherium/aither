@@ -626,13 +626,74 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
 
     # ── decision cards ────────────────────────────────────────────────────────
     # The card store is on local disk, but the DAEMON is what makes it reachable
-    # from anywhere: aitherium.com, Awconnect, a phone through the tunnel and
+    # from anywhere: aitherium.com, AitherConnect, a phone through the tunnel and
     # the CLI all read this one endpoint, so a card raised by a background agent
     # is answerable from whichever surface the owner happens to be looking at.
     #
     # Route order matters — FastAPI matches in registration order, so the static
     # `/decisions/count` MUST precede `/decisions/{card_id}` or the parameterised
     # handler swallows it and returns "no such card: count" (quality gate PQ005).
+
+    # ── images ──────────────────────────────────────────────────────────────
+    # An agent that can write and run code but cannot draw a picture is missing
+    # a sense. These route to whatever image server is ALREADY on loopback and
+    # start nothing; see adk/images.py for why the probe asks the generation
+    # route rather than /health.
+    #
+    # The path is the OpenAI shape on purpose: it is what every client already
+    # speaks, including GobboNet's awdk lane, so the capability arrives without
+    # anyone writing a bespoke client. Before this route existed that lane
+    # probed /v1/images/generations, got 404, and correctly reported the daemon
+    # as "running, but no image route" -- which is exactly what it was.
+
+    @app.get("/v1/images/backends", dependencies=[Depends(auth)])
+    async def image_backends() -> dict[str, Any]:
+        from adk import images as _img
+
+        lanes = await _img.discover()
+        return {
+            "backends": [ln.as_dict() for ln in lanes],
+            "usable": [ln.id for ln in lanes if ln.up],
+        }
+
+    @app.post("/v1/images/generations", dependencies=[Depends(auth)])
+    async def image_generate(body: dict[str, Any]) -> dict[str, Any]:
+        from fastapi import HTTPException
+
+        from adk import images as _img
+
+        size = str(body.get("size") or "768x768")
+        try:
+            w_s, h_s = size.lower().split("x", 1)
+            width, height = int(w_s), int(h_s)
+        except (ValueError, AttributeError):
+            raise HTTPException(400, f"size must look like 768x768, got {size!r}")
+
+        req = _img.ImageRequest(
+            prompt=str(body.get("prompt") or ""),
+            negative=str(body.get("negative_prompt") or ""),
+            width=width, height=height,
+            steps=int(body.get("steps") or 20),
+            cfg=float(body.get("cfg") or 6.0),
+            seed=body.get("seed"),
+            model=str(body.get("model") or ""),
+            backend=str(body.get("backend") or ""),
+        )
+        try:
+            out = await _img.generate(req)
+        except _img.ImageError as e:
+            # 503, not 500: every ImageError here means "no local backend can
+            # do this right now", which is a service-availability answer and
+            # the message is written to be shown to a person. A 500 would read
+            # as a bug in the daemon and send them to the wrong logs.
+            raise HTTPException(503, str(e))
+
+        return {
+            "created": 0,
+            "data": [{"b64_json": b} for b in out["images_b64"]],
+            "backend": out["backend"],
+            "model": out["model"],
+        }
 
     @app.get("/decisions", dependencies=[Depends(auth)])
     def list_decisions(
@@ -727,7 +788,7 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
 
         Until this existed the daemon could list, read, answer and cancel cards but not
         create one — the raise path was `adk decide ask` on the owner's own machine.
-        Every other surface (AitherShell, the portal, Awconnect, Relay, Room, and
+        Every other surface (AitherShell, the portal, AitherConnect, Relay, Room, and
         genesis's `/api/v1/decisions` proxy) could therefore SHOW a card and none could
         raise one, so "an agent anywhere reaches its owner" was not expressible. The
         genesis proxy was already written against this route; without it that proxy
