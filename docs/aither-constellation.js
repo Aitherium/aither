@@ -25,6 +25,7 @@
   var REPOS = [
     { id: "awdk", label: "awdk", blurb: "Build AI agent fleets — 3 lines, any backend,..." },
     { id: "awskills", label: "awskills", blurb: "Portable agent skills — self-contained..." },
+    { id: "awpack", label: "awpack", blurb: "First-party agent packs — the ones we build,..." },
     { id: "awm", label: "awm", blurb: "A portable, scoped agent memory" },
     { id: "awnode", label: "awnode", blurb: "A lightweight local gateway — bridges your..." },
     { id: "awrun", label: "awrun", blurb: "A priority-aware queue and dispatcher for..." },
