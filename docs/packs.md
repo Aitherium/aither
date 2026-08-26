@@ -35,26 +35,26 @@ Built from `v3.8.3` (adk 3.8.3).
 | **[GobboPack](packs/gobbonet.md)** | `3.8.3` | [gobbonet-3.8.3.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.3/gobbonet-3.8.3.tar.gz) | 45.5 KB | GobboNet Companion — an agent harness for a local-first chat client |
 | **[Hermes Architecture Studio](packs/hermes.md)** | `3.8.3` | [hermes-3.8.3.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.3/hermes-3.8.3.tar.gz) | 4.9 KB | Hermes — Architecture & Reasoning Agent Brain Pack |
 | **[Iris Visual Artisan](packs/iris.md)** | `3.8.3` | [iris-3.8.3.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.3/iris-3.8.3.tar.gz) | 8.2 KB | Iris — Visual Artisan Brain Pack |
-| **[OpenClaw Research Studio](packs/openclaw.md)** | `3.8.3` | [openclaw-3.8.3.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.3/openclaw-3.8.3.tar.gz) | 5.1 KB | OpenClaw — Web Research Agent Brain Pack |
+| **[OpenClaw Research Studio](packs/openclaw.md)** | `3.8.3` | [openclaw-3.8.3.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.3/openclaw-3.8.3.tar.gz) | 5.2 KB | OpenClaw — Web Research Agent Brain Pack |
 | **[Persona](packs/persona.md)** | `3.8.3` | [persona-3.8.3.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.3/persona-3.8.3.tar.gz) | 1.5 KB | Persona — an aither-adk agent pack for persona |
 
 ## Contents
 
 - **aither** `3.8.3` — skills  
-  `sha256:5d41b2adbd41acfb…`
+  `sha256:5f451b9adb88b043…`
 - **analyst** `3.8.3` — agent config, skills  
-  `sha256:bc94548f463ee40e…`
+  `sha256:e8da75524526e465…`
 - **bead-space** `3.8.3` — brain pack only  
-  `sha256:6ff548297b77b84e…`
+  `sha256:f8ccd4c13296cc6b…`
 - **claude-code** `3.8.3` — agent config, skills  
-  `sha256:292f47656a8ac17f…`
+  `sha256:58009d5c0b5638ef…`
 - **gobbonet** `3.8.3` — agent config, Python  
-  `sha256:48fbba0f0a17a8d0…`
+  `sha256:20b8fad3ca32260c…`
 - **hermes** `3.8.3` — agent config, skills  
-  `sha256:6b47da2a5a04635b…`
+  `sha256:6c859b4a1449b8b9…`
 - **iris** `3.8.3` — skills  
-  `sha256:4c849a8568fe8d6d…`
+  `sha256:520997da6db441ee…`
 - **openclaw** `3.8.3` — agent config, skills  
-  `sha256:2fa2e5f3fcd05197…`
+  `sha256:9f90ac83979b31ad…`
 - **persona** `3.8.3` — brain pack only  
-  `sha256:c3ade3ff7e94ecd0…`
+  `sha256:40631a928866b007…`
