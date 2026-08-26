@@ -176,6 +176,20 @@ def cmd_ask(args: argparse.Namespace, store: DecisionStore) -> int:
             print(str(exc), file=sys.stderr)
             return 2
 
+    kind = args.kind
+    if args.credential:
+        if not (args.secret_name or "").strip():
+            print("--credential requires --secret-name VAULT_KEY", file=sys.stderr)
+            return 2
+        if not (args.credential_description or "").strip():
+            print("--credential requires --credential-description (shown to the owner)",
+                  file=sys.stderr)
+            return 2
+        kind = "credential"
+    elif args.secret_name:
+        print("--secret-name requires --credential", file=sys.stderr)
+        return 2
+
     cwd = args.cwd or os.getcwd()
     session_pid = _resolve_session_pid(args.session_pid)
     card = DecisionCard(
@@ -183,7 +197,7 @@ def cmd_ask(args: argparse.Namespace, store: DecisionStore) -> int:
         title=args.title.strip(),
         summary=(args.summary or "").strip(),
         detail=(args.detail or "").strip(),
-        kind=args.kind,
+        kind=kind,
         urgency=args.urgency,
         options=options,
         default_key=default_key,
@@ -197,6 +211,11 @@ def cmd_ask(args: argparse.Namespace, store: DecisionStore) -> int:
             transcript=args.transcript or "",
         ),
         deadline=deadline,
+        secret_name=(args.secret_name or "").strip() if args.credential else None,
+        credential_format=args.credential_format if args.credential else None,
+        credential_scope=args.credential_scope if args.credential else None,
+        credential_description=((args.credential_description or "").strip()
+                                if args.credential else None),
     )
 
     try:
@@ -291,6 +310,18 @@ def cmd_show(args: argparse.Namespace, store: DecisionStore) -> int:
 
 
 def cmd_answer(args: argparse.Namespace, store: DecisionStore) -> int:
+    pre = store.get(args.id)
+    if pre is not None and (pre.kind or "").strip().lower() == "credential":
+        if args.choice:
+            print("credential cards take the value via the masked prompt only "
+                  "— no positional choice", file=sys.stderr)
+            return 2
+        from adk.decisions.secure_prompt import capture_credential
+        try:
+            return capture_credential(args.id, store)
+        except DecisionError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
     try:
         # deliver=False — delivered explicitly below so the path can be shown.
         card = store.answer(args.id, args.choice, note=args.note or "", via=args.via,
@@ -593,6 +624,17 @@ def build_parser() -> argparse.ArgumentParser:
                      help="apply the default after this long")
     ask.add_argument("--fact", action="append", help="repeatable; a measurement you took")
     ask.add_argument("--kind", default="decision", choices=("decision", "blocked", "info"))
+    ask.add_argument("--credential", action="store_true",
+                     help="ask for a secret: the value goes to the vault via a masked "
+                          "prompt (secure_prompt.py), never the card")
+    ask.add_argument("--secret-name", default="", metavar="VAULT_KEY",
+                     help="vault key the value is written to (required with --credential)")
+    ask.add_argument("--credential-format", default="api_key",
+                     choices=("password", "api_key", "totp_seed", "custom"))
+    ask.add_argument("--credential-scope", default="platform",
+                     choices=("platform", "workspace", "user"))
+    ask.add_argument("--credential-description", default="",
+                     help="why we need it — shown to the owner (required with --credential)")
     ask.add_argument("--urgency", default="normal",
                      choices=("low", "normal", "high", "critical"))
     ask.add_argument("--session", default="", help="session id the answer routes back to")
@@ -623,7 +665,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     answer = sub.add_parser("answer", help="answer a card and steer the session")
     answer.add_argument("id")
-    answer.add_argument("choice")
+    # Optional: a credential card must NOT take a positional choice — its value
+    # is entered via the masked prompt (secure_prompt.py).
+    answer.add_argument("choice", nargs="?", default="")
     answer.add_argument("--note", default="", help="anything the agent should also know")
     answer.add_argument("--via", default="cli")
 

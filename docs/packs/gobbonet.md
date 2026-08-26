@@ -304,5 +304,5 @@ Then `pip install aither-adk aither-pack-myapp` and the pack is discovered autom
 
 ---
 
-sha256 `3aca358f1c364b65db32cc4b86cf9525f4179c453d5a84b031ed64550179af30`  
+sha256 `48fbba0f0a17a8d0d2cead534eab80b0ff97a3d68c16152ad02aa01c2a0097e2`  
 Built from `v3.8.3` (adk 3.8.3). [All packs](../packs.md)

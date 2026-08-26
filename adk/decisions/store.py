@@ -584,6 +584,18 @@ class DecisionStore:
                     + (f" (answer: {card.answer})" if card.answer else "")
                 )
             picked = (choice or "").strip()
+            # A credential card closes ONLY with the marker — never with free
+            # text. The store's durable JSON is served over HTTP, rendered by
+            # the popup, and copied into session transcripts; a value written
+            # here would persist to all four despite to_dict_safe() scrubbing
+            # at the boundaries. The value's only door is secure_prompt.py:
+            # masked input -> vault, then this marker. (DC008)
+            if (card.kind or "").strip().lower() == "credential":
+                if picked != DecisionCard.CREDENTIAL_ANSWER:
+                    raise DecisionError(
+                        f"credential card {card_id} closes only with "
+                        f"{DecisionCard.CREDENTIAL_ANSWER!r} — the value goes to "
+                        "the vault via secure_prompt, never the card")
             if card.options:
                 opt = card.option(picked)
                 if opt is None:
