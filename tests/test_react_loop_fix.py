@@ -1,6 +1,6 @@
 """Test that ReActLoop emits observations with role='user' (not role='tool').
 
-This test verifies the fix for D-312: adk ReActLoop must emit observations
+This test pins the fix where adk ReActLoop must emit observations
 in user-role for OpenAI API compatibility (DeepSeek, GitHub Models).
 """
 

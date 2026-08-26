@@ -517,7 +517,7 @@ class TestProvideFullFlow:
 
 
 class TestFederationToken:
-    """Self-service relay-federation token mint (D-699 productization)."""
+    """Self-service relay-federation token mint."""
 
     @pytest.mark.asyncio
     async def test_federation_token_success_returns_key_once(self):

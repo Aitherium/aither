@@ -1,6 +1,6 @@
 """Real gateway-key minting for managed agent identities — fail-closed.
 
-Closes the D-808 residual "minter is offline/injectable, not wired to the real
+Closes the residual "minter is offline/injectable, not wired to the real
 gateway mint". `make_gateway_minter` wraps
 `adk.fleet_enroll._self_mint_gateway_key`, which is BEST-EFFORT and returns ""
 on any failure — unwrapped, that produced an ACTIVE identity holding an EMPTY
