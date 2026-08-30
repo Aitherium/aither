@@ -114,12 +114,43 @@ def _detect_session_id(explicit: str = "") -> str:
         explicit,
         os.getenv("AITHER_SESSION_ID", ""),
         os.getenv("CLAUDE_SESSION_ID", ""),
+        os.getenv("CLAUDE_CODE_SESSION_ID", ""),
     )
     for candidate in candidates:
         value = (candidate or "").strip()
         if value:
             return value
     return ""
+
+
+def _detect_transcript(explicit: str = "", session_id: str = "") -> str:
+    """Find the raising session's transcript when the caller did not pass one.
+
+    The Stop hook passes ``--transcript`` because it receives the path in its
+    payload — but every OTHER raiser (the skill's ``adk decide ask``, agents,
+    the daemon) leaves it empty, and the card's "what this session was doing"
+    panel then reads "no transcript anchored". Claude Code names its transcripts
+    ``~/.claude/projects/<encoded-cwd>/<session-id>.jsonl``; given a session id
+    and cwd we can locate the newest one. Returns "" when nothing plausibly
+    matches — the panel then reports the absence honestly rather than guessing.
+    """
+    if explicit.strip():
+        return explicit.strip()
+    sid = (session_id or _detect_session_id()).strip()
+    if not sid:
+        return ""
+    root = Path(os.getenv("CLAUDE_CONFIG_DIR", "")) if os.getenv("CLAUDE_CONFIG_DIR") else Path.home() / ".claude"
+    projects = root / "projects"
+    if not projects.is_dir():
+        return ""
+    # The transcript lives under the ENCODED project dir; we do not need the
+    # exact encoding to find it — the session id is unique across the tree.
+    candidates = sorted(
+        projects.glob(f"*/{sid}.jsonl"),
+        key=lambda p: p.stat().st_mtime if p.exists() else 0.0,
+        reverse=True,
+    )
+    return str(candidates[0]) if candidates else ""
 
 
 def _resolve_session_pid(explicit: int = 0) -> int:
@@ -192,6 +223,7 @@ def cmd_ask(args: argparse.Namespace, store: DecisionStore) -> int:
 
     cwd = args.cwd or os.getcwd()
     session_pid = _resolve_session_pid(args.session_pid)
+    session_id = _detect_session_id(args.session)
     card = DecisionCard(
         id="",
         title=args.title.strip(),
@@ -203,12 +235,12 @@ def cmd_ask(args: argparse.Namespace, store: DecisionStore) -> int:
         default_key=default_key,
         facts=[f for f in (args.fact or []) if f.strip()],
         source=DecisionSource(
-            session_id=_detect_session_id(args.session),
+            session_id=session_id,
             agent=args.agent or os.getenv("AITHER_AGENT_NAME", "") or "claude-code",
             cwd=cwd,
             branch=args.branch or _git_branch(cwd),
             session_pid=session_pid,
-            transcript=args.transcript or "",
+            transcript=_detect_transcript(args.transcript or "", session_id),
         ),
         deadline=deadline,
         secret_name=(args.secret_name or "").strip() if args.credential else None,
@@ -375,6 +407,62 @@ def cmd_cancel(args: argparse.Namespace, store: DecisionStore) -> int:
         print(str(exc), file=sys.stderr)
         return 1
     print(f"{card.id} withdrawn")
+    return 0
+
+
+def cmd_promise(args: argparse.Namespace, store: DecisionStore) -> int:
+    """Record work owed — an agent commitment with a deadline (promise plane).
+
+    A promise BREACHES when overdue; it never expires. The host promise sweep
+    (AitherOS-Promise-Sweep, every 15 min) breaches overdue promises and raises
+    an owner escalation card, so a promise with no due time is refused here.
+    """
+    import time as _time
+
+    due = (args.due or "").strip()
+    deadline = None
+    if due:
+        try:
+            deadline = _time.time() + parse_duration(due)
+        except ValueError:
+            try:
+                deadline = _time.mktime(_time.strptime(due, "%Y-%m-%dT%H:%M"))
+            except ValueError:
+                try:
+                    deadline = _time.mktime(_time.strptime(due, "%Y-%m-%d"))
+                except ValueError:
+                    deadline = None
+    if deadline is None:
+        print(f"cannot parse --due {args.due!r} (use 30m/2h/1d or ISO)", file=sys.stderr)
+        return 2
+    try:
+        card = store.create(DecisionCard(
+            id="",
+            title=args.title,
+            kind="promise",
+            deadline=deadline,
+            owed_by=args.owed_by or "",
+            owed_to=args.owed_to or "",
+            preconditions=list(args.precondition or []),
+            summary=args.summary or "",
+            source=DecisionSource(agent=args.agent or "cli",
+                                  cwd=args.cwd or str(Path.cwd())),
+        ))
+    except DecisionError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    print(f"{card.id} promise recorded (due {_time.strftime('%Y-%m-%d %H:%M', _time.localtime(deadline))})")
+    return 0
+
+
+def cmd_resolve(args: argparse.Namespace, store: DecisionStore) -> int:
+    """Close an open promise as KEPT."""
+    try:
+        card = store.resolve(args.id, note=args.note or "")
+    except DecisionError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    print(f"{card.id} promise resolved")
     return 0
 
 
@@ -684,6 +772,22 @@ def build_parser() -> argparse.ArgumentParser:
     cancel.add_argument("id")
     cancel.add_argument("--note", default="")
 
+    promise = sub.add_parser("promise", help="record work owed (an agent commitment with a due time)")
+    promise.add_argument("title")
+    promise.add_argument("--due", required=True, metavar="30m|ISO",
+                         help="when the promise must be kept; overdue promises BREACH")
+    promise.add_argument("--owed-by", default="", help="agent identity making the promise")
+    promise.add_argument("--owed-to", default="", help="who it is owed to")
+    promise.add_argument("--precondition", action="append",
+                         help="repeatable; a fact that must hold for the promise to be kept")
+    promise.add_argument("--summary", default="")
+    promise.add_argument("--agent", default="")
+    promise.add_argument("--cwd", default="")
+
+    resolve = sub.add_parser("resolve", help="close an open promise")
+    resolve.add_argument("id")
+    resolve.add_argument("--note", default="")
+
     watch = sub.add_parser("watch", help="render cards as they appear")
     watch.add_argument("--interval", default="2.0")
     watch.add_argument("--only-new", action="store_true",
@@ -733,6 +837,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "steer": cmd_steer,
         "window": cmd_window,
         "cancel": cmd_cancel,
+        "promise": cmd_promise,
+        "resolve": cmd_resolve,
         "watch": cmd_watch,
         "sweep": cmd_sweep,
     }[args.command]

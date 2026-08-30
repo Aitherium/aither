@@ -1,13 +1,13 @@
 """Pack install must mint a per-install credential, and replace must revoke first.
 
-`adk/pack_credentials.py` existed, was security-hardened (D-687 path traversal),
+`adk/pack_credentials.py` existed, was security-hardened (path traversal),
 and was never called by anything — so per-install scoped credentials were inert
 and pack installs kept using the shared credential the module was written to
 replace. These tests drive the REAL install path (`_download_verify_install`,
 both the sync plugin one and the async `sync_entitled_packs` one) against a real
 in-memory tarball, and assert the credential lifecycle actually fires.
 
-They are the regression guard for D-826: delete the wiring and these fail.
+They are the regression guard for the credential-wiring contract: delete the wiring and these fail.
 """
 from __future__ import annotations
 

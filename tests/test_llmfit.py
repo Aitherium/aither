@@ -396,7 +396,7 @@ class TestLLMFitClientRecommendConfig:
         generation_tiers = ("fast", "balanced", "reasoning", "coding")
         for tier in generation_tiers:
             assert config[tier]["provider"] == "ods"
-        # CONTRACT CHANGE (D-916): the four generation tiers must not collapse
+        # CONTRACT CHANGE: the four generation tiers must not collapse
         # to ONE model — calling resolve() once per tier used to return the same
         # pick every time.
         #
@@ -672,7 +672,7 @@ class TestOdsBackendMapping:
         config = await client.recommend_config()
         assert "error" not in config
         # 24GB VRAM must yield a substantial model, not a ~3B RAM-tier fallback.
-        # Asserted on `balanced`, NOT `fast`: since D-916 the fast tier is
+        # Asserted on `balanced`, NOT `fast`: since the tier-contract change the fast tier is
         # deliberately a small low-latency model on every box, so it can no
         # longer discriminate a mis-sized envelope. With the backend map broken
         # (cuda_12 -> cpu) capacity collapses to 8GB and balanced drops to ~2B,
@@ -718,7 +718,7 @@ class TestOdsBackendMapping:
         # ...and must NOT publish the cpu_x86 default (70GB/s) as this card's
         # bandwidth. Upstream enumerates no `intel` vendor, so the classifier
         # falls back to that default; reporting it as fact is ~6x wrong for an
-        # Arc B580. None is the honest answer (D-953).
+        # Arc B580. None is the honest answer.
         assert config["hardware"]["bandwidth_gbps"] is None, config["hardware"]
 
 
@@ -750,7 +750,7 @@ class TestLlmRouterTierResolution:
             assert model, f"{tier} did not resolve (dead is_available() gate is back?)"
             assert "/" not in model, f"{tier} returned an HF-style name: {model}"
 
-        # D-916: small/medium/large map to fast/balanced/reasoning, which used
+        # small/medium/large map to fast/balanced/reasoning, which used
         # to be the same model three times. Bound is host-derived for the same
         # reason as in TestLLMFitClientRecommendConfig — on a machine where only
         # two agent-viable models fit, converging is the correct answer, not the

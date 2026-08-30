@@ -122,8 +122,15 @@ def focus(pid: int) -> tuple[bool, str]:
     return True, (f"focused — look for the tab: {tab}" if tab else "focused the terminal")
 
 
-def open_terminal(cwd: str) -> tuple[bool, str]:
-    """Open a NEW terminal at ``cwd``. Not the same tab, and it says so."""
+def open_terminal(cwd: str, app: str = "") -> tuple[bool, str]:
+    """Open a NEW terminal at ``cwd``. Not the same tab, and it says so.
+
+    ``app`` selects WHAT runs in it. The default is the platform's own shell —
+    the awsh/AitherShell daily driver (``aither``, npm @aitherium/awsh) when
+    installed, so "Open a terminal here" starts a live fleet session, not a
+    bare prompt (owner 2026-08-29: cards must manage the real shell, not just
+    Claude tabs). Pass ``app="shell"`` for a plain terminal.
+    """
     directory = cwd or os.getcwd()
     if not os.path.isdir(directory):
         return False, f"no such directory: {directory}"
@@ -133,6 +140,10 @@ def open_terminal(cwd: str) -> tuple[bool, str]:
     candidates: list[list[str]] = []
     if os.name == "nt":
         if shutil.which("wt.exe"):
+            if app != "shell" and shutil.which("aither"):
+                # The awsh shell, live in a new tab at the card's directory —
+                # the "Open a terminal here" that starts a FLEET session.
+                candidates.append(["wt.exe", "-d", directory, "aither"])
             candidates.append(["wt.exe", "-d", directory])
         candidates.append(["cmd.exe", "/c", "start", "", "powershell.exe", "-NoExit",
                            "-Command", f"Set-Location -LiteralPath '{directory}'"])

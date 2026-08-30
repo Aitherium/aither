@@ -343,12 +343,24 @@ def harvest_platform(card: DecisionCard) -> ContextSource:
 
 
 def harvest_fleet(card: DecisionCard) -> ContextSource:
-    """Container reality, when docker answers. Unhealthy first."""
+    """Container reality, when an engine answers. Unhealthy first.
+
+    Engine ladder (2026-08-29): this box runs rootful podman inside the WSL2
+    Debian distro; Docker Desktop answers API 500 / "not found". The first
+    version shelled `docker` only, so every card's Fleet panel read "docker
+    did not answer" while ~140 containers ran. Try docker, then the podman
+    lane, and only report dead when BOTH cannot answer.
+    """
     src = ContextSource(name="fleet", title="Fleet")
     code, out = _run(
         ["docker", "ps", "--format", "{{.Names}}\x1f{{.Status}}"], timeout=5)
     if code != 0:
-        src.detail = out[:200] or "docker did not answer"
+        code, out = _run([
+            "wsl", "-d", "Debian", "-u", "root", "--",
+            "podman", "ps", "--format", "{{.Names}}\x1f{{.Status}}",
+        ], timeout=10)
+    if code != 0:
+        src.detail = out[:200] or "no container engine answered (docker + podman)"
         return src
     rows = []
     for line in out.splitlines():
@@ -361,7 +373,7 @@ def harvest_fleet(card: DecisionCard) -> ContextSource:
     items = [ContextItem(label=name, body=status) for name, status in rows]
     _cap(src, items)
     if src.status == STATUS_EMPTY:
-        src.detail = "docker answered with no running containers"
+        src.detail = "no container engine answered with running containers"
     return src
 
 

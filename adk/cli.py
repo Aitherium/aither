@@ -12052,10 +12052,18 @@ def build_command_manifest() -> list[dict]:
 
 def _extract_arg(act) -> dict:
     """Extract argument info from an argparse action."""
+    # required is computed, never read from argparse's attribute: 3.10 and
+    # 3.12 DISAGREE on the value for nargs='*'/REMAINDER positionals (3.10
+    # reports True, 3.12 False — measured 2026-08-28 on `image prompt`,
+    # `decide_args`, `shell_args`, `platform_args`), so the doc generated
+    # under one interpreter went STALE in CI under the other. A positional
+    # is required only when nargs is absent (or a positive count); '*' '?'
+    # and REMAINDER are all zero-or-more.
     ai = {
         "name": act.dest,
         "flags": act.option_strings or [],
-        "required": getattr(act, "required", not bool(act.option_strings)),
+        "required": (act.required if bool(act.option_strings)
+                     else (act.nargs not in ("?", "*", argparse.REMAINDER))),
         "type": act.type.__name__ if act.type else "str",
         "default": act.default if act.default != argparse.SUPPRESS else None,
         "help": act.help or "",
@@ -12118,7 +12126,7 @@ def _register_commands(sub):
     # adk image — generate on local backends (ComfyUI/Sana/SD.Next). The handler
     # lives in adk/images.py (cmd_image) so the daemon and the CLI share one
     # implementation; this was the wiring the local-image-generation skill
-    # advertised for months while nothing registered it (ONB006, 2026-08-25).
+    # advertised for months while nothing registered it (2026-08-25).
     image_p = sub.add_parser(
         "image", help="Generate an image on a local backend (ComfyUI/Sana/SD.Next)")
     image_p.add_argument("--backends", action="store_true",
@@ -13365,7 +13373,7 @@ def _register_commands(sub):
         help="Bearer token for API calls (auto-resolved from ~/.aither/config.json if not given)"
     )
 
-    # adk mesh federation-token — mint the relay AITHER_NODE_TOKEN (D-699 self-service)
+    # adk mesh federation-token — mint the relay AITHER_NODE_TOKEN (self-service)
     mesh_fedtok_p = mesh_sub.add_parser(
         "federation-token",
         help="Mint your node's relay-federation token (AITHER_NODE_TOKEN for the community hub)"

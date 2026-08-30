@@ -703,8 +703,18 @@ class TestFitReasonStrings:
 
             # Get models from both scenarios
             # In scenario 1, models can fall back to CPU, so they're "runs_tight" not "will_not_run"
-            cpu_fallback = [f for f in result_vram if f.can_run_on_cpu]
-            rejected_ram = [f for f in result_ram if f.classification == "will_not_run"]
+            # Disk-rejected models carry a DISK reason ("Not enough disk space"),
+            # which is accurate -- the keyword assertions below are about WHY a
+            # model falls back to CPU / is RAM-rejected, so they must only see
+            # models that were NOT disk-rejected. Measured 2026-08-29 on a
+            # disk-full runner (0.5 GB free): every model was disk-rejected,
+            # every cpu-fallback reason became a disk string, and the keyword
+            # assert failed for an environment reason, not a code one.
+            cpu_fallback = [f for f in result_vram
+                            if f.can_run_on_cpu and f.classification == "runs_tight"]
+            rejected_ram = [f for f in result_ram
+                            if f.classification == "will_not_run"
+                            and "disk" not in f.reason.lower()]
 
             assert len(cpu_fallback) > 0, "Should have models that fall back to CPU"
             assert len(rejected_ram) > 0, "Should have models rejected due to RAM shortage"

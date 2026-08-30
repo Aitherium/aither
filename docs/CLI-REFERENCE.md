@@ -18,7 +18,7 @@ describe a command that does not exist, and cannot omit one that does.
 Run `adk <command> --help` for the authoritative, always-current detail.
 
 
-**95 commands.**
+**97 commands.**
 
 | command | what it does |
 |---|---|
@@ -61,6 +61,7 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk grid`](#adk-grid) | Manage grid distributed nodes (add, remove, list, test, sync) |
 | [`adk harness`](#adk-harness) | AitherShell — drive Claude Code, other coding harnesses, agents and real terminals |
 | [`adk host`](#adk-host) | Host a self-hosted agent (your model key) + connect it to your fleet — one command |
+| [`adk image`](#adk-image) | Generate an image on a local backend (ComfyUI/Sana/SD.Next) |
 | [`adk index`](#adk-index) | Index a codebase for code search (CodeGraph) |
 | [`adk ingest`](#adk-ingest) | Ingest files into the agent's knowledge graph |
 | [`adk init`](#adk-init) | Scaffold a new agent project |
@@ -80,6 +81,7 @@ Run `adk <command> --help` for the authoritative, always-current detail.
 | [`adk onboard`](#adk-onboard) | Interactive onboarding — detect, configure, integrate |
 | [`adk pack`](#adk-pack) | Manage ToolPack extensions (list, search, install, remove, info) |
 | [`adk packs`](#adk-packs) | List available agent packs |
+| [`adk pair`](#adk-pair) | Pair this machine with the portal as an inference node (6-char code from the portal) |
 | [`adk platform`](#adk-platform) | Internal platform toolkit (merged from aither-platform) |
 | [`adk publish`](#adk-publish) | Publish agent to Elysium marketplace |
 | [`adk publish-preflight`](#adk-publish-preflight) | Check a package can actually be published: an interpreter that meets requires-python, and a wheel that installs AND imports |
@@ -587,6 +589,24 @@ Host a self-hosted agent (your model key) + connect it to your fleet — one com
 | `--no-register` | str |  | `false` | Run locally only — no tunnel, no fleet registration |
 | `--dry-run` | str |  | `false` | Show what would happen without starting anything |
 
+## `adk image`
+
+Generate an image on a local backend (ComfyUI/Sana/SD.Next)
+
+| option | type | required | default | description |
+|---|---|---|---|---|
+| `--backends` | str |  | `false` | list which lanes can actually generate |
+| `<prompt>` | str |  |  | what to draw |
+| `--width` | int |  | `768` |  |
+| `--height` | int |  | `768` |  |
+| `--steps` | int |  | `20` |  |
+| `--cfg` | float |  | `6.0` |  |
+| `--seed` | int |  |  |  |
+| `--model` | str |  |  | checkpoint to use |
+| `--backend` | str |  |  | force a lane id |
+| `--negative` | str |  |  |  |
+| `--out` | str |  |  | output PNG path |
+
 ## `adk index`
 
 Index a codebase for code search (CodeGraph)
@@ -817,6 +837,15 @@ Manage ToolPack extensions (list, search, install, remove, info)
 ## `adk packs`
 
 List available agent packs
+
+## `adk pair`
+
+Pair this machine with the portal as an inference node (6-char code from the portal)
+
+| option | type | required | default | description |
+|---|---|---|---|---|
+| `<code>` | str | yes |  | Pairing code shown in the signed-in portal tab |
+| `--portal` | str |  |  | Portal base URL (default: https://portal.aitherium.com) |
 
 ## `adk platform`
 

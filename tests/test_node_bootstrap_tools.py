@@ -470,7 +470,7 @@ class TestMaskToken:
 class TestRenderComposeServeArgs:
     """_render_compose must never SILENTLY drop a recipe's serve_args.
 
-    Regression for D-931: engine 'llamacpp' had no branch, so it fell into the
+    Regression for the engine-selection contract: engine 'llamacpp' had no branch, so it fell into the
     env-driven `else` whose filter requires ("=" in a and " " not in a). Every
     flag-style arg ("--ctx-size 32768", "--reasoning-budget 256", ...) matched
     nothing, `command` was omitted entirely, and the service silently inherited
@@ -497,7 +497,7 @@ class TestRenderComposeServeArgs:
         }
 
     def test_llamacpp_serve_args_reach_the_command(self):
-        """Every flag AND its value survives into argv (the D-931 regression)."""
+        """Every flag AND its value survives into argv (the engine-selection regression)."""
         out = tools._render_compose("cpu-1bit-llamacpp", self._llamacpp_recipe())
         assert "command:" in out, "llamacpp emitted no command at all"
         argv = json.loads(out.split("command: ")[1].split("\n")[0])

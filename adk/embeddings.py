@@ -106,6 +106,18 @@ def _flag(name: str, default: bool) -> bool:
     return v.strip().lower() in ("1", "true", "on", "yes", "auto")
 
 
+def _local_vllm_host(port: int) -> str:
+    """The host to dial for a local vLLM embeddings worker.
+
+    Inside a container, ``localhost`` is the container itself — the fleet
+    name is the only reachable spelling. Outside, the port is published on
+    the host loopback. Same marker as lib.core.AitherPorts._container_marker.
+    """
+    if os.path.exists("/run/.containerenv"):
+        return f"aither-vllm-embeddings:{port}"
+    return f"localhost:{port}"
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Feature-hash fallback (offline, zero-dep, DEGRADED 384-d)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -246,9 +258,16 @@ class AdkEmbeddings:
         return base
 
     async def _try_local_vllm(self, port: int) -> bool:
-        """Probe a local vLLM embeddings worker on ``port``, HTTPS then HTTP."""
+        """Probe a local vLLM embeddings worker on ``port``, HTTPS then HTTP.
+
+        In-container the host is the FLEET NAME, never localhost — measured
+        2026-08-27/28: localhost inside a container is the container itself, so
+        adk's baked probe made genesis/worker/nexus/strata fall to the 384-d
+        degraded tail while the embeddings lane answered 200. Re-landed
+        2026-08-28 (the first landing was lost in the 08-27 worktree revert).
+        """
         for scheme in ("https", "http"):
-            if await self._try_openai_endpoint(f"{scheme}://localhost:{port}"):
+            if await self._try_openai_endpoint(f"{scheme}://{_local_vllm_host(port)}"):
                 return True
         return False
 
