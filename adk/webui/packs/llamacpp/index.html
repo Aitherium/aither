@@ -303,61 +303,80 @@ button.stop{background:#c0392b}
     sid='web-'+Math.random().toString(36).slice(2);localStorage.setItem('adk_sid',sid);
     if(empty)empty.style.display='';input.focus();});
 
-  // ── On-device (WebGPU) backend — runs a small model in THIS browser on the GPU,
-  //    so light chats cost ZERO server compute. transformers.js loads in a blob module
-  //    worker (UI never freezes) from the CDN (local GUI, no CSP). First message triggers
-  //    a one-time ~900MB download, then it's cached. Single history kept per page.
-  var odWorker=null, odFiles={}, odHistory=[], odLoaded=false, odEl=null;
+  // ── On-device (WebGPU) backend — the SHARED Bonsai brain, the same runtime
+  //    aitherium.com and the Living OS use. bonsai-worker.js is built from the awkit
+  //    webml library (apps/packages/awkit/src/webml/bonsai-worker-entry.ts); weights
+  //    stream from weights.aitherium.com (Range + immutable cache: one download,
+  //    cached forever). modelId:'auto' = the library sizes the model for this device.
+  //    Protocol: load -> progress* -> ready -> generate -> token* (thinking|answer|tool)
+  //    -> done. Single history kept per page.
+  var odWorker=null, odLoaded=false, odEverLoaded=false, odEl=null, odAcc='', odPending=null, odLastUser='', odHistory=[];
   function odEnsure(){
     if(odWorker) return odWorker;
-    var src='import {pipeline,TextStreamer} from "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.0";'+
-      'let g=null;self.onmessage=async(e)=>{const m=e.data;if(m.type!=="chat")return;try{'+
-      'if(!g){g=await pipeline("text-generation","google/gemma-4-E2B-it-qat-mobile-transformers",{device:"webgpu",dtype:"q4",'+
-      'progress_callback:p=>{if(p&&p.status==="progress")self.postMessage({type:"progress",file:p.file,loaded:p.loaded,total:p.total});}});'+
-      'self.postMessage({type:"ready"});}'+
-      'const s=new TextStreamer(g.tokenizer,{skip_prompt:true,skip_special_tokens:true,callback_function:t=>self.postMessage({type:"token",text:t})});'+
-      'await g(m.messages,{max_new_tokens:m.maxTokens||512,do_sample:(m.temperature||0)>0,temperature:m.temperature||1,streamer:s});'+
-      'self.postMessage({type:"done"});}catch(err){self.postMessage({type:"error",message:String((err&&err.message)||err)});}};';
-    odWorker=new Worker(URL.createObjectURL(new Blob([src],{type:'text/javascript'})),{type:'module'});
+    odWorker=new Worker('/packs/llamacpp/bonsai-worker.js',{type:'module'});
+    odWorker.onmessage=function(e){
+      var m=e.data;
+      if(m.type==='progress'){
+        if(odEl){ var pct=typeof m.progress==='number'?Math.round(m.progress)+'%':'';
+          odEl.innerHTML='<span style="color:var(--dim)">On-device: '+(m.file?esc(m.file)+' ':'' )+pct+'</span>';
+          log.scrollTop=log.scrollHeight; }
+      }
+      else if(m.type==='ready'){ odLoaded=true;
+        if(odEl){ odEl.innerHTML='<span style="color:var(--dim)">Model ready — compiling…</span>'; }
+        if(odPending){ var t=odPending; odPending=null; odGenerate(t); }
+      }
+      else if(m.type==='token'){ odAcc+=m.text; if(odEl){ odEl.innerHTML=md(odAcc); log.scrollTop=log.scrollHeight; } }
+      else if(m.type==='done'){ if(odEl){ odEl.classList.remove('cursor'); if(!odAcc)odEl.innerHTML='<span style="color:var(--dim)">(no response)</span>'; }
+        odHistory.push({role:'user',content:odLastUser}); odHistory.push({role:'assistant',content:odAcc});
+        odEl=null; setBusy(false); }
+      else if(m.type==='error'){ if(odEl){ odEl.classList.remove('cursor'); odEl.innerHTML='⚠ '+esc(m.message); } odEl=null; setBusy(false); }
+    };
+    // A worker the browser kills for memory posts nothing and may fire no error
+    // on some engines — without these the UI would sit at "generating" forever.
+    odWorker.onerror=function(){ if(odEl){ odEl.classList.remove('cursor'); odEl.innerHTML='⚠ On-device worker crashed — try again (the model stays cached).'; } odEl=null; setBusy(false); };
+    odWorker.onmessageerror=function(){ if(odEl){ odEl.classList.remove('cursor'); odEl.innerHTML='⚠ On-device worker protocol error.'; } odEl=null; setBusy(false); };
     return odWorker;
   }
   function sendOnDevice(text, el){
-    if(!('gpu' in navigator)){el.classList.remove('cursor');
-      el.innerHTML='⚠ WebGPU not available here — use Chrome or Edge (or pick another backend).';setBusy(false);return;}
-    // First use: make the one-time download explicit and get consent before fetching ~900MB.
+    if(!('gpu' in navigator)){ el.classList.remove('cursor');
+      el.innerHTML='⚠ WebGPU not available here — use Chrome or Edge (or pick another backend).'; setBusy(false); return; }
     if(!odLoaded){
       el.classList.remove('cursor');
-      el.innerHTML='<div style="color:var(--dim);line-height:1.55">⚡ <b>On-device</b> runs the model right here in your browser on your GPU — free, private, nothing leaves this machine. '+
-        'It needs a <b>one-time ~900&nbsp;MB download</b> the first time you use it (cached after — it never downloads again).</div>';
-      var go=document.createElement('button');go.textContent='Download & start  (~900 MB)';
-      go.style.cssText='margin-top:10px;padding:9px 16px;border-radius:8px;border:0;background:#3b82f6;color:#fff;cursor:pointer;font-size:14px';
-      go.addEventListener('click',function(){el.innerHTML='';el.classList.add('cursor');setBusy(true);odRun(text,el);});
-      el.appendChild(go);setBusy(false);return;
+      if(!odEverLoaded){
+        el.innerHTML='<div style="color:var(--dim);line-height:1.55">⚡ <b>On-device</b> runs the model right here in your browser on your GPU — free, private, nothing leaves this machine. '+
+          'It needs a <b>one-time download</b> the first time you use it (236&nbsp;MB–3.6&nbsp;GB, sized to your device; cached forever after).</div>';
+        var go=document.createElement('button');go.textContent='Download & start';
+        go.style.cssText='margin-top:10px;padding:9px 16px;border-radius:8px;border:0;background:#3b82f6;color:#fff;cursor:pointer;font-size:14px';
+        var el0=el, text0=text;
+        go.addEventListener('click',function(){ el0.innerHTML=''; el0.classList.add('cursor'); setBusy(true);
+          odEl=el0; odEnsure(); odWorker.postMessage({type:'load',modelId:'auto'}); odEverLoaded=true; odPending={text:text0}; });
+        el.appendChild(go); setBusy(false); return;
+      }
+      // Already downloaded once: reload silently (from the immutable cache, no
+      // re-download, no second consent).
+      el.innerHTML='<span style="color:var(--dim)">Reloading cached on-device model…</span>';
+      el.classList.add('cursor'); setBusy(true);
+      odEl=el; odEnsure(); odWorker.postMessage({type:'load',modelId:'auto'}); odPending={text:text};
+      return;
     }
-    odRun(text, el);
+    odGenerate({text:text,el:el});
   }
-  function odRun(text, el){
-    var w=odEnsure(), acc=''; odEl=el;
-    var msgs=[{role:'system',content:'You are the on-device helper. Be concise.'}].concat(odHistory).concat([{role:'user',content:text}]);
-    w.onmessage=function(e){
-      var m=e.data;
-      if(m.type==='progress'){ if(m.file&&m.total>0)odFiles[m.file]={loaded:m.loaded||0,total:m.total};
-        var fs=Object.values(odFiles),ld=fs.reduce(function(a,f){return a+f.loaded},0),tot=fs.reduce(function(a,f){return a+f.total},0);
-        var pct=tot>0?Math.round(ld/tot*100):0;
-        el.innerHTML='<span style="color:var(--dim)">Downloading on-device model… '+pct+'% · '+(ld/1048576|0)+' / '+(tot/1048576|0)+' MB (one-time, cached)</span>'; log.scrollTop=log.scrollHeight; }
-      else if(m.type==='ready'){ odLoaded=true; el.innerHTML='<span style="color:var(--dim)">Compiling on your GPU…</span>'; }
-      else if(m.type==='token'){ acc+=m.text; el.innerHTML=md(acc); log.scrollTop=log.scrollHeight; }
-      else if(m.type==='done'){ el.classList.remove('cursor'); if(!acc)el.innerHTML='<span style="color:var(--dim)">(no response)</span>';
-        odHistory.push({role:'user',content:text}); odHistory.push({role:'assistant',content:acc}); odEl=null; setBusy(false); }
-      else if(m.type==='error'){ el.classList.remove('cursor'); el.innerHTML='⚠ '+esc(m.message); odEl=null; setBusy(false); }
-    };
-    w.postMessage({type:'chat',messages:msgs,temperature:parseFloat(temp.value),maxTokens:parseInt(document.getElementById('maxtok').value,10)});
+  function odGenerate(t){
+    odAcc=''; odEl=t.el; odLastUser=t.text; odEl.classList.add('cursor'); setBusy(true);
+    if(!odWorker){ odEnsure(); }
+    if(!odLoaded){ // not loaded yet: queue and load (model stays cached between uses)
+      odEverLoaded=true; odPending={text:t.text};
+      odWorker.postMessage({type:'load',modelId:'auto'}); return; }
+    var msgs=[{role:'system',content:'You are the on-device helper. Be concise.'}].concat(odHistory).concat([{role:'user',content:t.text}]);
+    odWorker.postMessage({type:'generate',messages:msgs,
+      temperature:parseFloat(temp.value),maxTokens:parseInt(document.getElementById('maxtok').value,10)});
   }
-  // Stop for the on-device path: terminate the worker (it re-loads from browser cache next
-  // time — no re-download). Returns true if it handled a stop.
+  // Stop for the on-device path: terminate the worker (the model stays in the
+  // browser cache — the next use reloads it silently, no re-download).
   function odStop(){
     if(backendPick.value!=='ondevice') return false;
     if(odWorker){ odWorker.terminate(); odWorker=null; }
+    odLoaded=false;
     if(odEl){ odEl.classList.remove('cursor'); odEl.innerHTML=(odEl.innerHTML||'')+' <span style="color:var(--dim)">…[stopped]</span>'; odEl=null; }
     setBusy(false); return true;
   }

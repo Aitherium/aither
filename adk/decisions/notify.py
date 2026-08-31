@@ -106,10 +106,20 @@ def _xml_escape(text: str) -> str:
 
 
 def _windows_toast(title: str, body: str, *, urgency: str = "normal") -> Optional[str]:
-    """Raise a native Windows toast. Returns an error string, or None on success."""
-    scenario = ' scenario="urgent"' if urgency == "critical" else ""
+    """Raise a native Windows toast. Returns an error string, or None on success.
+
+    Never mark the toast urgent: Windows 11 answers an urgent toast with a
+    DND-bypass "Allow important notifications" permission dialog on every
+    raise (measured 2026-08-29) — the popup/DM planes carry critical cards;
+    the toast is decoration and must not declare itself important.
+    """
+    # The toast is DECORATION and is not clickable: no activationType/launch.
+    # A launch URL with no registered protocol handler turns a click into
+    # Windows' "You'll need a new app to open this" error — measured 2026-08-30
+    # on the owner's box with `launch='aither-decide://open'` and no handler.
+    # The card WINDOW is the clickable channel; a toast cannot host controls.
     xml = (
-        f"<toast{scenario} activationType='protocol' launch='aither-decide://open'>"
+        "<toast>"
         "<visual><binding template='ToastGeneric'>"
         f"<text>{_xml_escape(title)}</text>"
         f"<text>{_xml_escape(body)}</text>"

@@ -22,10 +22,22 @@ from typing import Any
 
 import httpx
 from urllib.parse import quote
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi import (
+    FastAPI,
+    HTTPException,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import Response
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    PlainTextResponse,
+    StreamingResponse,
+)
 
 from adk import __version__
 from adk._tls import tls_verify
@@ -2109,6 +2121,26 @@ def create_app(
         # <pack>` or drop a folder in ~/.aither/ui-packs/. Never blank — falls
         # back console -> minimal.
         return HTMLResponse(load_ui_pack())
+
+    @app.get("/packs/{pack_name}/{asset_path:path}", response_class=FileResponse)
+    async def pack_asset(pack_name: str, asset_path: str):
+        """Static assets for a UI pack (e.g. the on-device Bonsai worker).
+
+        The pack's index.html is served as a STRING (load_ui_pack); its sibling
+        files were served by nothing, which is why the old on-device backend
+        inlined its runtime as a blob. Drop-in dir wins, then the packaged dir.
+        Traversal is refused, and an asset that does not exist is a 404 — never
+        a fallback to the index (a missing worker must be loud, not a page).
+        """
+        if not asset_path or ".." in asset_path or "\\" in asset_path or asset_path.startswith("/"):
+            raise HTTPException(status_code=404, detail="no such asset")
+        base = _ui_packs_dir()
+        cand = os.path.join(base, pack_name, asset_path)
+        if not os.path.isfile(cand):
+            cand = os.path.join(os.path.dirname(__file__), "webui", "packs", pack_name, asset_path)
+        if not os.path.isfile(cand):
+            raise HTTPException(status_code=404, detail="no such asset")
+        return FileResponse(cand)
 
     @app.get("/ui", response_class=HTMLResponse)
     async def console_page_alias():
