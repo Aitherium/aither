@@ -85,6 +85,14 @@ DEFAULT_ORIGINS = (
     "https://portal.aitherium.com",
     "https://veil.aitherium.com",
     "https://tunnel.aitherium.com",
+    # The Aither Hub (gobbonet.aitherium.com + apex /gobbonet/): the browser
+    # page on the user's machine reaches this daemon over 127.0.0.1:8362 —
+    # the same local-first pattern as the GobboNet probe ladder. Tenant
+    # portal mirrors (garg/dgg) use AITHER_HARNESS_ALLOWED_ORIGINS; the
+    # daemon cannot enumerate them.
+    "https://gobbonet.aitherium.com",
+    # Vite dev server for the hub frontend.
+    "http://127.0.0.1:5173",
 )
 
 
@@ -458,6 +466,71 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
             "spool": default_tailer().stats(),
             "transcripts": default_bridge().stats(),
             "well": default_well().stats(),
+        }
+
+    # ── the HUB contract (Aither Hub — gobbonet) ───────────────────────────
+    # The hub is a browser page on the user's machine. It cannot hold
+    # ~/.aither/harness_token — that file stays machine-only — so it mints a
+    # short-lived HUB token through a route that is public like /health but
+    # triple-gated: the Origin must be an allowed origin (the CORS plane
+    # already refuses random sites), the Host must be loopback (DNS-rebinding
+    # guard: a random website's fetch carries the browser's cookies but the
+    # Host header is ITS host, which fails here), and the token expires in
+    # 15 minutes. The browser holds it in sessionStorage and refreshes on 401.
+    import secrets as _secrets
+    import time as _time
+    hub_tokens: dict[str, float] = {}  # token -> expires_at
+
+    def hub_auth(authorization: str = Header(default="")) -> None:
+        if not authorization:
+            raise HTTPException(status_code=401, detail="missing bearer token")
+        scheme, _, value = authorization.partition(" ")
+        if scheme.lower() != "bearer" or not value:
+            raise HTTPException(status_code=401, detail="malformed Authorization header")
+        expires = hub_tokens.get(value.strip())
+        if expires is None or _time.time() > expires:
+            raise HTTPException(status_code=401, detail="hub token missing or expired")
+        now = _time.time()
+        for t in [t for t, e in hub_tokens.items() if now > e]:
+            hub_tokens.pop(t, None)
+
+    @app.post("/hub/token")
+    def hub_token(request: Request) -> dict[str, Any]:
+        origin = request.headers.get("origin", "")
+        host = request.headers.get("host", "")
+        if not origin or origin not in origins:
+            raise HTTPException(status_code=403, detail="origin not allowed")
+        hostname = host.split(":")[0].strip("[]").lower()
+        if hostname not in ("127.0.0.1", "localhost", "::1"):
+            raise HTTPException(status_code=403, detail="loopback host required")
+        tok = _secrets.token_urlsafe(32)
+        hub_tokens[tok] = _time.time() + 15 * 60
+        return {
+            "token": tok,
+            "expires_at": hub_tokens[tok],
+            "scope": ["sessions:read", "sessions:write", "decisions:read",
+                      "decisions:write", "rooms:read", "rooms:write"],
+        }
+
+    @app.get("/hub/manifest", dependencies=[Depends(hub_auth)])
+    def hub_manifest() -> dict[str, Any]:
+        # The surfaces this daemon serves the hub. Declared here so the hub
+        # auto-registers them while the daemon is present and unregisters on
+        # node loss (honest labelling — never claim online when offline).
+        return {
+            "panels": [
+                {"id": "sessions", "title": "Sessions", "icon": "🖥️",
+                 "auth": "local", "statusSourceId": "daemon"},
+                {"id": "decisions", "title": "Decisions", "icon": "🗳️",
+                 "auth": "local", "statusSourceId": "decisions"},
+            ],
+            "statusSources": [
+                {"id": "daemon", "label": "harness daemon",
+                 "degrade": "no harness daemon on this machine"},
+                {"id": "decisions", "label": "decision cards",
+                 "degrade": "daemon unreachable - cards cannot load"},
+            ],
+            "rooms": [],
         }
 
     # ── discovery ───────────────────────────────────────────────────────────

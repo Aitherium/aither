@@ -173,6 +173,24 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"status": "ok"})
             return
 
+        if path == "/hub-manifest":
+            # The Aither Hub contract (HUB-CONTRACT.md): this server is the
+            # agentic GobboNet backend, so it declares the surfaces the hub
+            # should merge while `adk up` serves it. The hub auto-registers
+            # these while the node is present and degrades honestly on loss.
+            self._json({
+                "panels": [],
+                "statusSources": [
+                    {"id": "agentic", "label": "gobbonet agentic backend",
+                     "degrade": "no local GobboNet agentic backend"},
+                ],
+                "rooms": [
+                    {"id": "agentic", "name": "Agentic GobboNet",
+                     "kind": "chat", "panelId": "chat"},
+                ],
+            })
+            return
+
         if path in ("/v1/models", "/models"):
             try:
                 self._json({"data": self.engine.models(), "object": "list"})
