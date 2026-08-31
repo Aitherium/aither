@@ -24,37 +24,37 @@ sha256sum -c <pack>-<version>.sha256
 ```
 
 
-Built from `v3.8.10` (adk 3.8.10).
+Built from `v3.8.11` (adk 3.8.11).
 
 | Pack | Version | Download | Size | What it is |
 |---|---|---|---|---|
-| **[Aither System Orchestrator](packs/aither.md)** | `3.8.10` | [aither-3.8.10.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.10/aither-3.8.10.tar.gz) | 4.4 KB | Aither — System Overseer & Orchestrator Brain Pack |
-| **[Analyst Studio](packs/analyst.md)** | `3.8.10` | [analyst-3.8.10.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.10/analyst-3.8.10.tar.gz) | 5.3 KB | Analyst — Data & Structured-ML Agent Brain Pack |
-| **[BeadSpace](packs/bead-space.md)** | `3.8.10` | [bead-space-3.8.10.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.10/bead-space-3.8.10.tar.gz) | 1.5 KB | BeadSpace — an aither-adk agent pack for bead-space |
-| **[Claude Code Studio](packs/claude-code.md)** | `3.8.10` | [claude-code-3.8.10.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.10/claude-code-3.8.10.tar.gz) | 5.0 KB | Claude Code — Software Development Agent Brain Pack |
-| **[GobboPack](packs/gobbonet.md)** | `3.8.10` | [gobbonet-3.8.10.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.10/gobbonet-3.8.10.tar.gz) | 45.7 KB | GobboNet Companion — an agent harness for a local-first chat client |
-| **[Hermes Architecture Studio](packs/hermes.md)** | `3.8.10` | [hermes-3.8.10.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.10/hermes-3.8.10.tar.gz) | 4.9 KB | Hermes — Architecture & Reasoning Agent Brain Pack |
-| **[Iris Visual Artisan](packs/iris.md)** | `3.8.10` | [iris-3.8.10.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.10/iris-3.8.10.tar.gz) | 8.2 KB | Iris — Visual Artisan Brain Pack |
-| **[OpenClaw Research Studio](packs/openclaw.md)** | `3.8.10` | [openclaw-3.8.10.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.10/openclaw-3.8.10.tar.gz) | 5.1 KB | OpenClaw — Web Research Agent Brain Pack |
-| **[Persona](packs/persona.md)** | `3.8.10` | [persona-3.8.10.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.10/persona-3.8.10.tar.gz) | 1.5 KB | Persona — an aither-adk agent pack for persona |
+| **[Aither System Orchestrator](packs/aither.md)** | `3.8.11` | [aither-3.8.11.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.11/aither-3.8.11.tar.gz) | 4.4 KB | Aither — System Overseer & Orchestrator Brain Pack |
+| **[Analyst Studio](packs/analyst.md)** | `3.8.11` | [analyst-3.8.11.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.11/analyst-3.8.11.tar.gz) | 5.3 KB | Analyst — Data & Structured-ML Agent Brain Pack |
+| **[BeadSpace](packs/bead-space.md)** | `3.8.11` | [bead-space-3.8.11.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.11/bead-space-3.8.11.tar.gz) | 1.5 KB | BeadSpace — an aither-adk agent pack for bead-space |
+| **[Claude Code Studio](packs/claude-code.md)** | `3.8.11` | [claude-code-3.8.11.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.11/claude-code-3.8.11.tar.gz) | 5.0 KB | Claude Code — Software Development Agent Brain Pack |
+| **[GobboPack](packs/gobbonet.md)** | `3.8.11` | [gobbonet-3.8.11.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.11/gobbonet-3.8.11.tar.gz) | 45.7 KB | GobboNet Companion — an agent harness for a local-first chat client |
+| **[Hermes Architecture Studio](packs/hermes.md)** | `3.8.11` | [hermes-3.8.11.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.11/hermes-3.8.11.tar.gz) | 4.9 KB | Hermes — Architecture & Reasoning Agent Brain Pack |
+| **[Iris Visual Artisan](packs/iris.md)** | `3.8.11` | [iris-3.8.11.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.11/iris-3.8.11.tar.gz) | 8.2 KB | Iris — Visual Artisan Brain Pack |
+| **[OpenClaw Research Studio](packs/openclaw.md)** | `3.8.11` | [openclaw-3.8.11.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.11/openclaw-3.8.11.tar.gz) | 5.1 KB | OpenClaw — Web Research Agent Brain Pack |
+| **[Persona](packs/persona.md)** | `3.8.11` | [persona-3.8.11.tar.gz](https://github.com/Aitherium/aither-adk/releases/download/v3.8.11/persona-3.8.11.tar.gz) | 1.5 KB | Persona — an aither-adk agent pack for persona |
 
 ## Contents
 
-- **aither** `3.8.10` — skills  
-  `sha256:67f479a68bebc977…`
-- **analyst** `3.8.10` — agent config, skills  
-  `sha256:759216b9acb200e3…`
-- **bead-space** `3.8.10` — brain pack only  
-  `sha256:1db2b97e26734ecc…`
-- **claude-code** `3.8.10` — agent config, skills  
-  `sha256:eafd1dd2ad6c8b1e…`
-- **gobbonet** `3.8.10` — agent config, Python  
-  `sha256:453eb8f251975df0…`
-- **hermes** `3.8.10` — agent config, skills  
-  `sha256:72fc26120cb56518…`
-- **iris** `3.8.10` — skills  
-  `sha256:118a8da59d7f5366…`
-- **openclaw** `3.8.10` — agent config, skills  
-  `sha256:c5d4cd25d3b074c5…`
-- **persona** `3.8.10` — brain pack only  
-  `sha256:41ce57b270484288…`
+- **aither** `3.8.11` — skills  
+  `sha256:b791f4d17bd7cf61…`
+- **analyst** `3.8.11` — agent config, skills  
+  `sha256:315814f13bf9802a…`
+- **bead-space** `3.8.11` — brain pack only  
+  `sha256:018ec667804e76cd…`
+- **claude-code** `3.8.11` — agent config, skills  
+  `sha256:a0e35eee11afdd87…`
+- **gobbonet** `3.8.11` — agent config, Python  
+  `sha256:f2698f3d44ca9ecf…`
+- **hermes** `3.8.11` — agent config, skills  
+  `sha256:9dd22c6a85c3301a…`
+- **iris** `3.8.11` — skills  
+  `sha256:24f0a966e851c7c4…`
+- **openclaw** `3.8.11` — agent config, skills  
+  `sha256:2467d8a47629ee06…`
+- **persona** `3.8.11` — brain pack only  
+  `sha256:285d1d77b88135da…`
