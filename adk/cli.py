@@ -12352,6 +12352,18 @@ def _register_commands(sub):
     decide_p.add_argument("decide_args", nargs=argparse.REMAINDER,
                           help="ask | list | show | answer | cancel | watch | sweep")
 
+    # adk storage — the awstorage brick (scan / inventory / diff / propose / apply
+    # with a reversible quarantine). Same REMAINDER pass-through shape as `decide`:
+    # awstorage owns its own parser, so no flag is defined twice.
+    storage_p = sub.add_parser(
+        "storage",
+        help="Storage inventory — scan a drive, rank what fills it, diff, propose, apply",
+        add_help=False,
+    )
+    storage_p.add_argument("storage_args", nargs=argparse.REMAINDER,
+                           help="scan | inventory | diff | propose | approve | apply | "
+                                "quarantine | revert | graph")
+
     # adk harness — AitherShell core: one shell that drives every coding shell
     shell_p = sub.add_parser(
         "harness",
@@ -14688,6 +14700,11 @@ def main():
     if len(sys.argv) > 1 and sys.argv[1] == "decide":
         from adk.decisions.cli import main as decide_main
         sys.exit(decide_main(sys.argv[2:]))
+    # Same shape for `adk storage`: leading flags (`adk storage --self-test`) must
+    # reach awstorage's own parser, not die as unknown options of this one.
+    if len(sys.argv) > 1 and sys.argv[1] == "storage":
+        from adk.storage_cmd import main as storage_main
+        sys.exit(storage_main(sys.argv[2:]))
 
     parser = argparse.ArgumentParser(
         prog="adk",

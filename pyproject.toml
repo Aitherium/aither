@@ -152,7 +152,9 @@ embedding = [
     "sentence-transformers>=2.3.0",
     "torch>=2.0.0",
 ]
-node = ["mcp>=1.0", "starlette>=0.36"]
+node = ["mcp>=1.28,<2", "starlette>=0.36"]
+# `adk storage` is a pass-through to the awstorage brick (adk/storage_cmd.py).
+storage = ["awstorage>=0.1.0"]
 pdf = ["pypdf>=4.0", "fpdf2>=2.7"]
 # ARC world-model contribution: the bundled arc-brainpack pack registers/streams
 # transitions with only core deps (httpx); PLAYING ARC to generate transitions
