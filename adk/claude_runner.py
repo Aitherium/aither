@@ -4,7 +4,7 @@ This module lets an orchestrator (AitherOS Genesis, another agent, or a human vi
 `adk claude spawn`) dispatch tightly scoped, headless Claude Code subagents and
 collect their results. It is the shared backend behind BOTH frontends:
 
-- HTTP daemon: ``adk claude serve`` (default 127.0.0.1:8360, Bearer-token auth)
+- HTTP daemon: ``adk claude serve`` (default 127.0.0.1:8365, Bearer-token auth)
 - CLI client:  ``adk claude spawn|runs|kill``
 
 Each run gets an isolated workspace (generated ``--settings`` permission
@@ -31,7 +31,7 @@ kill) run concurrently; every record load-modify-save cycle MUST hold
 Environment (all optional):
 - AITHER_CLAUDE_RUNNER_ROOT: state root (default ~/.aither/claude-runner)
 - AITHER_CLAUDE_RUNNER_TOKEN: Bearer token for the daemon
-- AITHER_CLAUDE_RUNNER_PORT / _HOST: bind address (default 127.0.0.1:8360)
+- AITHER_CLAUDE_RUNNER_PORT / _HOST: bind address (default 127.0.0.1:8365)
 - AITHER_CLAUDE_RUNNER_MAX_CONCURRENCY: parallel runs (default 2)
 - AITHER_CLAUDE_RUNNER_QUEUE_MAX: queued runs before 503 (default 8)
 - AITHER_CLAUDE_RUNNER_GATEWAY_HOSTS: comma list of allowed MCP hosts
@@ -83,7 +83,7 @@ try:
 except ImportError:
     _SELFGRAPH_AVAILABLE = False
 
-DEFAULT_PORT = 8360
+DEFAULT_PORT = 8365
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_MAX_CONCURRENCY = 2
 DEFAULT_QUEUE_MAX = 8
@@ -103,7 +103,17 @@ DEFAULT_SETTING_SOURCES = ""
 # Env vars matching this pattern are STRIPPED from the spawned subagent's
 # environment — most importantly the daemon's own Bearer token, which would
 # otherwise let a prompt-injected subagent call back into this API.
-_SENSITIVE_ENV_RE = re.compile(r"(?i)(token|secret|passw|api[_-]?key|credential)")
+_SENSITIVE_ENV_RE = re.compile(
+    r"(?i)(token|secret|passw|api[_-]?key|credential"
+    # Routing vars (2026-09-02): a spawned run must ALWAYS use the owner's default
+    # Claude backend - that is the whole reason spawn is owner-only. Measured: the
+    # runner process inherited its launcher's env, and only credential-shaped names
+    # were stripped, so an ANTHROPIC_BASE_URL exported where the task runs would
+    # have silently redirected every fleet-spawned run to another provider.
+    r"|^anthropic_(base_url|model|default_|custom_)"
+    r"|^claude_code_(max_|auto_|disable_|subagent|effort|enable_)"
+    r"|^enable_tool_search$)"
+)
 
 # Windows: CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP. NOT DETACHED_PROCESS —
 # the claude CLI on Windows is an npm .cmd shim, and cmd.exe HANGS when spawned
@@ -141,6 +151,30 @@ class ScopeError(ValueError):
 
 class QueueFullError(RunnerError):
     """Raised when the pending-run queue is at capacity."""
+
+
+def _default_mcp_config() -> dict[str, Any]:
+    """MCP config a run gets when its scope names none.
+
+    Until 2026-09-02 this was ``{"mcpServers": {}}``: a fleet-spawned Claude had
+    ZERO platform tools, so the "fleet drives Claude" lane could read files and
+    nothing else. The default now attaches the platform through the stdio bridge
+    when it is present beside this package (the bridge reads its own bearer, so no
+    secret is written here). ``--allowedTools`` still gates every call - a run
+    scoped to ``Read`` cannot invoke an MCP tool it was not granted - and
+    ``--strict-mcp-config`` still stops user/project config from leaking in.
+    Set AITHER_CLAUDE_RUNNER_DEFAULT_MCP=0 to restore the empty default.
+    """
+    if os.getenv("AITHER_CLAUDE_RUNNER_DEFAULT_MCP", "1").strip().lower() in ("0", "false", "no"):
+        return {"mcpServers": {}}
+    bridge = (Path(__file__).resolve().parents[2] / "AitherOS" / "dev" / "tools"
+              / "mcp_stdio_bridge.py")
+    if not bridge.exists():
+        return {"mcpServers": {}}
+    return {"mcpServers": {"aitheros": {
+        "type": "stdio", "command": sys.executable,
+        "args": [str(bridge), "--name", "aitheros-run"],
+    }}}
 
 
 def clean_subprocess_env(base: dict[str, str] | None = None) -> dict[str, str]:
@@ -642,7 +676,7 @@ class ClaudeRunner:
         # NEVER inherit MCP servers from user/project config. Empty by default.
         mcp_path = run_dir / "mcp.json"
         mcp_path.write_text(
-            json.dumps(scope.mcp_config or {"mcpServers": {}}, indent=2), encoding="utf-8"
+            json.dumps(scope.mcp_config or _default_mcp_config(), indent=2), encoding="utf-8"
         )
         return run_dir, workdir, settings_path
 
@@ -1196,8 +1230,14 @@ def create_app(runner: ClaudeRunner, token: str):
         return _record_view(rec)
 
     @app.get("/runs", dependencies=[Depends(_auth)])
-    async def list_runs() -> list[dict[str, Any]]:
-        return [_record_view(r) for r in runner.list()]
+    async def list_runs(goal_id: str | None = None) -> list[dict[str, Any]]:
+        # ?goal_id= was accepted and silently IGNORED until 2026-09-02: the
+        # first end-to-end proof of this lane had to filter 15 runs client-side
+        # to find its own. An ignored filter reads as "no runs for that goal".
+        views = [_record_view(r) for r in runner.list()]
+        if goal_id:
+            views = [v for v in views if v.get("goal_id") == goal_id]
+        return views
 
     @app.get("/runs/{run_id}", dependencies=[Depends(_auth)])
     async def get_run(run_id: str) -> dict[str, Any]:
@@ -1345,10 +1385,50 @@ $LogDir = Join-Path $Env:USERPROFILE ".aither\\logs"
 $LogFile = Join-Path $LogDir "claude-runner.log"
 New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
 
-# Run daemon (invoke with env vars, output to log)
-& python -m adk.cli claude serve `
-    --host $Env:AITHER_CLAUDE_RUNNER_HOST `
-    --port $Env:AITHER_CLAUDE_RUNNER_PORT 2>&1 | Add-Content -Path $LogFile
+# Check-then-serve (2026-09-02). The scheduled task re-runs this wrapper every
+# 5 minutes; without this probe every tick tried to bind a port already served
+# and logged Errno 10048 (256 times before it was noticed). A live runner means
+# exit 0 quietly - the same guard lives in the hand-edited live wrapper, and
+# this template is what regenerates it, so both must carry it.
+try {{
+    $Probe = Invoke-RestMethod -Uri "http://127.0.0.1:$Env:AITHER_CLAUDE_RUNNER_PORT/health" `
+        -TimeoutSec 2
+    if ($Probe.ok) {{
+        $Stamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+        Add-Content -Path $LogFile -Value ('{{"ts": "' + $Stamp + '", "level": "INFO", ' +
+            '"logger": "claude-runner-wrapper", "msg": "runner already serving - exiting"}}')
+        exit 0
+    }}
+}} catch {{ }}
+
+# Stale-kill (2026-09-02): a runner can WEDGE - alive, port released, /health dead -
+# and with MultipleInstances=IgnoreNew that instance kept the task "Running", so every
+# 5-minute tick was ignored. If we got here, /health did not answer: any serve is a zombie.
+Get-CimInstance Win32_Process |
+    Where-Object {{ $_.Name -eq 'python.exe' -and
+        $_.CommandLine -match 'adk[.]cli claude serve' }} |
+    ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }}
+
+# Inherited NODE_EXTRA_CA_CERTS may point at a retired tree; repoint to the live CA or drop.
+if ($Env:NODE_EXTRA_CA_CERTS -and -not (Test-Path $Env:NODE_EXTRA_CA_CERTS)) {{
+    $Ca = 'C:\\AitherOS-Data\\Library\\Data\\tls\\ca-chain.pem'
+    if (Test-Path $Ca) {{ $Env:NODE_EXTRA_CA_CERTS = $Ca }}
+    else {{ Remove-Item Env:NODE_EXTRA_CA_CERTS -ErrorAction SilentlyContinue }}
+}}
+
+# Detached launch: the task instance ends immediately (IgnoreNew can never mask a wedge)
+# and -u lands every log line as it is written instead of dying in a pipe buffer.
+$Out = Join-Path $LogDir "claude-runner.stdout.log"
+$Err = Join-Path $LogDir "claude-runner.stderr.log"
+Start-Process -FilePath python -WindowStyle Hidden `
+    -ArgumentList @('-u', '-m', 'adk.cli', 'claude', 'serve',
+                    '--host', $Env:AITHER_CLAUDE_RUNNER_HOST,
+                    '--port', $Env:AITHER_CLAUDE_RUNNER_PORT) `
+    -RedirectStandardOutput $Out -RedirectStandardError $Err
+$Stamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+Add-Content -Path $LogFile -Value ('{{"ts": "' + $Stamp + '", "level": "INFO", ' +
+    '"logger": "claude-runner-wrapper", "msg": "launched claude serve detached", ' +
+    '"stdout": "' + $Out + '"}}')
 """
 
 

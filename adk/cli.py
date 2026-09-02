@@ -12489,7 +12489,7 @@ def _register_commands(sub):
 
     cl_serve_p = claude_sub.add_parser("serve", help="Run the subagent runner daemon")
     cl_serve_p.add_argument("--host", default="", help="Bind host (default 127.0.0.1)")
-    cl_serve_p.add_argument("--port", type=int, default=0, help="Bind port (default 8360)")
+    cl_serve_p.add_argument("--port", type=int, default=0, help="Bind port (default 8365)")
     cl_serve_p.add_argument("--token", default="", help="Bearer token (default: resolved/generated)")
     cl_serve_p.add_argument("--register", action="store_true", help="Register as durable service")
     cl_serve_p.add_argument("--unregister", action="store_true", help="Unregister durable service")
@@ -12514,7 +12514,7 @@ def _register_commands(sub):
         help="Continue an existing session by id (requires --cwd, excludes --account)",
     )
     cl_spawn_p.add_argument("--goal", default="", help="Goal id to attribute this run to")
-    cl_spawn_p.add_argument("--url", default="", help="Runner URL (default http://127.0.0.1:8360)")
+    cl_spawn_p.add_argument("--url", default="", help="Runner URL (default http://127.0.0.1:8365)")
     cl_spawn_p.add_argument("--token", default="", help="Bearer token")
     cl_spawn_p.add_argument("--no-wait", action="store_true", help="Return run_id immediately")
 
