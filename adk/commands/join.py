@@ -319,7 +319,13 @@ async def join_mesh(
         print("    [6/10] Registering node with platform...")
         try:
             from adk.enrollment import rich_enroll
-            enroll_result = await rich_enroll()
+            from adk.fleet_enroll import _generate_node_id
+            # rich_enroll(base_url, token, node_id) — this call passed NOTHING
+            # until 2026-09-01, so step 6 raised TypeError on every run, was
+            # swallowed by the broad except below, and printed as "Node
+            # registration failed". `adk join` could never complete.
+            local_node_id = os.getenv("AITHER_NODE_NAME", "") or _generate_node_id()
+            enroll_result = await rich_enroll(identity_url, access_token, local_node_id)
             if enroll_result.get("error"):
                 print(
                     f"    [x] Node registration failed: "
@@ -330,9 +336,9 @@ async def join_mesh(
             print(f"    [x] Node registration failed: {e}")
             return 1
 
-        node_id = enroll_result.get("node_id", "")
+        node_id = enroll_result.get("node_id", "") or local_node_id
         if not node_id:
-            print(f"    [x] No node_id returned from enrollment")
+            print("    [x] No node_id returned from enrollment")
             return 1
 
         # ─ Obtain Mesh Key

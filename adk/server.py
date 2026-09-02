@@ -1016,6 +1016,251 @@ def create_app(
 
     # ─── Onboarding status endpoints (Awconnect extension) ───
 
+    # ── Browser handoff: let aitherium.com sign in as the user on THIS box ──
+    #
+    # The page that detected this daemon (Living OS, under the visitor's
+    # local-node opt-in) may ask WHO is signed in here and, on a click, for a
+    # one-time ticket it can redeem for a browser session. The daemon's own
+    # bearer never leaves this process: Identity `/auth/handoff/mint` is called
+    # from here, and only the 60-second ticket goes back to the page.
+    #
+    # Three gates, each independent of the CORS middleware above:
+    #   * TCP peer must be loopback. A header cannot forge a source address.
+    #   * Origin must be a first-party surface: the apex, or exactly one label
+    #     under it (idp., garg., the hosted sign-in page a tenant app lands
+    #     on). The Origin is returned and becomes the ticket's AUDIENCE: the
+    #     ticket Identity mints is stamped with it and redeems for that origin
+    #     only, so a tenant page cannot obtain a ticket for the apex and a
+    #     stranger's site cannot obtain one at all.
+    #   * AITHER_BROWSER_HANDOFF=0 turns the whole surface off (404).
+    # Note the auth middleware already lets loopback-without-forwarding-headers
+    # through, which is exactly what a browser fetch to 127.0.0.1 is.
+    _handoff_origins = frozenset({
+        "https://aitherium.com",
+        "https://www.aitherium.com",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    })
+    _handoff_origin_rule = re.compile(r"^https://[a-z0-9][a-z0-9-]*\.aitherium\.com$")
+    _handoff_loopback = frozenset({"127.0.0.1", "::1", "::ffff:127.0.0.1"})
+
+    def _handoff_guard(request: Request) -> str:
+        """Refuse anything but a loopback peer on a first-party origin; return the origin."""
+        if os.getenv("AITHER_BROWSER_HANDOFF", "1").strip().lower() in {"0", "false", "no", "off"}:
+            raise HTTPException(status_code=404, detail="browser handoff disabled on this node")
+        peer = getattr(getattr(request, "client", None), "host", None)
+        if peer not in _handoff_loopback:
+            raise HTTPException(status_code=403, detail="identity handoff is loopback-only")
+        origin = request.headers.get("origin", "")
+        if origin not in _handoff_origins and not _handoff_origin_rule.match(origin):
+            raise HTTPException(status_code=403, detail="origin not allowed for identity handoff")
+        return origin
+
+    def _handoff_profile() -> dict[str, Any] | None:
+        """The active ~/.aither/auth.json profile, or None if absent/expired."""
+        try:
+            from adk.auth import AuthStore, resolve_credentials
+            store = AuthStore()
+            prof = store.get_active_profile()
+            if not prof or not prof.get("access_token"):
+                return None
+            try:
+                if resolve_credentials(store=store).is_expired:
+                    return None
+            except (TypeError, ValueError) as exc:
+                # A naive/odd timestamp is not "signed out"; Identity is the
+                # authority on expiry and will refuse the mint if it is stale.
+                logger.debug("handoff profile expiry unparseable, deferring to Identity: %s", exc)
+            return prof
+        except Exception as exc:  # noqa: BLE001 — a broken auth.json is "not signed in"
+            logger.debug("handoff profile unreadable: %s", exc)
+            return None
+
+    def _handoff_identity_base(prof: dict[str, Any]) -> str:
+        base = (prof.get("endpoint") or "").rstrip("/")
+        if not base or base.startswith("http://127.0.0.1") or base.startswith("http://localhost"):
+            base = os.getenv(
+                "AITHER_IDP_URL", os.getenv("AITHER_IDP_BASE_URL", "https://idp.aitherium.com"),
+            ).rstrip("/")
+        # The IdP mounts Identity under /identity on the public host.
+        if "idp.aitherium.com" in base and not base.endswith("/identity"):
+            base += "/identity"
+        return base
+
+    @app.get("/identity/whoami")
+    async def identity_whoami(request: Request):
+        """Who is signed in on this device — a NAME, never a credential."""
+        _handoff_guard(request)
+        prof = _handoff_profile()
+        if not prof:
+            return {"logged_in": False, "handoff": True}
+        user = prof.get("user") or {}
+        return {
+            "logged_in": True,
+            "handoff": True,
+            "username": user.get("username") or user.get("id") or "",
+            "display_name": user.get("display_name") or user.get("username") or "",
+            "tenant_slug": user.get("tenant_slug") or user.get("tenant_id") or "",
+        }
+
+    @app.post("/identity/handoff")
+    async def identity_handoff(request: Request):
+        """Mint a one-time browser ticket for the signed-in local user.
+
+        Called from a click on the apex. The daemon's bearer stays here; the
+        page gets a 60-second single-use ticket to redeem at Veil.
+        """
+        audience = _handoff_guard(request)
+        prof = _handoff_profile()
+        if not prof:
+            raise HTTPException(
+                status_code=401, detail="no signed-in identity on this device — run `adk login`",
+            )
+        base = _handoff_identity_base(prof)
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                resp = await client.post(
+                    f"{base}/auth/handoff/mint",
+                    json={"client": "adk-daemon", "audience": audience},
+                    headers={"Authorization": f"Bearer {prof['access_token']}"},
+                )
+        except httpx.HTTPError as exc:
+            raise HTTPException(
+                status_code=502, detail=f"identity unreachable: {exc.__class__.__name__}",
+            )
+        if resp.status_code == 401:
+            raise HTTPException(
+                status_code=401, detail="this device's sign-in has expired — run `adk login`",
+            )
+        if resp.status_code != 200:
+            raise HTTPException(
+                status_code=502, detail=f"identity refused handoff ({resp.status_code})",
+            )
+        data = resp.json() if resp.content else {}
+        user = prof.get("user") or {}
+        return {
+            "ticket": data.get("ticket"),
+            "expires_in": data.get("expires_in", 60),
+            "audience": audience,
+            "username": user.get("username") or user.get("id") or "",
+            "display_name": user.get("display_name") or user.get("username") or "",
+        }
+
+    # ── One-click mesh enrollment from the desktop ──────────────────────────
+    #
+    # "Create my own mesh and enroll it into AitherNet." Three things already
+    # existed and never met: Identity issues a tenant-scoped headscale key to
+    # any signed-in user (POST /v1/mesh-keys/issue — tenant derived
+    # server-side, never caller-supplied), adk.mesh.join does the overlay join
+    # + Conductor onboard, and enrollment.rich_enroll registers the node on the
+    # identity spine. The only assembled chain was `adk join`, which was broken
+    # at step 6 and needs a terminal anyway.
+    #
+    # Same guard as /identity/handoff: loopback peer + first-party Origin +
+    # AITHER_BROWSER_HANDOFF kill switch. The user's OWN device-flow bearer is
+    # the only credential — no admin role, no paid-tier gate, no root, no
+    # AITHER_SELF_SERVICE flag, and the fleet internal secret is never touched.
+    @app.post("/mesh/join")
+    async def mesh_join_from_desktop(request: Request):
+        """Join the signed-in user's mesh on AitherNet and register this node."""
+        _handoff_guard(request)
+        prof = _handoff_profile()
+        if not prof:
+            raise HTTPException(
+                status_code=401, detail="no signed-in identity on this device — run `adk login`",
+            )
+        token = prof["access_token"]
+        idp = _handoff_identity_base(prof)
+        conductor_url = os.getenv("AITHER_CONDUCTOR_URL", "https://gateway.aitherium.com").rstrip("/")
+        import platform as _platform
+        relay = _state.get("relay")
+        node_id = (
+            (relay.node_id if relay else "")
+            or os.getenv("AITHER_NODE_NAME", "")
+            or _platform.node()
+        )
+        steps: list[dict[str, Any]] = []
+
+        # 1. mesh key — Identity refuses (403) when the caller has no tenant.
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                r = await client.post(
+                    f"{idp}/v1/mesh-keys/issue",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+        except httpx.HTTPError as exc:
+            raise HTTPException(
+                status_code=502, detail=f"identity unreachable: {exc.__class__.__name__}",
+            )
+        if r.status_code == 403:
+            raise HTTPException(
+                status_code=403,
+                detail="your account has no workspace yet — create or join one first",
+            )
+        if r.status_code == 401:
+            raise HTTPException(
+                status_code=401, detail="this device's sign-in has expired — run `adk login`",
+            )
+        if r.status_code != 200:
+            raise HTTPException(
+                status_code=502, detail=f"mesh key issuance failed ({r.status_code})",
+            )
+        mesh_key = (r.json() or {}).get("mesh_key", "")
+        if not mesh_key:
+            raise HTTPException(status_code=502, detail="identity returned no mesh key")
+        steps.append({"step": "mesh_key", "ok": True})
+
+        # 2. overlay join (headscale/tailscale transport, key auto-applied) + Conductor onboard
+        overlay_ip = ""
+        transport = "headscale"
+        try:
+            from adk import mesh as _mesh
+            mesh_result = await asyncio.wait_for(
+                _mesh.join(
+                    conductor_url, node_id, role="worker",
+                    headscale=True, headscale_auth_key=mesh_key,
+                ),
+                timeout=150,
+            )
+            overlay_ip = str(mesh_result.get("overlay_ip") or mesh_result.get("aithernet_ip") or "")
+            transport = str(mesh_result.get("transport") or transport)
+            steps.append({"step": "overlay_join", "ok": True, "overlay_ip": overlay_ip})
+        except asyncio.TimeoutError:
+            raise HTTPException(status_code=504, detail="mesh join timed out (150s)")
+        except (RuntimeError, OSError, ValueError, httpx.HTTPError) as exc:
+            # Most common cause on a fresh desktop: no tailscale/wireguard binary.
+            raise HTTPException(
+                status_code=502,
+                detail=f"mesh join failed: {str(exc)[:300]}",
+            )
+
+        # 3. identity spine registration (mTLS bundle + tenant-scoped node token)
+        tenant_id = ""
+        try:
+            from adk import enrollment as _enrollment
+            enroll = await asyncio.wait_for(
+                _enrollment.rich_enroll(idp, token, node_id, enable_heartbeat=True),
+                timeout=60,
+            )
+            tenant_id = str(enroll.get("tenant_id") or "")
+            steps.append({
+                "step": "identity_enroll", "ok": bool(enroll.get("enrolled")),
+                "error": enroll.get("error", ""),
+            })
+        except (asyncio.TimeoutError, RuntimeError, OSError, httpx.HTTPError) as exc:
+            # The overlay is up; say the registration half failed rather than
+            # undoing it. The desktop re-polls /api/nodes and can retry.
+            steps.append({"step": "identity_enroll", "ok": False, "error": str(exc)[:200]})
+
+        return {
+            "ok": True,
+            "node_id": node_id,
+            "overlay_ip": overlay_ip,
+            "transport": transport,
+            "tenant_id": tenant_id,
+            "steps": steps,
+        }
+
     @app.get("/onboard/status")
     async def onboard_status():
         """Report onboarding status for the Awconnect extension.
