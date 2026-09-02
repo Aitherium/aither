@@ -14,17 +14,18 @@
     "awrun",
     "awask",
     "AitherConnect",
-    "awpack"
+    "awpack",
+    "awembed"
   ],
   "includes": [],
   "metrics": {
     "files": {
-      "value": 1215,
-      "as_of": "2026-08-26T08:21:46-07:00"
+      "value": 1265,
+      "as_of": "2026-09-02T16:28:20-07:00"
     },
     "tests": {
-      "value": 284,
-      "as_of": "2026-08-26T08:21:46-07:00"
+      "value": 288,
+      "as_of": "2026-09-02T16:28:20-07:00"
     }
   }
 }
