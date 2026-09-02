@@ -361,6 +361,10 @@ async def join_mesh(
                 role="worker",
                 headscale=True,
                 headscale_auth_key=mesh_key,
+                # The conductor wants the node's OWN capability token (endpoint:mesh,
+                # minted at register) and the tenant it belongs to (2026-09-02).
+                psk=enroll_result.get("bearer_token", "") or None,
+                tenant_id=tenant_id,
             )
             if mesh_result.get("error"):
                 print(

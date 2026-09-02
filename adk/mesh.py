@@ -169,7 +169,7 @@ async def onboard(
     conductor_url: str, node_id: str, wg_public_key: str,
     role: str = "worker", external_ip: str | None = None,
     external_port: int = WG_PORT, storage_tiers: list[str] | None = None,
-    psk: str | None = None,
+    psk: str | None = None, tenant_id: str | None = None,
 ) -> dict:
     """POST /v1/mesh/onboard to the Conductor. Returns the parsed response
     (carries ``overlay_ip`` / ``aithernet_ip`` + assigned node id)."""
@@ -196,6 +196,13 @@ async def onboard(
         payload["external_ip"] = external_ip
     if workspace_id:
         payload["workspace_id"] = workspace_id
+    # The conductor's OnboardRequest REQUIRES tenant_id ("required for
+    # tenant-scoped mesh isolation") — without it every onboard is a 422, which
+    # was the last wall between a registered node and its mesh (2026-09-02).
+    # It is the tenant enrollment resolved server-side; the conductor still
+    # enforces that a tenant-scoped bearer may only name its own tenant.
+    if tenant_id:
+        payload["tenant_id"] = tenant_id
 
     url = conductor_url.rstrip("/") + "/v1/mesh/onboard"
     async with httpx.AsyncClient(timeout=30.0, verify=_verify()) as c:
@@ -380,7 +387,7 @@ async def join(
     aithernet_url: str | None = None, iface: str = DEFAULT_IFACE,
     external_ip: str | None = None, psk: str | None = None,
     headscale: bool = False, headscale_url: str | None = None,
-    headscale_auth_key: str | None = None,
+    headscale_auth_key: str | None = None, tenant_id: str | None = None,
 ) -> dict:
     """Run the full onboarding and return a report.
 
@@ -404,7 +411,9 @@ async def join(
     - Constrained networks (CGNAT, restrictive corporate firewalls)
 
     The Headscale URL defaults to the public endpoint
-    (https://headscale.aitherium.com); override with ``AITHER_HEADSCALE_URL``.
+    (https://hs.aitherium.com — NOT headscale.aitherium.com: that name is blocked
+    by at least one ISP by hostname and the edge answers plain HTTP on :443,
+    measured 2026-08-15 and again 2026-09-02); override with ``AITHER_HEADSCALE_URL``.
     The auth key must be pre-generated on the Headscale server and passed as
     ``AITHER_HEADSCALE_AUTH_KEY`` or via ``headscale_auth_key`` param.
 
@@ -431,7 +440,7 @@ async def join(
     priv, pub = generate_keypair()
     logger.info("mesh: onboarding node %s (role=%s) via %s", node_id, role, conductor_url)
     resp = await onboard(conductor_url, node_id, pub, role=role,
-                         external_ip=external_ip, psk=psk)
+                         external_ip=external_ip, psk=psk, tenant_id=tenant_id)
     overlay_ip = (resp.get("overlay_ip") or resp.get("aithernet_ip")
                   or resp.get("address") or "")
     if not overlay_ip:
@@ -453,7 +462,7 @@ async def join(
         # Headscale transport: bring up Tailscale tunnel instead of raw WG.
         # Key/URL precedence: explicit arg > env > conductor-issued (auto).
         hs_url = headscale_url or os.getenv("AITHER_HEADSCALE_URL", "") \
-            or resp_hs_url or "https://headscale.aitherium.com"
+            or resp_hs_url or "https://hs.aitherium.com"
         hs_key = headscale_auth_key or os.getenv("AITHER_HEADSCALE_AUTH_KEY", "") \
             or resp_hs_key
         if not hs_key:
@@ -544,8 +553,8 @@ def main(argv: list[str] | None = None) -> int:
         default=os.getenv("AITHER_MESH_TRANSPORT", "").lower() == "headscale",
         help="Use Headscale tunnel transport instead of raw WireGuard (for NAT'd networks)")
     pj.add_argument("--headscale-url",
-        default=os.getenv("AITHER_HEADSCALE_URL", "https://headscale.aitherium.com"),
-        help="Headscale control server URL (default: https://headscale.aitherium.com)")
+        default=os.getenv("AITHER_HEADSCALE_URL", "https://hs.aitherium.com"),
+        help="Headscale control server URL (default: https://hs.aitherium.com)")
     pj.add_argument("--headscale-key",
         default=os.getenv("AITHER_HEADSCALE_AUTH_KEY", ""),
         help="Headscale pre-generated auth key (from AITHER_HEADSCALE_AUTH_KEY)")

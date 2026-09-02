@@ -1249,6 +1249,13 @@ def create_app(
                 _mesh.join(
                     conductor_url, node_id, role="worker",
                     headscale=True, headscale_auth_key=mesh_key, psk=node_bearer,
+                    tenant_id=tenant_id,
+                    # Explicit control-plane URL: the conductor's onboard response
+                    # still advertises headscale.aitherium.com (its baked default),
+                    # which is blocked by hostname on at least one ISP and answers
+                    # plain HTTP on :443 at the edge — `tailscale up` sat in
+                    # "not a TLS handshake" until its 30s timeout (2026-09-02).
+                    headscale_url=os.getenv("AITHER_HEADSCALE_URL", "https://hs.aitherium.com"),
                 ),
                 timeout=150,
             )
