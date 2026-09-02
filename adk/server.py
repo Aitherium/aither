@@ -1171,7 +1171,9 @@ def create_app(
             )
         token = prof["access_token"]
         idp = _handoff_identity_base(prof)
-        conductor_url = os.getenv("AITHER_CONDUCTOR_URL", "https://gateway.aitherium.com").rstrip("/")
+        # conductor.aitherium.com, NOT gateway.aitherium.com: gateway is genesis +
+        # the MCP gateway and answers 404 for /v1/mesh/onboard (measured 2026-09-02).
+        conductor_url = os.getenv("AITHER_CONDUCTOR_URL", "https://conductor.aitherium.com").rstrip("/")
         import platform as _platform
         relay = _state.get("relay")
         node_id = (
@@ -1210,7 +1212,35 @@ def create_app(
             raise HTTPException(status_code=502, detail="identity returned no mesh key")
         steps.append({"step": "mesh_key", "ok": True})
 
-        # 2. overlay join (headscale/tailscale transport, key auto-applied) + Conductor onboard
+        # 2. identity-spine registration FIRST: /v1/nodes/register hands back a
+        #    tenant-scoped capability token (endpoint:mesh) — the ONLY bearer the
+        #    conductor's /v1/mesh/onboard accepts from a node. Measured 2026-09-02:
+        #    with the overlay step first, the conductor answered 401 every time.
+        tenant_id = ""
+        node_bearer = ""
+        try:
+            from adk import enrollment as _enrollment
+            enroll = await asyncio.wait_for(
+                _enrollment.rich_enroll(idp, token, node_id, enable_heartbeat=True),
+                timeout=60,
+            )
+            tenant_id = str(enroll.get("tenant_id") or "")
+            node_bearer = str(enroll.get("bearer_token") or "")
+            steps.append({
+                "step": "identity_enroll", "ok": bool(enroll.get("enrolled")),
+                "error": enroll.get("error", ""),
+            })
+        except (asyncio.TimeoutError, RuntimeError, OSError, httpx.HTTPError) as exc:
+            steps.append({"step": "identity_enroll", "ok": False, "error": str(exc)[:200]})
+        if not node_bearer:
+            raise HTTPException(
+                status_code=502,
+                detail="identity enrollment returned no node capability token; "
+                       "the conductor cannot admit this node without one",
+            )
+
+        # 3. overlay join (headscale/tailscale transport, key auto-applied) + Conductor
+        #    onboard, authenticated with the node's own capability token.
         overlay_ip = ""
         transport = "headscale"
         try:
@@ -1218,7 +1248,7 @@ def create_app(
             mesh_result = await asyncio.wait_for(
                 _mesh.join(
                     conductor_url, node_id, role="worker",
-                    headscale=True, headscale_auth_key=mesh_key,
+                    headscale=True, headscale_auth_key=mesh_key, psk=node_bearer,
                 ),
                 timeout=150,
             )
@@ -1233,24 +1263,6 @@ def create_app(
                 status_code=502,
                 detail=f"mesh join failed: {str(exc)[:300]}",
             )
-
-        # 3. identity spine registration (mTLS bundle + tenant-scoped node token)
-        tenant_id = ""
-        try:
-            from adk import enrollment as _enrollment
-            enroll = await asyncio.wait_for(
-                _enrollment.rich_enroll(idp, token, node_id, enable_heartbeat=True),
-                timeout=60,
-            )
-            tenant_id = str(enroll.get("tenant_id") or "")
-            steps.append({
-                "step": "identity_enroll", "ok": bool(enroll.get("enrolled")),
-                "error": enroll.get("error", ""),
-            })
-        except (asyncio.TimeoutError, RuntimeError, OSError, httpx.HTTPError) as exc:
-            # The overlay is up; say the registration half failed rather than
-            # undoing it. The desktop re-polls /api/nodes and can retry.
-            steps.append({"step": "identity_enroll", "ok": False, "error": str(exc)[:200]})
 
         return {
             "ok": True,

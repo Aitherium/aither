@@ -224,8 +224,10 @@ async def join_mesh(
     identity_url = os.getenv(
         "AITHER_IDENTITY_URL", "https://idp.aitherium.com"
     )
+    # conductor.aitherium.com — gateway.aitherium.com is genesis + the MCP gateway
+    # and answers 404 for /v1/mesh/onboard (measured 2026-09-02).
     conductor_url = os.getenv(
-        "AITHER_CONDUCTOR_URL", "https://gateway.aitherium.com"
+        "AITHER_CONDUCTOR_URL", "https://conductor.aitherium.com"
     )
 
     try:
