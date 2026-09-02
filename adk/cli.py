@@ -12501,6 +12501,12 @@ def _register_commands(sub):
     cl_spawn_p.add_argument("--task-file", default="", help="Read task prompt from file")
     cl_spawn_p.add_argument("--allow", default="", help="Comma list of allowed tools (REQUIRED)")
     cl_spawn_p.add_argument("--deny", default="", help="Comma list of disallowed tools")
+    cl_spawn_p.add_argument(
+        "--allow-dangerous",
+        action="store_true",
+        help="Lift the runner-side tool ceiling for this run (secrets, money, "
+             "destructive fleet ops). Off by default; see claude_runner.ceiling_deny_rules.",
+    )
     cl_spawn_p.add_argument("--model", default="", help="Model override (e.g. haiku)")
     cl_spawn_p.add_argument("--append-system-prompt", default="", help="Appended system prompt")
     cl_spawn_p.add_argument("--mcp-config", default="", help="Path to scoped MCP config JSON")

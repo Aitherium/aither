@@ -223,6 +223,82 @@ def _allowed_gateway_hosts() -> set[str]:
 
 
 # ---------------------------------------------------------------------------
+# The runner-side tool ceiling
+# ---------------------------------------------------------------------------
+#
+# `allowed_tools` comes from the CALLER, and a fleet-originated spawn attaches the
+# aitheros stdio bridge -- run 4f410016 saw 1366 platform tools. A caller that writes
+# `mcp__aitheros__*` (the ordinary way to say "give it the platform") has thereby also
+# handed that run set_secret, stripe_admin_*, and hetzner_destroy_server. Nothing
+# refused it, because an allowlist of one wildcard cannot express "everything except
+# the tools that spend money".
+#
+# So the ceiling is enforced HERE, on the DENY side, independent of what the caller
+# asked for, and it reaches the child through BOTH `--disallowedTools` and
+# settings.json permissions.deny -- two paths, so one silently-unsupported spelling
+# cannot make it inert.
+#
+# The enumeration is server-PREFIXED, which is only sound because the set of server
+# names is closed: `_validate_mcp` refuses any mcp_config naming a server outside
+# _CEILING_SERVERS unless allow_dangerous. Without that arm a caller would bypass
+# every rule below by attaching the same gateway under a different name.
+#
+# LIMIT, stated plainly rather than implied away: this bounds the MCP surface, not
+# the machine. A scope that allows `Bash` can reach podman, gh, or a curl at the
+# vault regardless of every pattern below -- Bash in a subagent scope IS the
+# dangerous grant. These rules stop the accidental reach, not a determined one.
+_CEILING_SERVERS: tuple[str, ...] = ("aitheros",)
+
+_CEILING_TOOLS: tuple[str, ...] = (
+    # -- secrets & credentials -------------------------------------------------
+    # Reading one leaks it into a transcript this process does not control; writing
+    # or deleting one can lock the fleet out of itself. secret-safety.md forbids the
+    # VALUES reaching a transcript at all, which a spawned run cannot promise.
+    "get_secret", "set_secret", "delete_secret", "list_secrets",
+    "workspace_secrets_*", "lockbox_*",
+    "create_api_key", "rotate_api_key", "revoke_api_key",
+    "provision_gateway_key", "provision_room_gateway_key",
+    "mint_node_token", "dev_generate_hmac",
+    "set_cloud_provider_key", "remove_cloud_provider_key",
+    "formbridge_vault_*", "secretguard_purge",
+    # -- money -----------------------------------------------------------------
+    # These move real funds or rent real hardware by the hour -- B2 in CLAUDE.md's
+    # blocker taxonomy, the one class an agent may not self-serve.
+    "stripe_admin_*", "commerce_refund", "commerce_create_checkout",
+    "commerce_cancel_subscription", "commerce_payouts", "create_checkout",
+    "x402_pay", "wallet_spend", "transfer_tokens", "marketplace_purchase",
+    "launch_gpu_instance", "gpu_cluster_provision", "hetzner_provision_server",
+    "aither_gpu_deploy_model", "aither_gpu_scale_deployment",
+    "deploy_cloud_*", "vast_selfserve",
+    # -- destructive fleet ops -------------------------------------------------
+    # Not undoable by a command the run can also run: they destroy hosts, retire the
+    # DNS/tunnel records the whole platform routes through, or promote an image onto
+    # a live tag.
+    "hetzner_destroy_server", "hetzner_reboot_server",
+    "gpu_cluster_teardown", "teardown_cloud_*", "aither_gpu_destroy_deployment",
+    "ring_deploy", "ring_full_deploy", "ring_promote", "ring_rollback",
+    "ring_set_image",
+    "k3s_deploy", "k3s_node_drain", "k3s_rollback",
+    "dgx_stop_containers", "restart_dgx_service",
+    "remove_cluster_node", "mesh_node_offboard",
+    "cf_dns_delete", "cf_dns_upsert", "cf_worker_deploy",
+    "cloudflare_dns_remove", "cloudflare_tunnel_remove",
+    "git_push", "fs_delete",
+    "dev_delete_user", "dev_suspend_user", "revoke_wallet",
+    "delete_workflow", "delete_spec", "formbridge_purge",
+)
+
+
+def ceiling_deny_rules() -> list[str]:
+    """Deny entries every run carries unless its scope declares allow_dangerous."""
+    return [
+        "mcp__{}__{}".format(server, tool)
+        for server in _CEILING_SERVERS
+        for tool in _CEILING_TOOLS
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Scope — pre-compiled by the caller, validated and enforced here
 # ---------------------------------------------------------------------------
 
@@ -243,6 +319,7 @@ class RunScope:
     account_profile: str = ""
     setting_sources: str = DEFAULT_SETTING_SOURCES
     resume_session_id: str = ""
+    allow_dangerous: bool = False
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "RunScope":
@@ -261,6 +338,7 @@ class RunScope:
             account_profile=str(data.get("account_profile") or ""),
             setting_sources=str(data.get("setting_sources") or DEFAULT_SETTING_SOURCES),
             resume_session_id=str(data.get("resume_session_id") or ""),
+            allow_dangerous=bool(data.get("allow_dangerous") or False),
         )
         scope.validate()
         return scope
@@ -292,6 +370,22 @@ class RunScope:
             raise ScopeError(f"scope.account_profile must be an identifier: {self.account_profile}")
         self._validate_resume()
         self._validate_mcp()
+        self._apply_ceiling()
+
+    def _apply_ceiling(self) -> None:
+        """Merge the runner-side ceiling into this scope's deny list.
+
+        Runs LAST in validate() so the caller's own entries are already checked, and
+        so nothing the caller writes can remove one of ours -- the merge is additive
+        and de-duplicated, never a replacement.
+        """
+        if self.allow_dangerous:
+            return
+        existing = set(self.disallowed_tools)
+        for rule in ceiling_deny_rules():
+            if rule not in existing:
+                self.disallowed_tools.append(rule)
+                existing.add(rule)
 
     def _validate_resume(self) -> None:
         """Fail-closed rules for continuing an existing conversation.
@@ -337,6 +431,16 @@ class RunScope:
         for name, server in servers.items():
             if not isinstance(server, dict):
                 raise ScopeError(f"mcp server {name!r} must be an object")
+            if not self.allow_dangerous and name not in _CEILING_SERVERS:
+                # The ceiling's deny rules are server-PREFIXED (mcp__aitheros__x), so
+                # they are only complete while the set of server names is closed.
+                # Attaching the same gateway as "gw" would otherwise expose every
+                # tool the ceiling names, with nothing to say it had happened.
+                raise ScopeError(
+                    f"mcp server {name!r}: name not in {sorted(_CEILING_SERVERS)} "
+                    "(the tool ceiling is keyed on the server name; "
+                    "set scope.allow_dangerous to attach another)"
+                )
             stype = str(server.get("type") or "").lower()
             if stype not in ("http", "sse"):
                 # stdio servers execute arbitrary local commands — never allowed
@@ -368,6 +472,7 @@ class RunScope:
             "account_profile": self.account_profile,
             "setting_sources": self.setting_sources,
             "resume_session_id": self.resume_session_id,
+            "allow_dangerous": self.allow_dangerous,
         }
 
 
@@ -1995,6 +2100,7 @@ def _cmd_spawn(args: Any) -> int:
     scope: dict[str, Any] = {
         "allowed_tools": [t for t in (getattr(args, "allow", "") or "").split(",") if t],
         "disallowed_tools": [t for t in (getattr(args, "deny", "") or "").split(",") if t],
+        "allow_dangerous": bool(getattr(args, "allow_dangerous", False)),
         "system_prompt": getattr(args, "append_system_prompt", "") or "",
         "model": getattr(args, "model", "") or "",
         "cwd": getattr(args, "cwd", "") or "",
