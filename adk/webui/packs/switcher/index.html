@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Aitherium — Local AI</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: #0b0d10; color: #e6e8eb; min-height: 100vh;
+    display: flex; flex-direction: column;
+  }
+  @media (prefers-color-scheme: light) {
+    body { background: #f6f7f9; color: #12141a; }
+    .card { background: #fff; border-color: #e2e5ea; }
+    .card:hover { border-color: #c9ced6; }
+    .tag { color: #5a6472; }
+    .head { color: #5a6472; }
+  }
+  header {
+    padding: 28px 24px 10px; max-width: 1080px; width: 100%; margin: 0 auto;
+  }
+  header h1 { font-size: 22px; font-weight: 700; letter-spacing: -0.01em; }
+  header h1 .dot { color: #3ba55d; }
+  .head { color: #8b94a1; font-size: 14px; margin-top: 4px; }
+  main {
+    max-width: 1080px; width: 100%; margin: 0 auto; padding: 18px 24px 48px;
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 14px; flex: 1;
+  }
+  a.card {
+    text-decoration: none; color: inherit; display: flex; flex-direction: column;
+    background: rgba(255,255,255,.03); border: 1px solid #23272e; border-radius: 14px;
+    padding: 16px 16px 14px; transition: border-color .15s, transform .15s;
+  }
+  a.card:hover { border-color: #3b4048; transform: translateY(-1px); }
+  .card .name { font-weight: 700; font-size: 15px; display: flex; align-items: center; gap: 8px; }
+  .card .name .ico { font-size: 17px; }
+  .card .desc { color: #8b94a1; font-size: 12.5px; margin-top: 6px; flex: 1; }
+  .card .row { display: flex; align-items: center; gap: 6px; margin-top: 12px; }
+  .pill {
+    font-size: 10.5px; font-weight: 600; padding: 2px 8px; border-radius: 999px;
+    border: 1px solid #2c3138; color: #8b94a1; letter-spacing: .04em;
+  }
+  .pill.live { color: #86e5ac; border-color: rgba(134,229,172,.3); }
+  .pill.up   { color: #fcd34d; border-color: rgba(252,211,77,.35); }
+  .pill.soon { color: #7d8590; border-color: #2c3138; }
+  footer {
+    max-width: 1080px; width: 100%; margin: 0 auto; padding: 0 24px 28px;
+    color: #5a6472; font-size: 12px;
+  }
+  footer code { background: rgba(255,255,255,.05); padding: 1px 6px; border-radius: 6px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Aitherium <span class="dot">●</span> Local AI</h1>
+  <p class="head">One stack, every surface — pick where you want to work. Local AI runs on your own hardware; the rest are the same platform, served from the fleet.</p>
+</header>
+<main>
+  <a class="card" href="/local">
+    <span class="name"><span class="ico">⚡</span> Local AI</span>
+    <span class="desc">The full local console — Ask, Tasks, Visual, Build, Files, Mail, MCP. Runs on this box's own GPU. Ask it anything; it suggests options instead of assuming.</span>
+    <span class="row"><span class="pill live">LIVE</span><span class="pill">awdk pack</span></span>
+  </a>
+  <a class="card" href="https://awsh.aitherium.com/">
+    <span class="name"><span class="ico">🖥️</span> AitherShell</span>
+    <span class="desc">The desktop-grade shell — your agents, your routines, one pane over the whole platform. (awsh — renamed from aithershell 2026-08-29.)</span>
+    <span class="row"><span class="pill live">LIVE</span></span>
+  </a>
+  <a class="card" href="https://elysium.aitherium.com/">
+    <span class="name"><span class="ico">🧌</span> Elysium</span>
+    <span class="desc">The GobboNet demo hub — on-device chat companions with a real in-browser brain (renamed from gobbonet 2026-08-31).</span>
+    <span class="row"><span class="pill live">LIVE</span></span>
+  </a>
+  <a class="card" href="https://garg.aitherium.com/">
+    <span class="name"><span class="ico">🧠</span> Garg</span>
+    <span class="desc">Bespoke company knowledge brain — ingests resumes, projects and proposals, matches staff to opportunities.</span>
+    <span class="row"><span class="pill live">LIVE</span></span>
+  </a>
+  <a class="card" href="https://jgames.aitherium.com/">
+    <span class="name"><span class="ico">🕹️</span> J Games &amp; Repair</span>
+    <span class="desc">Tenant storefront — repair quotes, tickets and billing on the shared platform.</span>
+    <span class="row"><span class="pill live">LIVE</span></span>
+  </a>
+  <a class="card" href="https://dgg.aitherium.com/">
+    <span class="name"><span class="ico">🎯</span> Digital Ground Game</span>
+    <span class="desc">The DGG tenant portal — tug-of-war, kick/keep and the arcade on the shared platform.</span>
+    <span class="row"><span class="pill live">LIVE</span></span>
+  </a>
+  <a class="card" href="https://vibe.aitherium.com/">
+    <span class="name"><span class="ico">💬</span> Vibe</span>
+    <span class="desc">The Vibe workspace — Discord-connected team space on the shared platform.</span>
+    <span class="row"><span class="pill live">LIVE</span></span>
+  </a>
+  <a class="card" href="https://studio.aitherium.com/">
+    <span class="name"><span class="ico">🎨</span> Design Studio</span>
+    <span class="desc">MCP in the browser — 14 tools for design + design memory, on-device when available, hosted otherwise.</span>
+    <span class="row"><span class="pill live">LIVE</span></span>
+  </a>
+  <a class="card" href="https://create.aitherium.com/">
+    <span class="name"><span class="ico">🪄</span> AitherCreate</span>
+    <span class="desc">Coming soon — the create surface.</span>
+    <span class="row"><span class="pill soon">SOON</span></span>
+  </a>
+  <a class="card" href="https://launch.aitherium.com/">
+    <span class="name"><span class="ico">🚀</span> Command Center</span>
+    <span class="desc">The full platform portal — every agent, every surface, one sign-in.</span>
+    <span class="row"><span class="pill live">LIVE</span></span>
+  </a>
+  <a class="card" href="https://saga.aitherium.com/">
+    <span class="name"><span class="ico">📖</span> Saga</span>
+    <span class="desc">Story worlds, characters and manuscripts — built with the platform.</span>
+    <span class="row"><span class="pill live">LIVE</span></span>
+  </a>
+  <a class="card" href="https://playground.aitherium.com/">
+    <span class="name"><span class="ico">🧪</span> Playground</span>
+    <span class="desc">Try the agents and tools without any setup.</span>
+    <span class="row"><span class="pill live">LIVE</span></span>
+  </a>
+  <a class="card" href="https://chelle.aitherium.com/">
+    <span class="name"><span class="ico">🏢</span> CheLLE</span>
+    <span class="desc">Tenant workspace — waking up.</span>
+    <span class="row"><span class="pill soon">WAKING</span></span>
+  </a>
+  <a class="card" href="https://shop.aitherium.com/">
+    <span class="name"><span class="ico">🛍️</span> Shop</span>
+    <span class="desc">Storefront on the shared commerce plane — waking up.</span>
+    <span class="row"><span class="pill soon">WAKING</span></span>
+  </a>
+  <a class="card" href="https://desktop.aitherium.com/">
+    <span class="name"><span class="ico">💾</span> AitherOS Desktop</span>
+    <span class="desc">The real Living Desktop — the OS shell in your browser: apps, widgets, agents. Running now.</span>
+    <span class="row"><span class="pill live">LIVE</span></span>
+  </a>
+</main>
+<footer>
+  Everything here is the same Aitherium platform — <code>lib/</code>, the agent core, the model
+  plane. The surfaces differ; the stack doesn't. Local AI is the only one that keeps your
+  prompts on your hardware.
+</footer>
+</body>
+</html>

@@ -716,8 +716,8 @@ def create_app(
     # "/" and "/chat" serve only the static chat page (no data); the page then
     # authenticates to the gated /chat/stream with the bearer from its URL fragment.
     # Similarly, "/aeon" serves the group-chat UI; "/aeon/stream" is bearer-gated.
-    _skip_auth_paths = {"/", "/chat", "/aeon", "/ui", "/health", "/docs", "/openapi.json",
-                        "/metrics", "/demo", "/redoc"}
+    _skip_auth_paths = {"/", "/chat", "/aeon", "/ui", "/local", "/health", "/docs",
+                        "/openapi.json", "/metrics", "/demo", "/redoc"}
 
     def _is_pack_ui_asset(path: str) -> bool:
         """Pack-UI static assets are unauthenticated like the console shell at "/".
@@ -2361,10 +2361,18 @@ def create_app(
 
     @app.get("/", response_class=HTMLResponse)
     async def console_page():
-        # The page `adk up` opens is the SELECTED UI pack ($AITHER_AGENT_UI,
-        # default "console" = the full admin SPA). Swap it with `adk ui set
-        # <pack>` or drop a folder in ~/.aither/ui-packs/. Never blank — falls
-        # back console -> minimal.
+        # The LANDPAGE is the "switcher" pack — one grid over every surface of
+        # the platform (the Local AI app, the tenant apps, the products), so a
+        # visitor lands somewhere instead of a blank console. The selected UI
+        # pack (the app itself) lives at /local; `adk ui set <pack>` still
+        # chooses it. Never blank — falls back console -> minimal.
+        return HTMLResponse(load_ui_pack("switcher"))
+
+    @app.get("/local", response_class=HTMLResponse)
+    async def console_page_local():
+        # The SELECTED UI pack ($AITHER_AGENT_UI, default "console" = the full
+        # admin SPA). Swap it with `adk ui set <pack>` or drop a folder in
+        # ~/.aither/ui-packs/. Never blank — falls back console -> minimal.
         return HTMLResponse(load_ui_pack())
 
     @app.get("/packs/{pack_name}/{asset_path:path}", response_class=FileResponse)
