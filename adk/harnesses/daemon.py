@@ -83,12 +83,12 @@ DEFAULT_ORIGINS = (
     "https://aitherium.com",
     "https://www.aitherium.com",
     "https://portal.aitherium.com",
-    "https://veil.aitherium.com",
+    "https://portal.aitherium.com",
     "https://tunnel.aitherium.com",
     # The Aither Hub (gobbonet.aitherium.com + apex /gobbonet/): the browser
     # page on the user's machine reaches this daemon over 127.0.0.1:8362 —
     # the same local-first pattern as the GobboNet probe ladder. Tenant
-    # portal mirrors (garg/dgg) use AITHER_HARNESS_ALLOWED_ORIGINS; the
+    # portal mirrors (per-tenant subdomains) use AITHER_HARNESS_ALLOWED_ORIGINS; the
     # daemon cannot enumerate them.
     "https://gobbonet.aitherium.com",
     # Vite dev server for the hub frontend.
@@ -1518,3 +1518,21 @@ def serve(host: str = "", port: int = 0, token: str = "") -> int:
     )
     uvicorn.run(app, host=bind_host, port=bind_port, log_level="warning")
     return 0
+
+
+if __name__ == "__main__":
+    # Without this, `python -m adk.harnesses.daemon` EXITS SILENTLY -- it
+    # imports the module, defines serve(), and stops. Every recorded start of
+    # this daemon has therefore been a `python -c "from ... import serve"`
+    # incantation, which is why nothing supervises it and why it was found down
+    # today. Bind 0.0.0.0 by default: the WSL socat bridge that publishes this
+    # to containers dials the Windows host address, not loopback.
+    import argparse as _argparse
+
+    _ap = _argparse.ArgumentParser(prog="adk.harnesses.daemon",
+                                   description="Run the AitherShell harness daemon.")
+    _ap.add_argument("--host", default="0.0.0.0")
+    _ap.add_argument("--port", type=int, default=0)
+    _args = _ap.parse_args()
+    raise SystemExit(serve(host=_args.host, port=_args.port))
+

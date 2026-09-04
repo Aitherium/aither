@@ -75,14 +75,17 @@ class AgentRef:
 
 
 def _portal_base() -> str:
-    # veil.aitherium.com hosts the agent registry (/api/genesis/v1/agent/*) and
+    # The control plane hosts the agent registry (/api/genesis/v1/agent/*). It is
+    # NOT veil.aitherium.com: that host is a GitHub Pages STATIC export and
+    # answers 404 to every API path, which surfaces only as
+    # "Cloud registry unreachable" and an empty agent list.
     # returns 200 with a valid owner bearer; the login `endpoint`
     # (portal.aitherium.com) 401s on that path — do NOT use it here (verified live
     # 2026-07-16). The registry 401 seen in the field is a TOKEN problem (see
     # _owner_token), not an endpoint one. Env override wins; veil is the default.
     return os.getenv(
         "AITHER_PORTAL_URL",
-        load_saved_config().get("portal_url", "") or "https://veil.aitherium.com",
+        load_saved_config().get("portal_url", "") or "https://portal.aitherium.com",
     ).rstrip("/")
 
 

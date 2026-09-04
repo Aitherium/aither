@@ -610,7 +610,7 @@ def create_app(
         "https://aitherium.com",
         "https://www.aitherium.com",
         "https://portal.aitherium.com",
-        "https://veil.aitherium.com",
+        "https://portal.aitherium.com",
         # GobboNet surfaces. The adapter's ALLOWED_HOSTS is the authority for this set.
         "https://desktop.aitherium.com",
         "https://spaces.aitherium.com",
@@ -717,7 +717,12 @@ def create_app(
     # authenticates to the gated /chat/stream with the bearer from its URL fragment.
     # Similarly, "/aeon" serves the group-chat UI; "/aeon/stream" is bearer-gated.
     _skip_auth_paths = {"/", "/chat", "/aeon", "/ui", "/local", "/health", "/docs",
-                        "/openapi.json", "/metrics", "/demo", "/redoc"}
+                        "/openapi.json", "/metrics", "/demo", "/redoc",
+                        # The landpage's community shelf. Public by construction:
+                        # it proxies a directory that is already public, holds no
+                        # secret, and is read by visitors with no session. Listed
+                        # EXACTLY, never as a prefix -- /api/* is otherwise gated.
+                        "/api/demos/community.json"}
 
     def _is_pack_ui_asset(path: str) -> bool:
         """Pack-UI static assets are unauthenticated like the console shell at "/".
@@ -1027,7 +1032,7 @@ def create_app(
     # Three gates, each independent of the CORS middleware above:
     #   * TCP peer must be loopback. A header cannot forge a source address.
     #   * Origin must be a first-party surface: the apex, or exactly one label
-    #     under it (idp., garg., the hosted sign-in page a tenant app lands
+    #     under it (idp., a tenant subdomain, the hosted sign-in page a tenant app lands
     #     on). The Origin is returned and becomes the ticket's AUDIENCE: the
     #     ticket Identity mints is stamped with it and redeems for that origin
     #     only, so a tenant page cannot obtain a ticket for the apex and a
@@ -2386,6 +2391,85 @@ def create_app(
         # pack (the app itself) lives at /local; `adk ui set <pack>` still
         # chooses it. Never blank — falls back console -> minimal.
         return HTMLResponse(load_ui_pack("switcher"))
+
+    # ─── Same-origin directory proxy (for a landpage that shows other people's work) ───
+
+    _directory_env = "ADK_COMMUNITY_DIRECTORY_URL"
+    _directory_cache: dict = {"at": 0.0, "body": None}
+    _directory_ttl = 60.0
+
+    @app.get("/api/demos/community.json")
+    async def demos_community_directory():
+        """Fetch a community directory upstream and serve it from THIS origin.
+
+        A landpage that lists other people's projects has to read them from
+        wherever they are registered, and that is a different origin. Doing it
+        from the browser needs CORS on the upstream, and granting an origin there
+        is not free: a service whose CORS list is non-empty commonly also sets
+        Access-Control-Allow-Credentials, and a cookie scoped to the parent
+        domain then rides along -- handing a page that renders text other people
+        submitted an authenticated channel to the API that stores it. Measured on
+        one such deployment, a per-route header could not opt out either, because
+        the credentials header is set once at middleware init and applied to
+        every response.
+
+        Fetching server-side removes the question. The browser makes a
+        same-origin request, no CORS header is involved anywhere, and no cookie
+        is ever in scope.
+
+        The upstream is OPERATOR CONFIGURATION, never a request parameter -- a
+        proxy that forwards to a caller-named URL is an SSRF hole. Unset is a
+        501 that names the variable rather than a 404: "not configured" and "no
+        such route" are different answers and only one of them tells the operator
+        what to do.
+        """
+        upstream = os.environ.get(_directory_env, "").strip()
+        if not upstream:
+            return JSONResponse(
+                status_code=501,
+                content={
+                    "detail": "no community directory configured",
+                    "set": _directory_env,
+                },
+            )
+        if not upstream.startswith("https://"):
+            return JSONResponse(
+                status_code=501,
+                content={
+                    "detail": _directory_env + " must be an absolute https URL",
+                },
+            )
+
+        now = time.time()
+        cached = _directory_cache.get("body")
+        if cached is not None and (now - _directory_cache["at"]) < _directory_ttl:
+            return JSONResponse(content=cached)
+
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                resp = await client.get(upstream)
+            if resp.status_code != 200:
+                raise RuntimeError("upstream answered " + str(resp.status_code))
+            body = resp.json()
+        except Exception as exc:
+            # A STALE shelf beats an empty one: the page says "could not reach the
+            # registry" and shows nothing, which reads as the platform being
+            # broken rather than as one upstream being briefly unavailable.
+            if cached is not None:
+                logging.getLogger("adk.server").warning(
+                    "community directory refresh failed (%s); serving cached copy", exc
+                )
+                return JSONResponse(content=cached)
+            logging.getLogger("adk.server").warning(
+                "community directory unavailable: %s", exc
+            )
+            return JSONResponse(
+                status_code=502, content={"detail": "community directory unavailable"}
+            )
+
+        _directory_cache["at"] = now
+        _directory_cache["body"] = body
+        return JSONResponse(content=body)
 
     @app.get("/local", response_class=HTMLResponse)
     async def console_page_local():
@@ -4896,6 +4980,40 @@ def create_app(
             return {"active": False, "message": "Mail relay not initialized"}
         return {**mail.status(), "active": True}
 
+    # ─── Fleet power control (/fleet/power/*) ───
+    #
+    # Registered HERE, in the unconditional app builder, and deliberately not
+    # beside the workspace routers. That block lives inside
+    # _mount_workspace_routers, which RETURNS EARLY when portal-kit-backend is
+    # absent and is itself called conditionally -- so mounting there put fleet
+    # stop/start behind an unrelated feature gate and it silently 404'd. Fleet
+    # power must be reachable exactly when the rest of the fleet is not.
+    #
+    # Imported rather than vendored: the implementation names host paths and
+    # container conventions that must never ship to PyPI with adk, so an absent
+    # module (a stranger's machine) is skipped and the daemon is unchanged.
+    try:
+        try:
+            from lib.fleet.power_control import create_fleet_power_router
+        except ImportError:
+            # DERIVED, never typed. Until 2026-09-04 this was an absolute path
+            # literal for one developer's checkout -- six lines under the comment
+            # above saying host paths must never ship to PyPI, in the file that
+            # ships to PyPI. It was also wrong on every machine but that one: the
+            # same tree is mounted under a different prefix inside the fleet
+            # distro, so the literal silently missed on the hosts this feature
+            # exists for. Walk instead: server.py -> adk -> package -> repo root.
+            import pathlib as _pl
+            import sys as _sys
+            _root = str(_pl.Path(__file__).resolve().parents[2] / "AitherOS")
+            if _root not in _sys.path:
+                _sys.path.insert(0, _root)
+            from lib.fleet.power_control import create_fleet_power_router
+        app.include_router(create_fleet_power_router())
+        logging.getLogger("adk.server").info("Mounted fleet power control (/fleet/power/*)")
+    except ImportError as _fp_exc:
+        logging.getLogger("adk.server").debug("fleet power control unavailable: %s", _fp_exc)
+
     # ─── Mesh relay endpoints ───
 
     @app.get("/mesh/status")
@@ -5819,6 +5937,7 @@ def _mount_workspace_routers(app: FastAPI, port: int) -> None:
         from portal_kit_backend.routers.onboarding import create_onboarding_router
         return create_onboarding_router(app_id=app_id)
     _try_mount(_onb, "onboarding (/api/onboarding/*)")
+
 
     # ── Workspace config endpoints (portal iframe + domain info) ──
 

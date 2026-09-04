@@ -21,6 +21,33 @@ from adk.config import load_saved_config, save_saved_config
 from adk.images import cmd_image
 
 
+def _control_plane() -> str:
+    """Base URL of the control plane (the SERVER-RENDERED portal).
+
+    The default was `https://veil.aitherium.com` at 13 sites, and that host
+    is a GitHub Pages STATIC export by deliberate design — it serves the
+    marketing site and NO API, so every control-plane call against it 404s.
+    Measured 2026-09-04:
+
+        veil.aitherium.com   /api/genesis/v1/agent/agents -> 404  (Server: GitHub.com)
+        portal.aitherium.com /api/genesis/v1/agent/agents -> 401  (route exists, wants auth)
+
+    The visible symptom was NOT a 404. `adk agents ls` folded it into
+    "Cloud registry unreachable" and then listed only the local agents, so a
+    fleet of healthy running agents read as "no agent named X in the mesh" —
+    which sends you to look at the agent, not at the URL. `awrun` dispatch of
+    `kind=agent` failed the same way for the same reason.
+
+    Order matches the one site in this file that was already correct, so
+    there is now exactly one answer to "where is the control plane".
+    """
+    import os as _os
+    return (
+        _os.environ.get("AITHER_PORTAL_URL")
+        or _os.environ.get("AITHER_ELYSIUM_URL")
+        or "https://portal.aitherium.com"
+    ).rstrip("/")
+
 def _fix_ollama_host(raw: str) -> str:
     """Rewrite Ollama's bind address (0.0.0.0) to connectable localhost."""
     if not raw:
@@ -956,7 +983,7 @@ def cmd_up(args):
             return 0
 
     # ── Portal token (used for BOTH the hosted brain and registration) ──
-    portal = (getattr(args, "portal", "") or "https://veil.aitherium.com").rstrip("/")
+    portal = (getattr(args, "portal", "") or _control_plane()).rstrip("/")
     saved = load_saved_config()
     portal_token = (getattr(args, "token", "") or os.environ.get("AITHER_PORTAL_TOKEN", "")
                     or saved.get("api_key", "") or saved.get("access_token", ""))
@@ -1375,7 +1402,7 @@ def _cmd_sandbox_up(args) -> int:
     offline = os.environ.get("AITHER_OFFLINE", "").lower() in ("1", "true", "yes")
     port = getattr(args, "port", None) or 8131
     image = os.environ.get("AITHER_SANDBOX_IMAGE", "aitheros-sandbox:latest")
-    portal = getattr(args, "portal", "https://veil.aitherium.com")
+    portal = getattr(args, "portal", _control_plane())
     portal_token = getattr(args, "token", "") or os.environ.get("AITHER_PORTAL_TOKEN", "")
     name = (getattr(args, "name", "") or "").strip() or re.sub(
         r"[^a-z0-9_-]", "-", f"{socket.gethostname()}-sandbox".lower())
@@ -1596,7 +1623,7 @@ def cmd_down(args):
     if st.get("registered") and st.get("name"):
         saved = load_saved_config()
         token = saved.get("api_key", "") or os.environ.get("AITHER_PORTAL_TOKEN", "")
-        portal = (st.get("portal") or "https://veil.aitherium.com").rstrip("/")
+        portal = (st.get("portal") or _control_plane()).rstrip("/")
         try:
             hdrs = {"Authorization": f"Bearer {token}"} if token else {}
             httpx.request("DELETE",
@@ -1642,7 +1669,7 @@ def cmd_reregister(args):
         print("  Error: Not authenticated. Run: adk login")
         return 1
 
-    portal = (getattr(args, "portal", "") or "https://veil.aitherium.com").rstrip("/")
+    portal = (getattr(args, "portal", "") or _control_plane()).rstrip("/")
 
     # Get current public key
     from adk.a2a_identity import get_a2a_public_key
@@ -4546,7 +4573,7 @@ def cmd_host(args):
         name = re.sub(r"[^a-z0-9_-]", "-", f"{socket.gethostname()}-adk".lower())
     identity = getattr(args, "identity", None) or "aither"
     register_url = getattr(args, "register_url", "") or ""
-    portal = (getattr(args, "portal", "") or "https://veil.aitherium.com").rstrip("/")
+    portal = (getattr(args, "portal", "") or _control_plane()).rstrip("/")
     dry_run = bool(getattr(args, "dry_run", False))
 
     print()
@@ -12171,7 +12198,7 @@ def _register_commands(sub):
     up_p.add_argument("--email", help="Email the phone-ready access link to this address once the "
                                       "tunnel is up (uses configured SMTP; else saved notify_email).")
     up_p.add_argument("--approve", help="Comma-list of tools that pause for approval (default: file_write,shell_exec,shell)")
-    up_p.add_argument("--portal", default="https://veil.aitherium.com", help="Control-plane base URL")
+    up_p.add_argument("--portal", default=_control_plane(), help="Control-plane base URL")
     up_p.add_argument("--login-url", help="Device-flow login base URL")
     up_p.add_argument("--register-url", help="Full fleet-register URL (overrides --portal)")
     up_p.add_argument("--reach", choices=["tunnel", "mesh"], default="tunnel",
@@ -12216,7 +12243,7 @@ def _register_commands(sub):
     sb_up.add_argument("--no-register", action="store_true",
                        help="Local-only — no tunnel, no portal registration")
     sb_up.add_argument("--token", help="Portal token for registration (else $AITHER_PORTAL_TOKEN)")
-    sb_up.add_argument("--portal", default="https://veil.aitherium.com", help="Control-plane base URL")
+    sb_up.add_argument("--portal", default=_control_plane(), help="Control-plane base URL")
     sb_sub.add_parser("down", help="Stop the sandbox container + tunnel")
     sb_sub.add_parser("status", help="Show sandbox state + linked URL")
 
@@ -12233,7 +12260,7 @@ def _register_commands(sub):
     reregister_group.add_argument("--all", action="store_true",
                                  help="Re-register all endpoints for this agent")
     reregister_p.add_argument("--token", help="Portal token (or $AITHER_PORTAL_TOKEN / 'adk login')")
-    reregister_p.add_argument("--portal", default="https://veil.aitherium.com",
+    reregister_p.add_argument("--portal", default=_control_plane(),
                               help="Portal URL (default: veil.aitherium.com)")
 
     # adk stack — supervise the consumer stack (Room + Ollama); was `adk up`
@@ -12906,7 +12933,7 @@ def _register_commands(sub):
     host_p.add_argument("--approve", help="Comma-list of tools that pause for approval, or '*' (default: file_write,shell_exec,shell)")
     host_p.add_argument("--token", help="Control-plane token for registration (else 'adk login' / $AITHER_PORTAL_TOKEN)")
     host_p.add_argument("--auth-token", help="Callback bearer the control plane presents back to your agent (minted if omitted)")
-    host_p.add_argument("--portal", default="https://veil.aitherium.com", help="Control-plane base URL")
+    host_p.add_argument("--portal", default=_control_plane(), help="Control-plane base URL")
     host_p.add_argument("--login-url", help="Device-flow login base URL (default: --portal, then portal.aitherium.com)")
     host_p.add_argument("--register-url", help="Full fleet-register URL (overrides --portal; e.g. http://localhost:8001/v1/agent/fleet/register)")
     host_p.add_argument("--no-register", action="store_true", help="Run locally only — no tunnel, no fleet registration")
@@ -14685,6 +14712,15 @@ def main():
     if (_dv if _dv is not None else __import__("sys").argv[1:])[:1] == ["doctor"]:
         from ._doctor import report
         return report()
+    # GENERATED repo-state intercept (gen_aw_doctor.py) -- do not edit
+    try:
+        from awgit import state as _aw_state
+    except Exception:
+        _aw_state = None
+    if _aw_state is not None:
+        _sv = locals().get("argv")
+        if _aw_state.cli_banner(_sv if _sv is not None else __import__("sys").argv[1:]):
+            return 0
     global _cached_parser
     # Windows consoles default to a legacy code page (cp1252) that cannot encode
     # the Unicode glyphs (arrows, box-drawing, emoji) the CLI prints — which
