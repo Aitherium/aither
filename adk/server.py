@@ -1285,6 +1285,302 @@ def create_app(
             "steps": steps,
         }
 
+    # ── Signed Spaces: this device as the Space's origin of record ──────────
+    #
+    # Two routes, both opening with the SAME `_handoff_guard` the identity and
+    # mesh routes use: loopback peer + first-party Origin + the
+    # AITHER_BROWSER_HANDOFF kill switch. Neither half is decoration.
+    #
+    #   * The peer check cannot be forged by a header. `request.client.host` is
+    #     the socket's own source address, so a page on some other machine
+    #     cannot reach this at all.
+    #   * The Origin check is the one that stops a STRANGER'S SITE writing here.
+    #     A loopback peer is not scarce -- every page the user opens runs on
+    #     this machine -- so without it any tab on the internet could POST a
+    #     document to the node and repoint what this device claims to serve.
+    #
+    # They live on the daemon rather than the standalone launcher for cause:
+    # the daemon is the only local process that has already solved BOTH browser
+    # gates (the CORS allowlist above, and `allow_private_network=True` for the
+    # https-page-to-loopback preflight). The launcher has no CORS handling of
+    # any kind, and its `/api` default is a logged 501 behind a fixed prefix
+    # allowlist -- adding a rival CORS + private-network lane there would be new
+    # unmeasured browser surface for no extra capability.
+    #
+    # NO NEW REQUEST HEADER is introduced. `allow_headers` above is explicit
+    # with no wildcard, and a header missing from it fails the PREFLIGHT --
+    # which is not an HTTP error and logs nothing on either side, so the symptom
+    # would be a route that simply never gets called. `Content-Type:
+    # application/json` is already allowed, and that is all these routes need.
+    _space_sign_prefix = b"aitherspace.v1."
+    _space_max_body_bytes = 256 * 1024
+    _space_raw_sig_bytes = 64
+    _space_handle_re = re.compile(r"^s-[0-9a-f]{16}$")
+    # The challenge is OPAQUE to this node: it is minted elsewhere, echoed back
+    # here, and judged elsewhere. It is bounded and character-checked only so an
+    # unbounded blob cannot be parked in the file under the name of a nonce.
+    _space_challenge_re = re.compile(r"^[A-Za-z0-9._~+/=-]{8,512}$")
+
+    def _space_path():
+        """Where this device's Space document lives (``~/.aither/space.json``).
+
+        The env override exists so the guard and cap arms can be exercised
+        without writing to a real home directory. The DEFAULT is absolute --
+        a relative default resolves against whatever the process's working
+        directory happened to be, which is how state gets written somewhere
+        nothing ever reads it back from.
+        """
+        from pathlib import Path
+        override = os.getenv("AITHER_SPACE_FILE", "").strip()
+        if override:
+            return Path(override)
+        return Path.home() / ".aither" / "space.json"
+
+    def _space_b64d(value: Any) -> bytes:
+        """STANDARD padded base64 only.
+
+        ``validate=True`` is load-bearing and not a style choice: it REJECTS the
+        base64url alphabet, which is the encoding the rest of this contract
+        refuses on the platform side too. Accepting it here would let a document
+        be written that no verifier downstream can read, and the rejection there
+        is indistinguishable from a wrong key.
+        """
+        import base64
+        if not isinstance(value, str) or not value:
+            raise ValueError("not a base64 string")
+        return base64.b64decode(value, validate=True)
+
+    def _space_verify_signature(pubkey_b64: str, message: bytes, sig_b64: str) -> bool:
+        """ECDSA P-256 over ``message``, by the key ``pubkey_b64`` names.
+
+        The browser's ``exportKey('raw', ...)`` is the 65-byte uncompressed
+        point, and WebCrypto emits a raw ``r||s`` signature, never DER -- so the
+        signature is re-encoded before verification and anything that is not
+        exactly 64 bytes is refused before any crypto runs.
+
+        Returns False on ANY exception, the library being absent included. A
+        verifier that fails open is not a verifier, and this one is the only
+        thing standing between a page that passed CORS and the file this device
+        serves from.
+        """
+        try:
+            from cryptography.hazmat.primitives import hashes
+            from cryptography.hazmat.primitives.asymmetric import ec
+            from cryptography.hazmat.primitives.asymmetric import utils as asym_utils
+
+            pubkey_bytes = _space_b64d(pubkey_b64)
+            sig_bytes = _space_b64d(sig_b64)
+            if len(sig_bytes) != _space_raw_sig_bytes:
+                return False
+            r = int.from_bytes(sig_bytes[:32], "big")
+            s = int.from_bytes(sig_bytes[32:], "big")
+            der_sig = asym_utils.encode_dss_signature(r, s)
+            public_key = ec.EllipticCurvePublicKey.from_encoded_point(
+                ec.SECP256R1(), pubkey_bytes
+            )
+            public_key.verify(der_sig, message, ec.ECDSA(hashes.SHA256()))
+            return True
+        except Exception:  # noqa: BLE001 -- every failure is "not verified"
+            return False
+
+    def _space_verify_envelope(envelope: Any):
+        """Verify a Space envelope with NO directory row to compare against.
+
+        Returns ``(ok, doc, status)``; ``doc`` is non-None only when ok.
+
+        This node holds no directory, so it cannot ask "is this the key the
+        platform expects for this handle". It asks the question it CAN answer,
+        which turns out to be the same one: an anonymous Space handle is a
+        FINGERPRINT of its signing key (``s-`` + the first 16 hex of
+        sha256 over the raw public key), so recomputing the handle from the key
+        in the document proves the document names the handle its own key owns.
+        Whoever holds the key owns that handle; nobody else can produce a
+        document that passes both that check and the signature.
+        """
+        import hashlib
+        import json as _json
+
+        if isinstance(envelope, (bytes, bytearray)):
+            try:
+                envelope = envelope.decode("utf-8")
+            except Exception:
+                return (False, None, "malformed")
+        if isinstance(envelope, str):
+            try:
+                envelope = _json.loads(envelope)
+            except Exception:
+                return (False, None, "malformed")
+        if not isinstance(envelope, dict) or envelope.get("v") != 1:
+            return (False, None, "malformed")
+
+        payload_b64 = envelope.get("payload")
+        sig_b64 = envelope.get("sig")
+        pubkey_b64 = envelope.get("pubkey")
+        try:
+            payload_bytes = _space_b64d(payload_b64)
+            # Decoded for its SIDE EFFECT: the alphabet check. A base64url
+            # signature must be refused here, in the same direction and for the
+            # same reason the platform refuses it, rather than reaching the
+            # verifier and coming back as an unexplainable wrong-key rejection.
+            _space_b64d(sig_b64)
+            pubkey_bytes = _space_b64d(pubkey_b64)
+        except Exception:
+            return (False, None, "malformed")
+
+        # A WRONG-LENGTH SIGNATURE IS A BAD SIGNATURE, not a malformed envelope,
+        # and the distinction is not pedantry: a DER-encoded signature is 70-72
+        # bytes and is the shape a future signer gets wrong. The platform calls
+        # it `bad_signature`; refusing it as `malformed` here would describe the
+        # same defect with two different words on two sides of one wire. The
+        # length check lives inside the verifier below, which returns False on
+        # anything but raw r||s before any crypto runs.
+        # THE SIGNATURE IS CHECKED BEFORE THE PAYLOAD IS PARSED, and the order is
+        # the point rather than a preference. It matches the platform verifier
+        # step for step, so both answer the SAME word for the same envelope: a
+        # swapped payload under a good signature is `bad_signature` here too,
+        # not `malformed`. Two verifiers that refuse for different stated reasons
+        # send whoever reads the log looking for two different defects.
+        message = _space_sign_prefix + str(payload_b64).encode("ascii")
+        if not _space_verify_signature(pubkey_b64, message, sig_b64):
+            return (False, None, "bad_signature")
+
+        try:
+            doc = _json.loads(payload_bytes.decode("utf-8"))
+        except Exception:
+            return (False, None, "malformed")
+        if not isinstance(doc, dict) or doc.get("v") != 1:
+            return (False, None, "malformed")
+
+        # A document may NEVER nominate a key other than the one it is signed by.
+        if doc.get("pubkey") != pubkey_b64:
+            return (False, None, "pubkey_mismatch")
+
+        handle = doc.get("handle")
+        if not isinstance(handle, str) or not _space_handle_re.match(handle):
+            return (False, None, "handle_mismatch")
+        derived = "s-" + hashlib.sha256(pubkey_bytes).hexdigest()[:16]
+        if derived != handle:
+            return (False, None, "handle_pubkey_mismatch")
+
+        issued_at = doc.get("issued_at")
+        if isinstance(issued_at, bool) or not isinstance(issued_at, int):
+            return (False, None, "malformed")
+        if not isinstance(doc.get("config"), dict):
+            return (False, None, "schema")
+
+        return (True, doc, "ok")
+
+    @app.get("/space")
+    async def space_get(request: Request):
+        """What this device is serving, if anything.
+
+        ``{state: 'none'|'serving', doc?, handle?, updated_at?, challenge_echo?}``
+
+        ``challenge_echo`` is the nonce the registering page handed this node on
+        the way in, read straight back. That echo is the whole proof this route
+        exists to produce, and it proves exactly one thing: a process on the
+        registering browser's own loopback, reachable only behind the guard
+        above, accepted that nonce. It says nothing about hardware, ownership
+        or uptime, and the surface that shows it must not imply otherwise.
+        """
+        _handoff_guard(request)
+        path = _space_path()
+        try:
+            raw = path.read_bytes()
+        except FileNotFoundError:
+            return {"state": "none"}
+        except OSError as exc:
+            logger.debug("space record unreadable: %s", exc)
+            return {"state": "none"}
+        try:
+            record = json.loads(raw.decode("utf-8"))
+        except Exception:
+            # A corrupt record is NOT "serving". Reporting it as such would put
+            # a Space in the directory that this device cannot produce.
+            logger.warning("space record at %s is unparseable", path)
+            return {"state": "none"}
+        if not isinstance(record, dict):
+            return {"state": "none"}
+        envelope = record.get("envelope")
+        if not isinstance(envelope, dict):
+            return {"state": "none"}
+        return {
+            "state": "serving",
+            "doc": envelope,
+            "handle": record.get("handle"),
+            "updated_at": record.get("updated_at"),
+            "challenge_echo": record.get("challenge"),
+        }
+
+    @app.post("/space")
+    async def space_post(request: Request):
+        """Accept a signed Space document from a first-party page on this box.
+
+        Body: ``{"envelope": {...}, "challenge": "<opaque nonce>"}``.
+
+        The signature is verified HERE, before anything is written. Passing CORS
+        is not authorisation to overwrite what this device serves -- the guard
+        proves the request came from a first-party page on this machine, and
+        the signature proves the document came from the key that owns the
+        handle. Both, or the file is untouched.
+        """
+        _handoff_guard(request)
+
+        # Cap BEFORE reading where the client declares a size, and again after,
+        # because Content-Length is caller-supplied and may be absent or lie.
+        declared = request.headers.get("content-length", "")
+        if declared.isdigit() and int(declared) > _space_max_body_bytes:
+            raise HTTPException(status_code=413, detail="space document too large")
+        raw = await request.body()
+        if len(raw) > _space_max_body_bytes:
+            raise HTTPException(status_code=413, detail="space document too large")
+
+        try:
+            body = json.loads(raw.decode("utf-8"))
+        except Exception:
+            raise HTTPException(status_code=400, detail="body must be JSON")
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="body must be a JSON object")
+
+        challenge = body.get("challenge")
+        if not isinstance(challenge, str) or not _space_challenge_re.match(challenge):
+            raise HTTPException(status_code=400, detail="a challenge is required")
+
+        ok, doc, status = _space_verify_envelope(body.get("envelope"))
+        if not ok:
+            # The file is NOT touched on this path, and that is asserted rather
+            # than assumed: an unverified document must not be able to change
+            # what this device serves, not even by truncating the old one.
+            raise HTTPException(status_code=400, detail=f"envelope refused: {status}")
+
+        path = _space_path()
+        record = {
+            "v": 1,
+            "envelope": body.get("envelope"),
+            "handle": doc.get("handle"),
+            "issued_at": doc.get("issued_at"),
+            "challenge": challenge,
+            "updated_at": int(time.time()),
+        }
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_name(path.name + ".tmp")
+            tmp.write_bytes(json.dumps(record, indent=2).encode("utf-8"))
+            # Atomic: a reader sees the old record or the new one, never a
+            # half-written one. A plain truncate-then-write loses the Space on
+            # any crash between the two.
+            os.replace(tmp, path)
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=f"could not write space record: {exc}")
+
+        return {
+            "ok": True,
+            "state": "serving",
+            "handle": doc.get("handle"),
+            "updated_at": record["updated_at"],
+            "challenge_echo": challenge,
+        }
+
     @app.get("/onboard/status")
     async def onboard_status():
         """Report onboarding status for the Awconnect extension.
@@ -3621,7 +3917,7 @@ def create_app(
         except Exception as _pk_exc:
             logger.debug("A2A pubkey unavailable for fleet registration: %s", _pk_exc)
         try:
-            portal_url = os.getenv("AITHER_PORTAL_URL", "https://portal.aitherium.com")
+            portal_url = os.getenv("AITHER_PORTAL_URL", "https://app.aitherium.com")
             import httpx
             async with httpx.AsyncClient(timeout=15) as client:
                 await client.post(
@@ -3649,7 +3945,7 @@ def create_app(
         # Register with new fleet API (separate try/except for resilience)
         workspace_id = saved.get("workspace_id", "") or os.getenv("AITHER_WORKSPACE_ID", "")
         try:
-            portal_url = os.getenv("AITHER_PORTAL_URL", "https://portal.aitherium.com")
+            portal_url = os.getenv("AITHER_PORTAL_URL", "https://app.aitherium.com")
             import httpx
             billing_email = saved.get("billing_email", "")
             async with httpx.AsyncClient(timeout=15) as client:
@@ -3721,7 +4017,7 @@ def create_app(
         agent_name = _state.get("identity", identity)
         tenant_id = saved.get("tenant_id", "") or os.getenv("AITHER_TENANT_ID", "")
         try:
-            portal_url = os.getenv("AITHER_PORTAL_URL", "https://portal.aitherium.com")
+            portal_url = os.getenv("AITHER_PORTAL_URL", "https://app.aitherium.com")
             import httpx
             async with httpx.AsyncClient(timeout=10) as client:
                 await client.post(
@@ -3741,7 +4037,7 @@ def create_app(
         fleet_endpoint_id = _state.get("fleet_endpoint_id")
         if fleet_endpoint_id:
             try:
-                portal_url = os.getenv("AITHER_PORTAL_URL", "https://portal.aitherium.com")
+                portal_url = os.getenv("AITHER_PORTAL_URL", "https://app.aitherium.com")
                 import httpx
                 async with httpx.AsyncClient(timeout=10) as client:
                     await client.delete(
@@ -3766,7 +4062,7 @@ def create_app(
             return
 
         tenant_id = saved.get("tenant_id", "") or os.environ.get("AITHER_TENANT_ID", "")
-        portal_url = os.environ.get("AITHER_PORTAL_URL", "https://portal.aitherium.com")
+        portal_url = os.environ.get("AITHER_PORTAL_URL", "https://app.aitherium.com")
         agent_name = _state.get("identity", identity)
         instance_id = os.environ.get("AITHER_INSTANCE_ID", "")
         invoke_url = os.environ.get("AITHER_INVOKE_URL", f"http://localhost:{config.server_port}")

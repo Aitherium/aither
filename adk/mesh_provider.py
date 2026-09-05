@@ -175,6 +175,7 @@ async def grant_consent(
     tenant_id: str | None = None,
     conductor_url: str = DEFAULT_CONDUCTOR_URL,
     auth_token: str | None = None,
+    granted: bool = True,
 ) -> dict[str, Any]:
     """Grant participation consent for the node to serve community inference.
 
@@ -217,9 +218,12 @@ async def grant_consent(
         }
 
     url = conductor_url.rstrip("/") + f"/v1/mesh/peers/{peer_id}/consent"
+    # ``granted`` defaults True so every existing caller is unchanged. The
+    # False direction is REVOCATION through the same door: one endpoint, one
+    # audit trail, and no second consent writer to drift from this one.
     payload = {
         "tenant_id": tenant_id,
-        "granted": True,
+        "granted": bool(granted),
     }
     headers = {"Content-Type": "application/json"}
     if auth_token:
@@ -234,6 +238,7 @@ async def grant_consent(
                 "step": "consent",
                 "peer_id": peer_id,
                 "tenant_id": tenant_id,
+                "granted": bool(granted),
             }
     except httpx.HTTPStatusError as e:
         logger.error("consent failed: %s %s", e.response.status_code, e.response.text)
@@ -871,3 +876,231 @@ async def flux_node(
             "error": f"flux_node error: {e}",
             "step": "flux_node_start",
         }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Idle-only lending — the NODE-SIDE half of "Lend Compute" (W11 / L7)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# ELIGIBILITY is platform-side and default-deny (the Conductor consent record
+# under the ``community_inference`` purpose). SERVING is this node's own
+# inference process. Idle-only belongs HERE, on the node, and nowhere else: the
+# only alternative is the node self-reporting "I am idle" to the platform and the
+# platform trusting it, which turns a comfort feature into a security-relevant
+# claim a provider controls.
+#
+# So the supervisor never asks the platform for anything and never asserts a
+# state. It does exactly one thing in each direction:
+#
+#   idle past the threshold, past the cooldown, and enabled  ->  grant consent
+#   no longer idle                                           ->  WITHDRAW
+#
+# Withdrawing is revoking consent (and, if asked, withdrawing the advertised
+# endpoint). The platform's existing PER-REQUEST re-gate
+# (``AitherLLMQueue._regate_community_backend`` -> ``evaluate_community_peer``)
+# evicts the peer on the next routed request. That is why this file must NOT
+# touch either routing gate: a mistake in the cross-mesh scope filter or the
+# per-peer re-gate is a cross-tenant defect, not a feature bug.
+#
+# The eligibility decision is a PURE FUNCTION (``idle_lending_eligible``) taking
+# the config, the measured idle minutes and a clock, so both directions can be
+# asserted without a GPU, a mesh, or a network. A flag whose decision cannot be
+# tested in both directions is decorative.
+#
+# Shape copied deliberately from ``slumber_gpu_scheduler._eligible``: ``enabled``
+# defaults FALSE, a minimum-idle threshold, and a cooldown (default 360 minutes)
+# so a twitchy idle signal cannot flap the endpoint. Flapping an advertised
+# endpoint is worse than never advertising it — every flap is a routed request
+# that fails on a peer that was there a second ago.
+
+#: Unset is OFF. Every other toggle in this family defaults ON via ``!== false``
+#: and copying that idiom here would make lending somebody's GPU the shipped
+#: default (the BCG009 shape).
+IDLE_LENDING_ENABLED_DEFAULT = False
+
+#: Minutes the box must have been idle before lending may start.
+IDLE_LENDING_MIN_IDLE_MINUTES = 30.0
+
+#: Minutes between two starts. Prevents endpoint flap on a twitchy idle signal.
+IDLE_LENDING_COOLDOWN_MINUTES = 360.0
+
+#: A serve command this supervisor may PRINT for the operator. It binds the
+#: inference server to LOOPBACK and reaches the mesh over the overlay, never
+#: 0.0.0.0 — an unauthenticated inference port on every interface is how a
+#: provider's box becomes reachable from their whole LAN (and, through a tunnel,
+#: further). This is a POSITIVE bind, not merely the absence of 0.0.0.0: a child
+#: spawned with no --host inherits its runtime's default, and both awdk apps
+#: default to 0.0.0.0.
+IDLE_LENDING_SERVE_BIND = "127.0.0.1"
+
+
+def idle_lending_config(overrides: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Resolve the idle-lending config: defaults, then env, then explicit overrides.
+
+    ``enabled`` is truthy ONLY for an explicit affirmative. An unparseable or
+    absent value is OFF — the fail-closed direction, and the one that matters,
+    because the thing being switched on is somebody else's work running on the
+    owner's hardware.
+    """
+    raw_enabled = os.getenv("AITHER_IDLE_LENDING", "").strip().lower()
+    cfg: dict[str, Any] = {
+        "enabled": raw_enabled in ("1", "true", "yes", "on")
+        if raw_enabled
+        else IDLE_LENDING_ENABLED_DEFAULT,
+        "min_idle_minutes": _float_env(
+            "AITHER_IDLE_LENDING_MIN_IDLE_MINUTES", IDLE_LENDING_MIN_IDLE_MINUTES
+        ),
+        "cooldown_minutes": _float_env(
+            "AITHER_IDLE_LENDING_COOLDOWN_MINUTES", IDLE_LENDING_COOLDOWN_MINUTES
+        ),
+        "bind_host": IDLE_LENDING_SERVE_BIND,
+    }
+    if overrides:
+        cfg.update(overrides)
+    return cfg
+
+
+def _float_env(name: str, default: float) -> float:
+    """Read a float from the environment, falling back on anything unparseable.
+
+    A malformed threshold must not become 0.0 (i.e. "always idle enough"); it
+    falls back to the conservative default instead.
+    """
+    try:
+        return float(os.getenv(name, "").strip() or default)
+    except (TypeError, ValueError):
+        return default
+
+
+def idle_lending_eligible(
+    cfg: dict[str, Any],
+    idle_minutes: float,
+    last_started_at: float = 0.0,
+    now: float | None = None,
+) -> bool:
+    """May this node START lending right now? Pure; no I/O, no clock of its own.
+
+    Three conditions, all required, in the order that makes a false cheapest:
+
+      1. ``enabled`` — the owner turned it on. Unset is False.
+      2. the box has been idle at least ``min_idle_minutes``.
+      3. at least ``cooldown_minutes`` have passed since the last start.
+
+    Returns False for a negative or non-numeric idle reading: "I could not
+    measure idleness" is not "the box is idle". That distinction is the whole
+    reason this is a function rather than an inline check — it is the direction
+    a reasonable-looking implementation gets wrong.
+    """
+    if not cfg.get("enabled", False):
+        return False
+    try:
+        idle = float(idle_minutes)
+    except (TypeError, ValueError):
+        return False
+    if idle < 0:
+        return False
+    if idle < float(cfg.get("min_idle_minutes", IDLE_LENDING_MIN_IDLE_MINUTES)):
+        return False
+    cooldown_s = float(cfg.get("cooldown_minutes", IDLE_LENDING_COOLDOWN_MINUTES)) * 60.0
+    clock = time.time() if now is None else float(now)
+    return (clock - float(last_started_at or 0.0)) >= cooldown_s
+
+
+def idle_lending_should_withdraw(cfg: dict[str, Any], idle_minutes: float) -> bool:
+    """Must this node WITHDRAW right now?
+
+    Withdrawal is NOT the negation of ``idle_lending_eligible``: the cooldown
+    governs starting, never stopping. Making them symmetric would hold a busy
+    box in the pool for the rest of its cooldown, which is exactly the promise
+    "idle-only" makes and the one a naive ``not eligible()`` breaks.
+
+    Withdrawal is also the answer when the owner switches the flag OFF while
+    lending, and when idleness cannot be measured at all — if we do not know the
+    box is idle, we do not keep serving on the assumption that it is.
+    """
+    if not cfg.get("enabled", False):
+        return True
+    try:
+        idle = float(idle_minutes)
+    except (TypeError, ValueError):
+        return True
+    if idle < 0:
+        return True
+    return idle < float(cfg.get("min_idle_minutes", IDLE_LENDING_MIN_IDLE_MINUTES))
+
+
+def idle_lending_serve_hint(model: str, port: int = 8000) -> str:
+    """The serve command this supervisor prints for the operator.
+
+    Emitted with an EXPLICIT loopback bind. The platform reaches the endpoint
+    over the WireGuard overlay address advertised in the peer record, so binding
+    the inference server to every interface buys nothing and costs an
+    unauthenticated port on the operator's LAN.
+    """
+    safe_model = (model or "").strip() or "<model>"
+    return (
+        f"llama-server --model {safe_model} "
+        f"--host {IDLE_LENDING_SERVE_BIND} --port {int(port)}"
+    )
+
+
+async def idle_lending_tick(
+    peer_id: str,
+    idle_minutes: float,
+    *,
+    tenant_id: str | None = None,
+    conductor_url: str = DEFAULT_CONDUCTOR_URL,
+    auth_token: str | None = None,
+    last_started_at: float = 0.0,
+    cfg: dict[str, Any] | None = None,
+    now: float | None = None,
+) -> dict[str, Any]:
+    """One supervisor step. Decides, then acts through the EXISTING consent door.
+
+    Returns a report; never raises. It calls ``grant_consent`` in both directions
+    (granted True to lend, False to withdraw) because that is the one door the
+    routing gate reads — this function adds no rival gate and writes no state of
+    its own. Auth is the adk token; the fleet internal secret is never used, and
+    TLS verification is never disabled.
+    """
+    resolved = cfg or idle_lending_config()
+    decision = "hold"
+    if idle_lending_should_withdraw(resolved, idle_minutes):
+        decision = "withdraw"
+    elif idle_lending_eligible(resolved, idle_minutes, last_started_at, now):
+        decision = "lend"
+
+    report: dict[str, Any] = {
+        "ok": True,
+        "decision": decision,
+        "idle_minutes": idle_minutes,
+        "enabled": bool(resolved.get("enabled", False)),
+        "min_idle_minutes": resolved.get("min_idle_minutes"),
+        "cooldown_minutes": resolved.get("cooldown_minutes"),
+        "bind_host": resolved.get("bind_host", IDLE_LENDING_SERVE_BIND),
+        "step": "idle_lending_tick",
+    }
+    if decision == "hold":
+        report["message"] = (
+            "Idle long enough to keep lending, but inside the start cooldown; "
+            "not re-advertising yet."
+        )
+        return report
+
+    granted = decision == "lend"
+    result = await grant_consent(
+        peer_id,
+        tenant_id=tenant_id,
+        conductor_url=conductor_url,
+        auth_token=auth_token,
+        granted=granted,
+    )
+    report["consent"] = result
+    report["ok"] = bool(result.get("ok", False))
+    report["message"] = (
+        "Lending: consent granted; the platform may route to this node."
+        if granted
+        else "Withdrawn: consent revoked. The platform's per-request re-gate "
+        "evicts this node on the next routed request."
+    )
+    return report
