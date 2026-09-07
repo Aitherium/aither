@@ -311,6 +311,31 @@ button.stop{background:#c0392b}
   //    Protocol: load -> progress* -> ready -> generate -> token* (thinking|answer|tool)
   //    -> done. Single history kept per page.
   var odWorker=null, odLoaded=false, odEverLoaded=false, odEl=null, odAcc='', odPending=null, odLastUser='', odHistory=[];
+  // AITHER_WEBML_MEMORY — the kit's memory backend (awkit/webml memory-bundle, mirrored
+  // beside this file by AitherVeil/scripts/build-workers.mjs). Same rules as aitherium.com:
+  // every turn remembered (IndexedDB), a recall block prepended, the deferred
+  // update/delete/ignore pass while this tab is HIDDEN — and only when the visitor ticked
+  // 'tidy while hidden' (the kit's `auto` consent). A missing bundle = no memory, said once.
+  var odMemP=null, odMem=null, odMemMod=null, odRaw=null, odConvId='adk-webui';
+  function odMemory(){
+    if(odMemP) return odMemP;
+    odMemP=import('/packs/llamacpp/webml-memory.js').then(function(M){
+      odMemMod=M; odMem=M.defaultChatMemory();
+      M.scheduleSleepPasses({ status:function(){ return (odLoaded&&!odEl&&!odRaw)?'ready':'busy'; },
+        generate:odGenerateRaw, memory:odMem });
+      return M;
+    }).catch(function(e){ console.warn('[on-device] memory backend unavailable:', e&&e.message); return null; });
+    return odMemP;
+  }
+  // One-shot generate on the SAME worker that never touches the chat log — the
+  // sleep pass's door. Refuses unless the model is ready and idle.
+  function odGenerateRaw(prompt){
+    return new Promise(function(resolve,reject){
+      if(!odWorker||!odLoaded||odEl||odRaw){ reject(new Error('on-device model busy or not loaded')); return; }
+      odRaw={buf:'',resolve:resolve,reject:reject};
+      odWorker.postMessage({type:'generate',messages:[{role:'user',content:prompt}],maxTokens:160,temperature:0});
+    });
+  }
   function odEnsure(){
     if(odWorker) return odWorker;
     odWorker=new Worker('/packs/llamacpp/bonsai-worker.js',{type:'module'});
@@ -325,11 +350,13 @@ button.stop{background:#c0392b}
         if(odEl){ odEl.innerHTML='<span style="color:var(--dim)">Model ready — compiling…</span>'; }
         if(odPending){ var t=odPending; odPending=null; odGenerate(t); }
       }
-      else if(m.type==='token'){ odAcc+=m.text; if(odEl){ odEl.innerHTML=md(odAcc); log.scrollTop=log.scrollHeight; } }
-      else if(m.type==='done'){ if(odEl){ odEl.classList.remove('cursor'); if(!odAcc)odEl.innerHTML='<span style="color:var(--dim)">(no response)</span>'; }
+      else if(m.type==='token'){ if(odRaw){ odRaw.buf+=m.text; return; } odAcc+=m.text; if(odEl){ odEl.innerHTML=md(odAcc); log.scrollTop=log.scrollHeight; } }
+      else if(m.type==='done'){ if(odRaw){ var r=odRaw; odRaw=null; r.resolve(m.text||r.buf); return; }
+        if(odEl){ odEl.classList.remove('cursor'); if(!odAcc)odEl.innerHTML='<span style="color:var(--dim)">(no response)</span>'; }
         odHistory.push({role:'user',content:odLastUser}); odHistory.push({role:'assistant',content:odAcc});
+        if(odMem&&odAcc){ odMem.remember(odConvId,'assistant',odAcc); }
         odEl=null; setBusy(false); }
-      else if(m.type==='error'){ if(odEl){ odEl.classList.remove('cursor'); odEl.innerHTML='⚠ '+esc(m.message); } odEl=null; setBusy(false); }
+      else if(m.type==='error'){ if(odRaw){ var er=odRaw; odRaw=null; er.reject(new Error(m.message||'worker error')); return; } if(odEl){ odEl.classList.remove('cursor'); odEl.innerHTML='⚠ '+esc(m.message); } odEl=null; setBusy(false); }
     };
     // A worker the browser kills for memory posts nothing and may fire no error
     // on some engines — without these the UI would sit at "generating" forever.
@@ -346,9 +373,16 @@ button.stop{background:#c0392b}
         el.innerHTML='<div style="color:var(--dim);line-height:1.55">⚡ <b>On-device</b> runs the model right here in your browser on your GPU — free, private, nothing leaves this machine. '+
           'It needs a <b>one-time download</b> the first time you use it (236&nbsp;MB–3.6&nbsp;GB, sized to your device; cached forever after).</div>';
         var go=document.createElement('button');go.textContent='Download & start';
+        // The click IS the consent (kit record `aitheros-bonsai-consent`); 'tidy while hidden'
+        // is the SEPARATE ask for unattended work — off unless ticked.
+        var tidy=document.createElement('label'); tidy.style.cssText='display:block;margin-top:8px;color:var(--dim);font-size:13px';
+        var tidyBox=document.createElement('input'); tidyBox.type='checkbox'; tidy.appendChild(tidyBox);
+        tidy.appendChild(document.createTextNode(' also let it tidy its memory while this tab is hidden'));
+        el.appendChild(tidy);
         go.style.cssText='margin-top:10px;padding:9px 16px;border-radius:8px;border:0;background:#3b82f6;color:#fff;cursor:pointer;font-size:14px';
         var el0=el, text0=text;
-        go.addEventListener('click',function(){ el0.innerHTML=''; el0.classList.add('cursor'); setBusy(true);
+        go.addEventListener('click',function(){ var auto=!!tidyBox.checked; odMemory().then(function(M){ if(M) M.grantModelConsent(auto); });
+          el0.innerHTML=''; el0.classList.add('cursor'); setBusy(true);
           odEl=el0; odEnsure(); odWorker.postMessage({type:'load',modelId:'auto'}); odEverLoaded=true; odPending={text:text0}; });
         el.appendChild(go); setBusy(false); return;
       }
@@ -367,9 +401,15 @@ button.stop{background:#c0392b}
     if(!odLoaded){ // not loaded yet: queue and load (model stays cached between uses)
       odEverLoaded=true; odPending={text:t.text};
       odWorker.postMessage({type:'load',modelId:'auto'}); return; }
-    var msgs=[{role:'system',content:'You are the on-device helper. Be concise.'}].concat(odHistory).concat([{role:'user',content:t.text}]);
-    odWorker.postMessage({type:'generate',messages:msgs,
-      temperature:parseFloat(temp.value),maxTokens:parseInt(document.getElementById('maxtok').value,10)});
+    // Memory: recall BEFORE the turn is posted, remember the user turn, then generate.
+    // Guarded — a memory failure never blocks the send; the recall comes back empty.
+    odMemory().then(function(){ return odMem? odMem.recallBlock(odConvId,t.text).catch(function(){return '';}) : ''; }).then(function(block){
+      if(odMem) odMem.remember(odConvId,'user',t.text);
+      var sys='You are the on-device helper. Be concise.'+(block?'\n\n'+block:'');
+      var msgs=[{role:'system',content:sys}].concat(odHistory).concat([{role:'user',content:t.text}]);
+      odWorker.postMessage({type:'generate',messages:msgs,
+        temperature:parseFloat(temp.value),maxTokens:parseInt(document.getElementById('maxtok').value,10)});
+    });
   }
   // Stop for the on-device path: terminate the worker (the model stays in the
   // browser cache — the next use reloads it silently, no re-download).

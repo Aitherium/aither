@@ -1,4 +1,4 @@
-"""Dynamic A2A trust via the authoritative cloud agent registry (D-479 residual).
+"""Dynamic A2A trust via the authoritative cloud agent registry.
 
 Proves _is_key_trusted consults the registry (owner-authed, per-tenant, source of
 truth) for a mesh peer / portal-trust mode, fail-closed on an unknown or missing

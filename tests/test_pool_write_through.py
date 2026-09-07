@@ -17,8 +17,10 @@ module-level alias so the shared urllib module is never touched).
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
+
 from adk.pool_write_through import (
     report_task_to_pool,
     write_through_enabled,

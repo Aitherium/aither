@@ -15,10 +15,18 @@ bitten this repo:
    backend that hangs must cost the raising session nothing, so everything here is
    spawned detached with a timeout and failures are returned, never raised.
 
-3. **It must coalesce.** Cards fire on every fork, so a naive one-toast-per-card
-   turns into a notification storm that trains the owner to dismiss without
-   reading — which is exactly the outcome this feature exists to prevent. Inside
-   the quiet window a burst collapses into one "N decisions waiting" toast.
+3. **It must coalesce.** Cards fire on every fork, so a naive
+   one-notification-per-card turns into a storm that trains the owner to dismiss
+   without reading — which is exactly the outcome this feature exists to
+   prevent. Inside the quiet window a burst collapses into one "N decisions
+   waiting" summary.
+
+The Windows toast channel is REMOVED (2026-08-31, owner decision): card toasts
+presented under the PowerShell app id ("{1AC14E77-...}\\WindowsPowerShell\\...")
+and their clicks led nowhere — the launch URL had no registered handler
+(DTOAST001, measured 2026-08-30). The card WINDOW is the channel; the tray
+badge, the desk deck and the Discord fanout are the bells. DTOAST001 asserts
+both twin copies stay free of Windows toast code.
 """
 
 from __future__ import annotations
@@ -35,16 +43,9 @@ from typing import Optional
 from adk.decisions.render import human_age, render_summary
 from adk.decisions.store import STATUS_OPEN, DecisionCard, DecisionStore, decisions_dir
 
-#: Within this many seconds of the last toast, a new card is folded into a single
-#: summary toast rather than raising its own.
+#: Within this many seconds of the last raise, a new card is folded into a single
+#: summary rather than raising its own window.
 QUIET_WINDOW_SECONDS = float(os.getenv("AITHER_DECISIONS_QUIET_SECONDS", "45"))
-
-#: Windows will not show a toast from an unregistered AppID. The built-in
-#: PowerShell shortcut id is always present, so it works on a clean machine with
-#: nothing installed and no shortcut authored by us.
-_WINDOWS_APP_ID = r"{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe"
-
-_CREATE_NO_WINDOW = 0x08000000
 
 
 @dataclass
@@ -93,72 +94,6 @@ def _write_state(data: dict) -> None:
         return
 
 
-def _xml_escape(text: str) -> str:
-    return (
-        text.replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace('"', "&quot;")
-    )
-
-
-# ── Windows ─────────────────────────────────────────────────────────────────────
-
-
-def _windows_toast(title: str, body: str, *, urgency: str = "normal") -> Optional[str]:
-    """Raise a native Windows toast. Returns an error string, or None on success.
-
-    Never mark the toast urgent: Windows 11 answers an urgent toast with a
-    DND-bypass "Allow important notifications" permission dialog on every
-    raise (measured 2026-08-29) — the popup/DM planes carry critical cards;
-    the toast is decoration and must not declare itself important.
-    """
-    # The toast is DECORATION and is not clickable: no activationType/launch.
-    # A launch URL with no registered protocol handler turns a click into
-    # Windows' "You'll need a new app to open this" error — measured 2026-08-30
-    # on the owner's box with `launch='aither-decide://open'` and no handler.
-    # The card WINDOW is the clickable channel; a toast cannot host controls.
-    xml = (
-        "<toast>"
-        "<visual><binding template='ToastGeneric'>"
-        f"<text>{_xml_escape(title)}</text>"
-        f"<text>{_xml_escape(body)}</text>"
-        "</binding></visual>"
-        "<audio src='ms-winsoundevent:Notification.Reminder'/>"
-        "</toast>"
-    )
-    script = (
-        "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications,"
-        " ContentType=WindowsRuntime] > $null;"
-        "[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument,"
-        " ContentType=WindowsRuntime] > $null;"
-        "$d = New-Object Windows.Data.Xml.Dom.XmlDocument;"
-        f"$d.LoadXml(@'\n{xml}\n'@);"
-        "$t = New-Object Windows.UI.Notifications.ToastNotification $d;"
-        f"[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('{_WINDOWS_APP_ID}')"
-        ".Show($t);"
-    )
-    try:
-        proc = subprocess.run(
-            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=20,
-            # THE line that matters: no console is allocated, so nothing takes
-            # focus. See the module docstring and quality gate 1t.
-            creationflags=_CREATE_NO_WINDOW,
-        )
-    except FileNotFoundError:
-        return "powershell.exe not found"
-    except subprocess.TimeoutExpired:
-        return "toast timed out after 20s"
-    if proc.returncode != 0:
-        return (proc.stderr or proc.stdout or "unknown powershell failure").strip()[:300]
-    return None
-
-
 # ── macOS / Linux ───────────────────────────────────────────────────────────────
 
 
@@ -194,20 +129,22 @@ def _linux_toast(title: str, body: str, *, urgency: str = "normal") -> Optional[
 def native_toast(title: str, body: str, *, urgency: str = "normal") -> Optional[str]:
     """Platform-appropriate native notification. Returns an error string or None.
 
-    OFF by default — see ``toast_enabled``. Kept because it is the only channel
-    that works on a headless or remote box where no window can be drawn.
+    Windows is REMOVED from this channel (2026-08-31, owner decision) — the
+    card window, tray badge, deck and Discord fanout carry the push there, and
+    DTOAST001 asserts the twin copies stay free of Windows toast code. The
+    remaining macOS/Linux toasts are OFF by default — see ``toast_enabled``.
     """
+    if sys.platform.startswith("win"):
+        return "windows toast channel removed 2026-08-31 (owner decision)"
     if not toast_enabled():
         return "off by default (set AITHER_DECISIONS_TOAST=1 to enable)"
-    if sys.platform.startswith("win"):
-        return _windows_toast(title, body, urgency=urgency)
     if sys.platform == "darwin":
         return _macos_toast(title, body)
     return _linux_toast(title, body, urgency=urgency)
 
 
 def toast_enabled() -> bool:
-    """Toasts are OPT-IN, and that is a considered default, not an oversight.
+    """Native toasts are OPT-IN, and that is a considered default, not an oversight.
 
     Measured against the owner's actual workflow, a toast fails as the channel for
     this: it is a two-line strip that queues in the same tray as mail and chat, so
@@ -217,17 +154,36 @@ def toast_enabled() -> bool:
     cannot host controls. Every one of those is fatal for "you are the bottleneck".
 
     The card WINDOW is the channel. The toast stays available for the one case the
-    window cannot serve — a headless or SSH-only box with no display.
+    window cannot serve — a headless or SSH-only box with no display. (Windows is
+    excluded outright since 2026-08-31: see ``native_toast``.)
     """
+    if sys.platform.startswith("win"):
+        return False
     flag = os.getenv("AITHER_DECISIONS_TOAST", "").strip().lower()
     return flag in ("1", "true", "yes", "on")
 
 
 def popup_enabled() -> bool:
-    """The card window, unless explicitly disabled or there is no display."""
+    """The card window, unless explicitly disabled or there is no display.
+
+    Two switches, OR-ed off: the ``AITHER_DECISIONS_POPUP`` env var (process
+    scope — only NEW processes see it) and the kill-switch FILE
+    ``~/.aither/decisions/.popup-off`` (read at call time — RUNNING processes
+    honor it on their next raise, no restart). The file exists because the
+    owner's background-first preference must be enforceable against sessions
+    that started before the env was set — measured 2026-08-29: 18 long-lived
+    sessions could not see the env var, and each card raise still popped a
+    focus-stealing topmost window on the desktop.
+    """
     flag = os.getenv("AITHER_DECISIONS_POPUP", "").strip().lower()
     if flag in ("0", "false", "no", "off"):
         return False
+    try:
+        if (Path.home() / ".aither" / "decisions" / ".popup-off").is_file():
+            return False
+    except OSError:
+        # An unreadable home is not a reason to start popping windows.
+        return True
     if not sys.platform.startswith("win") and sys.platform != "darwin":
         # An X-less Linux box would raise a window nobody can see; fall back to
         # the toast path rather than spawning a process that cannot draw.

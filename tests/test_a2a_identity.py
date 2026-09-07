@@ -100,7 +100,7 @@ class TestA2AIdentity:
           2026-08-02), which matched neither accepted value, so the AssertionError
           escaped the handler and the test failed on every Windows run.
 
-        Gated at DECORATION time rather than skipping inside the body (PQ004): a
+        Gated at DECORATION time rather than skipping inside the body: a
         body-level skip fires after partial execution and reports a real failure
         as a skip.
         """

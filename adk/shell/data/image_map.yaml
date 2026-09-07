@@ -112,7 +112,6 @@ layers:
     base: slim
     size_estimate_gb: 0.3
     services:
-      - aitheros-moltbook
       - aitheros-social-hub
       - aitheros-social-platforms
       - aitheros-social-intelligence

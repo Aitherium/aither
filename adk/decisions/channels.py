@@ -263,7 +263,17 @@ class DecisionChannelBridge:
         if not card.options:
             # Nothing to reply with. Same rule as the popup: a message you cannot
             # act on is an interruption, not a decision surface.
-            return False
+            #
+            # EXCEPT credential cards (kind="credential"): their ONLY door is
+            # the masked prompt (secure_prompt.py, DC008) — no popup renders
+            # them, the deck reply box is not allowed to, and without a DM the
+            # owner never learns the ask exists. Measured 2026-08-27: three
+            # secure-input cards (LAMBDA/HETZNER/GOOGLE) sat undelivered for
+            # hours with 4912 deliveries for option cards around them. The DM
+            # for a credential card carries the answer instruction; the value
+            # itself still never travels through any channel.
+            if card.kind != "credential":
+                return False
         floor = _URGENCY_RANK.get(cfg.min_urgency, 1)
         rank = _URGENCY_RANK.get(card.urgency, 1)
         if rank < floor:
@@ -280,10 +290,22 @@ class DecisionChannelBridge:
         # And it fails toward DELIVERING: unmeasurable presence (no API,
         # non-Windows, permission error) counts as away. Suppressing on
         # evidence nobody gathered is the failure cards exist to prevent.
-        if rank < _URGENCY_RANK.get("critical", 99):
+        if rank < _URGENCY_RANK.get("critical", 99) and card.kind != "credential":
+            # Credential cards bypass the presence suppression: "popup is
+            # enough" is FALSE for them (no popup renders them — the masked
+            # prompt is the only door), so suppressing the DM makes the ask
+            # invisible. Fail toward delivering, per this module's own rule.
+            #
+            # The suppression holds ONLY when a popup will actually show:
+            # "popup is enough" is a statement about a window that exists.
+            # With the popup plane disabled (AITHER_DECISIONS_POPUP=0 — the
+            # owner's background-first preference, 2026-08-29), an at-desk
+            # card must reach the DM instead of vanishing into a suppressed
+            # silence — the exact "the feature is just off" shape.
             try:
+                from adk.decisions.notify import popup_enabled
                 from adk.decisions.presence import is_at_desk, presence_note
-                if is_at_desk():
+                if is_at_desk() and popup_enabled():
                     # Logged, not silent: a notification that did not happen is
                     # otherwise indistinguishable from one that failed.
                     print(f"[decisions] {card.id}: {presence_note()}")

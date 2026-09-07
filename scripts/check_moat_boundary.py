@@ -5,8 +5,8 @@ Fails (non-zero exit) if the wheel OR the sdist leaks the internal moat:
   * imports the proprietary ``aither_adk`` package
   * bundles ``adk/nanogpt.py`` (on-device training IP)
   * bundles any premium identity YAML (only ``aither.yaml`` is free)
-  * bundles the internal ``adk/platform`` toolkit (relocated out of the SDK,
-    D-347) or the license-gated ``adk/formbridge`` product
+  * bundles the internal ``adk/platform`` toolkit (relocated out of the SDK)
+    or the license-gated ``adk/formbridge`` product
   * bundles ``adk/aither_bridge.py`` (internal IRC↔chat bridge, stripped at sync)
   * is missing the ``adk/licensing.py`` entitlement keystone
 

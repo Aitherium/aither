@@ -82,8 +82,8 @@ DEFAULT_ORIGINS = (
     "http://127.0.0.1:3000",
     "https://aitherium.com",
     "https://www.aitherium.com",
-    "https://portal.aitherium.com",
-    "https://portal.aitherium.com",
+    "https://api.aitherium.com",
+    "https://api.aitherium.com",
     "https://tunnel.aitherium.com",
     # The Aither Hub (gobbonet.aitherium.com + apex /gobbonet/): the browser
     # page on the user's machine reaches this daemon over 127.0.0.1:8362 —
@@ -803,7 +803,68 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
     #
     # Route order matters — FastAPI matches in registration order, so the static
     # `/decisions/count` MUST precede `/decisions/{card_id}` or the parameterised
-    # handler swallows it and returns "no such card: count" (quality gate PQ005).
+    # handler swallows it and returns "no such card: count".
+
+    # ── images ──────────────────────────────────────────────────────────────
+    # An agent that can write and run code but cannot draw a picture is missing
+    # a sense. These route to whatever image server is ALREADY on loopback and
+    # start nothing; see adk/images.py for why the probe asks the generation
+    # route rather than /health.
+    #
+    # The path is the OpenAI shape on purpose: it is what every client already
+    # speaks, including GobboNet's awdk lane, so the capability arrives without
+    # anyone writing a bespoke client. Before this route existed that lane
+    # probed /v1/images/generations, got 404, and correctly reported the daemon
+    # as "running, but no image route" -- which is exactly what it was.
+
+    @app.get("/v1/images/backends", dependencies=[Depends(auth)])
+    async def image_backends() -> dict[str, Any]:
+        from adk import images as _img
+
+        lanes = await _img.discover()
+        return {
+            "backends": [ln.as_dict() for ln in lanes],
+            "usable": [ln.id for ln in lanes if ln.up],
+        }
+
+    @app.post("/v1/images/generations", dependencies=[Depends(auth)])
+    async def image_generate(body: dict[str, Any]) -> dict[str, Any]:
+        from fastapi import HTTPException
+
+        from adk import images as _img
+
+        size = str(body.get("size") or "768x768")
+        try:
+            w_s, h_s = size.lower().split("x", 1)
+            width, height = int(w_s), int(h_s)
+        except (ValueError, AttributeError):
+            raise HTTPException(400, f"size must look like 768x768, got {size!r}")
+
+        req = _img.ImageRequest(
+            prompt=str(body.get("prompt") or ""),
+            negative=str(body.get("negative_prompt") or ""),
+            width=width, height=height,
+            steps=int(body.get("steps") or 20),
+            cfg=float(body.get("cfg") or 6.0),
+            seed=body.get("seed"),
+            model=str(body.get("model") or ""),
+            backend=str(body.get("backend") or ""),
+        )
+        try:
+            out = await _img.generate(req)
+        except _img.ImageError as e:
+            # 503, not 500: every ImageError here means "no local backend can
+            # do this right now", which is a service-availability answer and
+            # the message is written to be shown to a person. A 500 would read
+            # as a bug in the daemon and send them to the wrong logs.
+            raise HTTPException(503, str(e))
+
+        return {
+            "created": 0,
+            "data": [{"b64_json": b} for b in out["images_b64"]],
+            "backend": out["backend"],
+            "model": out["model"],
+        }
 
     # ── images ──────────────────────────────────────────────────────────────
     # An agent that can write and run code but cannot draw a picture is missing
@@ -1199,7 +1260,7 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
 
     # Producers that must not block (Claude Code hooks run synchronously inside the
     # owner's session) append to a spool file instead of POSTing. Tailing it is
-    # blocking file I/O, so it lives on its own thread — PQ010: a blocking call on
+    # blocking file I/O, so it lives on its own thread — a blocking call on
     # the event loop is not "slow", it is an outage for every concurrent request.
     tailer = default_tailer()
     tailer.start()
@@ -1222,7 +1283,7 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
         actor: str = Query(default=""),
         render: bool = Query(default=False),
     ) -> dict[str, Any]:
-        """Draw the ambient snapshot. Never rebuilds inline (PQ010).
+        """Draw the ambient snapshot. Never rebuilds inline.
 
         ``?render=1`` also returns the tagged-section form that
         ``AitherGraph.context_for`` emits, so a caller can paste it straight into a
@@ -1327,7 +1388,7 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
                 detail="httpx required for device flow (pip install httpx)",
             ) from None
 
-        portal_url = "https://portal.aitherium.com"
+        portal_url = "https://api.aitherium.com"
         portal_endpoint = f"{portal_url}/auth/device/code"
 
         try:
@@ -1391,7 +1452,7 @@ def create_app(manager: Optional[SessionManager] = None, token: str = ""):
             )
 
         # Poll portal for current status (may have changed since last check)
-        portal_url = "https://portal.aitherium.com"
+        portal_url = "https://api.aitherium.com"
         portal_endpoint = f"{portal_url}/auth/device/token"
 
         try:

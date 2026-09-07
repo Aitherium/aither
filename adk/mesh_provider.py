@@ -509,7 +509,7 @@ async def federation_token(
     conductor_url: str = DEFAULT_CONDUCTOR_URL,
     auth_token: str | None = None,
 ) -> dict[str, Any]:
-    """SELF-SERVICE relay-federation credential (D-699): mint the AITHER_NODE_TOKEN
+    """SELF-SERVICE relay-federation credential: mint the AITHER_NODE_TOKEN
     this node's sovereign relay presents on the community hub's /ws/chat.
 
     POST /v1/mesh/peers/{peer_id}/federation-token — ownership enforced server-side
@@ -907,15 +907,15 @@ async def flux_node(
 # asserted without a GPU, a mesh, or a network. A flag whose decision cannot be
 # tested in both directions is decorative.
 #
-# Shape copied deliberately from ``slumber_gpu_scheduler._eligible``: ``enabled``
-# defaults FALSE, a minimum-idle threshold, and a cooldown (default 360 minutes)
-# so a twitchy idle signal cannot flap the endpoint. Flapping an advertised
-# endpoint is worse than never advertising it — every flap is a routed request
-# that fails on a peer that was there a second ago.
+# Configuration shape: ``enabled`` defaults FALSE (an explicit affirmative is
+# required), a minimum-idle threshold, and a cooldown (default 360 minutes) so a
+# twitchy idle signal cannot flap the endpoint. Flapping an advertised endpoint is
+# worse than never advertising it — every flap is a routed request that fails on a
+# peer that was there a second ago.
 
 #: Unset is OFF. Every other toggle in this family defaults ON via ``!== false``
 #: and copying that idiom here would make lending somebody's GPU the shipped
-#: default (the BCG009 shape).
+#: default, which is a safety risk and a poor user experience.
 IDLE_LENDING_ENABLED_DEFAULT = False
 
 #: Minutes the box must have been idle before lending may start.

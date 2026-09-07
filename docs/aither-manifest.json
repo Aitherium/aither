@@ -14,24 +14,17 @@
     "awrun",
     "awask",
     "AitherConnect",
-    "awpack",
-    "awembed",
-    "awflow",
-    "awdaemons",
-    "awgit",
-    "awgraph",
-    "awrelay",
-    "awstorage"
+    "awpack"
   ],
   "includes": [],
   "metrics": {
     "files": {
-      "value": 1270,
-      "as_of": "2026-09-06T20:00:41-07:00"
+      "value": 1215,
+      "as_of": "2026-08-26T01:56:46-07:00"
     },
     "tests": {
-      "value": 290,
-      "as_of": "2026-09-06T20:00:41-07:00"
+      "value": 284,
+      "as_of": "2026-08-26T01:56:46-07:00"
     }
   }
 }

@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-
 from adk.reasoning_session import ReasoningSession
 from adk.supervisor import (
     Goal,
@@ -97,6 +96,120 @@ async def test_supervisor_detects_run_react_vocab_failures():
     verdict = await sup.run(tick_s=0.03)
     assert verdict.action == "escalate"
     assert any("deep_reason" in p for p in sess.pop_steering())
+
+
+@pytest.mark.asyncio
+async def test_supervisor_forces_reasoner_injection():
+    """A stuck loop with a `reasoner` wired → the supervisor calls the reasoner
+    ON THE AGENT'S BEHALF and steers the CONCLUSION (not just an advisory to call
+    a tool). A fast router does not self-diagnose being stuck (measured:
+    deep_reasoning advertised on 12/12 instances, called 0 times)."""
+    sess = ReasoningSession("sup-forced")
+    calls = []
+
+    async def reasoner(problem: str) -> str:
+        calls.append(problem)
+        return "CONCLUSION: the answer is 42"
+
+    async def loop(s):
+        s.emit({"type": "turn_start"})
+        s.emit({"type": "tool_result", "ok": False, "error": "boom"})
+        s.emit({"type": "turn_start"})
+        s.emit({"type": "tool_result", "ok": False, "error": "boom2"})
+        await asyncio.sleep(0.05)
+        return "done"
+
+    sup = Supervisor(sess, Goal("solve the problem"),
+                     fail_threshold=2, reasoner=reasoner)
+    sess.start(loop)
+    verdict = await sup.run(tick_s=0.03)
+
+    assert sup._escalated is True
+    assert verdict.action == "escalate"
+    # The reasoner ran ONCE, with the goal text, and its conclusion reached the
+    # steering queue (the live injection channel the loop drains each step).
+    assert calls == ["solve the problem"]
+    pending = sess.pop_steering()
+    assert any("CONCLUSION: the answer is 42" in p for p in pending)
+
+
+@pytest.mark.asyncio
+async def test_supervisor_reasoner_failure_falls_back_to_advisory():
+    """A reasoner that raises/returns empty must not lose the escalation — the
+    advisory steer (the old behaviour) remains the fallback."""
+    sess = ReasoningSession("sup-reasoner-fail")
+
+    async def reasoner(problem: str) -> str:
+        raise RuntimeError("reasoner down")
+
+    async def loop(s):
+        s.emit({"type": "turn_start"})
+        s.emit({"type": "tool_result", "ok": False, "error": "boom"})
+        s.emit({"type": "turn_start"})
+        s.emit({"type": "tool_result", "ok": False, "error": "boom2"})
+        await asyncio.sleep(0.05)
+        return "done"
+
+    sup = Supervisor(sess, Goal("solve it"),
+                     fail_threshold=2, reasoner=reasoner,
+                     reasoning_tool_name="deep_reason")
+    sess.start(loop)
+    await sup.run(tick_s=0.03)
+    pending = sess.pop_steering()
+    assert any("deep_reason" in p for p in pending)  # advisory fallback fired
+
+
+@pytest.mark.asyncio
+async def test_supervisor_empty_reasoner_conclusion_falls_back_to_advisory():
+    """An empty conclusion (reasoner returned nothing) → advisory steer, not
+    silence — 'escalated and the conclusion was useless' must not look like
+    'never escalated'."""
+    sess = ReasoningSession("sup-empty-conclusion")
+
+    async def reasoner(problem: str) -> str:
+        return "   "
+
+    async def loop(s):
+        s.emit({"type": "turn_start"})
+        s.emit({"type": "tool_result", "ok": False, "error": "boom"})
+        s.emit({"type": "turn_start"})
+        s.emit({"type": "tool_result", "ok": False, "error": "boom2"})
+        await asyncio.sleep(0.05)
+        return "done"
+
+    sup = Supervisor(sess, Goal("solve it"),
+                     fail_threshold=2, reasoner=reasoner,
+                     reasoning_tool_name="deep_reason")
+    sess.start(loop)
+    await sup.run(tick_s=0.03)
+    pending = sess.pop_steering()
+    assert any("deep_reason" in p for p in pending)  # advisory fallback fired
+
+
+@pytest.mark.asyncio
+async def test_supervisor_skips_steer_when_loop_finished():
+    """The reasoner await can outlast the loop. A steer into a finished session
+    is dropped anyway — skipping it keeps 'escalated and the conclusion was
+    useless' distinguishable from 'never escalated' in the log."""
+    sess = ReasoningSession("sup-late-reasoner")
+
+    async def reasoner(problem: str) -> str:
+        await asyncio.sleep(0.15)   # outlives the loop
+        return "CONCLUSION: too late"
+
+    async def loop(s):
+        s.emit({"type": "turn_start"})
+        s.emit({"type": "tool_result", "ok": False, "error": "boom"})
+        s.emit({"type": "turn_start"})
+        s.emit({"type": "tool_result", "ok": False, "error": "boom2"})
+        s.mark_done()               # loop finishes immediately after the failures
+        return "done"
+
+    sup = Supervisor(sess, Goal("solve it"), fail_threshold=2, reasoner=reasoner)
+    sess.start(loop)
+    await sup.run(tick_s=0.03)
+    assert sup._escalated is True
+    assert sess.pop_steering() == []   # nothing steered into a dead session
 
 
 @pytest.mark.asyncio

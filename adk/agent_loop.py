@@ -348,29 +348,6 @@ async def async_main(
 
     Returns 0 on clean exit, non-zero on error.
     """
-    # Drain anything the Chronicle client queued locally on a previous run.
-    #
-    # chronicle.log_event() falls back to a capped JSONL queue whenever the
-    # endpoint is unreachable, and flush_queue() drains it -- but the ONLY caller
-    # was the ADK server's startup path (server.py:494). A customer who runs the
-    # CLI and never starts the server therefore accumulated a queue that nothing
-    # ever emptied: not lost (the file is capped and durable) but never sent, so
-    # their agent activity reached the platform only if a server happened to run.
-    #
-    # Best-effort by construction. A telemetry drain that stops an agent from
-    # starting would be a far worse defect than the one it fixes.
-    try:
-        from adk.chronicle import get_chronicle
-        _flushed = await get_chronicle().flush_queue()
-        if _flushed:
-            print(f"[{agent_name}] flushed {_flushed} queued Chronicle entry(ies)")
-    except Exception as _flush_err:  # noqa: BLE001 - never block agent startup
-        # print, NOT logger: this module defines no logger, and a NameError
-        # raised INSIDE an except handler propagates and would break the very
-        # startup this guard exists to protect. That is the gate-1n class --
-        # undefined names living in the fallback paths no happy-path probe runs.
-        print(f"[{agent_name}] chronicle queue flush skipped: {_flush_err!r}")
-
     loop = AgentLoop(
         name=agent_name,
         daemon_url=daemon_url,

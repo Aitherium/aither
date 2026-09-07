@@ -27,7 +27,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
+import threading
 import time
 from typing import Any
 
@@ -40,6 +42,8 @@ from adk.decisions.store import (
     get_store,
 )
 
+logger = logging.getLogger("adk.decisions.agent_tools")
+
 #: An agent that blocks forever is a hung agent. Any ``wait_seconds`` above this
 #: is clamped, and the clamp is REPORTED in the result rather than applied
 #: quietly — an agent that thinks it waited an hour and actually waited ten
@@ -47,6 +51,16 @@ from adk.decisions.store import (
 MAX_WAIT_SECONDS = float(os.getenv("AITHER_DECISIONS_MAX_WAIT", "3600"))
 
 POLL_SECONDS = 1.0
+
+#: Relay target for cards raised by OFF-DESKTOP awdk sessions. Genesis's
+#: `/api/v1/decisions/raise` proxies to the owner-host harness daemon, so a
+#: card POSTed here lands on the owner's desktop — the "an agent anywhere
+#: reaches its owner" path the daemon was built for (daemon.py:878-891).
+#: Set it ONLY where the owner's desktop is NOT this machine (containers,
+#: tunnel/phone sessions): on the owner's own host, the local store already
+#: IS the desktop and relaying would create a second card. Fail-soft: an
+#: unreachable relay must never fail or delay the local raise.
+DECISIONS_RELAY_URL = os.getenv("AITHER_DECISIONS_RELAY_URL", "").strip()
 
 
 def _agent_name() -> str:
@@ -166,8 +180,74 @@ def raise_card(
         ),
         deadline=(time.time() + deadline_seconds) if deadline_seconds > 0 else None,
     ))
+    _relay_card_if_configured(card)
     notify(card, store)
     return card
+
+
+def _relay_card_if_configured(card: DecisionCard) -> None:
+    """Best-effort mirror of a raised card to the owner's desktop plane.
+
+    Only acts when ``AITHER_DECISIONS_RELAY_URL`` is set (off-desktop sessions).
+    The URL is either a genesis base (``https://host:8001``) or the full
+    ``/api/v1/decisions/raise`` endpoint; genesis proxies to the owner-host
+    harness daemon. Runs on a DAEMON THREAD, never the caller's: ``raise_card``
+    is the synchronous core of tools an async chat loop calls, and a sync
+    ``httpx.post`` there would stall every concurrent turn (PQ010, measured
+    class). Never raises and never blocks — the card is already durable locally
+    by the time this runs (same contract as notify()).
+    """
+    if not DECISIONS_RELAY_URL:
+        return
+    threading.Thread(
+        target=_relay_post, args=(card, DECISIONS_RELAY_URL), daemon=True
+    ).start()
+
+
+def _relay_post(card: DecisionCard, relay_url: str) -> None:
+    """The actual POST, run off-thread. Every failure degrades to a debug line."""
+    try:
+        import httpx
+
+        base = relay_url.rstrip("/")
+        if base.endswith("/api/v1/decisions/raise"):
+            url = base
+        else:
+            url = f"{base}/api/v1/decisions/raise"
+        payload = {
+            "title": card.title,
+            "kind": card.kind,
+            "urgency": card.urgency,
+            "summary": card.summary,
+            "facts": list(card.facts),
+            "options": [
+                {
+                    "key": o.key,
+                    "label": o.label,
+                    "consequence": o.consequence,
+                    "recommended": o.recommended,
+                }
+                for o in card.options
+            ],
+            "default": card.default_key or "",
+            "raised_by": card.source.agent or "",
+            "agent": card.source.agent or "",
+            "session_id": card.source.session_id or None,
+            "cwd": card.source.cwd or None,
+            "via": "awdk",
+        }
+        resp = httpx.post(
+            url,
+            json=payload,
+            headers={"X-Caller-Type": "platform"},
+            timeout=5.0,
+        )
+        if resp.status_code >= 300:
+            logger.debug(
+                "decision relay to %s failed: HTTP %s", url, resp.status_code
+            )
+    except Exception as exc:  # noqa: BLE001 — relay is best-effort, never fatal
+        logger.debug("decision relay to genesis failed: %s", exc)
 
 
 def _card_state(card: DecisionCard) -> dict[str, Any]:

@@ -1,6 +1,6 @@
 """End-to-end managed-agent rail: manifest -> Supervisor.spawn -> ACP driver -> prompt.
 
-This closes the D-808 residual where Supervisor only RECORDED the declared protocol.
+This closes the residual where Supervisor only RECORDED the declared protocol.
 It also guards two structural bugs found while wiring it:
   * spawn() did not pipe stdin, so a stdio (ACP/MCP) agent was unreachable;
   * a non-drivable protocol must fail LOUD, not hand back an inert handle.

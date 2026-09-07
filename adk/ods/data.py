@@ -185,8 +185,8 @@ def load_hardware_classes(hw_path: str | None = None) -> dict[str, Any]:
     Consumed by `adk.ods.hardware.classify_host()`, which is the only caller.
     This file's unique payload is `recommended.compose_overlays` — the per-class
     tier is better sourced from gpu-database.json, which carries exact device
-    knowledge. (It was described as "legacy/deprecated" while nothing read it
-    at all; see D-918.)
+    knowledge. (Originally this file was intended to hold tier information,
+    but gpu-database.json proved to be the authoritative source.)
 
     Args:
         hw_path: Explicit path to hardware-classes.json (for testing).

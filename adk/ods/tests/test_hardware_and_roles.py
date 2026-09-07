@@ -1,4 +1,4 @@
-"""Host classification (D-918) and role-differentiated selection (D-916).
+"""Host classification and role-differentiated selection.
 
 These two changes exist because of two concrete defects:
 
@@ -34,7 +34,7 @@ def resolver() -> OdsResolver:
     return OdsResolver()
 
 
-# ── D-916: roles must actually differ ────────────────────────────────────────
+# ── Roles must actually differ ────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize("envelope", [RTX_5090, GPU_8GB, CPU_ONLY, STRIX])
@@ -176,7 +176,7 @@ def test_tokens_per_sec_is_populated_from_the_catalog(resolver: OdsResolver) -> 
     assert rec.selected.tokens_per_sec_estimate > 0
 
 
-# ── D-918: the vendored hardware data must be load-bearing ───────────────────
+# ── The vendored hardware data must be load-bearing ────────────────────────────
 
 
 def test_known_gpu_corrects_a_wrong_probe() -> None:
@@ -292,7 +292,7 @@ def test_current_platform_id_is_a_known_token() -> None:
     assert current_platform_id() in {"linux", "wsl", "macos", "windows", "unknown"}
 
 
-# ── D-939: role picks must respect upstream's own agent-viability evidence ────
+# ── Role picks must respect upstream's own agent-viability evidence ────────────
 
 
 def _raw_catalog() -> dict:
@@ -339,7 +339,7 @@ def test_no_role_recommends_a_model_upstream_proved_not_agent_viable(
 def test_agent_viability_filter_does_not_collapse_the_roles(
     resolver: OdsResolver,
 ) -> None:
-    """The filter must not trade D-916's degeneracy for a new one.
+    """The filter must not create a new role degeneracy.
 
     Requiring a *verified* status (only 3 of 52 records have one) would do
     exactly that, which is why `is_agent_viable` treats untested as allowed.

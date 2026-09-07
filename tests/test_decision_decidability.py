@@ -152,3 +152,49 @@ def test_blocked_card_with_a_default_is_accepted():
 def test_decision_card_with_no_options_is_still_prose():
     with pytest.raises(DecisionError):
         DecisionStore._validate(_card(kind="decision", options=[]))
+
+
+def test_credential_card_without_options_is_deliverable():
+    """A credential card has NO options by design (DC008: the value enters via
+    the masked prompt, never the card), so the options gate must not suppress
+    its delivery — nothing else carries the ask to the owner. Measured
+    2026-08-27: three secure-input cards (LAMBDA/HETZNER/GOOGLE) sat
+    undelivered while 4912 option-card deliveries went out around them; the
+    fanout skipped them at `if not card.options: return False`.
+    MUTATION: restore the unconditional `if not card.options: return False`
+    and this test fails — a credential card with no options must still deliver.
+    """
+    from adk.decisions.channels import ChannelConfig, DecisionChannelBridge
+    from adk.decisions.store import DecisionCard
+
+    cfg = ChannelConfig(platform="discord", enabled=True, min_urgency="normal")
+    bridge = DecisionChannelBridge()
+    card = DecisionCard(
+        id="d-cred1",
+        title="Secure input: TEST_KEY",
+        kind="credential",
+        options=[],
+        urgency="high",
+    )
+    assert bridge.should_deliver(card, cfg) is True
+
+
+def test_plain_optionless_card_is_still_not_deliverable():
+    """The credential exemption is narrow: an ordinary card with nothing to
+    reply with stays suppressed (an unanswerable message is an interruption).
+    MUTATION: drop the `card.kind != "credential"` guard and every plain
+    optionless card would page the owner — this test fails.
+    """
+    from adk.decisions.channels import ChannelConfig, DecisionChannelBridge
+    from adk.decisions.store import DecisionCard
+
+    cfg = ChannelConfig(platform="discord", enabled=True, min_urgency="normal")
+    bridge = DecisionChannelBridge()
+    card = DecisionCard(
+        id="d-plain1",
+        title="FYI only",
+        kind="info",
+        options=[],
+        urgency="high",
+    )
+    assert bridge.should_deliver(card, cfg) is False

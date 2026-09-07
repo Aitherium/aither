@@ -2,6 +2,95 @@
 
 All notable changes to aither-adk will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- `adk briefs list|show`: the executive-brief delivery plane as a command —
+  reads the same host store (~/.aither/briefs) the stop hook writes, so an
+  agent can answer "what did the sessions do" without hunting transcripts.
+
+## [3.8.6] - 2026-08-28
+
+### Added
+
+- Demo lane: switcher landing page and the `/local` console pack served by
+  `aither-serve`; Pages-ready demo packs (API base override, hosted chat,
+  public `VEIL_URL`); the AitherOS Desktop live at desktop.aitherium.com.
+- Local UI pack: MCP section, direct-answer resilience, think-strip; To Do
+  lists and a Desktop OS view ported from the partner WebMock2 design.
+- `awask` plain-mode direct LLM completion — no agent loop, no 60-second
+  tool-loop timeout.
+
+### Fixed
+
+- Decision-card plane: waiting cards get a TTL and cancel-on-resume; the popup
+  survives a large store; console-safety fixes (a self-test can never type into
+  the owner's real console; "type it into that terminal" actually presses
+  Enter and names the card's own terminal tab).
+- `adk.embeddings`: the local-vLLM rung dialed `localhost` — inside a
+  container that is the container itself, so every in-container consumer fell
+  to the 384-d degraded tail while the embeddings lane answered 200. It now
+  dials `aither-vllm-embeddings` in-container, `localhost` on the host.
+- `planb_ledger sync` docstring neutralizes the tenant name (ADK003).
+
+> 3.8.0–3.8.5 were release-lane bumps during the 2026-08-26 recovery; their
+> changes are folded into this entry.
+
+## [3.7.4] - 2026-08-23
+
+### Fixed
+
+- Re-release: 3.7.3 was tagged by a racing auto-release lane on a tree
+  WITHOUT the `session_context` fix.
+
+## [3.7.3] - 2026-08-23
+
+### Added
+
+- Campaign memory — the gobbonet harness keeps the notes, scoped by who knows
+  them. This release also cut itself.
+
+## [3.7.2] - 2026-08-23
+
+### Added
+
+- Agents know the time (situation-aware session context; ships with
+  `@aitherium/shell-cli` 1.18.1).
+
+## [3.7.1] - 2026-08-23
+
+### Fixed
+
+- The installer that can actually install.
+
+## [3.7.0] - 2026-08-20
+
+### Added
+
+- Opt-in learning-report channel.
+- `awrun` tool category — `queue_submit` / `queue_list` / `queue_status` /
+  `queue_bump` / `queue_cancel`.
+- The rest of the aw family as extras — memory, snapshots, seal, share.
+
+## [3.6.1] - 2026-08-19
+
+### Fixed
+
+- Release repair: the develop merge left the tree unreleasable; 3.6.1 ships it
+  clean.
+
+## [3.6.0] - 2026-08-19
+
+### Changed
+
+- Renamed `aither-adk` → `awdk` (the old name keeps resolving via the
+  `aither-adk` redirect package). Agents now natively consume the aw family,
+  and the aw* bricks integrate as optional capabilities.
+
+> 3.3.0–3.5.0 shipped from the aither-adk mirror lane during the rename window
+> and are not documented in this file.
+
 ## [3.2.0] - 2026-08-15
 
 ### Added — External thinking: a scratchpad for models whose reasoning was taken away

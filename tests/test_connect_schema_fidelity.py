@@ -1,6 +1,6 @@
 """Connect-template schema fidelity — a wrong key is a SILENT no-op.
 
-Closes the D-808 residual "connect templates never validated". A template that
+Closes the residual "connect templates never validated". A template that
 renders valid YAML can still be completely ignored by the target framework if the
 key shape is wrong. That actually happened: the hermes template emitted `models:`
 (a list) while hermes' real cli-config uses `model:` (a mapping) — so the render

@@ -2862,7 +2862,12 @@ def cmd_connect(args):
                         gateway_ok = True
                         print("  [OK] Gateway: gateway.aitherium.com")
 
-                    resp = await client.get("https://gateway.aitherium.com/v1/billing/balance")
+                    # gateway.aitherium.com answers 404 for /v1/* — the v1 API
+                    # plane lives on mcp.aitherium.com (measured 2026-08-31:
+                    # 404 on gateway vs 401-with-auth on mcp). On the old host
+                    # this check silently never fired and the Plan/Balance line
+                    # never printed.
+                    resp = await client.get("https://mcp.aitherium.com/v1/billing/balance")
                     if resp.status_code == 200:
                         balance_info = resp.json()
                         plan = balance_info.get("plan", "free")
@@ -2933,7 +2938,9 @@ def cmd_connect(args):
                 async with httpx.AsyncClient(timeout=5.0, headers={
                     "Authorization": f"Bearer {api_key}",
                 }) as client:
-                    resp = await client.get("https://gateway.aitherium.com/v1/mesh/status")
+                    # same wrong-host class as the balance probe above:
+                    # /v1/mesh/status exists on mcp.aitherium.com, not gateway
+                    resp = await client.get("https://mcp.aitherium.com/v1/mesh/status")
                     if resp.status_code == 200:
                         mesh = resp.json()
                         nodes = mesh.get("total_nodes", 0)
@@ -5558,7 +5565,7 @@ def _relay_up(args) -> int:
     rooms = (getattr(args, "rooms", "") or os.environ.get("AITHERNET_ADVERTISED_ROOMS", "")
              or "#general").strip()
     hub_url = (getattr(args, "hub_url", "") or os.environ.get("AITHERNET_HUB_URL", "")
-               or "wss://demo.aitherium.com/ws/chat").strip()
+               or "wss://relay.aitherium.com/ws/chat").strip()
     federation = (not getattr(args, "no_federation", False)
                   and os.environ.get("AITHERNET_FEDERATION", "").lower() not in ("0", "false", "no"))
     directory_url = (getattr(args, "directory_url", "") or os.environ.get("AITHERNET_DIRECTORY_URL", "")
@@ -8000,7 +8007,15 @@ def cmd_grid(args) -> int:
     elif sub == "enroll":
         ttl = max(60, min(int(getattr(args, "ttl", 1.0) * 3600), 86400))
         body = {"ttl_seconds": ttl, "label": getattr(args, "label", ""), "tenant": getattr(args, "tenant", "")}
-        ok, data = _grid_mesh_request("POST", "/nodes/enroll-token", body=body, need_key=True)
+        # Self-service first (owner ruling 2026-08-31): the device-flow bearer
+        # from `adk login` mints for the caller's OWN tenant, subscription-
+        # gated server-side. The admin key remains the fallback for platform
+        # operators minting on behalf of a tenant.
+        _cfg = load_saved_config()
+        _bearer = (_cfg.get("access_token") or _cfg.get("api_key")
+                   or os.environ.get("AITHER_API_KEY", "")).strip()
+        ok, data = _grid_mesh_request("POST", "/nodes/enroll-token", body=body,
+                                      need_key=not bool(_bearer), bearer=_bearer or None)
         if not ok:
             print(f"  {data}")
             return 1
@@ -8091,11 +8106,14 @@ def cmd_grid(args) -> int:
         return 0
 
 
-def _grid_mesh_request(method: str, path: str, body: dict | None = None, need_key: bool = False):
+def _grid_mesh_request(method: str, path: str, body: dict | None = None, need_key: bool = False,
+                       bearer: str | None = None):
     """Call the gateway node registry through the public Cloudflare tunnel.
 
     GET /nodes is open; minting/removing are gated by admin credentials (need_key=True,
-    sourced from AITHER_INTERNAL_SECRET/AITHER_MASTER_KEY env vars). Returns (ok, data|msg).
+    sourced from AITHER_INTERNAL_SECRET/AITHER_MASTER_KEY env vars). Since 2026-08-31 the
+    enroll-token mint also accepts an authenticated identity (the device-flow bearer from
+    `adk login`) for the caller's OWN tenant — pass it via `bearer`. Returns (ok, data|msg).
     Uses a browser UA — Cloudflare 403s the default python-urllib agent.
     """
     import json as _json
@@ -8103,14 +8121,39 @@ def _grid_mesh_request(method: str, path: str, body: dict | None = None, need_ke
     import ssl as _ssl
     import urllib.request as _ur
 
-    gateway = (_os.environ.get("AITHER_NODE_GATEWAY_URL")
-               or _os.environ.get("AITHER_PUBLIC_CLUSTER_URL")
-               or "https://cluster.aitherium.com").rstrip("/")
+    gateway = ""
+    if bearer:
+        # The self-service (bearer) lane rides the PUBLIC portal proxy: the
+        # gateway itself has NO public ingress (tunnel-ingress.yaml: aitheros-
+        # gateway:8777 appears only in comments), and cluster.aitherium.com
+        # serves PORTAL HTML for every path (measured 2026-08-31) — which is
+        # how a "working" mint used to hand a web page back to the adk. The
+        # portal route /api/nodes/enroll-token forwards the caller to the
+        # gateway in-network; the mint is the security boundary.
+        gateway = (_os.environ.get("AITHER_NODE_GATEWAY_URL")
+                   or "https://portal.aitherium.com/api").rstrip("/")
+    else:
+        # Admin-key lanes stay OFF the public surface — the X-API-Key IS the
+        # internal secret, so only an operator-set in-network URL may carry
+        # it. There is deliberately NO public default here: cluster.
+        # aitherium.com serves PORTAL HTML for every path (measured
+        # 2026-08-31), so a "working" default was a web page. Refuse with the
+        # remedy instead of dialing a host that cannot answer.
+        gateway = (_os.environ.get("AITHER_NODE_GATEWAY_URL")
+                   or _os.environ.get("AITHER_PUBLIC_CLUSTER_URL") or "").rstrip("/")
+        if not gateway:
+            return False, ("No gateway URL for the node registry. Set "
+                           "AITHER_NODE_GATEWAY_URL (operator, in-network) — "
+                           "or use the device-flow bearer via `adk login` "
+                           "where supported. cluster.aitherium.com serves a "
+                           "web page, not the API.")
     headers = {
         "User-Agent": "Mozilla/5.0 (compatible; AitherADK/1.0)",
         "Content-Type": "application/json",
     }
-    if need_key:
+    if bearer:
+        headers["Authorization"] = f"Bearer {bearer}"
+    elif need_key:
         key = (_os.environ.get("AITHER_INTERNAL_SECRET") or _os.environ.get("AITHER_MASTER_KEY") or "").strip()
         if not key:
             return False, "Admin credential required: set AITHER_INTERNAL_SECRET or AITHER_MASTER_KEY to mint or remove nodes."
@@ -8312,13 +8355,19 @@ def cmd_explore(args) -> int:
 
 
 _UPGRADE_URLS: dict[str, tuple[str, str]] = {
-    "managed": ("https://portal.aitherium.com/marketplace/grid?sku=grid_managed_monthly", "Grid Managed ($49/mo)"),
-    "setup": ("https://portal.aitherium.com/marketplace/grid?sku=grid_setup_onetime", "Grid Setup Call ($199)"),
-    "grid": ("https://portal.aitherium.com/marketplace/grid", "Grid Distributed Inference"),
-    "demiurge": ("https://portal.aitherium.com/marketplace/agent.demiurge", "Demiurge — Code Architect"),
-    "hydra": ("https://portal.aitherium.com/marketplace/agent.hydra", "Hydra — Code Guardian"),
-    "athena": ("https://portal.aitherium.com/marketplace/agent.athena", "Athena — Security Oracle"),
-    "lyra": ("https://portal.aitherium.com/marketplace/agent.lyra", "Lyra — Research Muse"),
+    # The ONLY marketplace detail route that exists is
+    # /marketplace/app/[app_id] (src/app/marketplace/app/[app_id]).
+    # The bare /marketplace/grid and /marketplace/agent.* shapes 307 to the
+    # login gate and then 404 — measured 2026-08-31, gate RSU001. The id
+    # slug is catalog data; if a slug ever stops resolving, the detail page
+    # renders its own not-found state instead of a route-level 404.
+    "managed": ("https://portal.aitherium.com/marketplace/app/grid?sku=grid_managed_monthly", "Grid Managed ($49/mo)"),
+    "setup": ("https://portal.aitherium.com/marketplace/app/grid?sku=grid_setup_onetime", "Grid Setup Call ($199)"),
+    "grid": ("https://portal.aitherium.com/marketplace/app/grid", "Grid Distributed Inference"),
+    "demiurge": ("https://portal.aitherium.com/marketplace/app/agent.demiurge", "Demiurge — Code Architect"),
+    "hydra": ("https://portal.aitherium.com/marketplace/app/agent.hydra", "Hydra — Code Guardian"),
+    "athena": ("https://portal.aitherium.com/marketplace/app/agent.athena", "Athena — Security Oracle"),
+    "lyra": ("https://portal.aitherium.com/marketplace/app/agent.lyra", "Lyra — Research Muse"),
     "pro": ("https://portal.aitherium.com/pricing", "Professional Plan"),
 }
 
@@ -10865,7 +10914,7 @@ def _load_pack_catalog(genesis_url: str) -> list[dict]:
 
 
 def _cmd_fleet(args) -> int:
-    """Create & manage a fleet of agents across runtimes (local | managed | cloud-run)."""
+    """Create & manage a fleet of agents across runtimes (local | managed | hosted | cloud-run)."""
     import json as _json
 
     from adk.fleet_manager import FleetManager
@@ -10891,6 +10940,11 @@ def _cmd_fleet(args) -> int:
             "port": args.port,
             "mcp_url": getattr(args, "mcp_url", "") or "",
             "model": args.model or "",
+            "preset": getattr(args, "preset", "") or "",
+            "brain": getattr(args, "brain", "") or "",
+            "loop": getattr(args, "loop", "") or "",
+            "hands": getattr(args, "hands", "") or "",
+            "image": getattr(args, "image", "") or "",
         }
         m = mgr.create(args.runtime, args.name, **{k: v for k, v in opts.items() if v != ""})
         status_icon = {"running": "✓", "pending_runtime": "…", "failed": "✗"}.get(m.status, "•")
@@ -10946,6 +11000,112 @@ def _cmd_fleet(args) -> int:
             return 1
 
     print("Usage: adk fleet {create|list|status|rm|connect-local}. See `adk fleet -h`.")
+    return 1
+
+
+def _cmd_instance(args) -> int:
+    """`adk instance` — thin client of Genesis /v1/instances.
+
+    Every verb prints the gateway's real answer. A 4xx/5xx is printed with its
+    body and exits 1; nothing here 'gracefully degrades' into a pending state —
+    that is how the old cloud-run driver hid a route that never existed.
+    """
+    import json as _json
+
+    import httpx
+
+    from adk.fleet_manager import _api_key, _gateway_base
+
+    cmd = getattr(args, "instance_command", None)
+    base = f"{_gateway_base()}/v1/instances"
+    headers = {"Authorization": f"Bearer {_api_key()}"} if _api_key() else {}
+    as_json = bool(getattr(args, "json_output", False))
+
+    def _call(method: str, url: str, body: dict | None = None, timeout: float = 60.0):
+        try:
+            r = httpx.request(method, url, json=body, headers=headers, timeout=timeout)
+        except Exception as exc:  # noqa: BLE001 - the transport error IS the answer
+            print(f"✗ gateway unreachable ({_gateway_base()}): {exc}")
+            return None
+        try:
+            data = r.json()
+        except ValueError:
+            data = {"raw": r.text[:400]}
+        if r.status_code >= 400:
+            print(f"✗ {method} {url} -> {r.status_code}")
+            print(_json.dumps(data, indent=2)[:1500])
+            return None
+        return data
+
+    def _show(inst: dict) -> None:
+        if as_json:
+            print(_json.dumps(inst, indent=2))
+            return
+        icon = {"ready": "✓", "provisioning": "…", "stopped": "■", "failed": "✗",
+                "suspended": "⏸", "destroyed": "—"}.get(inst.get("status", ""), "•")
+        print(f"{icon} {inst.get('id')}  {inst.get('name')}  {inst.get('status')}"
+              f"  {inst.get('endpoint_url') or ''}")
+        if inst.get("ready_ms", -1) >= 0:
+            print(f"   ready in {inst['ready_ms']} ms · placement "
+                  f"brain={inst.get('brain')} loop={inst.get('loop')} hands={inst.get('hands')}")
+        if inst.get("error"):
+            print(f"   error: {inst['error']}")
+
+    if cmd == "create":
+        body: dict = {"name": args.name, "preset": args.preset or "hosted"}
+        for plane in ("brain", "loop", "hands"):
+            if getattr(args, plane, ""):
+                body[plane] = getattr(args, plane)
+        if args.image:
+            body["image"] = args.image
+        env: dict = {}
+        for kv in args.env or []:
+            k, _, v = kv.partition("=")
+            if k:
+                env[k] = v
+        if env:
+            body["env"] = env
+        data = _call("POST", base, body, timeout=180.0)
+        if not data:
+            return 1
+        _show(data.get("instance") or {})
+        return 0
+    if cmd == "list":
+        data = _call("GET", base)
+        if data is None:
+            return 1
+        items = data.get("instances") or []
+        if as_json:
+            print(_json.dumps(items, indent=2))
+        elif not items:
+            print("No instances. Create one: adk instance create <name>")
+        else:
+            for inst in items:
+                _show(inst)
+        return 0
+    if cmd in ("status", "connect", "stop", "start", "rm"):
+        iid = args.instance_id
+        if cmd == "status":
+            data = _call("GET", f"{base}/{iid}")
+            if data is None:
+                return 1
+            _show(data.get("instance") or {})
+            return 0
+        if cmd == "connect":
+            data = _call("GET", f"{base}/{iid}/connect-info")
+            if data is None:
+                return 1
+            print(_json.dumps(data, indent=2))
+            return 0
+        if cmd == "rm":
+            data = _call("DELETE", f"{base}/{iid}", timeout=120.0)
+        else:
+            data = _call("POST", f"{base}/{iid}/{cmd}", timeout=180.0)
+        if data is None:
+            return 1
+        _show(data.get("instance") or {})
+        return 0
+    print("Usage: adk instance {create|list|status|connect|stop|start|rm}. See `adk instance -h`.")
     return 1
 
 
@@ -12104,15 +12264,24 @@ _cached_parser: argparse.ArgumentParser | None = None
 
 
 def get_parser() -> argparse.ArgumentParser:
-    """Return the full CLI parser (cached). Used by manifest builder and main()."""
+    """Return the full CLI parser (cached).
+
+    The name and docstring promise a REAL parser, and an empty-returning
+    helper is a trap: until 2026-08-31 this returned a bare ArgumentParser
+    with NO subcommands, populated only as a side effect of main() running —
+    so any caller that asked before main() got a parser that accepted
+    nothing, and the failure read as "unrecognized arguments" (measured: a
+    smoke test hit exactly that). No source caller exists today (the
+    manifest builder and main() construct their own), but the function is
+    part of the package surface, so it must do what its name says.
+    """
     global _cached_parser
     if _cached_parser is None:
-        # Trigger main() to build it on first call — or build fresh
         _cached_parser = argparse.ArgumentParser(
             prog="adk",
             description="AitherADK — Build AI agent fleets with any LLM backend",
         )
-        # We'll populate it in main() and cache it
+        _register_commands(_cached_parser.add_subparsers(dest="command"))
     return _cached_parser
 
 
@@ -12153,7 +12322,7 @@ def _register_commands(sub):
     # adk image — generate on local backends (ComfyUI/Sana/SD.Next). The handler
     # lives in adk/images.py (cmd_image) so the daemon and the CLI share one
     # implementation; this was the wiring the local-image-generation skill
-    # advertised for months while nothing registered it (2026-08-25).
+    # advertised for months while nothing registered it (ONB006, 2026-08-25).
     image_p = sub.add_parser(
         "image", help="Generate an image on a local backend (ComfyUI/Sana/SD.Next)")
     image_p.add_argument("--backends", action="store_true",
@@ -13033,7 +13202,7 @@ def _register_commands(sub):
     relay_up_p = relay_sub.add_parser("up", help="Start a sovereign AitherNet relay (Docker compose bundle)")
     relay_up_p.add_argument("--slug", help="Node identifier for this relay (default: relay-<hostname>)")
     relay_up_p.add_argument("--rooms", help="Comma-separated advertised rooms (default: #general)")
-    relay_up_p.add_argument("--hub-url", help="Hub relay endpoint for federation (default: wss://demo.aitherium.com/ws/chat)")
+    relay_up_p.add_argument("--hub-url", help="Hub relay endpoint for federation (default: wss://relay.aitherium.com/ws/chat)")
     relay_up_p.add_argument("--no-federation", action="store_true", help="Disable hub federation (default: enabled)")
     relay_up_p.add_argument("--directory-url", help="Directory service URL for registration (optional)")
     relay_up_p.add_argument("--public-endpoint", help="This relay's own public wss:// or https:// address, listed in the community directory (required for directory registration)")
@@ -13668,7 +13837,12 @@ def _register_commands(sub):
     skills_sub.add_parser("export", help="Export skills in agentskills.io format")
 
     # adk addon — self-hosted addon management
-    addon_p = sub.add_parser("addon", help="Manage self-hosted service addons (Qdrant, RAG, CodeGraph, etc.)")
+    # `component`/`components` are ALIASES, not a second implementation: an addon
+    # manifest IS the component declaration every host reads (2026-09-06).
+    addon_p = sub.add_parser(
+        "addon", aliases=["component", "components"],
+        help="Manage self-hosted addons / components (Qdrant, RAG, awgym, awdesk, ...)",
+    )
     addon_sub = addon_p.add_subparsers(dest="addon_command")
     addon_sub.add_parser("list", help="Show available addons + status")
     addon_enable_p = addon_sub.add_parser("enable", help="Pull image, start container, register with portal")
@@ -13755,18 +13929,25 @@ def _register_commands(sub):
     pack_import_p = pack_sub.add_parser("import", help="Import an external agent (e.g., Eve) to AitherADK pack")
     pack_import_p.add_argument("agent_path", help="Path to agent directory (must have .compiled-manifest.json)")
 
-    # adk fleet — create & manage agents across runtimes (local | managed | cloud-run)
-    fleet_p = sub.add_parser("fleet", help="Create & manage a fleet of agents (local | managed | cloud-run)")
+    # adk fleet — create & manage agents across runtimes (local | managed | hosted | cloud-run)
+    fleet_p = sub.add_parser("fleet", help="Create & manage a fleet of agents (local | managed | hosted | cloud-run)")
     fleet_sub = fleet_p.add_subparsers(dest="fleet_command")
     fleet_create_p = fleet_sub.add_parser("create", help="Create an agent in a runtime")
     fleet_create_p.add_argument("name", help="Agent name")
     fleet_create_p.add_argument("--runtime", "-r", default="local",
-                                choices=["local", "managed", "cloud-run"],
+                                choices=["local", "managed", "hosted", "cloud-run"],
                                 help="Where the agent runs (default: local)")
     fleet_create_p.add_argument("--pack", default="", help="Pack/identity to run (e.g. an eve-import id)")
     fleet_create_p.add_argument("--port", type=int, default=8080, help="Local runtime port")
     fleet_create_p.add_argument("--mcp-url", dest="mcp_url", default="", help="Gateway MCP url (managed)")
     fleet_create_p.add_argument("--model", default="", help="Model override (managed)")
+    fleet_create_p.add_argument("--preset", default="",
+                                help="hosted placement preset: all-local | local-loop-rented-brain | "
+                                     "hosted | all-cloud (hosted runtime only)")
+    for _plane in ("brain", "loop", "hands"):
+        fleet_create_p.add_argument(f"--{_plane}", default="", choices=["", "local", "rented", "cloud"],
+                                    help=f"{_plane} placement override (hosted runtime only)")
+    fleet_create_p.add_argument("--image", default="", help="OCI image for a hosted instance")
     fleet_create_p.add_argument("--json", dest="json_output", action="store_true", help="JSON output")
     fleet_list_p = fleet_sub.add_parser("list", help="List fleet members")
     fleet_list_p.add_argument("--json", dest="json_output", action="store_true", help="JSON output")
@@ -13783,6 +13964,34 @@ def _register_commands(sub):
         "apply-pack", help="Push+enable a bundled pack on a mesh agent (no SSH; 'self' = this node)")
     fleet_applypack_p.add_argument("agent", help="Agent name (or 'self' for this node)")
     fleet_applypack_p.add_argument("pack", help="Bundled pack name")
+
+    # adk instance — an Aitherium Instance: a long-lived, singleton, addressable agent
+    # runtime on the platform fleet (the "Cloud Run instance" primitive). Thin over
+    # Genesis /v1/instances; every verb prints what the gateway actually said.
+    inst_p = sub.add_parser(
+        "instance", help="Create & manage Aitherium Instances (always-on agent with a stable URL)")
+    inst_sub = inst_p.add_subparsers(dest="instance_command")
+    inst_create = inst_sub.add_parser("create", help="Create an instance (admin of your tenant)")
+    inst_create.add_argument("name", help="Instance name (a-z, 0-9, hyphens; becomes the hostname)")
+    inst_create.add_argument("--preset", default="hosted",
+                             help="all-local | local-loop-rented-brain | hosted | all-cloud")
+    for _plane in ("brain", "loop", "hands"):
+        inst_create.add_argument(f"--{_plane}", default="", choices=["", "local", "rented", "cloud"],
+                                 help=f"{_plane} placement override")
+    inst_create.add_argument("--image", default="", help="OCI image (default: the aitherd image)")
+    inst_create.add_argument("--env", action="append", default=[], metavar="KEY=VALUE",
+                             help="Environment for the loop (repeatable)")
+    inst_create.add_argument("--json", dest="json_output", action="store_true")
+    inst_list = inst_sub.add_parser("list", help="List your tenant's instances")
+    inst_list.add_argument("--json", dest="json_output", action="store_true")
+    for verb, help_text in (("status", "Show one instance"),
+                            ("connect", "Print how to reach an instance"),
+                            ("stop", "Stop the loop (hostname + record kept; meter stops)"),
+                            ("start", "Re-create the loop of a stopped instance"),
+                            ("rm", "Destroy: loop, hostname, meter")):
+        vp = inst_sub.add_parser(verb, help=help_text)
+        vp.add_argument("instance_id", help="Instance id (inst-...)")
+        vp.add_argument("--json", dest="json_output", action="store_true")
 
     # adk support — help and community links
     sub.add_parser("support", help="Get help — Discord, GitHub, docs")
@@ -14101,6 +14310,13 @@ def _register_commands(sub):
     forge_p.add_argument("--no-watch", action="store_false", dest="watch",
                          help="Don't stream progress")
     forge_p.set_defaults(watch=True)
+
+    # adk briefs — the executive-brief delivery plane (host store)
+    briefs_p = sub.add_parser("briefs", help="List and read executive briefs")
+    briefs_sub = briefs_p.add_subparsers(dest="briefs_command")
+    briefs_sub.add_parser("list", help="List recorded briefs")
+    briefs_show_p = briefs_sub.add_parser("show", help="Print one brief in full")
+    briefs_show_p.add_argument("brief_id", help="The session id of the brief")
 
     # adk notebook — plan, run, and inspect Agent Notebooks (.anb) on Genesis
     nb_p = sub.add_parser(
@@ -14946,7 +15162,7 @@ def main():
         sys.exit(cmd_gateway(args))
     elif args.command == "cron":
         sys.exit(_cmd_cron(args))
-    elif args.command == "addon":
+    elif args.command in ("addon", "component", "components"):
         sys.exit(_cmd_addon(args))
     elif args.command == "install":
         sys.exit(cmd_install(args))
@@ -14958,6 +15174,8 @@ def main():
         sys.exit(_cmd_pack(args))
     elif args.command == "fleet":
         sys.exit(_cmd_fleet(args))
+    elif args.command == "instance":
+        sys.exit(_cmd_instance(args))
     elif args.command == "skills":
         sys.exit(_cmd_skills(args))
     elif args.command == "soul":
@@ -15068,6 +15286,13 @@ def main():
         sys.exit(cmd_forge(args))
     elif args.command == "notebook":
         sys.exit(cmd_notebook(args))
+    elif args.command == "briefs":
+        from adk.commands.briefs import cmd_briefs_list, cmd_briefs_show
+
+        brief_cmd = getattr(args, "briefs_command", None)
+        if brief_cmd == "show":
+            sys.exit(cmd_briefs_show(args))
+        sys.exit(cmd_briefs_list(args))
     elif args.command == "wm":
         wm_cmd = getattr(args, "wm_command", None)
         if wm_cmd == "status":

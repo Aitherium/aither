@@ -18,7 +18,7 @@ import socket
 import time
 import uuid
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, Optional
 
 import httpx
 from urllib.parse import quote
@@ -473,7 +473,7 @@ def create_app(
         if offline:
             await _connect_local_mcp_if_available()
             # Do NOT let a momentary gateway flap cost this daemon its 1,227 platform
-            # tools for the rest of its life (D-1621). Both loops are background tasks:
+            # tools for the rest of its life. Both loops are background tasks:
             # boot must never block on the gateway being up.
             _state["mcp_retry_now"] = asyncio.Event()
             _state["mcp_supervisor_task"] = asyncio.create_task(_supervise_local_mcp())
@@ -610,7 +610,7 @@ def create_app(
         "https://aitherium.com",
         "https://www.aitherium.com",
         "https://portal.aitherium.com",
-        "https://portal.aitherium.com",
+        "https://veil.aitherium.com",
         # GobboNet surfaces. The adapter's ALLOWED_HOSTS is the authority for this set.
         "https://desktop.aitherium.com",
         "https://spaces.aitherium.com",
@@ -717,12 +717,7 @@ def create_app(
     # authenticates to the gated /chat/stream with the bearer from its URL fragment.
     # Similarly, "/aeon" serves the group-chat UI; "/aeon/stream" is bearer-gated.
     _skip_auth_paths = {"/", "/chat", "/aeon", "/ui", "/local", "/health", "/docs",
-                        "/openapi.json", "/metrics", "/demo", "/redoc",
-                        # The landpage's community shelf. Public by construction:
-                        # it proxies a directory that is already public, holds no
-                        # secret, and is read by visitors with no session. Listed
-                        # EXACTLY, never as a prefix -- /api/* is otherwise gated.
-                        "/api/demos/community.json"}
+                        "/openapi.json", "/metrics", "/demo", "/redoc"}
 
     def _is_pack_ui_asset(path: str) -> bool:
         """Pack-UI static assets are unauthenticated like the console shell at "/".
@@ -906,6 +901,41 @@ def create_app(
 
     # ─── Health ───
 
+    # -- Components: what is installed on THIS device, for hosts that render it ------
+    # The Living Desktop's "On this device" lane, awdesk's tray, awsh packs and the
+    # aitheros launcher all ask this one question; before 2026-09-06 each kept its own
+    # list and none derived from the registry. Loopback peer + first-party Origin
+    # only: this enumerates local services and their ports, which a stranger's page
+    # must not be able to read. 127.0.0.1 answers; a tab on youtube.com does not.
+    _components_origins = frozenset({
+        "https://aitherium.com", "https://www.aitherium.com",
+        "http://localhost:3000", "http://127.0.0.1:3000",
+    })
+    _components_origin_rule = re.compile(r"^https://[a-z0-9][a-z0-9-]*\.aitherium\.com$")
+    _components_loopback = frozenset({"127.0.0.1", "::1", "::ffff:127.0.0.1"})
+
+    def _components_guard(request: Request) -> None:
+        peer = getattr(getattr(request, "client", None), "host", None)
+        if peer not in _components_loopback:
+            raise HTTPException(status_code=403, detail="components are loopback-only")
+        origin = request.headers.get("origin", "")
+        # No Origin = a native client on this machine (curl, awsh, awdesk); allowed.
+        if origin and origin not in _components_origins \
+                and not _components_origin_rule.match(origin):
+            raise HTTPException(status_code=403, detail="origin not allowed for components")
+
+    @app.get("/components")
+    async def components(request: Request):
+        """Every component manifest known here + its live state (see addon_manager)."""
+        _components_guard(request)
+        from adk.addon_manager import AddonManager
+        mgr = AddonManager()
+        return {
+            "host": "awdk",
+            "port": int(os.getenv("AITHER_PORT") or os.getenv("AITHER_DAEMON_PORT") or 0),
+            "components": mgr.components_inventory(),
+        }
+
     @app.get("/health")
     async def health():
         try:
@@ -925,7 +955,7 @@ def create_app(
             "gateway_mcp_connected": _state.get("gateway_mcp_connected", False),
         }
 
-        # Capability, not liveness (D-1621). `status: healthy` is TRUE of a daemon serving
+        # Capability, not liveness. `status: healthy` is TRUE of a daemon serving
         # turns with 7 built-in tools — and useless, because the interesting failure is
         # that it lost the other 1,227 to a gateway flap and will never notice. A probe
         # that cannot distinguish those two states is the reason two verification runs
@@ -1003,19 +1033,33 @@ def create_app(
         payload = {"storage_state": {"cookies": cookies, "origins": []}}
         # Genesis LB (plain HTTP) first, then the worker (TLS); the route lives on
         # both. A 404 means that host doesn't serve it — fall through, don't report.
-        bases = [("http://localhost:8001", False), ("https://localhost:8159", False)]
+        # The old bases are dead: :8001 was the retired nginx LB (2026-08-13)
+        # and :8159 the worker, which has no host port. The awnode gateway is
+        # the mcp gateway (:8182, the app that bakes mcp_gateway.py, host-reachable
+        # with the loopback-trusted daemon client; route added 2026-08-26).
+        # Plain HTTP by design: the quadlet serves 8182 http-only (TLS at the
+        # tunnel edge) — its own unit comment says internal callers must use http.
+        bases = [("http://127.0.0.1:8182", False)]
         last = None
-        async with httpx.AsyncClient(timeout=120.0, verify=tls_verify()) as client:
-            for base, _verify in bases:
-                try:
-                    r = await client.post(f"{base}/social/x/import-session", headers=headers, json=payload)
-                    if r.status_code == 404:
-                        last = (404, (r.text or "")[:200])
-                        continue
-                    data = r.json()
-                    return JSONResponse(status_code=(200 if data.get("ok") else 502), content=data)
-                except Exception as e:  # noqa: BLE001 — try the next base
-                    last = (0, str(e)[:200])
+        # The client is created PER BASE with that base's verify flag: the
+        # loopback base (https://127.0.0.1:8182) cannot match the gateway
+        # cert's SAN (aitheros-mcpgateway), so CA-verification would fail on
+        # the hostname even though the cert is trusted. The daemon is
+        # loopback-trusted by design (see the module docstring), so verify is
+        # off for the loopback hop only.
+        for base, verify in bases:
+            try:
+                async with httpx.AsyncClient(timeout=120.0, verify=verify) as client:
+                    r = await client.post(
+                        f"{base}/social/x/import-session",
+                        headers=headers, json=payload)
+                if r.status_code == 404:
+                    last = (404, (r.text or "")[:200])
+                    continue
+                data = r.json()
+                return JSONResponse(status_code=(200 if data.get("ok") else 502), content=data)
+            except Exception as e:  # noqa: BLE001 — try the next base
+                last = (0, str(e)[:200])
         return JSONResponse(status_code=502, content={
             "ok": False, "error": f"no fleet endpoint reachable: {last}"})
 
@@ -2084,7 +2128,7 @@ def create_app(
         def _build_encrypted_blob():
             """Tar the allowlisted user-data paths, then PBKDF2-derive + Fernet-encrypt.
             Runs in a worker THREAD — tar+encrypt would otherwise block the daemon's
-            single asyncio loop for the whole operation (PQ010)."""
+            single asyncio loop for the whole operation."""
             tar_bytes = io.BytesIO()
             with tarfile.open(fileobj=tar_bytes, mode="w:gz") as tar:
                 for name in include:
@@ -2688,85 +2732,6 @@ def create_app(
         # chooses it. Never blank — falls back console -> minimal.
         return HTMLResponse(load_ui_pack("switcher"))
 
-    # ─── Same-origin directory proxy (for a landpage that shows other people's work) ───
-
-    _directory_env = "ADK_COMMUNITY_DIRECTORY_URL"
-    _directory_cache: dict = {"at": 0.0, "body": None}
-    _directory_ttl = 60.0
-
-    @app.get("/api/demos/community.json")
-    async def demos_community_directory():
-        """Fetch a community directory upstream and serve it from THIS origin.
-
-        A landpage that lists other people's projects has to read them from
-        wherever they are registered, and that is a different origin. Doing it
-        from the browser needs CORS on the upstream, and granting an origin there
-        is not free: a service whose CORS list is non-empty commonly also sets
-        Access-Control-Allow-Credentials, and a cookie scoped to the parent
-        domain then rides along -- handing a page that renders text other people
-        submitted an authenticated channel to the API that stores it. Measured on
-        one such deployment, a per-route header could not opt out either, because
-        the credentials header is set once at middleware init and applied to
-        every response.
-
-        Fetching server-side removes the question. The browser makes a
-        same-origin request, no CORS header is involved anywhere, and no cookie
-        is ever in scope.
-
-        The upstream is OPERATOR CONFIGURATION, never a request parameter -- a
-        proxy that forwards to a caller-named URL is an SSRF hole. Unset is a
-        501 that names the variable rather than a 404: "not configured" and "no
-        such route" are different answers and only one of them tells the operator
-        what to do.
-        """
-        upstream = os.environ.get(_directory_env, "").strip()
-        if not upstream:
-            return JSONResponse(
-                status_code=501,
-                content={
-                    "detail": "no community directory configured",
-                    "set": _directory_env,
-                },
-            )
-        if not upstream.startswith("https://"):
-            return JSONResponse(
-                status_code=501,
-                content={
-                    "detail": _directory_env + " must be an absolute https URL",
-                },
-            )
-
-        now = time.time()
-        cached = _directory_cache.get("body")
-        if cached is not None and (now - _directory_cache["at"]) < _directory_ttl:
-            return JSONResponse(content=cached)
-
-        try:
-            async with httpx.AsyncClient(timeout=8.0) as client:
-                resp = await client.get(upstream)
-            if resp.status_code != 200:
-                raise RuntimeError("upstream answered " + str(resp.status_code))
-            body = resp.json()
-        except Exception as exc:
-            # A STALE shelf beats an empty one: the page says "could not reach the
-            # registry" and shows nothing, which reads as the platform being
-            # broken rather than as one upstream being briefly unavailable.
-            if cached is not None:
-                logging.getLogger("adk.server").warning(
-                    "community directory refresh failed (%s); serving cached copy", exc
-                )
-                return JSONResponse(content=cached)
-            logging.getLogger("adk.server").warning(
-                "community directory unavailable: %s", exc
-            )
-            return JSONResponse(
-                status_code=502, content={"detail": "community directory unavailable"}
-            )
-
-        _directory_cache["at"] = now
-        _directory_cache["body"] = body
-        return JSONResponse(content=body)
-
     @app.get("/local", response_class=HTMLResponse)
     async def console_page_local():
         # The SELECTED UI pack ($AITHER_AGENT_UI, default "console" = the full
@@ -2885,6 +2850,42 @@ def create_app(
                 "Content-Security-Policy": "frame-ancestors 'self'",
                 "Cache-Control": "no-cache",
             })
+
+    @app.get("/packs/{pack_name}/{asset_path:path}", response_class=FileResponse)
+    async def pack_asset(pack_name: str, asset_path: str):
+        """Static assets for a UI pack (e.g. the on-device Bonsai worker).
+
+        The pack's index.html is served as a STRING (load_ui_pack); its sibling
+        files were served by nothing, which is why the old on-device backend
+        inlined its runtime as a blob. Drop-in dir wins, then the packaged dir.
+        Traversal is refused, and an asset that does not exist is a 404 — never
+        a fallback to the index (a missing worker must be loud, not a page).
+        """
+        if not asset_path or ".." in asset_path or "\\" in asset_path or asset_path.startswith("/"):
+            raise HTTPException(status_code=404, detail="no such asset")
+        base = _ui_packs_dir()
+        cand = os.path.join(base, pack_name, asset_path)
+        if not os.path.isfile(cand):
+            cand = os.path.join(os.path.dirname(__file__), "webui", "packs", pack_name, asset_path)
+        if not os.path.isfile(cand):
+            raise HTTPException(status_code=404, detail="no such asset")
+        return FileResponse(cand)
+
+    @app.get("/ui", response_class=HTMLResponse)
+    async def console_page_alias():
+        return HTMLResponse(load_ui_pack())
+
+    @app.get("/chat", response_class=HTMLResponse)
+    async def chat_page_minimal():
+        # Back-compat: the original lightweight streaming chat page (the
+        # "minimal" pack), regardless of the selected pack.
+        return HTMLResponse(load_ui_pack("minimal"))
+
+    @app.get("/aeon", response_class=HTMLResponse)
+    async def aeon_page():
+        # Aeon group-chat UI pack — multi-agent discussion.
+        return HTMLResponse(load_ui_pack("aeon"))
+
 
     # ─── Admin/settings console API (all under /admin/*, bearer-gated) ───
     # Registered as a function (not an APIRouter) so the handlers can close over
@@ -3097,6 +3098,15 @@ def create_app(
         message = body.get("message", body.get("content", ""))
         session_id = body.get("session_id")
         agent_name = body.get("agent")
+
+        # An empty prompt runs the FULL agentic pipeline on nothing: the model has
+        # no user question in context, burns turns calling tools aimlessly, and
+        # answers with a first-contact greeting, which reads as the agent being
+        # broken rather than as the request being empty. Refuse before any of that
+        # starts -- measured on the platform's own /agent lane: 7 turns, 7 tools,
+        # 133.8s, ending in a greeting to a question that never reached the model.
+        if not (message or "").strip():
+            raise HTTPException(status_code=400, detail="empty_message")
         request_id = get_trace_id()
 
         # Inference controls (null=auto pattern — only pass if explicitly set)
@@ -3200,6 +3210,15 @@ def create_app(
         message = body.get("message", body.get("content", ""))
         session_id = body.get("session_id") or f"adk-{uuid.uuid4().hex[:8]}"
         agent_name = body.get("agent") or body.get("persona")
+
+        # An empty prompt runs the FULL agentic pipeline on nothing: the model has
+        # no user question in context, burns turns calling tools aimlessly, and
+        # answers with a first-contact greeting, which reads as the agent being
+        # broken rather than as the request being empty. Refuse before any of that
+        # starts -- measured on the platform's own /agent lane: 7 turns, 7 tools,
+        # 133.8s, ending in a greeting to a question that never reached the model.
+        if not (message or "").strip():
+            raise HTTPException(status_code=400, detail="empty_message")
         reasoning = body.get("reasoning", False)
         mcp_endpoints = body.get("mcp_endpoints")
         # Extra SYSTEM content for this turn — the same `system_additions` list
@@ -3373,6 +3392,50 @@ def create_app(
         stream = body.get("stream", False)
 
         a = await get_agent()
+
+        # ── Plain mode: direct LLM completion, no agent loop ──
+        # The local UI pack's Ask tab sends plain:true. The agent loop decides
+        # tool use and can hang mid-fleet-churn, timing out after 60s with
+        # "took too long to process" — a direct completion cannot tool-loop
+        # and is the reliable path for casual questions. Agentic paths
+        # (Tasks/Build) keep the loop. OpenAI shape on purpose, like the rest
+        # of this route.
+        if body.get("plain"):
+            msgs = [Message(role=m["role"], content=m.get("content", ""))
+                    for m in messages_raw]
+
+            if stream:
+                async def plain_stream():
+                    async for chunk in a.llm.chat_stream(msgs, model=model or None):
+                        if chunk.content:
+                            yield "data: " + json.dumps({
+                                "id": "chatcmpl-plain", "object": "chat.completion.chunk",
+                                "created": int(time.time()), "model": chunk.model or "",
+                                "choices": [{"index": 0, "delta": {"content": chunk.content},
+                                             "finish_reason": None}],
+                            }) + "\n\n"
+                    yield "data: " + json.dumps({
+                        "id": "chatcmpl-plain", "object": "chat.completion.chunk",
+                        "created": int(time.time()), "model": "",
+                        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                    }) + "\n\n"
+                    yield "data: [DONE]\n\n"
+
+                return StreamingResponse(plain_stream(), media_type="text/event-stream")
+
+            resp = await a.llm.chat(msgs, model=model or None)
+            return {
+                "id": "chatcmpl-plain",
+                "object": "chat.completion",
+                "created": int(time.time()),
+                "model": resp.model or "",
+                "choices": [{"index": 0,
+                             "message": {"role": "assistant", "content": resp.content},
+                             "finish_reason": resp.finish_reason}],
+                "usage": {"prompt_tokens": resp.prompt_tokens,
+                          "completion_tokens": resp.completion_tokens,
+                          "total_tokens": resp.prompt_tokens + resp.completion_tokens},
+            }
 
         # Convert to Message objects
         messages = [Message(role=m["role"], content=m.get("content", "")) for m in messages_raw]
@@ -4210,7 +4273,7 @@ def create_app(
         turn in that window silently ran on 7 built-in tools instead of 1,227.
 
         Deliberately does NOT await the attach. The failure being recovered from is a
-        gateway that HANGS rather than refuses (D-1629), so awaiting here would add that
+        gateway that HANGS rather than refuses, so awaiting here would add that
         hang to every single turn — trading a degraded answer for no answer at all.
         """
         if _state.get("mcp_attach_permanent_failure"):
@@ -4226,7 +4289,7 @@ def create_app(
 
         Both flags must move together. Leaving `mcp_tools_registered` at its last good
         value while the gateway is gone made /health report `mode: platform, registered:
-        18` against a dead gateway for 140s in the D-1621 flap test — a stale success is
+        18` against a dead gateway for 140s in the flap test — a stale success is
         worse than no signal, because it is the signal a probe trusts.
         """
         _state["gateway_mcp_connected"] = False
@@ -4253,7 +4316,7 @@ def create_app(
         tools, and says so.
 
         Returns True when the gateway is attached and tools are registered. The caller
-        (`_supervise_local_mcp`) retries on False — see D-1621: this used to run exactly
+        (`_supervise_local_mcp`) retries on False: this used to run exactly
         once at boot, so a daemon that started during a gateway flap ran with 7 built-in
         tools for its ENTIRE lifetime and looked merely "not very capable".
         """
@@ -4289,7 +4352,7 @@ def create_app(
             # NOTE: `gateway_mcp_connected` is deliberately NOT set here. Listing and
             # registering 1,227 tools takes ~11s, and flipping the flag on connect made
             # /health report `mode: platform, registered: 0` for that whole window —
-            # measured 2026-07-29 during the D-1621 flap test. The flag is set at the
+            # measured 2026-07-29 during the flap test. The flag is set at the
             # bottom, once tools are actually usable, so "attached" never means
             # "connected but inert".
             tools = await mcp_client.list_tools()
@@ -4297,7 +4360,7 @@ def create_app(
             # [] for unreachable/401/402/4xx alike, and the two meta-tools below register
             # unconditionally — so without this guard the daemon reported
             # `mode: platform, registered: 2, catalogue: 0`: attached to nothing, offering a
-            # `search_tools` that searches an empty list. Measured in the D-1621 flap test.
+            # `search_tools` that searches an empty list. Measured in the flap test.
             if not tools:
                 logger.info(
                     "Sovereign mode: local MCP gateway %s listed 0 tools — built-in tools only",
@@ -4432,7 +4495,7 @@ def create_app(
     async def _supervise_local_mcp():
         """Keep re-attempting the local MCP attachment until it succeeds, then watch it.
 
-        D-1621: the gateway FLAPS — measured 2026-07-29, `curl -m 8` returned nothing and
+        The gateway FLAPS — measured 2026-07-29, `curl -m 8` returned nothing and
         four minutes later the identical endpoint answered 200 in 0.0026s, while the
         container read `Up 2 hours (healthy)` throughout. A one-shot attach at boot turns
         that momentary flap into a permanent capability loss for the daemon's whole
@@ -4478,7 +4541,7 @@ def create_app(
                     continue
                 # Probe with MCP `ping`, NOT `list_tools()` and NOT the gateway's /health:
                 #   - /health answers 200 while /mcp is unresponsive on this very gateway —
-                #     that lie is how the D-1621 flap stayed invisible;
+                #     that lie is how the flap stayed invisible;
                 #   - list_tools() costs 3.2s and 366 KB (1,227 schemas), too heavy to run
                 #     on a watch interval, which forced a 300s window in which /health could
                 #     assert `platform` at a gateway that had already died;
@@ -5692,6 +5755,17 @@ def create_app(
         except ImportError as e:
             logger.debug("FormBridge routes not available: %s", e)
 
+    # ── Local AI UI routes (the `local` UI pack: tasks, images, mail) ──
+    # Mounted on the main app so the pack served at "/" has ONE origin and
+    # ONE auth plane. Reuses the awrun queue wrappers and adk.images.
+    try:
+        from adk.local_routes import router as _local_router
+
+        app.include_router(_local_router)
+        logger.info("Local AI routes mounted (/api/local/*)")
+    except ImportError as e:
+        logger.warning("Local AI routes not available: %s", e)
+
     return app
 
 
@@ -5731,7 +5805,7 @@ def _tool_result_ok(result) -> bool:
     try:
         parsed = json.loads(stripped)
     except (ValueError, TypeError):
-        return True
+        parsed = None  # unparseable -> keep the previous answer (see docstring)
     if isinstance(parsed, dict) and parsed.get('error'):
         return False
     return True
@@ -5758,6 +5832,46 @@ async def _aitheros_stream(
     start = time.time()
     try:
         agent = await get_agent_fn(agent_name)
+
+        # Layer-3 supervised reasoning (gated): a parallel watcher escalates a
+        # stuck tool loop by calling the agent's deep_reasoning tool ON ITS
+        # BEHALF and injecting the conclusion via the steering queue — a fast
+        # router does not self-diagnose being stuck (measured: deep_reasoning
+        # registered AND advertised on 12/12 instances, called 0 times).
+        # Conservative here: escalate on repeated tool failures only
+        # (drift_steps=999). AITHER_ADK_SUPERVISOR=0 disables. The daemon has no
+        # ReasoningSession of its own, so the supervisor steers through
+        # queue_steering_message — the same channel POST /chat/steer uses.
+        _sup_task: Optional[asyncio.Task] = None
+        _sup_sess = None
+        if os.environ.get("AITHER_ADK_SUPERVISOR", "1") not in ("0", "false", "False"):
+            try:
+                from adk.reasoning_session import ReasoningSession as _RS
+                from adk.supervisor import Supervisor as _Sup, Goal as _SupGoal
+                from adk.steering import queue_steering_message as _qsm
+                _sup_sess = _RS(session_id)
+                _sup_sess.mark_running()
+                _sup_reasoner = None
+                _sup_td = agent._tools.get("deep_reasoning")
+                if _sup_td is not None:
+                    _sup_fn = _sup_td.fn
+
+                    async def _forced_reasoner(problem: str) -> str:
+                        try:
+                            return str((await _sup_fn(problem)) or "").strip()
+                        except Exception:  # noqa: BLE001 — advisory fallback
+                            return ""
+                    _sup_reasoner = _forced_reasoner
+                _sup = _Sup(_sup_sess, _SupGoal(message, session_id),
+                            reasoning_tool_name="deep_reasoning",
+                            fail_threshold=2, drift_steps=999, emit_events=True,
+                            reasoner=_sup_reasoner,
+                            steer_fn=lambda m: _qsm(session_id, "hint", m))
+                _sup_task = asyncio.ensure_future(_sup.run(tick_s=0.5))
+            except Exception:  # noqa: BLE001 — supervisor is best-effort
+                _sup_task = None
+                _sup_sess = None
+
         # Attach the customer's self-hosted MCP "hands" relayed by the platform in
         # the /stream body (brain/body/HANDS). Best-effort; never blocks the turn.
         if mcp_endpoints:
@@ -5800,6 +5914,11 @@ async def _aitheros_stream(
                 """Relay one stream_react event to the SSE loop below, live."""
                 if ev.get("type") == "tool":
                     tool_calls_for_kg.append(ev.get("name", "?"))
+                if _sup_sess is not None:
+                    try:
+                        _sup_sess.emit(ev)   # the supervisor observes this stream
+                    except Exception:  # noqa: BLE001
+                        pass
                 _q.put_nowait(ev)
 
             async def _run_turn():
@@ -5813,6 +5932,8 @@ async def _aitheros_stream(
                     )
                 finally:
                     unregister_steering_queue(session_id)
+                    if _sup_sess is not None:
+                        _sup_sess.mark_done()   # ends the supervisor's observe loop
                     _q.put_nowait(_done)
 
             _turn_task = asyncio.ensure_future(_run_turn())
@@ -5855,6 +5976,27 @@ async def _aitheros_stream(
             # emits a typed error + terminal complete (never a truncated stream).
             resp = await _turn_task
 
+            # Let a mid-flight reasoner steer land, then stop watching — the
+            # stream is ending and nothing will drain new steers after it.
+            if _sup_task is not None:
+                try:
+                    await asyncio.wait_for(_sup_task, timeout=2.0)
+                except asyncio.TimeoutError:
+                    _sup_task.cancel()
+
+            # No silent empty answers: an empty completion must surface as a typed
+            # error, not a blank answer that reads as "the model said nothing".
+            if not (resp.content or "").strip():
+                logger.warning("AitherOS stream: empty completion from %s (model %s)",
+                               agent.name, model_name)
+                _err_data = json.dumps({"type": "error",
+                                        "error": "model returned an empty completion"})
+                yield f"event: error\ndata: {_err_data}\n\n"
+                _end_ms = int((time.time() - start) * 1000)
+                yield (f"event: complete\ndata: "
+                       f"{json.dumps({'type': 'complete', 'duration_ms': _end_ms})}\n\n")
+                return
+
             yield f"event: answer\ndata: {json.dumps({'type': 'answer', 'answer': resp.content})}\n\n"
 
             duration_ms = int((time.time() - start) * 1000)
@@ -5878,6 +6020,18 @@ async def _aitheros_stream(
                 full_content += chunk
                 token_count += 1
                 yield f"event: token\ndata: {json.dumps({'type': 'token', 't': chunk, 'n': token_count})}\n\n"
+
+        # No silent empty answers (same rule as the tool branch above).
+        if not full_content.strip():
+            logger.warning("AitherOS stream: empty completion from %s (no-tools path)",
+                           agent.name)
+            _err_data = json.dumps({"type": "error",
+                                    "error": "model returned an empty completion"})
+            yield f"event: error\ndata: {_err_data}\n\n"
+            _end_ms = int((time.time() - start) * 1000)
+            yield (f"event: complete\ndata: "
+                   f"{json.dumps({'type': 'complete', 'duration_ms': _end_ms})}\n\n")
+            return
 
         yield f"event: answer\ndata: {json.dumps({'type': 'answer', 'answer': full_content})}\n\n"
 

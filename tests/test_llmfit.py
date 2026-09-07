@@ -12,7 +12,7 @@ def _agent_viable_pool_size(hw: dict) -> int:
     Every distinctness assertion below depends on it. A GitHub runner (~3GB
     envelope) has a pool of 2 — both Fast-specialty — so all roles legitimately
     converge there, while a workstation has ~19 and convergence would be the
-    D-916 regression. A constant bound cannot tell those apart, and these tests'
+    regression of that class. A constant bound cannot tell those apart, and these tests'
     envelope is whatever machine they run on.
     """
     from adk.llmfit import _to_ods_backend

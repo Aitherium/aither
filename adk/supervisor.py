@@ -56,6 +56,8 @@ class Supervisor:
     fail_threshold: int = 2          # tool failures → escalate to deep reasoning
     drift_steps: int = 4             # many steps + no answer → escalate
     reasoning_tool_name: str = "deep_reasoning"   # the escalation tool to suggest
+    reasoner: Optional[Callable[[str], Awaitable[str]]] = None
+    steer_fn: Optional[Callable[[str], Awaitable[bool]]] = None
     emit_events: bool = True
     # internal
     _nudged: bool = field(default=False, init=False)
@@ -95,20 +97,61 @@ class Supervisor:
         return SupervisionVerdict("proceed", score, "on track")
 
     # ── intervention ─────────────────────────────────────────────────────────
-    def _act(self, verdict: SupervisionVerdict) -> None:
+    async def _act(self, verdict: SupervisionVerdict) -> None:
         if self.emit_events:
             self.session.emit({"type": "supervision", "action": verdict.action,
                                "score": verdict.score, "reason": verdict.reason,
                                "goal": self.goal.text})
         if verdict.action == "escalate" and not self._escalated:
             self._escalated = True
-            self.session.steer(
-                f"[Supervisor] This sub-problem looks hard. Call the {self.reasoning_tool_name} "
-                f"tool to think it through rigorously, in service of the goal: {self.goal.text}")
+            if self.reasoner is not None:
+                # FORCED escalation: call the reasoner ON THE AGENT'S BEHALF and
+                # inject the conclusion through the same steering queue the loop
+                # drains. A fast router does not self-diagnose being stuck —
+                # measured: deep_reasoning was registered AND advertised on 12/12
+                # instances and called 0 times. Availability is not reach.
+                conclusion = ""
+                try:
+                    conclusion = (await self.reasoner(self.goal.text) or "").strip()
+                except Exception as exc:  # noqa: BLE001 — fall back to advisory
+                    await self._steer(
+                        f"[Supervisor] This sub-problem looks hard and the deep reasoner "
+                        f"failed ({exc}). Call the {self.reasoning_tool_name} tool to think "
+                        f"it through rigorously, in service of the goal: {self.goal.text}")
+                if conclusion:
+                    await self._steer(
+                        f"[Supervisor] Deep-reasoning conclusion for the goal "
+                        f"'{self.goal.text}':\n{conclusion}")
+                else:
+                    await self._steer(
+                        f"[Supervisor] This sub-problem looks hard. Call the "
+                        f"{self.reasoning_tool_name} tool to think it through rigorously, "
+                        f"in service of the goal: {self.goal.text}")
+            else:
+                await self._steer(
+                    f"[Supervisor] This sub-problem looks hard. Call the "
+                    f"{self.reasoning_tool_name} tool to think it through rigorously, "
+                    f"in service of the goal: {self.goal.text}")
         elif verdict.action == "nudge" and not self._nudged:
             self._nudged = True
-            self.session.steer(
+            await self._steer(
                 f"[Supervisor] Stay focused on the goal: {self.goal.text}. {verdict.reason}")
+
+    async def _steer(self, text: str) -> None:
+        """Inject guidance through the loop's steering channel.
+
+        Defaults to the session's steering queue (the Layer-2 mechanism the loop
+        drains each step). Callers that can't hold a ReasoningSession (e.g. the
+        adk daemon bridge) pass ``steer_fn`` instead. Guarded on session
+        liveness: the reasoner await can outlast the loop, and a steer into a
+        finished session is dropped anyway — steering a dead session would make
+        'escalated and the conclusion was useless' look identical to 'never
+        escalated' in the log.
+        """
+        if self.steer_fn is not None:
+            await self.steer_fn(text)
+        elif self.session.is_active():
+            self.session.steer(text)
 
     def _state_from_events(self, counters: dict) -> dict:
         return {"steps": counters.get("steps", 0),
@@ -139,7 +182,7 @@ class Supervisor:
                 verdict = await self.assess(self._state_from_events(c))
                 self.last_verdict = verdict
                 if verdict.action != "proceed":
-                    self._act(verdict)
+                    await self._act(verdict)
         return verdict
 
 

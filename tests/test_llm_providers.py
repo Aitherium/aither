@@ -664,7 +664,7 @@ class TestTransientRetry:
         assert "overloaded" in str(ei.value)
 
 
-# ─── thinking-mode wiring (D-1317) ───
+# ─── thinking-mode wiring ───
 
 class TestChatTemplateKwargsWiring:
     """Every OpenAIProvider construction must carry the per-model

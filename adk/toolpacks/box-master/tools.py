@@ -158,7 +158,7 @@ async def explore(query: str, domain: str = "any", k: int = 8) -> dict:
     domain: which catalog to search — one of 'tools', 'agents', 'fs',
             'code', 'skills', or 'any' (all). Defaults to 'any'.
             (Non-internal callers only ever receive 'tools' cards; the other
-            domains are entitlement-gated server-side — D-416.)
+            domains are entitlement-gated server-side.)
     k: maximum results to return (default 8).
 
     Returns {"ok": True, "results": [...]} with compact cards

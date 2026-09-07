@@ -434,7 +434,7 @@ class TestOdsPolicyName:
 
 
 class TestGgufIntegrityVerification:
-    """D-917: the catalog's gguf_sha256 pins must actually be enforced."""
+    """The catalog's gguf_sha256 pins must be enforced for model integrity."""
 
     def test_matching_hash_passes_and_keeps_file(self, tmp_path):
         import hashlib

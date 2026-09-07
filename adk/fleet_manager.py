@@ -6,7 +6,8 @@ tracks a durable FLEET whose members each live in a distinct runtime —
   - **local**      : a self-hosted agent process on THIS machine (adk serve / daemon).
   - **managed**    : an Anthropic Managed Agent (hosted twin), deployed through the
                      platform's managed-deploy pipeline (compile → agents.create).
-  - **cloud-run**  : an agent we run for the customer on GCP Cloud Run (we-host).
+  - **hosted**     : an Aitherium Instance on the platform fleet (POST /v1/instances);
+                     `cloud-run` is kept as an alias of it.
 
 The manager owns a durable registry (`~/.aither/fleet.json`) and dispatches lifecycle
 (create / status / remove) to a per-runtime DRIVER. Drivers are injected, so the real
@@ -27,7 +28,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional, Protocol
 
-RUNTIMES = ("local", "managed", "cloud-run")
+RUNTIMES = ("local", "managed", "hosted", "cloud-run")  # cloud-run = alias of hosted
 
 
 def _data_dir() -> Path:
@@ -326,71 +327,117 @@ def _http_managed_demigrate(agent: str, meta: dict[str, Any]) -> bool:
         return False
 
 
-# ── cloud-run: we-host on GCP (intent emitted; fulfilment is server-side) ─
+# ── hosted: an Aitherium Instance on the platform's own fleet ─────────────
 
-class CloudRunDriver:
-    """Emits a we-host provisioning intent — matching WorkforceProvisioner's
-    `we_host` path, which marks `pending_runtime` and lets the server-side Cloud Run
-    provisioner fulfil it. HONEST: this does NOT itself stand up Cloud Run."""
+class HostedDriver:
+    """Creates an Aitherium Instance through Genesis ``POST /v1/instances``.
 
-    runtime = "cloud-run"
+    HISTORY, kept so it is not re-derived: this driver was ``CloudRunDriver``
+    (runtime ``cloud-run``) and posted to ``/v1/workforce/cloud-run/provision``
+    — a route that never existed in Genesis (measured 2026-09-06: zero hits). It
+    then "gracefully degraded" to a local ``pending_runtime`` that nothing ever
+    fulfilled, so every hosted agent anyone created sat pending forever with no
+    error. The gateway now has the route, and this driver reports what the
+    gateway actually said: a 4xx/5xx is a FAILED member with the body in
+    ``error``, never a pending one.
+    """
 
-    def __init__(self, emit_fn: Optional[Callable[[str, dict[str, Any]], dict[str, Any]]] = None) -> None:
-        self._emit_fn = emit_fn or self._default_emit
+    runtime = "hosted"
 
-    @staticmethod
-    def _default_emit(name: str, opts: dict[str, Any]) -> dict[str, Any]:
-        """Emit a cloud-run provisioning intent to the gateway. If the gateway is
-        unavailable or doesn't have the endpoint, gracefully degrade by returning
-        a local request ID and pending status (server-side fulfilment will retry)."""
-        import httpx
-
-        body = {
-            "agent_name": name,
-            "runtime": "cloud-run",
-        }
-        for k in ("pack", "model", "company"):
-            if opts.get(k):
-                body[k] = opts[k]
-
-        headers = {}
-        if _api_key():
-            headers["Authorization"] = f"Bearer {_api_key()}"
-
-        url = f"{_gateway_base()}/v1/workforce/cloud-run/provision"
-        request_id = f"cr_{uuid.uuid4().hex[:12]}"
-
-        try:
-            r = httpx.post(url, json=body, headers=headers, timeout=30.0)
-            if r.status_code < 400:
-                result = r.json()
-                # Server-side returned a request_id or resource_id
-                return {
-                    "request_id": result.get("request_id") or request_id,
-                    "status": result.get("status", "pending_runtime"),
-                }
-            # 4xx/5xx — fall through to local default
-        except Exception:  # noqa: BLE001
-            # Network error, timeout, etc. — fall through
-            pass
-
-        # Graceful degradation: return local request_id and pending_runtime
-        # (server-side handling of the intent happens later via event/routine)
-        return {"request_id": request_id, "status": "pending_runtime"}
+    def __init__(
+        self,
+        create_fn: Optional[Callable[[str, dict[str, Any]], dict[str, Any]]] = None,
+        status_fn: Optional[Callable[[str], str]] = None,
+        remove_fn: Optional[Callable[[str], bool]] = None,
+    ) -> None:
+        self._create_fn = create_fn or _http_instance_create
+        self._status_fn = status_fn or _http_instance_status
+        self._remove_fn = remove_fn or _http_instance_delete
 
     def create(self, member: FleetMember, opts: dict[str, Any]) -> dict[str, Any]:
-        res = self._emit_fn(member.name, opts)
+        res = self._create_fn(member.name, opts)
+        if not res.get("ok"):
+            return {"status": "failed", "error": str(res.get("error") or "instance create failed")}
+        inst = res.get("instance") or {}
         return {
-            "status": res.get("status", "pending_runtime"),
-            "ref": res.get("request_id", ""),
-            "meta": {"note": "Cloud Run fulfilment is server-side (we-host); see workforce provisioner."},
+            "status": ("running" if inst.get("status") == "ready"
+                       else str(inst.get("status") or "failed")),
+            "ref": str(inst.get("id", "")),
+            "endpoint": str(inst.get("endpoint_url", "")),
+            "meta": {"hostname": inst.get("hostname", ""), "ready_ms": inst.get("ready_ms", -1),
+                     "placement": {k: inst.get(k) for k in ("brain", "loop", "hands")}},
         }
 
     def status(self, member: FleetMember) -> str:
-        return member.status
+        if not member.ref:
+            return "failed"
+        return self._status_fn(member.ref)
 
     def remove(self, member: FleetMember) -> bool:
-        return True  # dropping the local record; server-side teardown is a separate concern
+        if not member.ref:
+            return True
+        return bool(self._remove_fn(member.ref))
+
+
+# Backwards-compatible alias: `--runtime cloud-run` keeps working and lands on
+# the platform's own instances rather than a dead GCP intent.
+CloudRunDriver = HostedDriver
+
+
+def _instance_headers() -> dict[str, str]:
+    headers: dict[str, str] = {}
+    if _api_key():
+        headers["Authorization"] = f"Bearer {_api_key()}"
+    return headers
+
+
+def _http_instance_create(name: str, opts: dict[str, Any]) -> dict[str, Any]:
+    import httpx
+
+    body: dict[str, Any] = {"name": name, "preset": opts.get("preset") or "hosted"}
+    for k in ("brain", "loop", "hands", "image"):
+        if opts.get(k):
+            body[k] = opts[k]
+    env: dict[str, str] = {}
+    if opts.get("pack"):
+        env["AITHER_IDENTITY"] = str(opts["pack"])
+    if opts.get("model"):
+        env["AITHER_MODEL"] = str(opts["model"])
+    if env:
+        body["env"] = env
+    url = f"{_gateway_base()}/v1/instances"
+    try:
+        r = httpx.post(url, json=body, headers=_instance_headers(), timeout=180.0)
+        if r.status_code >= 400:
+            return {"ok": False, "error": f"{r.status_code}: {r.text[:300]}"}
+        return r.json()
+    except Exception as exc:  # noqa: BLE001 - surface as a failed create, never crash the CLI
+        return {"ok": False, "error": str(exc)}
+
+
+def _http_instance_status(instance_id: str) -> str:
+    import httpx
+
+    url = f"{_gateway_base()}/v1/instances/{instance_id}"
+    try:
+        r = httpx.get(url, headers=_instance_headers(), timeout=30.0)
+        if r.status_code >= 400:
+            return "failed" if r.status_code == 404 else "unknown"
+        status = str((r.json().get("instance") or {}).get("status") or "unknown")
+        return "running" if status == "ready" else status
+    except Exception:  # noqa: BLE001
+        return "unknown"
+
+
+def _http_instance_delete(instance_id: str) -> bool:
+    import httpx
+
+    url = f"{_gateway_base()}/v1/instances/{instance_id}"
+    try:
+        r = httpx.request("DELETE", url, headers=_instance_headers(), timeout=120.0)
+        return r.status_code < 400
+    except Exception:  # noqa: BLE001
+        return False
 
 
 # ── the manager ──────────────────────────────────────────────────────────
@@ -408,7 +455,8 @@ class FleetManager:
         self.drivers: dict[str, RuntimeDriver] = drivers or {
             "local": LocalDriver(),
             "managed": ManagedDriver(),
-            "cloud-run": CloudRunDriver(),
+            "hosted": HostedDriver(),
+            "cloud-run": HostedDriver(),
         }
 
     def create(self, runtime: str, name: str, **opts: Any) -> FleetMember:
@@ -530,5 +578,6 @@ __all__ = [
     "LocalDriver",
     "ManagedDriver",
     "CloudRunDriver",
+    "HostedDriver",
     "connect_local_agent",
 ]

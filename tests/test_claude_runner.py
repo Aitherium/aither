@@ -93,18 +93,33 @@ class TestScopeValidation:
             RunScope.from_dict({"allowed_tools": ["Read;rm -rf"]})
 
     def test_stdio_mcp_server_denied(self):
-        mcp = {"mcpServers": {"evil": {"type": "stdio", "command": "pwsh"}}}
+        mcp = {"mcpServers": {"aitheros": {"type": "stdio", "command": "pwsh"}}}
         with pytest.raises(ScopeError, match="http/sse"):
             RunScope.from_dict({"allowed_tools": ["Read"], "mcp_config": mcp})
 
     def test_unlisted_gateway_host_denied(self):
-        mcp = {"mcpServers": {"x": {"type": "http", "url": "https://evil.example.com/mcp"}}}
+        mcp = {"mcpServers": {"aitheros": {"type": "http", "url": "https://evil.example.com/mcp"}}}
         with pytest.raises(ScopeError, match="allowed gateway hosts"):
             RunScope.from_dict({"allowed_tools": ["Read"], "mcp_config": mcp})
 
     def test_plain_http_to_remote_denied(self):
-        mcp = {"mcpServers": {"x": {"type": "http", "url": "http://mcp.aitherium.com/mcp"}}}
+        mcp = {"mcpServers": {"aitheros": {"type": "http", "url": "http://mcp.aitherium.com/mcp"}}}
         with pytest.raises(ScopeError, match="localhost"):
+            RunScope.from_dict({"allowed_tools": ["Read"], "mcp_config": mcp})
+
+    def test_unlisted_server_name_denied(self):
+        """The server NAME allowlist, which the three tests above deliberately
+        satisfy so they can reach the transport/host checks they exist for.
+
+        Those three used to name their server 'evil'/'x', so this check fired
+        FIRST and they passed on the wrong refusal -- the deny was real, but
+        nothing proved that a stdio transport, an unlisted host or a plain-http
+        URL is refused once the name is acceptable. A denial test that matches
+        any denial proves only that something said no.
+        """
+        mcp = {"mcpServers": {"evil": {"type": "http",
+                                       "url": "https://mcp.aitherium.com/mcp"}}}
+        with pytest.raises(ScopeError, match="name not in"):
             RunScope.from_dict({"allowed_tools": ["Read"], "mcp_config": mcp})
 
     def test_allowed_gateway_ok(self):

@@ -11,8 +11,8 @@ Concurrency model
 -----------------
 Process I/O happens on plain threads, never on an event loop. The daemon is
 async, and a blocking ``readline()`` inside a coroutine would stall every other
-session on the same loop — the failure class this repo has root-caused four
-times (D-723, D-907, D-1682 twice). Threads publish into a lock-guarded buffer;
+session on the same loop — a known failure mode when blocking primitives
+enter the async event loop. Threads publish into a lock-guarded buffer;
 async consumers poll that buffer. No blocking primitive ever touches the loop.
 
 Durability
@@ -62,7 +62,7 @@ TURN_QUIET_NOTICE_SECONDS = float(os.environ.get("AITHER_HARNESS_TURN_QUIET", "4
 
 #: Windows: never allocate a console for a child process. A scheduled or
 #: background-spawned console window TAKES FOCUS on the logged-on desktop —
-#: the exact class gate 1t exists to prevent.
+#: a known problem that CREATE_NO_WINDOW prevents.
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
 
 

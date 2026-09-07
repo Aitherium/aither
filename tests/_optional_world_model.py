@@ -6,7 +6,7 @@ for licence-gated products). So in a public install `_get_offline_engine()`
 returns None by design and every test that drives the in-process learner fails.
 
 That matters because the release gate ("Test the public payload before releasing
-it", D-977) installs the payload into a clean environment and runs this suite
+it") installs the payload into a clean environment and runs this suite
 there — reproducing the public install on purpose. Eight tests across
 test_world_model_pack / test_env_enroll / test_arc_world_pack failed that way and
 blocked EVERY adk-v* release from 2026-07-30 onward, while passing locally where
@@ -21,7 +21,7 @@ level when absent".
 
 Module-level `skipif` (evaluated at decoration) on purpose: a `pytest.skip()`
 inside a test body fires AFTER partial execution and reports a real failure as a
-skip, which `.claude/rules/python-quality.md` bans as PQ004.
+skip, which this project bans.
 """
 
 from __future__ import annotations

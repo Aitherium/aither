@@ -13,7 +13,7 @@ import time
 import pytest
 
 from adk.fleet_manager import (
-    CloudRunDriver,
+    HostedDriver,
     FleetManager,
     FleetMember,
     FleetStore,
@@ -70,10 +70,27 @@ def test_create_managed_failure_marks_failed(tmp_path):
     assert m.status == "failed" and "401" in m.error
 
 
-def test_create_cloud_run_is_pending(tmp_path):
-    mgr = _mgr(tmp_path, {"cloud-run": CloudRunDriver(emit_fn=lambda n, o: {"request_id": "cr_x", "status": "pending_runtime"})})
+def test_create_hosted_runs_when_gateway_answers(tmp_path):
+    """The old CloudRunDriver 'gracefully degraded' to pending_runtime when the
+    gateway lacked its route (it always did). A hosted member is now RUNNING only
+    when Genesis reports the instance ready, and FAILED — with the body — otherwise."""
+    ok = {"ok": True, "instance": {"id": "inst-abc", "status": "ready",
+                                   "endpoint_url": "https://hosted-acme.aitherium.com",
+                                   "hostname": "hosted-acme.aitherium.com", "ready_ms": 812,
+                                   "brain": "cloud", "loop": "rented", "hands": "rented"}}
+    mgr = _mgr(tmp_path, {"hosted": HostedDriver(create_fn=lambda n, o: ok)})
+    m = mgr.create("hosted", "hosted")
+    assert m.status == "running" and m.ref == "inst-abc"
+    assert m.endpoint == "https://hosted-acme.aitherium.com"
+    assert m.meta["placement"]["loop"] == "rented" and m.meta["ready_ms"] == 812
+
+
+def test_create_hosted_gateway_error_is_failed_not_pending(tmp_path):
+    mgr = _mgr(tmp_path, {"cloud-run": HostedDriver(
+        create_fn=lambda n, o: {"ok": False, "error": "404: {\"detail\":\"Not Found\"}"})})
     m = mgr.create("cloud-run", "hosted")
-    assert m.status == "pending_runtime" and m.ref == "cr_x"
+    assert m.status == "failed" and "404" in m.error
+    assert m.status != "pending_runtime"
 
 
 def test_unknown_runtime_raises(tmp_path):
@@ -91,7 +108,10 @@ def test_empty_name_raises(tmp_path):
 def test_list_sorted_and_remove(tmp_path):
     mgr = _mgr(tmp_path, {
         "local": LocalDriver(spawner=lambda n, o: {"pid": 999999}),
-        "cloud-run": CloudRunDriver(emit_fn=lambda n, o: {"request_id": "cr", "status": "pending_runtime"}),
+        "cloud-run": HostedDriver(
+            create_fn=lambda n, o: {"ok": True, "instance": {"id": "cr", "status": "ready"}},
+            remove_fn=lambda r: True,
+        ),
     })
     a = mgr.create("local", "a")
     b = mgr.create("cloud-run", "b")
@@ -145,28 +165,17 @@ def test_local_status_stopped_for_dead_pid(tmp_path):
 
 # ── cloud-run emit with intent posting ───────────────────────────────────
 
-def test_cloud_run_emit_posts_intent_to_gateway():
-    """CloudRunDriver._default_emit POSTs a provisioning intent; verifies shape."""
-    calls = []
+def test_hosted_gateway_down_is_failed_not_pending(monkeypatch):
+    """A gateway that cannot be reached is a FAILED create with the transport error
+    in `error` — never the old 'pending_runtime' that nothing ever fulfilled."""
+    from adk.fleet_manager import _http_instance_create
 
-    def fake_poster(name, opts):
-        calls.append({"name": name, "opts": opts})
-        return {"request_id": "cr_abc123", "status": "pending_runtime"}
-
-    # Use a fake poster so we don't hit the network
-    calls.clear()
-    result = CloudRunDriver._default_emit("my-agent", {"pack": "eve-import", "model": "gpt-4"})
-    # With no poster injected, it should degrade gracefully
-    assert result.get("status") == "pending_runtime"
-    assert "cr_" in result.get("request_id", "")
-
-
-def test_cloud_run_emit_degrades_gracefully_on_network_error():
-    """When gateway is down, CloudRunDriver._default_emit returns a pending
-    request_id instead of crashing."""
-    result = CloudRunDriver._default_emit("offline-agent", {})
-    assert result.get("status") == "pending_runtime"
-    assert result.get("request_id", "").startswith("cr_")
+    monkeypatch.setenv("AITHER_API_URL", "http://127.0.0.1:9")  # nothing listens
+    res = _http_instance_create("offline-agent", {})
+    assert res.get("ok") is False and res.get("error")
+    m = FleetMember(id="x", name="offline-agent", runtime="hosted")
+    out = HostedDriver().create(m, {})
+    assert out["status"] == "failed" and "pending" not in out["status"]
 
 
 # ── bidirectional: connect-local ─────────────────────────────────────────

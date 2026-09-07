@@ -23,7 +23,7 @@ from adk.config import load_saved_config as _real_load_saved_config
 # Stripping it per-test is safe for the offline modules: they capture offline mode
 # at IMPORT time (before this fixture runs), so their in-process engines stay
 # in-process. Only call-time readers are affected — which is the bug. Same class
-# as D-1518; asserted by check_test_order_independence.py.
+# as a known ContextVar leak; asserted by a test-order-independence check.
 _ISOLATION_VARS = [
     "AITHER_API_KEY",
     "AITHER_MCP_KEY",

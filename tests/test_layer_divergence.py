@@ -3,7 +3,7 @@
 Tests whether adk.core.model (Layer A) and adk.llm (Layer B) produce
 IDENTICAL wire-format requests and responses when fed the same logical input.
 
-This is the measurement for D-1384 (tech-debt row: "adk carries two parallel,
+This is the measurement for the divergence ("adk carries two parallel,
 unreconciled LLM abstraction layers").
 
 CRITICAL: Every divergence is NAMED and ASSERTED AS CURRENT TRUTH with a
@@ -873,7 +873,7 @@ class TestMessagesPassThrough:
 # path triggers this today. It fires for (a) any external embedder passing its
 # own message list to a Layer A backend, and (b) any future mid-conversation
 # system nudge — which the Layer B docstring says ReAct loops do
-# "legitimately". That is exactly the drift D-1384 predicts.
+# "legitimately". That is exactly the drift this measurement predicts.
 #
 # These tests PIN CURRENT BEHAVIOUR. They are not asserting that Layer A is
 # correct; they assert what it does today, so that porting the demotion to
@@ -962,7 +962,7 @@ class TestMidConversationSystemMessageDivergence:
     async def test_the_two_layers_disagree_on_the_wire(self):
         """The divergence itself, asserted directly: same input, different payload.
 
-        This is the measurement D-1384 asked for. If someone ports the
+        This is the measurement that divergence asked for. If someone ports the
         demotion to Layer A (or unifies the layers), THIS TEST FAILS — which
         is the intended signal, not a regression.
         """

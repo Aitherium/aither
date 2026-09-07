@@ -112,7 +112,19 @@ class ReasoningSession:
             finally:
                 self.updated_at = time.time()
 
-        self._task = asyncio.ensure_future(_runner())
+        # Bind to the RUNNING loop, never asyncio.ensure_future: ensure_future
+        # resolves via get_event_loop(), which has NO default in modern
+        # pytest-asyncio (and any loop-less context) — it fabricates an orphan
+        # loop, the task is created there and never stepped, and the loop that
+        # called start() observes a task that is done-without-running.
+        # Measured 2026-08-30: supervisor tests failed exactly this way under
+        # pytest-asyncio 1.3.0 while asyncio.create_task worked. In production
+        # (daemon/awkit, running loop set as default) the two were identical;
+        # create_task is correct in both worlds.
+        try:
+            self._task = asyncio.get_running_loop().create_task(_runner())
+        except RuntimeError:
+            self._task = asyncio.ensure_future(_runner())  # legacy: no running loop
         return self._task
 
     async def join(self, timeout: Optional[float] = None) -> Any:

@@ -167,10 +167,10 @@ class GatewayMCPClient:
     async def ping(self) -> bool:
         """Cheap liveness probe that exercises the REAL MCP path.
 
-        `connect()` is not a substitute: it GETs `/health`, and this gateway is known to
-        answer that 200 while `/mcp` is unresponsive — that exact lie is what let a flap
-        go unnoticed in D-1621. `list_tools()` does exercise `/mcp`, but it costs 3.2s and
-        366 KB (1,227 tool schemas), which is far too heavy to run on a watch interval.
+        `connect()` is not a substitute: it GETs `/health`, and this gateway can answer 200
+        while `/mcp` is unresponsive. That mismatch can mask real problems. `list_tools()`
+        does exercise `/mcp`, but it costs 3.2s and 366 KB (1,227 tool schemas), which is
+        far too heavy to run on a watch interval.
         The JSON-RPC `ping` method measures **8ms / 36 bytes** against the same session
         and endpoint, so loss can be detected in seconds instead of minutes for free.
 

@@ -24,10 +24,54 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 
-def build(onedir: bool = False):
-    """Build the executable."""
-    entry_point = str(ROOT / "adk" / "cli.py")
-    name = "aither"
+#: Packages the DAEMONS never touch. Excluded only on the narrow build, where
+#: they are provably unreachable -- measured through the import system, not
+#: guessed: importing daemon.create_app and server.main together loads 35 adk
+#: modules and ZERO of these.
+NARROW_EXCLUDES = (
+    # Tier 1 -- the ML stack. Excluding these took the build 694 -> 426 MiB.
+    "torch", "torchvision", "torchaudio", "transformers", "scipy", "sklearn",
+    "pandas", "matplotlib", "cv2", "PIL", "boto3", "botocore", "grpc",
+    "tensorboard", "datasets", "accelerate",
+    # Tier 2 -- found only because 426 MiB was still absurd for two daemons.
+    # BUILT AND SERVED: 199,768,543 bytes (190.5 MiB), 77 hooks, 72.5% off
+    # the wide build. `harness serve` answers /health 200 and `up` starts
+    # with zero import failures, so nothing excluded here was load-bearing.
+    # 🚨 The tier-1 list was verified with a probe that asked "is torch in
+    # sys.modules?" for ELEVEN names I had chosen, and it answered "0 ML
+    # modules" -- truthfully, and uselessly, because the build was still
+    # dragging in PyQt6, playwright, onnxruntime, numba/llvmlite, pyarrow,
+    # langchain, nltk, imageio and a PDF/Office document stack. A probe scoped
+    # to the list you already suspect cannot find what you did not suspect.
+    # Re-measured against THIRTY names: the daemons import ZERO of them at
+    # runtime. PyInstaller collects them from static traces of code paths these
+    # two servers never execute.
+    "numpy", "numba", "llvmlite", "onnxruntime", "pyarrow", "fastparquet",
+    "playwright", "PyQt6", "IPython", "jedi", "parso", "black", "blib2to3",
+    "langchain", "nltk", "imageio", "imageio_ffmpeg", "av", "pypdfium2",
+    "pdfminer", "openpyxl", "pptx", "docx", "lxml", "google.cloud",
+    "googleapiclient", "google.api_core", "ddgs", "fake_useragent",
+)
+
+
+def build(onedir: bool = False, narrow: bool = False):
+    """Build the executable.
+
+    ``narrow`` roots the freeze at packaging/daemon_entry.py -- the two daemons
+    the AitherOS launcher starts -- instead of the whole CLI. Measured
+    2026-09-05, the full CLI build is 727,327,049 bytes (694 MiB) in ~17
+    minutes across 164+ hooks, because cli.py imports adk.images and drags in
+    the entire ML stack. The daemons import none of it.
+
+    NOT the default: the wide build is what ships to humans as `aither`, and
+    quietly narrowing it would remove every command they use.
+    """
+    if narrow:
+        entry_point = str(ROOT / "packaging" / "daemon_entry.py")
+        name = "aither-daemons"
+    else:
+        entry_point = str(ROOT / "adk" / "cli.py")
+        name = "aither"
 
     args = [
         sys.executable, "-m", "PyInstaller",
@@ -41,6 +85,10 @@ def build(onedir: bool = False):
         args.append("--onedir")
     else:
         args.append("--onefile")
+
+    if narrow:
+        for mod in NARROW_EXCLUDES:
+            args.extend(["--exclude-module", mod])
 
     # Include data files
     data_sep = ";" if platform.system() == "Windows" else ":"
@@ -125,5 +173,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Build AitherADK executable")
     parser.add_argument("--onedir", action="store_true",
                         help="Build as directory instead of single file")
+    parser.add_argument("--narrow", action="store_true",
+                        help="freeze ONLY the daemons the AitherOS launcher "
+                             "starts (packaging/daemon_entry.py) and exclude "
+                             "the ML stack -- the wide build is 694 MiB")
     args = parser.parse_args()
-    build(onedir=args.onedir)
+    build(onedir=args.onedir, narrow=args.narrow)

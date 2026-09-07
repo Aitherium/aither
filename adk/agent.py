@@ -2958,6 +2958,17 @@ class AitherAgent:
                 system_prompt=self.system_prompt,
                 success=not getattr(response, "error", None),
             )
+            # The context-substrate write-through: the completed task lands in
+            # the tenant knowledge pool (same opt-in doctrine — the system
+            # prompt is deliberately NOT sent). OPT-IN, never raises.
+            from adk.pool_write_through import report_task_to_pool
+
+            report_task_to_pool(
+                task,
+                str(text),
+                agent_name=self.name,
+                success=not getattr(response, "error", None),
+            )
         except Exception as exc:  # noqa: BLE001 - one lost row, never a failed run
             logger.debug("learning report skipped: %s", exc)
 

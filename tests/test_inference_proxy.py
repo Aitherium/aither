@@ -259,7 +259,7 @@ class TestProxyChatCompletion:
         # MicroScheduler's OpenAI-compat backend since 76e2540991. Patching the
         # ollama path left the REAL vllm path live, so this test was making a
         # network call and failing on the timeout — it was mis-diagnosed as an
-        # environmental 503 (D-809) when it is the same stale-routing bug as
+        # environmental 503 when it is the same stale-routing bug as
         # test_model_backends.
         with patch.object(
             inference_mod, "_proxy_vllm",

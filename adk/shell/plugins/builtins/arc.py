@@ -61,6 +61,20 @@ class ArcPlugin(SlashCommand):
     description: str = "Watch and steer the ARC-AGI-3 agent — board, room, votes"
     category: str = "labs"
 
+    def __init__(self) -> None:
+        # Explicit, because the dataclass base assigns
+        # `self.name = ""` and shadows the class attribute above —
+        # the instance then registers under the empty string and is
+        # overwritten by the next plugin to do the same. Without this,
+        # /arc resolves to nothing (measured 2026-08-30: the registry
+        # loaded the class, checked the CLASS attr, and registered the
+        # instance under '' — arc was absent from every command list).
+        super().__init__(
+            name='arc',
+            description='Watch and steer the ARC-AGI-3 agent — board, room, votes',
+            aliases=['aitherarc'],
+        )
+
     async def run(self, args: List[str], ctx: Dict[str, Any]) -> Optional[str]:
         sub = (args[0].lower() if args else "status")
         try:

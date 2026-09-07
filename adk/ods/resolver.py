@@ -114,7 +114,7 @@ def is_agent_viable(model: dict[str, Any]) -> bool:
     Untested models pass. This is deliberately not "verified-only": just 3 of 52
     records carry a verified agent_viability, so requiring it would collapse
     every role on every machine onto the same handful of models — trading one
-    degenerate answer (D-916) for another.
+    degenerate answer for another.
     """
     status = agent_viability(model)
     return status is None or status == "verified"
@@ -404,7 +404,7 @@ class OdsResolver:
 
         Upstream ODS answers one question — "which single model should this box
         install" — so calling `resolve()` once per ADK tier returns the same
-        model five times (D-916). This narrows upstream's *feasible* set by the
+        model five times. This narrows upstream's *feasible* set by the
         role's preferred catalog specialties; it never adds a candidate upstream
         rejected, and the arch-policy substitution still applies to the role's
         own pick, so a unified-memory host cannot be handed the coder-next model

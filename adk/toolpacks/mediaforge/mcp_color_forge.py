@@ -31,15 +31,6 @@ _BASE = os.getenv(
     "http://aitheros-media-forge:8200" if _DOCKER else "http://localhost:8200",
 ).rstrip("/")
 
-
-def _auth_headers() -> dict:
-    """The forge-gateway's internal-key lane. Writes through the gateway
-    resolve to the anonymous lane (fail-closed DENY) without this key; with it
-    they pass as the platform lane. Loopback (no gateway) ignores the header."""
-    key = os.getenv("AITHER_INTERNAL_SECRET")
-    return {"X-Internal-Key": key} if key else {}
-
-
 _T_FAST = 60      # probes / knowledge lookup
 _T_OP = 300       # a color transform: upload + CPU OCIO + fetch — seconds, not minutes
 
@@ -48,8 +39,7 @@ def _post(path: str, body: dict, timeout: int, tries: int = 3) -> dict:
     """POST with GateBusy backoff. media-forge signals errors as 200 + ok:false."""
     for attempt in range(tries):
         try:
-            r = requests.post(f"{_BASE}{path}", json=body, timeout=timeout,
-                              headers=_auth_headers())
+            r = requests.post(f"{_BASE}{path}", json=body, timeout=timeout)
             r.raise_for_status()
             data = r.json()
         except requests.Timeout:
