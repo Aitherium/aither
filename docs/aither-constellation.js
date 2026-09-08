@@ -51,7 +51,7 @@
     { id: "awfind", label: "awfind", blurb: "A portable search client — query, results,..." },
     { id: "awbrowse", label: "awbrowse", blurb: "A portable browser client — navigate,..." },
     { id: "awknowledge", label: "awknowledge", blurb: "How to run a coding agent so the result..." },
-    { id: "gobbonet-agentic", label: "gobbonet-agentic", blurb: "GobboNet campaigns with a real agent brain —..." },
+    { id: "gawbbonet", label: "gawbbonet", blurb: "GobboNet campaigns with a real agent brain —..." },
     { id: "aitherkvcache", label: "aitherkvcache", blurb: "Near-optimal KV cache quantization for LLM..." },
     { id: "awrtifact", label: "awrtifact", blurb: "Deliberately chunk artifacts into GitHub..." },
     { id: "AitherZero", label: "AitherZero", blurb: "PowerShell 7+ automation framework —..." },
